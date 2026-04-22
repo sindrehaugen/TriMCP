@@ -20,6 +20,10 @@ log = logging.getLogger("tri-stack-embeddings")
 
 MODEL_ID = "jinaai/jina-embeddings-v2-base-code"
 VECTOR_DIM = 768
+# Hard cap on how many texts we ever feed to model.encode() in one call.
+# Chunked on the Python side so huge files can't balloon resident memory
+# holding thousands of input strings + output tensors simultaneously.
+_BATCH_CHUNK_SIZE = int(os.getenv("EMBED_BATCH_CHUNK", "64"))
 # One worker — model is not thread-safe; serialise inference
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jina-embed")
 
@@ -69,21 +73,38 @@ async def embed(text: str) -> list[float]:
     return await loop.run_in_executor(_executor, _sync_embed, text)
 
 
+def _sync_batch(texts: list[str]) -> list[list[float]]:
+    """Blocking batch encode — runs inside the executor thread."""
+    model = _load_model()
+    if model is None:
+        return [_stub_vector(t) for t in texts]
+    try:
+        vectors = model.encode(
+            texts,
+            normalize_embeddings=True,
+            batch_size=32,
+            show_progress_bar=False,
+        )
+        return [v.tolist() for v in vectors]
+    except Exception as e:
+        log.error(f"Batch embedding failed: {e}. Falling back to stub.")
+        return [_stub_vector(t) for t in texts]
+
+
 async def embed_batch(texts: list[str]) -> list[list[float]]:
     """
     Batch encode — more efficient than N individual calls for code indexing.
-    Still offloaded to the single executor thread to serialise access to the model.
+    Chunked into _BATCH_CHUNK_SIZE groups at the Python level so a file with
+    thousands of AST nodes cannot exhaust memory by holding every input string
+    and every output tensor simultaneously. Between chunks control returns to
+    the event loop, so other saga steps aren't starved during a large index.
     """
-    def _sync_batch(texts: list[str]) -> list[list[float]]:
-        model = _load_model()
-        if model is None:
-            return [_stub_vector(t) for t in texts]
-        try:
-            vectors = model.encode(texts, normalize_embeddings=True, batch_size=32, show_progress_bar=False)
-            return [v.tolist() for v in vectors]
-        except Exception as e:
-            log.error(f"Batch embedding failed: {e}. Falling back to stub.")
-            return [_stub_vector(t) for t in texts]
-
+    if not texts:
+        return []
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_executor, _sync_batch, texts)
+    results: list[list[float]] = []
+    for start in range(0, len(texts), _BATCH_CHUNK_SIZE):
+        chunk = texts[start:start + _BATCH_CHUNK_SIZE]
+        chunk_vectors = await loop.run_in_executor(_executor, _sync_batch, chunk)
+        results.extend(chunk_vectors)
+    return results
