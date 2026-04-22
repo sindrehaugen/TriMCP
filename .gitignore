@@ -1,0 +1,33 @@
+# Secrets — never commit
+.env
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Embeddings model cache (can be several GB)
+~/.cache/huggingface/
+*.bin
+*.safetensors
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage

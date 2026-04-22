@@ -1,0 +1,27 @@
+# Async Database Drivers
+redis>=5.0.1
+asyncpg>=0.29.0
+motor>=3.3.2
+
+# Data Validation
+pydantic>=2.5.3
+
+# Environment
+python-dotenv>=1.0.0
+
+# MCP SDK
+mcp>=1.2.0
+
+# Phase 2: Graphify — entity/relation extraction
+spacy>=3.7.0
+# After install run: python -m spacy download en_core_web_sm
+
+# Phase 3.2: AST Parsing
+tree-sitter==0.20.4
+tree-sitter-python==0.20.4
+tree-sitter-javascript==0.20.1
+
+# Phase 5: Jina Embeddings (jinaai/jina-embeddings-v2-base-code, 768-dim)
+sentence-transformers>=2.3.1
+transformers>=4.36.2
+torch>=2.1.2

@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  # 1. Working Memory (Current Data)
+  redis:
+    image: redis:7-alpine
+    container_name: tri-stack-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # 2. Semantic Index (What Data is Stored)
+  postgres:
+    image: ankane/pgvector:v0.5.1
+    container_name: tri-stack-postgres
+    environment:
+      POSTGRES_USER: mcp_user
+      POSTGRES_PASSWORD: mcp_password
+      POSTGRES_DB: memory_meta
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # 3. Episodic Archive (The Complete Data)
+  mongodb:
+    image: mongo:7.0
+    container_name: tri-stack-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  pg_data:
+  mongo_data:
