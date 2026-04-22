@@ -15,11 +15,8 @@ from pydantic import BaseModel, Field, field_validator
 from motor.motor_asyncio import AsyncIOMotorClient
 import asyncpg
 import redis.asyncio as redis
-from dotenv import load_dotenv
-
-import embeddings as _embeddings
-
-load_dotenv()
+from trimcp import embeddings as _embeddings
+from trimcp.config import cfg, OrchestratorConfig
 
 log = logging.getLogger("tri-stack-orchestrator")
 
@@ -86,23 +83,6 @@ class MongoDocument(BaseModel):
 
 # --- Config ---
 
-class OrchestratorConfig:
-    MONGO_URI:  str = os.getenv("MONGO_URI",  "mongodb://localhost:27017")
-    PG_DSN:     str = os.getenv("PG_DSN",     "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta")
-    REDIS_URL:  str = os.getenv("REDIS_URL",  "redis://localhost:6379/0")
-    REDIS_TTL:  int = int(os.getenv("REDIS_TTL",  "3600"))
-    PG_MIN_POOL: int = int(os.getenv("PG_MIN_POOL", "1"))
-    PG_MAX_POOL: int = int(os.getenv("PG_MAX_POOL", "10"))
-    REDIS_MAX_CONNECTIONS: int = int(os.getenv("REDIS_MAX_CONNECTIONS", "20"))
-
-    @classmethod
-    def validate(cls) -> None:
-        """Fail fast if required env vars are missing in production."""
-        missing = [k for k in ("MONGO_URI", "PG_DSN", "REDIS_URL") if not os.getenv(k)]
-        if missing:
-            log.warning("Using default connection strings — set %s for production", ", ".join(missing))
-
-
 # --- Engine ---
 
 class TriStackEngine:
@@ -113,36 +93,36 @@ class TriStackEngine:
         self._graph_traverser = None
 
     async def connect(self):
-        OrchestratorConfig.validate()
+        cfg.validate()
         self.mongo_client = AsyncIOMotorClient(
-            OrchestratorConfig.MONGO_URI,
+            cfg.MONGO_URI,
             serverSelectionTimeoutMS=5_000,
         )
         self.pg_pool = await asyncpg.create_pool(
-            OrchestratorConfig.PG_DSN,
-            min_size=OrchestratorConfig.PG_MIN_POOL,
-            max_size=OrchestratorConfig.PG_MAX_POOL,
+            cfg.PG_DSN,
+            min_size=cfg.PG_MIN_POOL,
+            max_size=cfg.PG_MAX_POOL,
             command_timeout=30,
         )
         self.redis_client = redis.from_url(
-            OrchestratorConfig.REDIS_URL,
+            cfg.REDIS_URL,
             socket_connect_timeout=5,
             socket_timeout=5,
-            max_connections=OrchestratorConfig.REDIS_MAX_CONNECTIONS,
+            max_connections=cfg.REDIS_MAX_CONNECTIONS,
             health_check_interval=30,
         )
         await self._init_pg_schema()
         await self._init_mongo_indexes()
-        from graph_query import GraphRAGTraverser
+        from trimcp.graph_query import GraphRAGTraverser
         self._graph_traverser = GraphRAGTraverser(
             pg_pool=self.pg_pool,
             mongo_client=self.mongo_client,
             embedding_fn=self._generate_embedding,
         )
         log.info("TriStackEngine connected (PG pool: %d-%d, Redis max: %d).",
-                 OrchestratorConfig.PG_MIN_POOL,
-                 OrchestratorConfig.PG_MAX_POOL,
-                 OrchestratorConfig.REDIS_MAX_CONNECTIONS)
+                 cfg.PG_MIN_POOL,
+                 cfg.PG_MAX_POOL,
+                 cfg.REDIS_MAX_CONNECTIONS)
 
     async def disconnect(self):
         if self.mongo_client:
@@ -154,77 +134,18 @@ class TriStackEngine:
         log.info("TriStackEngine disconnected.")
 
     async def _init_pg_schema(self):
+        """
+        Load DDL from the package-bundled schema.sql and execute it as a single
+        batch. Idempotent — safe to run on every startup. Keeping the schema in
+        a sibling .sql file means it can be reviewed as a schema, diffed across
+        versions, and fed to migration tools without touching Python.
+        """
+        from pathlib import Path
+        schema_path = Path(__file__).resolve().parent / "schema.sql"
+        ddl = schema_path.read_text(encoding="utf-8")
         async with self.pg_pool.acquire() as conn:
-            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS memory_metadata (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    user_id VARCHAR(128),
-                    session_id VARCHAR(128),
-                    embedding VECTOR(768),
-                    mongo_ref_id VARCHAR(255),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS code_metadata (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    filepath TEXT,
-                    language VARCHAR(64),
-                    node_type VARCHAR(64),
-                    name VARCHAR(255),
-                    start_line INT,
-                    end_line INT,
-                    file_hash VARCHAR(64),
-                    embedding VECTOR(768),
-                    mongo_ref_id VARCHAR(255),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_memory_mongo_ref ON memory_metadata (mongo_ref_id);
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_memory_user ON memory_metadata (user_id);
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_code_mongo_ref ON code_metadata (mongo_ref_id);
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_code_filepath ON code_metadata (filepath);
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS kg_nodes (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    label TEXT NOT NULL,
-                    entity_type VARCHAR(64) NOT NULL DEFAULT 'UNKNOWN',
-                    embedding VECTOR(768),
-                    mongo_ref_id VARCHAR(255),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE (label)
-                );
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS kg_edges (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    subject_label TEXT NOT NULL,
-                    predicate TEXT NOT NULL,
-                    object_label TEXT NOT NULL,
-                    confidence FLOAT NOT NULL DEFAULT 1.0,
-                    mongo_ref_id VARCHAR(255),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE (subject_label, predicate, object_label)
-                );
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_kg_nodes_label ON kg_nodes (label);
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_kg_edges_subject ON kg_edges (subject_label);
-            """)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_kg_edges_object ON kg_edges (object_label);
-            """)
+            await conn.execute(ddl)
+        log.debug("[PG] schema.sql applied from %s", schema_path)
 
     async def _init_mongo_indexes(self):
         db = self.mongo_client.memory_archive
@@ -246,7 +167,7 @@ class TriStackEngine:
         inserted_mongo_id: Optional[str] = None
         inserted_result = None
 
-        from graph_extractor import extract as graph_extract
+        from trimcp.graph_extractor import extract as graph_extract
         entities, triplets = graph_extract(payload.summary)
 
         try:
@@ -287,7 +208,8 @@ class TriStackEngine:
                             ON CONFLICT (label) DO UPDATE
                                 SET entity_type  = EXCLUDED.entity_type,
                                     embedding    = EXCLUDED.embedding,
-                                    mongo_ref_id = EXCLUDED.mongo_ref_id
+                                    mongo_ref_id = EXCLUDED.mongo_ref_id,
+                                    updated_at   = NOW()
                             """,
                             entity.label, entity.entity_type,
                             json.dumps(node_vec), inserted_mongo_id,
@@ -299,7 +221,8 @@ class TriStackEngine:
                             VALUES ($1, $2, $3, $4, $5)
                             ON CONFLICT (subject_label, predicate, object_label) DO UPDATE
                                 SET confidence   = EXCLUDED.confidence,
-                                    mongo_ref_id = EXCLUDED.mongo_ref_id
+                                    mongo_ref_id = EXCLUDED.mongo_ref_id,
+                                    updated_at   = NOW()
                             """,
                             triplet.subject, triplet.predicate, triplet.obj,
                             triplet.confidence, inserted_mongo_id,
@@ -309,7 +232,7 @@ class TriStackEngine:
 
             # STEP 3: Working Memory (Redis)
             redis_key = f"cache:{payload.user_id}:{payload.session_id}"
-            await self.redis_client.setex(redis_key, OrchestratorConfig.REDIS_TTL, payload.summary)
+            await self.redis_client.setex(redis_key, cfg.REDIS_TTL, payload.summary)
             log.debug("[Redis] Summary cached. key=%s", redis_key)
 
             return inserted_mongo_id
@@ -420,7 +343,7 @@ class TriStackEngine:
             raise ValueError(f"raw_code exceeds {_MAX_PAYLOAD_LEN // 1024 // 1024} MB limit")
 
         import hashlib
-        from ast_parser import parse_file
+        from trimcp.ast_parser import parse_file
 
         file_hash = hashlib.md5(raw_code.encode()).hexdigest()
 
@@ -466,7 +389,7 @@ class TriStackEngine:
 
             # STEP 3: Cache hash
             await self.redis_client.setex(
-                f"hash:{filepath}", OrchestratorConfig.REDIS_TTL, file_hash
+                f"hash:{filepath}", cfg.REDIS_TTL, file_hash
             )
             log.info("[Code] Indexed %d chunks from %s", len(chunks), filepath)
             return {

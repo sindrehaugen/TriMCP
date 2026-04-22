@@ -1,12 +1,25 @@
 {
   "mcpServers": {
     "tri-stack-memory": {
-      "command": "python",
-      "args": ["C:\\Users\\SindreLøvlieHaugen\\Documents\\systemer\\TriMCP\\server.py"],
+      "command": "C:\\Users\\SindreLøvlieHaugen\\Documents\\systemer\\TriMCP\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\Users\\SindreLøvlieHaugen\\Documents\\systemer\\TriMCP\\server.py"
+      ],
       "env": {
-        "MONGO_URI": "mongodb://localhost:27017",
-        "PG_DSN": "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta",
-        "REDIS_URL": "redis://localhost:6379/0"
+        "MONGO_URI":             "mongodb://localhost:27017",
+        "PG_DSN":                "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta",
+        "REDIS_URL":             "redis://localhost:6379/0",
+
+        "REDIS_TTL":             "3600",
+        "REDIS_MAX_CONNECTIONS": "20",
+
+        "PG_MIN_POOL":           "1",
+        "PG_MAX_POOL":           "10",
+
+        "GC_INTERVAL_SECONDS":   "3600",
+        "GC_ORPHAN_AGE_SECONDS": "300",
+
+        "EMBED_BATCH_CHUNK":     "64"
       }
     }
   }

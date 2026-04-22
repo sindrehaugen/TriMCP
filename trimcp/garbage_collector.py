@@ -12,26 +12,19 @@ Hardening:
 """
 import asyncio
 import logging
-import os
 from datetime import datetime, timedelta
 
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient
 import asyncpg
-from dotenv import load_dotenv
 
-load_dotenv()
+from trimcp.config import cfg
 
 log = logging.getLogger("tri-stack-gc")
 
-GC_INTERVAL_SECONDS  = int(os.getenv("GC_INTERVAL_SECONDS", "3600"))
-ORPHAN_AGE_SECONDS   = int(os.getenv("GC_ORPHAN_AGE_SECONDS", "300"))
-PAGE_SIZE            = 500        # rows fetched per PG cursor page
+PAGE_SIZE            = 500   # rows fetched per PG cursor page
 MAX_CONNECT_ATTEMPTS = 5
-CONNECT_BASE_DELAY   = 2.0        # seconds; doubles each retry
-
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-PG_DSN    = os.getenv("PG_DSN",    "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta")
+CONNECT_BASE_DELAY   = 2.0   # seconds; doubles each retry
 
 
 # --- Connection helpers with retry ---
@@ -47,14 +40,14 @@ async def _connect_with_retry() -> tuple[AsyncIOMotorClient, asyncpg.Pool]:
     for attempt in range(1, MAX_CONNECT_ATTEMPTS + 1):
         try:
             mongo_client = AsyncIOMotorClient(
-                MONGO_URI,
+                cfg.MONGO_URI,
                 serverSelectionTimeoutMS=5_000,
             )
             # Force a real connection check
             await mongo_client.admin.command("ping")
 
             pg_pool = await asyncpg.create_pool(
-                PG_DSN,
+                cfg.PG_DSN,
                 min_size=1,
                 max_size=3,          # GC needs very few connections
                 command_timeout=30,
@@ -114,7 +107,7 @@ async def _collect_orphans(
     mongo_client: AsyncIOMotorClient,
     pg_pool: asyncpg.Pool,
 ) -> int:
-    cutoff = datetime.utcnow() - timedelta(seconds=ORPHAN_AGE_SECONDS)
+    cutoff = datetime.utcnow() - timedelta(seconds=cfg.GC_ORPHAN_AGE_SECONDS)
     db = mongo_client.memory_archive
 
     candidates: list[tuple[str, str]] = []
@@ -132,7 +125,7 @@ async def _collect_orphans(
         return 0
 
     log.info("GC: %d candidate(s) older than %ds. Cross-referencing PG (page=%d)...",
-             len(candidates), ORPHAN_AGE_SECONDS, PAGE_SIZE)
+             len(candidates), cfg.GC_ORPHAN_AGE_SECONDS, PAGE_SIZE)
 
     pg_refs = await _fetch_pg_refs(pg_pool)
     orphans = [(col, oid) for col, oid in candidates if oid not in pg_refs]
@@ -164,7 +157,7 @@ async def run_gc_loop():
     Designed to be launched as asyncio.create_task() alongside the MCP server.
     """
     log.info("GC starting up (interval=%ds, orphan_age=%ds).",
-             GC_INTERVAL_SECONDS, ORPHAN_AGE_SECONDS)
+             cfg.GC_INTERVAL_SECONDS, cfg.GC_ORPHAN_AGE_SECONDS)
 
     try:
         mongo_client, pg_pool = await _connect_with_retry()
@@ -178,7 +171,7 @@ async def run_gc_loop():
                 await _collect_orphans(mongo_client, pg_pool)
             except Exception as exc:
                 log.error("GC pass raised unexpected error: %s", exc)
-            await asyncio.sleep(GC_INTERVAL_SECONDS)
+            await asyncio.sleep(cfg.GC_INTERVAL_SECONDS)
     finally:
         mongo_client.close()
         await pg_pool.close()

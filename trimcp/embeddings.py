@@ -10,20 +10,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 import random
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
-from typing import Protocol
+
+from trimcp.config import cfg
 
 log = logging.getLogger("tri-stack-embeddings")
 
 MODEL_ID = "jinaai/jina-embeddings-v2-base-code"
 VECTOR_DIM = 768
-# Hard cap on how many texts we ever feed to model.encode() in one call.
-# Chunked on the Python side so huge files can't balloon resident memory
-# holding thousands of input strings + output tensors simultaneously.
-_BATCH_CHUNK_SIZE = int(os.getenv("EMBED_BATCH_CHUNK", "64"))
 # One worker — model is not thread-safe; serialise inference
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jina-embed")
 
@@ -94,7 +90,7 @@ def _sync_batch(texts: list[str]) -> list[list[float]]:
 async def embed_batch(texts: list[str]) -> list[list[float]]:
     """
     Batch encode — more efficient than N individual calls for code indexing.
-    Chunked into _BATCH_CHUNK_SIZE groups at the Python level so a file with
+    Chunked into cfg.EMBED_BATCH_CHUNK groups at the Python level so a file with
     thousands of AST nodes cannot exhaust memory by holding every input string
     and every output tensor simultaneously. Between chunks control returns to
     the event loop, so other saga steps aren't starved during a large index.
@@ -103,8 +99,8 @@ async def embed_batch(texts: list[str]) -> list[list[float]]:
         return []
     loop = asyncio.get_event_loop()
     results: list[list[float]] = []
-    for start in range(0, len(texts), _BATCH_CHUNK_SIZE):
-        chunk = texts[start:start + _BATCH_CHUNK_SIZE]
+    for start in range(0, len(texts), cfg.EMBED_BATCH_CHUNK):
+        chunk = texts[start:start + cfg.EMBED_BATCH_CHUNK]
         chunk_vectors = await loop.run_in_executor(_executor, _sync_batch, chunk)
         results.extend(chunk_vectors)
     return results

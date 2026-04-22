@@ -4,7 +4,8 @@ Runs 6 test cases against live Docker containers. No mocks.
 Exits 0 on full pass, 1 on any failure.
 
 Usage:
-    python test_stack.py
+    python -m tests.test_stack        # preferred (runs from repo root)
+    python tests/test_stack.py        # also works (adds repo root to sys.path)
 
 Prerequisites:
     docker compose up -d   (all three containers must be healthy)
@@ -13,9 +14,15 @@ Prerequisites:
 import asyncio
 import sys
 import traceback
+from pathlib import Path
 from textwrap import dedent
 
-from orchestrator import MemoryPayload, TriStackEngine
+# Allow running the file directly: add repo root to sys.path so `trimcp` resolves.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from trimcp import MemoryPayload, TriStackEngine
 
 PASS = "\033[92m  PASS\033[0m"
 FAIL = "\033[91m  FAIL\033[0m"

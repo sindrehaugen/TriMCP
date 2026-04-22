@@ -13,8 +13,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
-from orchestrator import MemoryPayload, TriStackEngine
-from garbage_collector import run_gc_loop
+from trimcp import MemoryPayload, TriStackEngine, run_gc_loop
 
 logging.basicConfig(
     level=logging.INFO,
