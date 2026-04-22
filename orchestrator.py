@@ -93,6 +93,7 @@ class OrchestratorConfig:
     REDIS_TTL:  int = int(os.getenv("REDIS_TTL",  "3600"))
     PG_MIN_POOL: int = int(os.getenv("PG_MIN_POOL", "1"))
     PG_MAX_POOL: int = int(os.getenv("PG_MAX_POOL", "10"))
+    REDIS_MAX_CONNECTIONS: int = int(os.getenv("REDIS_MAX_CONNECTIONS", "20"))
 
     @classmethod
     def validate(cls) -> None:
@@ -127,6 +128,8 @@ class TriStackEngine:
             OrchestratorConfig.REDIS_URL,
             socket_connect_timeout=5,
             socket_timeout=5,
+            max_connections=OrchestratorConfig.REDIS_MAX_CONNECTIONS,
+            health_check_interval=30,
         )
         await self._init_pg_schema()
         await self._init_mongo_indexes()
@@ -136,8 +139,10 @@ class TriStackEngine:
             mongo_client=self.mongo_client,
             embedding_fn=self._generate_embedding,
         )
-        log.info("TriStackEngine connected (PG pool: %d–%d).",
-                 OrchestratorConfig.PG_MIN_POOL, OrchestratorConfig.PG_MAX_POOL)
+        log.info("TriStackEngine connected (PG pool: %d-%d, Redis max: %d).",
+                 OrchestratorConfig.PG_MIN_POOL,
+                 OrchestratorConfig.PG_MAX_POOL,
+                 OrchestratorConfig.REDIS_MAX_CONNECTIONS)
 
     async def disconnect(self):
         if self.mongo_client:
@@ -256,48 +261,51 @@ class TriStackEngine:
             inserted_mongo_id = str(inserted_result.inserted_id)
             log.debug("[Mongo] Inserted episode. id=%s", inserted_mongo_id)
 
-            # STEP 2: Semantic Commit (PostgreSQL)
+            # Pre-compute all embeddings OUTSIDE the PG transaction so we don't
+            # hold a pooled connection open during CPU-bound inference.
             vector = await self._generate_embedding(payload.summary)
-            async with self.pg_pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO memory_metadata (user_id, session_id, embedding, mongo_ref_id)
-                    VALUES ($1, $2, $3::vector, $4)
-                    """,
-                    payload.user_id, payload.session_id,
-                    json.dumps(vector), inserted_mongo_id,
-                )
-            log.debug("[PG] Vector index committed. mongo_ref=%s", inserted_mongo_id)
+            node_vecs = [await self._generate_embedding(e.label) for e in entities]
 
-            # STEP 2b: Graph Commit (kg_nodes + kg_edges)
+            # STEP 2 + 2b: Atomic Semantic + Graph Commit (single PG transaction)
+            # Either all three tables (memory_metadata, kg_nodes, kg_edges) commit,
+            # or PG rolls everything back on exception — no partial Saga state.
             async with self.pg_pool.acquire() as conn:
-                for entity in entities:
-                    node_vec = await self._generate_embedding(entity.label)
+                async with conn.transaction():
                     await conn.execute(
                         """
-                        INSERT INTO kg_nodes (label, entity_type, embedding, mongo_ref_id)
+                        INSERT INTO memory_metadata (user_id, session_id, embedding, mongo_ref_id)
                         VALUES ($1, $2, $3::vector, $4)
-                        ON CONFLICT (label) DO UPDATE
-                            SET entity_type  = EXCLUDED.entity_type,
-                                embedding    = EXCLUDED.embedding,
-                                mongo_ref_id = EXCLUDED.mongo_ref_id
                         """,
-                        entity.label, entity.entity_type,
-                        json.dumps(node_vec), inserted_mongo_id,
+                        payload.user_id, payload.session_id,
+                        json.dumps(vector), inserted_mongo_id,
                     )
-                for triplet in triplets:
-                    await conn.execute(
-                        """
-                        INSERT INTO kg_edges (subject_label, predicate, object_label, confidence, mongo_ref_id)
-                        VALUES ($1, $2, $3, $4, $5)
-                        ON CONFLICT (subject_label, predicate, object_label) DO UPDATE
-                            SET confidence   = EXCLUDED.confidence,
-                                mongo_ref_id = EXCLUDED.mongo_ref_id
-                        """,
-                        triplet.subject, triplet.predicate, triplet.obj,
-                        triplet.confidence, inserted_mongo_id,
-                    )
-            log.debug("[PG/Graph] %d nodes, %d edges upserted.", len(entities), len(triplets))
+                    for entity, node_vec in zip(entities, node_vecs):
+                        await conn.execute(
+                            """
+                            INSERT INTO kg_nodes (label, entity_type, embedding, mongo_ref_id)
+                            VALUES ($1, $2, $3::vector, $4)
+                            ON CONFLICT (label) DO UPDATE
+                                SET entity_type  = EXCLUDED.entity_type,
+                                    embedding    = EXCLUDED.embedding,
+                                    mongo_ref_id = EXCLUDED.mongo_ref_id
+                            """,
+                            entity.label, entity.entity_type,
+                            json.dumps(node_vec), inserted_mongo_id,
+                        )
+                    for triplet in triplets:
+                        await conn.execute(
+                            """
+                            INSERT INTO kg_edges (subject_label, predicate, object_label, confidence, mongo_ref_id)
+                            VALUES ($1, $2, $3, $4, $5)
+                            ON CONFLICT (subject_label, predicate, object_label) DO UPDATE
+                                SET confidence   = EXCLUDED.confidence,
+                                    mongo_ref_id = EXCLUDED.mongo_ref_id
+                            """,
+                            triplet.subject, triplet.predicate, triplet.obj,
+                            triplet.confidence, inserted_mongo_id,
+                        )
+            log.debug("[PG] Atomic commit: vector + %d nodes + %d edges. mongo_ref=%s",
+                      len(entities), len(triplets), inserted_mongo_id)
 
             # STEP 3: Working Memory (Redis)
             redis_key = f"cache:{payload.user_id}:{payload.session_id}"
@@ -310,7 +318,26 @@ class TriStackEngine:
             log.error("[SAGA] Transaction failed: %s", e)
             if inserted_mongo_id and inserted_result is not None:
                 log.warning("[ROLLBACK] Removing orphaned Mongo doc %s", inserted_mongo_id)
-                await collection.delete_one({"_id": inserted_result.inserted_id})
+                try:
+                    await collection.delete_one({"_id": inserted_result.inserted_id})
+                except Exception as mongo_exc:
+                    log.error("[ROLLBACK] Mongo cleanup failed: %s", mongo_exc)
+                # If Step 2+2b committed but Step 3 (Redis) failed, the PG transaction
+                # has already flushed — clean the orphaned rows by mongo_ref_id.
+                # kg_nodes are intentionally NOT deleted: labels are shared across
+                # memories via upsert, so removing them could orphan other sagas.
+                try:
+                    async with self.pg_pool.acquire() as conn:
+                        await conn.execute(
+                            "DELETE FROM memory_metadata WHERE mongo_ref_id = $1",
+                            inserted_mongo_id,
+                        )
+                        await conn.execute(
+                            "DELETE FROM kg_edges WHERE mongo_ref_id = $1",
+                            inserted_mongo_id,
+                        )
+                except Exception as pg_exc:
+                    log.error("[ROLLBACK] PG cleanup failed (GC will reap): %s", pg_exc)
                 log.info("[ROLLBACK] Tri-Stack remains pure.")
             raise
 
