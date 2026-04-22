@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "tri-stack-memory": {
+      "command": "python",
+      "args": ["C:\\Users\\SindreLøvlieHaugen\\Documents\\systemer\\TriMCP\\server.py"],
+      "env": {
+        "MONGO_URI": "mongodb://localhost:27017",
+        "PG_DSN": "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta",
+        "REDIS_URL": "redis://localhost:6379/0"
+      }
+    }
+  }
+}
