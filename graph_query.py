@@ -139,6 +139,11 @@ class GraphRAGTraverser:
     # --- Step 3: Hydrate source documents from MongoDB ---
 
     async def _hydrate_sources(self, mongo_ref_ids: set[str]) -> list[dict]:
+        """
+        KG edges/nodes can point at either `episodes` (chat/summary memories) or
+        `code_files` (indexed source files). Try both collections so graph_search
+        surfaces entities extracted from code as well as from conversations.
+        """
         db = self.mongo_client.memory_archive
         sources = []
         seen: set[str] = set()
@@ -147,13 +152,32 @@ class GraphRAGTraverser:
                 continue
             seen.add(ref_id)
             try:
-                doc = await db.episodes.find_one({"_id": ObjectId(ref_id)})
+                oid = ObjectId(ref_id)
+            except Exception as e:
+                log.warning(f"Invalid mongo_ref_id={ref_id}: {e}")
+                continue
+            try:
+                doc = await db.episodes.find_one({"_id": oid})
                 if doc:
                     raw = doc.get("raw_data", "")
                     sources.append({
                         "mongo_ref_id": ref_id,
+                        "collection": "episodes",
                         "type": doc.get("type", "unknown"),
                         "excerpt": str(raw)[:600],   # trim for LLM context budget
+                    })
+                    continue
+
+                code_doc = await db.code_files.find_one({"_id": oid})
+                if code_doc:
+                    raw = code_doc.get("raw_code", "")
+                    sources.append({
+                        "mongo_ref_id": ref_id,
+                        "collection": "code_files",
+                        "type": "code",
+                        "filepath": code_doc.get("filepath"),
+                        "language": code_doc.get("language"),
+                        "excerpt": str(raw)[:600],
                     })
             except Exception as e:
                 log.warning(f"Could not hydrate mongo_ref_id={ref_id}: {e}")
