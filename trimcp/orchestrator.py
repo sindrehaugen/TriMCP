@@ -23,7 +23,7 @@ log = logging.getLogger("tri-stack-orchestrator")
 # --- Constants ---
 
 _SAFE_ID_RE = re.compile(r"^[\w\-]{1,128}$")   # alphanumeric, hyphens, underscores
-_ALLOWED_LANGUAGES = frozenset({"python", "javascript"})
+_ALLOWED_LANGUAGES = frozenset({"python", "javascript", "typescript", "go", "rust"})
 _MAX_SUMMARY_LEN = 8_192
 _MAX_PAYLOAD_LEN = 10 * 1024 * 1024  # 10 MB hard cap
 _MAX_TOP_K = 100
@@ -90,6 +90,7 @@ class TriStackEngine:
         self.mongo_client = None
         self.pg_pool = None
         self.redis_client = None
+        self.redis_sync_client = None
         self._graph_traverser = None
 
     async def connect(self):
@@ -111,6 +112,10 @@ class TriStackEngine:
             max_connections=cfg.REDIS_MAX_CONNECTIONS,
             health_check_interval=30,
         )
+        # RQ needs a synchronous connection
+        import redis as redis_sync
+        self.redis_sync_client = redis_sync.from_url(cfg.REDIS_URL)
+
         await self._init_pg_schema()
         await self._init_mongo_indexes()
         from trimcp.graph_query import GraphRAGTraverser
@@ -132,6 +137,40 @@ class TriStackEngine:
         if self.redis_client:
             await self.redis_client.aclose()
         log.info("TriStackEngine disconnected.")
+
+    def _validate_path(self, filepath: str):
+        """Strict OS-agnostic path traversal protection."""
+        from pathlib import Path
+        try:
+            # Normalize and resolve to catch '..' and Unix-style absolute paths
+            # Note: Path("/etc/shadow").resolve() on Windows might become C:\etc\shadow 
+            # if that directory doesn't exist, so we also check raw strings.
+            p = Path(filepath).resolve()
+            cwd = Path.cwd().resolve()
+            
+            # 1. Block '..' in absolute paths
+            if Path(filepath).is_absolute():
+                if any(part == ".." for part in Path(filepath).parts):
+                    raise ValueError(f"Path traversal attempt (..) in absolute path: {filepath!r}")
+            
+            # 2. Block escaping CWD for relative paths
+            elif ".." in filepath:
+                if not str(p).startswith(str(cwd)):
+                    raise ValueError(f"Path traversal attempt (outside CWD): {filepath!r}")
+
+            # 3. Explicitly block leading slashes that imply Unix root
+            if filepath.startswith("/") or filepath.startswith("\\") and not (len(filepath) > 1 and filepath[1] == ":"):
+                 # This catches /etc/shadow on Windows too if the intent is root-access
+                 raise ValueError(f"Absolute path without drive letter denied: {filepath!r}")
+                    
+            # 4. Deny specific sensitive system paths (heuristic)
+            forbidden = {"/etc", "/proc", "/sys", "/dev", "C:\\Windows", "C:\\Users\\Default"}
+            for f in forbidden:
+                if str(p).startswith(f) or filepath.startswith(f):
+                    raise ValueError(f"Access to system path denied: {filepath!r}")
+
+        except (ValueError, RuntimeError) as e:
+            raise ValueError(f"Unsafe filepath rejected: {filepath!r} - {e}")
 
     async def _init_pg_schema(self):
         """
@@ -194,11 +233,11 @@ class TriStackEngine:
                 async with conn.transaction():
                     await conn.execute(
                         """
-                        INSERT INTO memory_metadata (user_id, session_id, embedding, mongo_ref_id)
-                        VALUES ($1, $2, $3::vector, $4)
+                        INSERT INTO memory_metadata (user_id, session_id, embedding, content_fts, mongo_ref_id)
+                        VALUES ($1, $2, $3::vector, to_tsvector('english', $4), $5)
                         """,
                         payload.user_id, payload.session_id,
-                        json.dumps(vector), inserted_mongo_id,
+                        json.dumps(vector), payload.summary, inserted_mongo_id,
                     )
                     for entity, node_vec in zip(entities, node_vecs):
                         await conn.execute(
@@ -302,16 +341,37 @@ class TriStackEngine:
         top_k = max(1, min(top_k, _MAX_TOP_K))
 
         vector = await self._generate_embedding(query)
+        # Hybrid Search (RRF): Combine pgvector and Full Text Search
+        # We fetch more candidates from each and then fuse them.
+        candidate_k = top_k * 4 
         async with self.pg_pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT mongo_ref_id, embedding <=> $1::vector AS distance
-                FROM memory_metadata
-                WHERE user_id = $2
-                ORDER BY distance ASC
-                LIMIT $3
+                WITH vector_results AS (
+                    SELECT mongo_ref_id, embedding <=> $1::vector AS distance
+                    FROM memory_metadata
+                    WHERE user_id = $2
+                    ORDER BY distance ASC
+                    LIMIT $3
+                ),
+                fts_results AS (
+                    SELECT mongo_ref_id, ts_rank_cd(content_fts, query) AS rank
+                    FROM memory_metadata, websearch_to_tsquery('english', $4) query
+                    WHERE user_id = $2 AND content_fts @@ query
+                    ORDER BY rank DESC
+                    LIMIT $3
+                )
+                SELECT 
+                    COALESCE(v.mongo_ref_id, f.mongo_ref_id) AS mongo_ref_id,
+                    (COALESCE(1.0 / (60 + ROW_NUMBER() OVER (ORDER BY v.distance ASC NULLS LAST)), 0.0) +
+                     COALESCE(1.0 / (60 + ROW_NUMBER() OVER (ORDER BY f.rank DESC NULLS LAST)), 0.0)) AS score
+                FROM vector_results v
+                FULL OUTER JOIN fts_results f ON v.mongo_ref_id = f.mongo_ref_id
+                WHERE (v.mongo_ref_id IS NOT NULL OR f.mongo_ref_id IS NOT NULL)
+                ORDER BY score DESC
+                LIMIT $5
                 """,
-                json.dumps(vector), user_id, top_k,
+                json.dumps(vector), user_id, candidate_k, query, top_k,
             )
 
         from bson import ObjectId
@@ -322,7 +382,7 @@ class TriStackEngine:
             if doc:
                 results.append({
                     "mongo_ref_id": row["mongo_ref_id"],
-                    "distance": row["distance"],
+                    "score": row["score"],
                     "raw_data": doc.get("raw_data"),
                 })
         return results
@@ -331,80 +391,57 @@ class TriStackEngine:
 
     async def index_code_file(self, filepath: str, raw_code: str, language: str) -> dict:
         """
-        Saga: archive full file in MongoDB, embed each AST chunk in PG code_metadata.
-        Skips re-indexing if MD5 hash is unchanged.
+        Offloads indexing to a background worker via RQ.
+        Returns a job_id immediately.
         """
         # Input validation
         if language not in _ALLOWED_LANGUAGES:
             raise ValueError(f"Unsupported language '{language}'. Allowed: {sorted(_ALLOWED_LANGUAGES)}")
-        if ".." in filepath or filepath.startswith("/etc") or filepath.startswith("/proc"):
-            raise ValueError(f"Unsafe filepath rejected: {filepath!r}")
+
+        self._validate_path(filepath)
+
         if len(raw_code.encode()) > _MAX_PAYLOAD_LEN:
             raise ValueError(f"raw_code exceeds {_MAX_PAYLOAD_LEN // 1024 // 1024} MB limit")
 
         import hashlib
-        from trimcp.ast_parser import parse_file
-
         file_hash = hashlib.md5(raw_code.encode()).hexdigest()
 
+        # Quick check for skip (sync)
         cached_hash = await self.redis_client.get(f"hash:{filepath}")
         if cached_hash and cached_hash.decode() == file_hash:
             return {"status": "skipped", "reason": "unchanged", "filepath": filepath}
 
-        db = self.mongo_client.memory_archive
-        collection = db.code_files
-        inserted_result = None
-        inserted_mongo_id: Optional[str] = None
+        # Enqueue the task
+        from rq import Queue
+        from trimcp.tasks import process_code_indexing
+        
+        q = Queue(connection=self.redis_sync_client)
+        job = q.enqueue(
+            process_code_indexing,
+            args=(filepath, raw_code, language),
+            job_timeout='10m'
+        )
+        
+        log.info("[Code] Enqueued indexing job %s for %s", job.id, filepath)
+        return {
+            "status": "enqueued",
+            "job_id": job.id,
+            "filepath": filepath
+        }
 
+    async def get_job_status(self, job_id: str) -> dict:
+        """Checks the status of an RQ job."""
+        from rq.job import Job
         try:
-            # STEP 1: Episodic Commit
-            inserted_result = await collection.insert_one({
-                "filepath": filepath,
-                "language": language,
-                "file_hash": file_hash,
-                "raw_code": raw_code,
-                "ingested_at": datetime.utcnow(),
-            })
-            inserted_mongo_id = str(inserted_result.inserted_id)
-
-            # STEP 2: Batch-embed all AST chunks
-            chunks = list(parse_file(raw_code, language))
-            texts = [f"{c.name}\n{c.code_string}" for c in chunks]
-            vectors = await _embeddings.embed_batch(texts)
-
-            async with self.pg_pool.acquire() as conn:
-                await conn.execute("DELETE FROM code_metadata WHERE filepath = $1", filepath)
-                for chunk, vector in zip(chunks, vectors):
-                    await conn.execute(
-                        """
-                        INSERT INTO code_metadata
-                            (filepath, language, node_type, name, start_line, end_line,
-                             file_hash, embedding, mongo_ref_id)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9)
-                        """,
-                        filepath, language, chunk.node_type, chunk.name,
-                        chunk.start_line, chunk.end_line,
-                        file_hash, json.dumps(vector), inserted_mongo_id,
-                    )
-
-            # STEP 3: Cache hash
-            await self.redis_client.setex(
-                f"hash:{filepath}", cfg.REDIS_TTL, file_hash
-            )
-            log.info("[Code] Indexed %d chunks from %s", len(chunks), filepath)
+            job = await asyncio.to_thread(Job.fetch, job_id, connection=self.redis_sync_client)
             return {
-                "status": "indexed",
-                "filepath": filepath,
-                "chunks": len(chunks),
-                "mongo_ref_id": inserted_mongo_id,
+                "job_id": job_id,
+                "status": job.get_status(),
+                "result": job.result if job.is_finished else None,
+                "error": str(job.exc_info) if job.is_failed else None
             }
-
         except Exception as e:
-            log.error("[SAGA] index_code_file failed: %s", e)
-            if inserted_mongo_id and inserted_result is not None:
-                await collection.delete_one({"_id": inserted_result.inserted_id})
-                log.warning("[ROLLBACK] Orphaned code file removed from MongoDB.")
-            raise
+            return {"job_id": job_id, "status": "not_found", "error": str(e)}
 
     # --- Graph Search ---
 
@@ -425,45 +462,82 @@ class TriStackEngine:
             raise ValueError(f"Invalid language_filter '{language_filter}'")
 
         vector = await self._generate_embedding(query)
+        candidate_k = top_k * 4
+        
         async with self.pg_pool.acquire() as conn:
+            # We handle language_filter by injecting it into both CTEs
+            lang_clause = "AND language = $5" if language_filter else ""
+            query_params = [json.dumps(vector), candidate_k, query, top_k]
             if language_filter:
-                rows = await conn.fetch(
-                    """
-                    SELECT filepath, language, node_type, name, start_line, end_line, mongo_ref_id,
-                           embedding <=> $1::vector AS distance
+                query_params.append(language_filter)
+
+            sql = f"""
+                WITH vector_results AS (
+                    SELECT id, embedding <=> $1::vector AS distance
                     FROM code_metadata
-                    WHERE language = $2
-                    ORDER BY distance ASC LIMIT $3
-                    """,
-                    json.dumps(vector), language_filter, top_k,
+                    WHERE 1=1 {lang_clause}
+                    ORDER BY distance ASC
+                    LIMIT $2
+                ),
+                fts_results AS (
+                    SELECT id, ts_rank_cd(content_fts, query) AS rank
+                    FROM code_metadata, websearch_to_tsquery('english', $3) query
+                    WHERE content_fts @@ query {lang_clause}
+                    ORDER BY rank DESC
+                    LIMIT $2
                 )
-            else:
-                rows = await conn.fetch(
-                    """
-                    SELECT filepath, language, node_type, name, start_line, end_line, mongo_ref_id,
-                           embedding <=> $1::vector AS distance
-                    FROM code_metadata
-                    ORDER BY distance ASC LIMIT $2
-                    """,
-                    json.dumps(vector), top_k,
-                )
+                SELECT 
+                    COALESCE(v.id, f.id) AS id,
+                    (COALESCE(1.0 / (60 + ROW_NUMBER() OVER (ORDER BY v.distance ASC NULLS LAST)), 0.0) +
+                     COALESCE(1.0 / (60 + ROW_NUMBER() OVER (ORDER BY f.rank DESC NULLS LAST)), 0.0)) AS score
+                FROM vector_results v
+                FULL OUTER JOIN fts_results f ON v.id = f.id
+                WHERE (v.id IS NOT NULL OR f.id IS NOT NULL)
+                ORDER BY score DESC
+                LIMIT $4
+            """
+            
+            fused_rows = await conn.fetch(sql, *query_params)
+            
+            if not fused_rows:
+                return []
+
+            # Fetch full metadata for the winner IDs
+            ids = [r["id"] for r in fused_rows]
+            rows = await conn.fetch(
+                """
+                SELECT id, filepath, language, node_type, name, start_line, end_line, mongo_ref_id
+                FROM code_metadata
+                WHERE id = ANY($1::uuid[])
+                """,
+                ids,
+            )
+            # Map back to scores and preserve order
+            row_map = {r["id"]: r for r in rows}
+            results_ordered = []
+            for fr in fused_rows:
+                r = row_map.get(fr["id"])
+                if r:
+                    results_ordered.append({
+                        "filepath": r["filepath"],
+                        "language": r["language"],
+                        "node_type": r["node_type"],
+                        "name": r["name"],
+                        "start_line": r["start_line"],
+                        "end_line": r["end_line"],
+                        "score": fr["score"],
+                        "mongo_ref_id": r["mongo_ref_id"],
+                    })
 
         from bson import ObjectId
         db = self.mongo_client.memory_archive
-        results = []
-        for row in rows:
-            doc = await db.code_files.find_one({"_id": ObjectId(row["mongo_ref_id"])})
-            results.append({
-                "filepath": row["filepath"],
-                "language": row["language"],
-                "node_type": row["node_type"],
-                "name": row["name"],
-                "start_line": row["start_line"],
-                "end_line": row["end_line"],
-                "distance": row["distance"],
-                "raw_code_preview": doc["raw_code"][:500] if doc else None,
-            })
-        return results
+        final_results = []
+        for res in results_ordered:
+            doc = await db.code_files.find_one({"_id": ObjectId(res["mongo_ref_id"])})
+            res["raw_code_preview"] = doc["raw_code"][:500] if doc else None
+            final_results.append(res)
+            
+        return final_results
 
 
 # --- Dev test harness (not executed in production) ---

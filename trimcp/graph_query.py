@@ -112,9 +112,13 @@ class GraphRAGTraverser:
                     continue
 
                 # Outbound edges (current is subject)
+                # GRAPH DECAY: Introduce time-weighted penalty to confidence.
+                # penalty = exp(-decay_rate * days_since_update)
+                # We'll use a simplified SQL-side decay for performance.
                 rows = await conn.fetch(
                     """
-                    SELECT subject_label, predicate, object_label, confidence, mongo_ref_id
+                    SELECT subject_label, predicate, object_label, mongo_ref_id,
+                           confidence * EXP(-0.01 * EXTRACT(EPOCH FROM (NOW() - updated_at)) / 86400) AS decayed_confidence
                     FROM kg_edges
                     WHERE subject_label = $1 OR object_label = $1
                     """,
@@ -125,7 +129,7 @@ class GraphRAGTraverser:
                         subject=row["subject_label"],
                         predicate=row["predicate"],
                         obj=row["object_label"],
-                        confidence=row["confidence"],
+                        confidence=row["decayed_confidence"],
                         mongo_ref_id=row["mongo_ref_id"],
                     )
                     all_edges.append(edge)

@@ -67,16 +67,28 @@ TOOLS = [
         name="index_code_file",
         description=(
             "Index a source code file into the Tri-Stack. "
-            "Parses AST nodes (functions/classes), embeds each chunk, stores full file in MongoDB."
+            "Parses AST nodes (functions/classes), embeds each chunk, stores full file in MongoDB. "
+            "Runs asynchronously: returns a job_id immediately."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "filepath":  {"type": "string", "description": "Absolute or relative path of the file"},
                 "raw_code":  {"type": "string", "description": "Full source code content"},
-                "language":  {"type": "string", "description": "Language: 'python' or 'javascript'"},
+                "language":  {"type": "string", "description": "Language: 'python', 'javascript', 'typescript', 'go', 'rust'"},
             },
             "required": ["filepath", "raw_code", "language"],
+        },
+    ),
+    Tool(
+        name="check_indexing_status",
+        description="Check the status of a background indexing job.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "The job_id returned by index_code_file"},
+            },
+            "required": ["job_id"],
         },
     ),
     Tool(
@@ -165,6 +177,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 filepath=arguments["filepath"],
                 raw_code=arguments["raw_code"],
                 language=arguments["language"],
+            )
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        if name == "check_indexing_status":
+            result = await engine.get_job_status(
+                job_id=arguments["job_id"],
             )
             return [TextContent(type="text", text=json.dumps(result))]
 

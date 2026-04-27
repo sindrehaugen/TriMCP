@@ -12,7 +12,7 @@ from typing import Iterator
 
 log = logging.getLogger("tri-stack-ast")
 
-SUPPORTED_LANGUAGES = ("python", "javascript")
+SUPPORTED_LANGUAGES = ("python", "javascript", "typescript", "go", "rust")
 
 
 @dataclass
@@ -43,6 +43,15 @@ def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | Non
         elif language == "javascript":
             import tree_sitter_javascript as ts_lang
             lang = Language(ts_lang.language())
+        elif language == "typescript":
+            import tree_sitter_typescript as ts_lang
+            lang = Language(ts_lang.language_typescript())
+        elif language == "go":
+            import tree_sitter_go as ts_lang
+            lang = Language(ts_lang.language())
+        elif language == "rust":
+            import tree_sitter_rust as ts_lang
+            lang = Language(ts_lang.language())
         else:
             return None
     except Exception as e:
@@ -58,6 +67,10 @@ def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | Non
         "python":     {"function_definition", "class_definition"},
         "javascript": {"function_declaration", "function_expression",
                        "arrow_function", "class_declaration", "method_definition"},
+        "typescript": {"function_declaration", "generator_function_declaration",
+                       "class_declaration", "method_definition", "interface_declaration", "type_alias_declaration"},
+        "go":         {"function_declaration", "method_declaration", "type_declaration"},
+        "rust":       {"function_item", "struct_item", "enum_item", "impl_item", "trait_item"},
     }
     targets = target_types.get(language, set())
     lines = raw_code.splitlines()

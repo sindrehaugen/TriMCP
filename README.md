@@ -732,3 +732,25 @@ To ensure TriMCP and its databases start automatically when your PC boots:
       %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
 3.  **Silent Operation:** The .vbs script launches the server completely hidden in the background. No terminal window will remain open.
 
+
+---
+
+## Scalability & Advanced Search
+
+### Hybrid Search (RRF)
+TriMCP now uses **Reciprocal Rank Fusion (RRF)** to combine vector similarity (pgvector) with Full-Text Search (FTS). This significantly improves retrieval quality by catching exact keyword matches that vector embeddings might miss.
+
+### Graph Decay
+Knowledge Graph edges now feature **temporal decay**. The confidence score of a relationship decreases over time if not refreshed, ensuring that stale architectural patterns naturally depreciate in relevance compared to recent ones.
+
+### Async Indexing
+Code indexing is now **asynchronous**. 
+- index_code_file returns a job_id immediately.
+- Use check_indexing_status(job_id) to track progress.
+- Requires the background worker to be running.
+
+#### Starting the Background Worker:
+`ash
+.venv\Scripts\python.exe start_worker.py
+`
+

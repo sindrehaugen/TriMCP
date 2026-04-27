@@ -27,6 +27,15 @@ CREATE TABLE IF NOT EXISTS memory_metadata (
     created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Migration: Add content_fts if it doesn't exist
+DO $$ 
+BEGIN 
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='memory_metadata' AND column_name='content_fts') THEN
+        ALTER TABLE memory_metadata ADD COLUMN content_fts TSVECTOR;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_memory_fts ON memory_metadata USING GIN (content_fts);
 CREATE INDEX IF NOT EXISTS idx_memory_mongo_ref ON memory_metadata (mongo_ref_id);
 CREATE INDEX IF NOT EXISTS idx_memory_user      ON memory_metadata (user_id);
 
@@ -51,6 +60,15 @@ CREATE TABLE IF NOT EXISTS code_metadata (
     created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Migration: Add content_fts if it doesn't exist
+DO $$ 
+BEGIN 
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='code_metadata' AND column_name='content_fts') THEN
+        ALTER TABLE code_metadata ADD COLUMN content_fts TSVECTOR;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_code_fts       ON code_metadata USING GIN (content_fts);
 CREATE INDEX IF NOT EXISTS idx_code_mongo_ref ON code_metadata (mongo_ref_id);
 CREATE INDEX IF NOT EXISTS idx_code_filepath  ON code_metadata (filepath);
 

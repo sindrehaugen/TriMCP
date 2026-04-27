@@ -145,6 +145,28 @@ async def _collect_orphans(
         except Exception as exc:
             log.error("GC: failed to delete %s from [%s]: %s", str_id, col_name, exc)
 
+    # KNOWLEDGE GRAPH GC: Delete orphaned kg_nodes
+    # A node is orphaned if its label is no longer a subject or object in any edge.
+    try:
+        async with pg_pool.acquire() as conn:
+            # We use a subquery to find all labels currently in use in edges.
+            # Nodes NOT in that set are deleted.
+            deleted_nodes = await conn.execute(
+                """
+                DELETE FROM kg_nodes
+                WHERE label NOT IN (
+                    SELECT subject_label FROM kg_edges
+                    UNION
+                    SELECT object_label FROM kg_edges
+                )
+                """
+            )
+            count = int(deleted_nodes.split()[-1]) if "DELETE" in deleted_nodes else 0
+            if count > 0:
+                log.info("GC: purged %d orphaned kg_nodes.", count)
+    except Exception as exc:
+        log.error("GC: kg_nodes cleanup failed: %s", exc)
+
     log.info("GC: pass complete — %d orphan(s) removed.", deleted)
     return deleted
 
