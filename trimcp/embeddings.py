@@ -49,11 +49,15 @@ def _stub_vector(text: str) -> list[float]:
 
 def _sync_embed(text: str) -> list[float]:
     """Blocking encode — runs inside the executor thread."""
+    log.debug("Embedding start: %r...", text[:50])
     model = _load_model()
     if model is None:
+        log.debug("No model, using stub for %r", text[:20])
         return _stub_vector(text)
     try:
+        log.debug("Model encode starting...")
         vector = model.encode(text, normalize_embeddings=True)
+        log.debug("Model encode finished.")
         return vector.tolist()
     except Exception as e:
         log.error(f"Embedding inference failed: {e}. Falling back to stub.")

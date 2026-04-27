@@ -4,9 +4,8 @@ Exposes the TriMCP server over HTTP/SSE for persistent background access.
 """
 import logging
 from starlette.applications import Starlette
-from starlette.routing import Route
 from mcp.server.sse import SseServerTransport
-from server import app as mcp_app, engine, run_gc_loop
+from server import app as mcp_app
 import asyncio
 from contextlib import asynccontextmanager
 
@@ -14,17 +13,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("trimcp-sse")
 
 sse = SseServerTransport("/messages")
-
-async def handle_sse(request):
-    async with sse.connect_scope(request.scope, request.receive, request.send):
-        await mcp_app.run(
-            sse.read_stream,
-            sse.write_stream,
-            mcp_app.create_initialization_options()
-        )
-
-async def handle_messages(request):
-    await sse.handle_post_message(request.scope, request.receive, request.send)
 
 @asynccontextmanager
 async def lifespan(app: Starlette):
@@ -35,6 +23,7 @@ async def lifespan(app: Starlette):
     await server.engine.connect()
     logger.info("TriStackEngine connected (SSE)")
     
+    from server import run_gc_loop
     gc_task = asyncio.create_task(run_gc_loop())
     logger.info("GC loop started (SSE)")
     
@@ -50,14 +39,20 @@ async def lifespan(app: Starlette):
         await server.engine.disconnect()
     logger.info("TriStackEngine disconnected (SSE)")
 
-starlette_app = Starlette(
-    debug=True,
-    routes=[
-        Route("/sse", endpoint=handle_sse),
-        Route("/messages", endpoint=handle_messages, methods=["POST"]),
-    ],
-    lifespan=lifespan
-)
+starlette_app = Starlette(debug=True, lifespan=lifespan)
+
+@starlette_app.route("/sse")
+async def handle_sse(request):
+    async with sse.connect_sse(request.scope, request.receive, request._send) as (read_stream, write_stream):
+        await mcp_app.run(
+            read_stream,
+            write_stream,
+            mcp_app.create_initialization_options()
+        )
+
+@starlette_app.route("/messages", methods=["POST"])
+async def handle_messages(request):
+    await sse.handle_post_message(request.scope, request.receive, request._send)
 
 if __name__ == "__main__":
     import uvicorn

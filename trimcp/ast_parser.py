@@ -58,8 +58,7 @@ def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | Non
         log.warning(f"Tree-sitter language binding unavailable for '{language}': {e}")
         return None
 
-    parser = Parser()
-    parser.set_language(lang)
+    parser = Parser(lang)
     tree = parser.parse(raw_code.encode())
 
     # Node types that represent meaningful semantic boundaries

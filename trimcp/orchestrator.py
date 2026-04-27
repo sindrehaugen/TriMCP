@@ -221,10 +221,11 @@ class TriStackEngine:
             inserted_mongo_id = str(inserted_result.inserted_id)
             log.debug("[Mongo] Inserted episode. id=%s", inserted_mongo_id)
 
-            # Pre-compute all embeddings OUTSIDE the PG transaction so we don't
-            # hold a pooled connection open during CPU-bound inference.
-            vector = await self._generate_embedding(payload.summary)
-            node_vecs = [await self._generate_embedding(e.label) for e in entities]
+            # Pre-compute all embeddings OUTSIDE the PG transaction
+            all_texts = [payload.summary] + [e.label for e in entities]
+            all_vectors = await _embeddings.embed_batch(all_texts)
+            vector = all_vectors[0]
+            node_vecs = all_vectors[1:]
 
             # STEP 2 + 2b: Atomic Semantic + Graph Commit (single PG transaction)
             # Either all three tables (memory_metadata, kg_nodes, kg_edges) commit,
@@ -347,27 +348,35 @@ class TriStackEngine:
         async with self.pg_pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                WITH vector_results AS (
+                WITH vector_candidates AS (
                     SELECT mongo_ref_id, embedding <=> $1::vector AS distance
                     FROM memory_metadata
                     WHERE user_id = $2
                     ORDER BY distance ASC
                     LIMIT $3
                 ),
-                fts_results AS (
-                    SELECT mongo_ref_id, ts_rank_cd(content_fts, query) AS rank
-                    FROM memory_metadata, websearch_to_tsquery('english', $4) query
+                vector_ranked AS (
+                    SELECT mongo_ref_id, ROW_NUMBER() OVER (ORDER BY distance ASC) as rank
+                    FROM vector_candidates
+                ),
+                fts_candidates AS (
+                    SELECT mongo_ref_id, ts_rank_cd(content_fts, query) AS ts_score
+                    FROM memory_metadata, 
+                    LATERAL websearch_to_tsquery('english', $4) AS query
                     WHERE user_id = $2 AND content_fts @@ query
-                    ORDER BY rank DESC
+                    ORDER BY ts_score DESC
                     LIMIT $3
+                ),
+                fts_ranked AS (
+                    SELECT mongo_ref_id, ROW_NUMBER() OVER (ORDER BY ts_score DESC) as rank
+                    FROM fts_candidates
                 )
                 SELECT 
                     COALESCE(v.mongo_ref_id, f.mongo_ref_id) AS mongo_ref_id,
-                    (COALESCE(1.0 / (60 + ROW_NUMBER() OVER (ORDER BY v.distance ASC NULLS LAST)), 0.0) +
-                     COALESCE(1.0 / (60 + ROW_NUMBER() OVER (ORDER BY f.rank DESC NULLS LAST)), 0.0)) AS score
-                FROM vector_results v
-                FULL OUTER JOIN fts_results f ON v.mongo_ref_id = f.mongo_ref_id
-                WHERE (v.mongo_ref_id IS NOT NULL OR f.mongo_ref_id IS NOT NULL)
+                    (COALESCE(1.0 / (60 + v.rank), 0.0) +
+                     COALESCE(1.0 / (60 + f.rank), 0.0)) AS score
+                FROM vector_ranked v
+                FULL OUTER JOIN fts_ranked f ON v.mongo_ref_id = f.mongo_ref_id
                 ORDER BY score DESC
                 LIMIT $5
                 """,
@@ -472,27 +481,35 @@ class TriStackEngine:
                 query_params.append(language_filter)
 
             sql = f"""
-                WITH vector_results AS (
+                WITH vector_candidates AS (
                     SELECT id, embedding <=> $1::vector AS distance
                     FROM code_metadata
                     WHERE 1=1 {lang_clause}
                     ORDER BY distance ASC
                     LIMIT $2
                 ),
-                fts_results AS (
-                    SELECT id, ts_rank_cd(content_fts, query) AS rank
-                    FROM code_metadata, websearch_to_tsquery('english', $3) query
+                vector_ranked AS (
+                    SELECT id, ROW_NUMBER() OVER (ORDER BY distance ASC) as rank
+                    FROM vector_candidates
+                ),
+                fts_candidates AS (
+                    SELECT id, ts_rank_cd(content_fts, query) AS ts_score
+                    FROM code_metadata, 
+                    LATERAL websearch_to_tsquery('english', $3) AS query
                     WHERE content_fts @@ query {lang_clause}
-                    ORDER BY rank DESC
+                    ORDER BY ts_score DESC
                     LIMIT $2
+                ),
+                fts_ranked AS (
+                    SELECT id, ROW_NUMBER() OVER (ORDER BY ts_score DESC) as rank
+                    FROM fts_candidates
                 )
                 SELECT 
                     COALESCE(v.id, f.id) AS id,
-                    (COALESCE(1.0 / (60 + ROW_NUMBER() OVER (ORDER BY v.distance ASC NULLS LAST)), 0.0) +
-                     COALESCE(1.0 / (60 + ROW_NUMBER() OVER (ORDER BY f.rank DESC NULLS LAST)), 0.0)) AS score
-                FROM vector_results v
-                FULL OUTER JOIN fts_results f ON v.id = f.id
-                WHERE (v.id IS NOT NULL OR f.id IS NOT NULL)
+                    (COALESCE(1.0 / (60 + v.rank), 0.0) +
+                     COALESCE(1.0 / (60 + f.rank), 0.0)) AS score
+                FROM vector_ranked v
+                FULL OUTER JOIN fts_ranked f ON v.id = f.id
                 ORDER BY score DESC
                 LIMIT $4
             """
