@@ -12,10 +12,12 @@
 4. [Quick Start](#quick-start)
 5. [Configuration Reference](#configuration-reference)
 6. [MCP Tool Reference](#mcp-tool-reference)
-7. [Connecting to an LLM Client](#connecting-to-an-llm-client) — Claude Desktop, Cursor, Windsurf, Gemini CLI, Gemini Antigravity, VS Code, Continue.dev, Zed
-8. [Running the Test Suite](#running-the-test-suite)
-9. [Production Deployment Notes](#production-deployment-notes)
-10. [Project Structure](#project-structure)
+7. [SSE Mode (HTTP)](#sse-mode-http)
+8. [Connecting to an LLM Client](#connecting-to-an-llm-client) — Claude Desktop, Cursor, Windsurf, Gemini CLI, Gemini Antigravity, VS Code, Continue.dev, Zed
+9. [Windows Auto-start](#windows-auto-start)
+10. [Running the Test Suite](#running-the-test-suite)
+11. [Production Deployment Notes](#production-deployment-notes)
+12. [Project Structure](#project-structure)
 
 ---
 
@@ -693,8 +695,40 @@ TriMCP/
 ├── graph_query.py           # GraphRAG BFS traverser
 ├── garbage_collector.py     # Hourly orphan GC (paginated, retry-enabled)
 ├── server.py                # MCP stdio server — 6 tools
+├── sse_server.py            # MCP SSE (HTTP) server — 6 tools
+├── run_sse.bat              # Batch runner for SSE + Docker
+├── start_trimcp.vbs         # Background runner for Windows
 │
 ├── mcp_config.json          # Client configuration for Claude Desktop / Cursor
 ├── test_stack.py            # End-to-end integration tests (6 live tests)
 └── README.md
 ```
+
+---
+
+## SSE Mode (HTTP)
+
+By default, the server runs over **stdio**, which is ideal for LLM clients that spawn the server themselves (Claude Desktop, Gemini CLI). 
+
+To run TriMCP as a persistent background service that multiple clients can connect to simultaneously via HTTP/SSE:
+
+1.  **Start the SSE server:**
+    `ash
+    .venv\Scripts\python.exe sse_server.py
+    `
+2.  **Access the endpoint:**
+    The server listens on http://localhost:8000/sse.
+
+---
+
+## Windows Auto-start
+
+To ensure TriMCP and its databases start automatically when your PC boots:
+
+1.  **Configure Docker Desktop:** Ensure "Start Docker Desktop when you log in" is enabled in settings.
+2.  **Use the Startup script:**
+    - The repository includes start_trimcp.vbs and un_sse.bat.
+    - Copy start_trimcp.vbs to your Windows Startup folder:
+      %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
+3.  **Silent Operation:** The .vbs script launches the server completely hidden in the background. No terminal window will remain open.
+
