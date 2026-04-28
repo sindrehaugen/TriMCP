@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from motor.motor_asyncio import AsyncIOMotorClient
 import asyncpg
 import redis.asyncio as redis
+from minio import Minio
 from trimcp import embeddings as _embeddings
 from trimcp.config import cfg, OrchestratorConfig
 
@@ -38,6 +39,7 @@ class MemoryPayload(BaseModel):
     content_type: Literal["chat", "code"]
     summary: str = Field(max_length=_MAX_SUMMARY_LEN)
     heavy_payload: str
+    metadata: Optional[dict] = None
 
     @field_validator("user_id", "session_id")
     @classmethod
@@ -54,6 +56,14 @@ class MemoryPayload(BaseModel):
         if len(v.encode()) > _MAX_PAYLOAD_LEN:
             raise ValueError(f"heavy_payload exceeds {_MAX_PAYLOAD_LEN // 1024 // 1024} MB limit")
         return v
+
+
+class MediaPayload(BaseModel):
+    user_id: str
+    session_id: str
+    media_type: Literal["audio", "video", "image"]
+    file_path_on_disk: str  # Path to the temporary raw file
+    summary: str = Field(max_length=_MAX_SUMMARY_LEN)
 
 
 class CodeChunk(BaseModel):
@@ -91,6 +101,7 @@ class TriStackEngine:
         self.pg_pool = None
         self.redis_client = None
         self.redis_sync_client = None
+        self.minio_client = None  # New Quad-Stack MinIO property
         self._graph_traverser = None
 
     async def connect(self):
@@ -118,16 +129,25 @@ class TriStackEngine:
 
         await self._init_pg_schema()
         await self._init_mongo_indexes()
+
+        # Initialize MinIO
+        self.minio_client = Minio(
+            cfg.MINIO_ENDPOINT,
+            access_key=cfg.MINIO_ACCESS_KEY,
+            secret_key=cfg.MINIO_SECRET_KEY,
+            secure=cfg.MINIO_SECURE
+        )
+
+        # Ensure audio/video buckets exist asynchronously
+        await asyncio.to_thread(self._init_minio_buckets)
+
         from trimcp.graph_query import GraphRAGTraverser
         self._graph_traverser = GraphRAGTraverser(
             pg_pool=self.pg_pool,
             mongo_client=self.mongo_client,
             embedding_fn=self._generate_embedding,
         )
-        log.info("TriStackEngine connected (PG pool: %d-%d, Redis max: %d).",
-                 cfg.PG_MIN_POOL,
-                 cfg.PG_MAX_POOL,
-                 cfg.REDIS_MAX_CONNECTIONS)
+        log.info("TriStackEngine connected (Now Quad-Stack with MinIO).")
 
     async def disconnect(self):
         if self.mongo_client:
@@ -137,6 +157,14 @@ class TriStackEngine:
         if self.redis_client:
             await self.redis_client.aclose()
         log.info("TriStackEngine disconnected.")
+
+    def _init_minio_buckets(self):
+        """Creates default media buckets if they do not exist."""
+        buckets = ["mcp-audio", "mcp-video", "mcp-images"]
+        for b in buckets:
+            if not self.minio_client.bucket_exists(b):
+                self.minio_client.make_bucket(b)
+                log.debug(f"[MinIO] Created bucket: {b}")
 
     def _validate_path(self, filepath: str):
         """Strict OS-agnostic path traversal protection."""
@@ -216,6 +244,7 @@ class TriStackEngine:
                 "session_id": payload.session_id,
                 "type": payload.content_type,
                 "raw_data": payload.heavy_payload,
+                "metadata": payload.metadata,
                 "ingested_at": datetime.utcnow(),
             })
             inserted_mongo_id = str(inserted_result.inserted_id)
@@ -303,6 +332,53 @@ class TriStackEngine:
                     log.error("[ROLLBACK] PG cleanup failed (GC will reap): %s", pg_exc)
                 log.info("[ROLLBACK] Tri-Stack remains pure.")
             raise
+
+    async def store_media(self, payload: MediaPayload) -> str:
+        """
+        Uploads massive media files to MinIO, saves metadata to MongoDB,
+        and processes the summary into the PGVector/Knowledge Graph pipelines.
+        """
+        import os
+        import uuid
+
+        if not os.path.exists(payload.file_path_on_disk):
+            raise FileNotFoundError(f"Media file not found: {payload.file_path_on_disk}")
+
+        # 1. Upload to MinIO
+        bucket_name = f"mcp-{payload.media_type}"
+        file_ext = os.path.splitext(payload.file_path_on_disk)[1]
+        object_name = f"{payload.session_id}_{uuid.uuid4().hex}{file_ext}"
+
+        # MinIO fput_object is blocking, so we wrap it in a thread
+        await asyncio.to_thread(
+            self.minio_client.fput_object,
+            bucket_name,
+            object_name,
+            payload.file_path_on_disk
+        )
+        log.info(f"[MinIO] Uploaded {payload.media_type} to {bucket_name}/{object_name}")
+
+        # 2. Extract MongoDB Metadata
+        media_metadata = {
+            "bucket": bucket_name,
+            "object_name": object_name,
+            "media_type": payload.media_type,
+            "original_path": payload.file_path_on_disk
+        }
+
+        # 3. Create a standard MemoryPayload using the AI-generated summary 
+        # and attach the MinIO metadata. Then pipe it through the existing memory pipeline.
+        memory_payload = MemoryPayload(
+            user_id=payload.user_id,
+            session_id=payload.session_id,
+            content_type="chat", # Default for media summaries
+            summary=payload.summary,  # The summary gets embedded and graphed
+            heavy_payload=payload.summary, # Duplicate for consistency in episodic archive
+            metadata=media_metadata
+        )
+
+        # Reuse existing graph/vector logic
+        return await self.store_memory(memory_payload)
 
     # --- Recall ---
 

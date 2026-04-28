@@ -39,6 +39,12 @@ class _Config:
     # --- Embeddings ---
     EMBED_BATCH_CHUNK: int = int(os.getenv("EMBED_BATCH_CHUNK", "64"))
 
+    # --- MinIO Object Storage ---
+    MINIO_ENDPOINT: str = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+    MINIO_ACCESS_KEY: str = os.getenv("MINIO_ACCESS_KEY", "mcp_admin")
+    MINIO_SECRET_KEY: str = os.getenv("MINIO_SECRET_KEY", "super_secure_minio_password")
+    MINIO_SECURE: bool = os.getenv("MINIO_SECURE", "false").lower() == "true"
+
     @classmethod
     def validate(cls) -> None:
         """Warn on startup if required env vars are not set (uses insecure defaults)."""

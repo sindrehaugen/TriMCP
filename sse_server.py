@@ -39,9 +39,8 @@ async def lifespan(app: Starlette):
         await server.engine.disconnect()
     logger.info("TriStackEngine disconnected (SSE)")
 
-starlette_app = Starlette(debug=True, lifespan=lifespan)
+from starlette.routing import Route
 
-@starlette_app.route("/sse")
 async def handle_sse(request):
     async with sse.connect_sse(request.scope, request.receive, request._send) as (read_stream, write_stream):
         await mcp_app.run(
@@ -50,10 +49,18 @@ async def handle_sse(request):
             mcp_app.create_initialization_options()
         )
 
-@starlette_app.route("/messages", methods=["POST"])
 async def handle_messages(request):
     await sse.handle_post_message(request.scope, request.receive, request._send)
 
+starlette_app = Starlette(
+    debug=True, 
+    lifespan=lifespan,
+    routes=[
+        Route("/sse", endpoint=handle_sse),
+        Route("/messages", endpoint=handle_messages, methods=["POST"]),
+    ]
+)
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(starlette_app, host="0.0.0.0", port=8000)
+    uvicorn.run(starlette_app, host="0.0.0.0", port=8002)

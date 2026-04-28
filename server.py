@@ -13,7 +13,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
-from trimcp import MemoryPayload, TriStackEngine, run_gc_loop
+from trimcp import MemoryPayload, MediaPayload, TriStackEngine, run_gc_loop
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +45,24 @@ TOOLS = [
                 "heavy_payload": {"type": "string", "description": "Full raw content to archive"},
             },
             "required": ["user_id", "session_id", "content_type", "summary", "heavy_payload"],
+        },
+    ),
+    Tool(
+        name="store_media",
+        description=(
+            "Ingest large media (audio/video/image) into the Quad-Stack. "
+            "Uploads raw file to MinIO and indexes the summary into the Tri-Stack."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "user_id":           {"type": "string"},
+                "session_id":        {"type": "string"},
+                "media_type":        {"type": "string", "enum": ["audio", "video", "image"]},
+                "file_path_on_disk": {"type": "string", "description": "Local path to the media file"},
+                "summary":           {"type": "string", "description": "AI-generated summary of the media content"},
+            },
+            "required": ["user_id", "session_id", "media_type", "file_path_on_disk", "summary"],
         },
     ),
     Tool(
@@ -163,6 +181,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             payload = MemoryPayload(**arguments)
             mongo_id = await engine.store_memory(payload)
             return [TextContent(type="text", text=json.dumps({"status": "ok", "mongo_ref_id": mongo_id}))]
+
+        if name == "store_media":
+            payload = MediaPayload(**arguments)
+            mongo_id = await engine.store_media(payload)
+            return [TextContent(type="text", text=json.dumps({"status": "ok", "mongo_ref_id": mongo_id, "storage": "minio"}))]
 
         if name == "semantic_search":
             results = await engine.semantic_search(

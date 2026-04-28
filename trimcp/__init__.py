@@ -8,13 +8,14 @@ everything it needs from here.
 
 Public API — stable names the server.py wrapper (and tests) rely on:
 """
-from trimcp.orchestrator import TriStackEngine, MemoryPayload
+from trimcp.orchestrator import TriStackEngine, MemoryPayload, MediaPayload
 from trimcp.garbage_collector import run_gc_loop
 from trimcp.config import OrchestratorConfig
 
 __all__ = [
     "TriStackEngine",
     "MemoryPayload",
+    "MediaPayload",
     "OrchestratorConfig",
     "run_gc_loop",
 ]
