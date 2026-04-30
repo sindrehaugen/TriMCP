@@ -106,7 +106,7 @@ async def _fetch_pg_refs(pg_pool: asyncpg.Pool) -> set[str]:
 async def _collect_orphans(
     mongo_client: AsyncIOMotorClient,
     pg_pool: asyncpg.Pool,
-) -> int:
+) -> dict:
     cutoff = datetime.utcnow() - timedelta(seconds=cfg.GC_ORPHAN_AGE_SECONDS)
     db = mongo_client.memory_archive
 
@@ -147,6 +147,7 @@ async def _collect_orphans(
 
     # KNOWLEDGE GRAPH GC: Delete orphaned kg_nodes
     # A node is orphaned if its label is no longer a subject or object in any edge.
+    count = 0
     try:
         async with pg_pool.acquire() as conn:
             # We use a subquery to find all labels currently in use in edges.
@@ -168,7 +169,7 @@ async def _collect_orphans(
         log.error("GC: kg_nodes cleanup failed: %s", exc)
 
     log.info("GC: pass complete — %d orphan(s) removed.", deleted)
-    return deleted
+    return {"deleted_docs": deleted, "deleted_nodes": count}
 
 
 # --- Long-running loop ---

@@ -166,17 +166,50 @@ async def list_tools() -> list[Tool]:
     return TOOLS
 
 
-def _err(msg: str) -> list[TextContent]:
+def _err(msg: str, is_error: bool = True) -> list[TextContent]:
     log.warning("Tool error: %s", msg)
-    return [TextContent(type="text", text=json.dumps({"error": msg}))]
-
+    # The SDK exposes isError through CallToolResult at the server level, but typically
+    # a tool handler raising an exception or returning specific error types causes the 
+    # server to format the response with isError=True. If we want to return TextContent
+    # directly and signal an error to the MCP server, we should raise an exception,
+    # or rely on the caller to format.
+    # Actually, the python SDK expects exceptions for `isError=True` inside `call_tool`, 
+    # or the return value must be a `CallToolResult`. But since we return `list[TextContent]`,
+    # returning text does NOT set `isError=True`.
+    # Let's change this to raise ValueError which the SDK catches and turns into an error result,
+    # or we can just raise a generic Exception.
+    raise ValueError(msg)
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     if engine is None:
-        return _err("Engine not initialized")
+        raise RuntimeError("Engine not initialized")
 
     try:
+        # --- API Cache Layer ---
+        # Cache read-heavy determinisic queries
+        CACHEABLE_TOOLS = {"semantic_search", "search_codebase", "graph_search"}
+        MUTATION_TOOLS = {"store_memory", "store_media", "index_code_file"}
+        
+        # Read-after-write invalidation via generation counter
+        if name in MUTATION_TOOLS:
+            await engine.redis_client.incr("mcp_cache_generation")
+            
+        cache_key = None
+        if name in CACHEABLE_TOOLS:
+            import hashlib
+            args_str = json.dumps(arguments, sort_keys=True)
+            args_hash = hashlib.md5(args_str.encode()).hexdigest()
+            
+            gen = await engine.redis_client.get("mcp_cache_generation")
+            gen_val = gen.decode() if gen else "0"
+            cache_key = f"mcp_cache:v{gen_val}:{name}:{args_hash}"
+            
+            cached_val = await engine.redis_client.get(cache_key)
+            if cached_val:
+                log.info(f"API Cache hit for tool {name}")
+                return [TextContent(type="text", text=cached_val.decode())]
+
         if name == "store_memory":
             payload = MemoryPayload(**arguments)
             mongo_id = await engine.store_memory(payload)
@@ -193,7 +226,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 query=arguments["query"],
                 top_k=int(arguments.get("top_k", 5)),
             )
-            return [TextContent(type="text", text=json.dumps(results))]
+            result_text = json.dumps(results)
+            if cache_key: await engine.redis_client.setex(cache_key, 300, result_text)
+            return [TextContent(type="text", text=result_text)]
 
         if name == "index_code_file":
             result = await engine.index_code_file(
@@ -215,14 +250,18 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 language_filter=arguments.get("language_filter"),
                 top_k=int(arguments.get("top_k", 5)),
             )
-            return [TextContent(type="text", text=json.dumps(results))]
+            result_text = json.dumps(results)
+            if cache_key: await engine.redis_client.setex(cache_key, 300, result_text)
+            return [TextContent(type="text", text=result_text)]
 
         if name == "graph_search":
             result = await engine.graph_search(
                 query=arguments["query"],
                 max_depth=max(1, min(int(arguments.get("max_depth", 2)), 3)),
             )
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            result_text = json.dumps(result, indent=2)
+            if cache_key: await engine.redis_client.setex(cache_key, 300, result_text)
+            return [TextContent(type="text", text=result_text)]
 
         if name == "get_recent_context":
             context = await engine.recall_memory(
@@ -231,13 +270,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             )
             return [TextContent(type="text", text=json.dumps({"context": context}))]
 
-        return _err(f"Unknown tool: {name}")
+        raise ValueError(f"Unknown tool: {name}")
 
     except (ValueError, TypeError) as e:
-        return _err(f"Invalid input: {e}")
+        raise ValueError(f"Invalid input: {e}")
     except Exception as e:
         log.exception("Unhandled error in tool '%s'", name)
-        return _err(f"Internal error: {type(e).__name__}")
+        raise RuntimeError(f"Internal error: {type(e).__name__}")
 
 
 # --- Startup / Shutdown ---

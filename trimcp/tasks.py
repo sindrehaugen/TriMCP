@@ -35,13 +35,13 @@ def process_code_indexing(filepath: str, raw_code: str, language: str):
     
     async def _index():
         await engine.connect()
+        inserted_mongo_id = None
+        db = engine.mongo_client.memory_archive
+        collection = db.code_files
         try:
             file_hash = hashlib.md5(raw_code.encode()).hexdigest()
             
             # STEP 1: Episodic Commit (MongoDB)
-            db = engine.mongo_client.memory_archive
-            collection = db.code_files
-            
             inserted_result = await collection.insert_one({
                 "filepath": filepath,
                 "language": language,
@@ -82,6 +82,12 @@ def process_code_indexing(filepath: str, raw_code: str, language: str):
             
         except Exception as e:
             log.exception("[Worker] Indexing failed for %s", filepath)
+            if inserted_mongo_id:
+                log.warning("[ROLLBACK] Removing orphaned Mongo doc %s", inserted_mongo_id)
+                try:
+                    await collection.delete_one({"_id": inserted_result.inserted_id})
+                except Exception as mongo_exc:
+                    log.error("[ROLLBACK] Mongo cleanup failed: %s", mongo_exc)
             raise
         finally:
             await engine.disconnect()

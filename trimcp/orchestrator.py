@@ -125,7 +125,13 @@ class TriStackEngine:
         )
         # RQ needs a synchronous connection
         import redis as redis_sync
-        self.redis_sync_client = redis_sync.from_url(cfg.REDIS_URL)
+        self.redis_sync_client = redis_sync.from_url(
+            cfg.REDIS_URL,
+            socket_connect_timeout=5,
+            socket_timeout=5,
+            max_connections=cfg.REDIS_MAX_CONNECTIONS,
+            health_check_interval=30,
+        )
 
         await self._init_pg_schema()
         await self._init_mongo_indexes()
@@ -156,6 +162,8 @@ class TriStackEngine:
             await self.pg_pool.close()
         if self.redis_client:
             await self.redis_client.aclose()
+        if self.redis_sync_client:
+            self.redis_sync_client.close()
         log.info("TriStackEngine disconnected.")
 
     def _init_minio_buckets(self):
@@ -379,6 +387,67 @@ class TriStackEngine:
 
         # Reuse existing graph/vector logic
         return await self.store_memory(memory_payload)
+
+    async def force_gc(self) -> dict:
+        """Manually trigger a GC pass."""
+        from trimcp.garbage_collector import _collect_orphans
+        if not self.mongo_client or not self.pg_pool:
+            raise RuntimeError("Engine not connected")
+        
+        result = await _collect_orphans(self.mongo_client, self.pg_pool)
+        
+        # Check if we purged an abnormally large amount
+        total_deleted = result.get("deleted_docs", 0) + result.get("deleted_nodes", 0)
+        if total_deleted > 100:
+            from trimcp.notifications import dispatcher
+            await dispatcher.dispatch_alert("Large GC Purge", f"Manual GC purged {total_deleted} items.")
+            
+        return result
+
+    async def check_health(self) -> dict:
+        """Live non-blocking health checks for all databases."""
+        health = {
+            "mongo": "down",
+            "postgres": "down",
+            "redis": "down",
+            "rq_queue": "unknown"
+        }
+        
+        # Mongo
+        try:
+            if self.mongo_client:
+                await self.mongo_client.admin.command("ping")
+                health["mongo"] = "up"
+        except Exception:
+            pass
+            
+        # Postgres
+        try:
+            if self.pg_pool:
+                async with self.pg_pool.acquire() as conn:
+                    await conn.execute("SELECT 1")
+                health["postgres"] = "up"
+        except Exception:
+            pass
+            
+        # Redis
+        try:
+            if self.redis_client:
+                await self.redis_client.ping()
+                health["redis"] = "up"
+        except Exception:
+            pass
+            
+        # RQ Queue
+        try:
+            if self.redis_sync_client:
+                from rq import Queue
+                q = Queue(connection=self.redis_sync_client)
+                health["rq_queue"] = f"{len(q)} pending jobs"
+        except Exception:
+            pass
+
+        return health
 
     # --- Recall ---
 
