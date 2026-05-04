@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/public"
+	"github.com/pkg/browser"
 )
 
 const defaultGraphScope = "https://graph.microsoft.com/User.Read"
@@ -24,7 +25,9 @@ type CloudToken struct {
 // EnsureCloudAccessToken is the cross-platform Cloud OAuth helper (§6.4): reads bridges.json for
 // tenant_id and client_id only (never bridge OAuth secrets in this flow), loads the MSAL opaque cache
 // from disk (path from bridges or default), and falls back to the OS credential store when the file is
-// empty and MirrorMSALToKeychain was used. MSAL refreshes expired access tokens via data inside the opaque blob.
+// empty and MirrorMSALToKeychain was used. MSAL refreshes cached tokens via AcquireTokenSilent when possible;
+// otherwise this helper runs the device code flow (opens the verification URL in the system browser when available),
+// then persists the updated opaque cache via dualMSALCache.
 //
 // Callers must not log access tokens, refresh tokens, cache payloads, or raw bridges.json. Wrap ctx with
 // RecommendedCloudOAuthTimeout or similar; that deadline is separate from the <5s hardware probe budget.
@@ -81,18 +84,37 @@ func EnsureCloudAccessToken(ctx context.Context, log *slog.Logger, bridgesPath s
 		log.Warn("msal_accounts_failed")
 		return CloudToken{}, err
 	}
-	if len(accounts) == 0 {
-		log.Info("msal_no_cached_account")
-		return CloudToken{}, ErrNoMSALAccount
+
+	if len(accounts) > 0 {
+		ar, silentErr := app.AcquireTokenSilent(ctx, scopes, public.WithSilentAccount(accounts[0]), public.WithTenantID(cloud.TenantID))
+		if silentErr == nil {
+			log.Info("msal_silent_ok")
+			return CloudToken{Token: ar.AccessToken, ExpiresOn: ar.ExpiresOn}, nil
+		}
+		log.Warn("msal_acquire_token_silent_failed")
 	}
 
-	ar, err := app.AcquireTokenSilent(ctx, scopes, public.WithSilentAccount(accounts[0]), public.WithTenantID(cloud.TenantID))
+	log.Info("msal_device_code_start")
+	dc, err := app.AcquireTokenByDeviceCode(ctx, scopes, public.WithTenantID(cloud.TenantID))
 	if err != nil {
-		log.Warn("msal_acquire_token_silent_failed")
+		log.Warn("msal_device_code_request_failed")
 		return CloudToken{}, err
 	}
+	if u := dc.Result.VerificationURL; u != "" {
+		if openErr := browser.OpenURL(u); openErr != nil && log != nil {
+			log.Debug("device_code_open_browser_skipped")
+		}
+	}
+	if log != nil && dc.Result.Message != "" {
+		log.Info("msal_device_code_instructions", "message", dc.Result.Message)
+	}
 
-	log.Info("msal_silent_ok")
+	ar, err := dc.AuthenticationResult(ctx)
+	if err != nil {
+		log.Warn("msal_device_code_failed")
+		return CloudToken{}, err
+	}
+	log.Info("msal_device_code_ok")
 	return CloudToken{Token: ar.AccessToken, ExpiresOn: ar.ExpiresOn}, nil
 }
 

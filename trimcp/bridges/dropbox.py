@@ -1,0 +1,105 @@
+"""
+Dropbox — list_folder/continue + webhooks (§10.3, Appendix H.5).
+"""
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, Iterator
+
+import httpx
+
+from trimcp.bridges.base import BridgeAuthError, BridgeProvider, redis_client
+from trimcp.config import cfg
+
+log = logging.getLogger("trimcp.bridges.dropbox")
+
+DROPBOX_API = "https://api.dropboxapi.com/2"
+
+
+class DropboxBridge(BridgeProvider):
+    """Dropbox API v2 delta via list_folder / continue."""
+
+    @property
+    def provider_key(self) -> str:
+        return "dropbox"
+
+    def bearer_token(self) -> str:
+        token = (cfg.DROPBOX_BRIDGE_TOKEN or "").strip()
+        if not token:
+            try:
+                return self.refresh_oauth_token()
+            except BridgeAuthError:
+                raise
+        return token
+
+    def _cursor_key(self, account_id: str) -> str:
+        return f"bridge:cursor:dropbox:{account_id}"
+
+    def walk_delta(self, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        for account_id in context.get("accounts") or []:
+            yield from self._continue_for_account(str(account_id))
+
+    def _continue_for_account(self, account_id: str) -> Iterator[dict[str, Any]]:
+        r = redis_client()
+        ck = self._cursor_key(account_id)
+        raw = r.get(ck)
+        if not raw:
+            log.warning(
+                "Dropbox: no cursor for account=%s — initial list_folder required during bridge connect",
+                account_id,
+            )
+            return
+        cursor = raw.decode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self.bearer_token()}",
+            "Content-Type": "application/json",
+        }
+        with httpx.Client(timeout=120.0, headers=headers) as client:
+            while True:
+                resp = client.post(
+                    f"{DROPBOX_API}/files/list_folder/continue",
+                    json={"cursor": cursor},
+                )
+                if resp.status_code == 401:
+                    raise BridgeAuthError("Dropbox 401 — set DROPBOX_BRIDGE_TOKEN or reconnect OAuth")
+                resp.raise_for_status()
+                data = resp.json()
+                for ent in data.get("entries", []):
+                    yield ent
+                cursor = data.get("cursor", cursor)
+                r.set(ck, cursor)
+                if not data.get("has_more"):
+                    break
+
+    def download_file(self, file_ref: dict[str, Any]) -> bytes:
+        path = file_ref.get("path_lower") or file_ref.get("path_display", "")
+        headers = {
+            "Authorization": f"Bearer {self.bearer_token()}",
+            "Dropbox-API-Arg": json.dumps({"path": path}),
+        }
+        with httpx.Client(timeout=120.0, headers=headers) as client:
+            resp = client.post(
+                "https://content.dropboxapi.com/2/files/download",
+                content=b"",
+            )
+            resp.raise_for_status()
+            return resp.content
+
+
+def process_dropbox_event(payload: dict[str, Any]) -> dict[str, Any]:
+    accounts: list[str] = []
+    lf = payload.get("list_folder") or {}
+    if isinstance(lf, dict):
+        accounts = list(lf.get("accounts") or [])
+    if not accounts and payload.get("accounts"):
+        accounts = list(payload["accounts"])
+    bridge = DropboxBridge()
+    count = 0
+    try:
+        for _ in bridge.walk_delta({"accounts": accounts}):
+            count += 1
+    except BridgeAuthError as e:
+        log.error("%s", e)
+        return {"status": "error", "error": str(e)}
+    return {"status": "ok", "entries_seen": count}

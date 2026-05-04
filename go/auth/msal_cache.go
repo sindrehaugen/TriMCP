@@ -13,6 +13,7 @@ const keyringMSALKey = "msal_opaque_cache_v1"
 
 // dualMSALCache persists MSAL's opaque blob to disk and reads a keychain fallback when the file is empty.
 // When mirrorToKeychain is true, successful cache exports are also written to the OS credential store.
+// Token acquisition flows (silent refresh, device code, etc.) invoke Export after success so the blob stays current.
 type dualMSALCache struct {
 	path             string
 	ring             keyring.Keyring

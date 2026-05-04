@@ -1,0 +1,14 @@
+# TriMCP Multi-User: reverse-proxy `/webhooks/*` to the FastAPI receiver (container port 8080).
+#
+# Default: HTTP :80 (suitable behind a corporate load balancer or for local testing).
+# For public Let's Encrypt TLS, add a second site block and set CADDY_DOMAIN + CADDY_EMAIL,
+# e.g. hooks.example.com { tls {$CADDY_EMAIL} ... } — see Caddy docs for auto_https.
+
+:80 {
+	handle /webhooks/* {
+		reverse_proxy webhook-receiver:8080
+	}
+	handle {
+		respond "TriMCP gateway" 200
+	}
+}

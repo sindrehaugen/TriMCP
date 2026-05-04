@@ -1,51 +1,34 @@
+// trimcp-launch is the mode-aware MCP stdio shim (TriMCP Enterprise Deployment Plan §6.4).
 package main
 
 import (
+	"context"
+	"errors"
+	"log/slog"
 	"os"
 
-	"github.com/trimcp/tri-stack/trimcp-launch/internal/config"
-	"github.com/trimcp/tri-stack/trimcp-launch/internal/logx"
-	"github.com/trimcp/tri-stack/trimcp-launch/internal/notify"
-	"github.com/trimcp/tri-stack/trimcp-launch/internal/paths"
+	"github.com/trimcp/tri-stack/launch"
 )
 
-// Phase 4 Part 1: validates mode.txt + .env merge, logging, and notifier wiring.
 func main() {
-	logger, logFile, err := logx.Setup(os.Stderr)
+	log, f, err := launch.SetupLogger(os.Stderr)
 	if err != nil {
-		notify.New().Error("TriMCP", "failed to open log file: "+err.Error())
+		_, _ = os.Stderr.WriteString("trimcp-launch: logger: " + err.Error() + "\n")
 		os.Exit(1)
 	}
-	defer logFile.Close()
-
-	modePath, err := paths.ModeFilePath()
-	if err != nil {
-		logger.Error("mode path", "err", err)
-		notify.New().Error("TriMCP", err.Error())
-		os.Exit(1)
-	}
-	envPath, err := paths.EnvFilePath()
-	if err != nil {
-		logger.Error("env path", "err", err)
-		notify.New().Error("TriMCP", err.Error())
-		os.Exit(1)
+	if f != nil {
+		defer func() { _ = f.Close() }()
 	}
 
-	mode, err := config.ReadMode(modePath)
-	if err != nil {
-		logger.Error("read mode", "path", modePath, "err", err)
-		notify.New().Error("TriMCP — mode.txt", err.Error())
+	ctx, stop := notifyRootContext()
+	defer stop()
+
+	n := launch.NewPlatformNotifier(log)
+	if err := launch.Run(ctx, n, log); err != nil {
+		if errors.Is(err, context.Canceled) {
+			os.Exit(0)
+		}
+		log.Error("launch_failed", slog.String("err", err.Error()))
 		os.Exit(1)
 	}
-	logger.Info("mode loaded", "mode", string(mode), "file", modePath)
-
-	merged, err := config.MergeEnv(envPath)
-	if err != nil {
-		logger.Error("merge .env", "path", envPath, "err", err)
-		notify.New().Error("TriMCP — .env", err.Error())
-		os.Exit(1)
-	}
-	logger.Info(".env merged", "path", envPath, "env_count", len(merged))
-
-	logger.Info("trimcp-launch Part 1 ready", "mode", string(mode))
 }

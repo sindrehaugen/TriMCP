@@ -1,0 +1,453 @@
+"""
+MCP tool handlers for document bridges (§10.6). Uses `TriStackEngine.pg_pool` and `trimcp/bridges/`.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import secrets
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from urllib.parse import urlencode
+
+import httpx
+from redis import Redis
+from rq import Queue
+
+from trimcp import bridge_repo
+from trimcp.config import cfg
+from trimcp.orchestrator import TriStackEngine
+from trimcp.tasks import process_bridge_event
+
+log = logging.getLogger("trimcp.bridge_mcp_handlers")
+
+PROVIDERS = frozenset({"sharepoint", "gdrive", "dropbox"})
+
+
+def _parse_sharepoint_resource(resource_id: str) -> tuple[str, str]:
+    if "|" not in resource_id:
+        raise ValueError("sharepoint resource_id must be 'site_id|drive_id'")
+    site, drive = resource_id.split("|", 1)
+    if not site or not drive:
+        raise ValueError("Invalid site|drive pair")
+    return site, drive
+
+
+async def connect_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+    user_id = arguments["user_id"]
+    provider = arguments["provider"].strip().lower()
+    if provider not in PROVIDERS:
+        raise ValueError(f"provider must be one of {sorted(PROVIDERS)}")
+
+    client_state = secrets.token_urlsafe(32)
+    row_id = uuid.uuid4()
+
+    async with engine.pg_pool.acquire() as conn:
+        await bridge_repo.insert_subscription(
+            conn,
+            user_id=user_id,
+            provider=provider,
+            resource_id="pending",
+            status="REQUESTED",
+            client_state=client_state,
+            row_id=row_id,
+        )
+
+    auth_url: str | None = None
+    if provider == "sharepoint":
+        cid = (cfg.AZURE_CLIENT_ID or "").strip()
+        if not cid:
+            return json.dumps(
+                {
+                    "status": "pending_config",
+                    "bridge_id": str(row_id),
+                    "client_state": client_state,
+                    "message": "Set AZURE_CLIENT_ID (and BRIDGE_OAUTH_REDIRECT_URI) to obtain auth_url.",
+                }
+            )
+        tenant = cfg.AZURE_TENANT_ID or "common"
+        q = urlencode(
+            {
+                "client_id": cid,
+                "response_type": "code",
+                "redirect_uri": cfg.BRIDGE_OAUTH_REDIRECT_URI,
+                "response_mode": "query",
+                "scope": "offline_access Files.Read.All Sites.Read.All",
+                "state": f"{row_id}:{client_state}",
+            }
+        )
+        auth_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize?{q}"
+    elif provider == "gdrive":
+        cid = (cfg.GDRIVE_OAUTH_CLIENT_ID or "").strip()
+        if not cid:
+            return json.dumps(
+                {
+                    "status": "pending_config",
+                    "bridge_id": str(row_id),
+                    "client_state": client_state,
+                    "message": "Set GDRIVE_OAUTH_CLIENT_ID for Google OAuth URL.",
+                }
+            )
+        q = urlencode(
+            {
+                "client_id": cid,
+                "redirect_uri": cfg.BRIDGE_OAUTH_REDIRECT_URI,
+                "response_type": "code",
+                "scope": "https://www.googleapis.com/auth/drive.readonly",
+                "access_type": "offline",
+                "prompt": "consent",
+                "state": f"{row_id}:{client_state}",
+            }
+        )
+        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{q}"
+    elif provider == "dropbox":
+        cid = (cfg.DROPBOX_OAUTH_CLIENT_ID or "").strip()
+        if not cid:
+            return json.dumps(
+                {
+                    "status": "pending_config",
+                    "bridge_id": str(row_id),
+                    "client_state": client_state,
+                    "message": "Set DROPBOX_OAUTH_CLIENT_ID for Dropbox authorize URL.",
+                }
+            )
+        q = urlencode(
+            {
+                "client_id": cid,
+                "redirect_uri": cfg.BRIDGE_OAUTH_REDIRECT_URI,
+                "response_type": "code",
+                "token_access_type": "offline",
+                "state": f"{row_id}:{client_state}",
+            }
+        )
+        auth_url = f"https://www.dropbox.com/oauth2/authorize?{q}"
+
+    return json.dumps(
+        {
+            "status": "ok",
+            "bridge_id": str(row_id),
+            "provider": provider,
+            "auth_url": auth_url,
+            "client_state": client_state,
+            "note": "Complete OAuth in browser; call complete_bridge_auth with the authorization code.",
+        }
+    )
+
+
+async def complete_bridge_auth(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+    user_id = arguments["user_id"]
+    bridge_id = uuid.UUID(arguments["bridge_id"])
+    provider = arguments["provider"].strip().lower()
+    code = (arguments.get("authorization_code") or arguments.get("code") or "").strip()
+    resource_id = (arguments.get("resource_id") or "").strip()
+
+    if not code:
+        raise ValueError("authorization_code is required")
+
+    async with engine.pg_pool.acquire() as conn:
+        row = await bridge_repo.get_by_id(conn, bridge_id)
+        if not row or str(row["user_id"]) != str(user_id):
+            raise ValueError("bridge not found for user")
+        if row["provider"] != provider:
+            raise ValueError("provider mismatch")
+        if row["status"] not in ("REQUESTED", "VALIDATING"):
+            raise ValueError(f"bridge not in connectable state (got {row['status']})")
+        bridge_client_state = row["client_state"]
+
+    access_token: str | None = None
+
+    if provider == "sharepoint":
+        if not cfg.AZURE_CLIENT_ID or not cfg.AZURE_CLIENT_SECRET:
+            raise ValueError("AZURE_CLIENT_ID and AZURE_CLIENT_SECRET required for token exchange")
+        tenant = cfg.AZURE_TENANT_ID or "common"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            tr = await client.post(
+                f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+                data={
+                    "client_id": cfg.AZURE_CLIENT_ID,
+                    "client_secret": cfg.AZURE_CLIENT_SECRET,
+                    "code": code,
+                    "redirect_uri": cfg.BRIDGE_OAUTH_REDIRECT_URI,
+                    "grant_type": "authorization_code",
+                },
+            )
+            tr.raise_for_status()
+            tok = tr.json()
+            access_token = tok.get("access_token")
+            if not access_token:
+                raise ValueError("token response missing access_token")
+    elif provider == "gdrive":
+        if not cfg.GDRIVE_OAUTH_CLIENT_ID or not cfg.GDRIVE_OAUTH_CLIENT_SECRET:
+            raise ValueError("GDRIVE_OAUTH_CLIENT_ID/SECRET required")
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            tr = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "client_id": cfg.GDRIVE_OAUTH_CLIENT_ID,
+                    "client_secret": cfg.GDRIVE_OAUTH_CLIENT_SECRET,
+                    "code": code,
+                    "redirect_uri": cfg.BRIDGE_OAUTH_REDIRECT_URI,
+                    "grant_type": "authorization_code",
+                },
+            )
+            tr.raise_for_status()
+            tok = tr.json()
+            access_token = tok.get("access_token")
+            if not access_token:
+                raise ValueError("token response missing access_token")
+    elif provider == "dropbox":
+        if not cfg.DROPBOX_OAUTH_CLIENT_ID:
+            raise ValueError("DROPBOX_OAUTH_CLIENT_ID required")
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            tr = await client.post(
+                "https://api.dropboxapi.com/oauth2/token",
+                data={
+                    "code": code,
+                    "grant_type": "authorization_code",
+                    "client_id": cfg.DROPBOX_OAUTH_CLIENT_ID,
+                    "redirect_uri": cfg.BRIDGE_OAUTH_REDIRECT_URI,
+                },
+            )
+            tr.raise_for_status()
+            tok = tr.json()
+            access_token = tok.get("access_token")
+            if not access_token:
+                raise ValueError("token response missing access_token")
+
+    if not resource_id or resource_id == "pending":
+        raise ValueError(
+            "resource_id required after OAuth: sharepoint 'site_id|drive_id', "
+            "gdrive Google resourceId or folder Id as configured, dropbox account id (dbid:...)"
+        )
+
+    sub_id: str | None = None
+    expires_at: datetime | None = None
+    base = (cfg.BRIDGE_WEBHOOK_BASE_URL or "").rstrip("/")
+
+    if provider == "sharepoint" and base and access_token:
+        site, drive = _parse_sharepoint_resource(resource_id)
+        exp_iso = (datetime.now(timezone.utc) + timedelta(minutes=4200)).strftime(
+            "%Y-%m-%dT%H:%M:%S.0000000Z"
+        )
+        body = {
+            "changeType": "updated",
+            "notificationUrl": f"{base}/webhooks/graph",
+            "resource": f"/sites/{site}/drives/{drive}/root",
+            "expirationDateTime": exp_iso,
+            "clientState": bridge_client_state,
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            cr = await client.post(
+                "https://graph.microsoft.com/v1.0/subscriptions",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+            if cr.status_code >= 400:
+                raise ValueError(f"Graph subscription failed: {cr.status_code} {cr.text[:500]}")
+            sub = cr.json()
+            sub_id = sub.get("id")
+            exp_s = sub.get("expirationDateTime")
+            if exp_s:
+                expires_at = datetime.fromisoformat(str(exp_s).replace("Z", "+00:00"))
+
+    if provider == "gdrive" and base and access_token:
+        chan = str(uuid.uuid4())
+        exp_ms = int((datetime.now(timezone.utc) + timedelta(days=6, hours=23)).timestamp() * 1000)
+        watch_body = {
+            "id": chan,
+            "type": "web_hook",
+            "address": f"{base}/webhooks/drive",
+            "token": bridge_client_state or "",
+            "expiration": exp_ms,
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            cr = await client.post(
+                "https://www.googleapis.com/drive/v3/changes/watch",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json=watch_body,
+            )
+            if cr.status_code >= 400:
+                raise ValueError(f"Drive watch failed: {cr.status_code} {cr.text[:500]}")
+            sub = cr.json()
+            sub_id = sub.get("id") or chan
+            rid = sub.get("resourceId") or resource_id
+            resource_id = rid
+            exp_ms2 = sub.get("expiration")
+            if exp_ms2:
+                expires_at = datetime.fromtimestamp(int(exp_ms2) / 1000.0, tz=timezone.utc)
+
+    async with engine.pg_pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE bridge_subscriptions
+            SET resource_id = $2,
+                subscription_id = COALESCE($3, subscription_id),
+                expires_at = COALESCE($4, expires_at),
+                status = 'ACTIVE',
+                updated_at = NOW()
+            WHERE id = $1
+            """,
+            bridge_id,
+            resource_id,
+            sub_id,
+            expires_at,
+        )
+
+    return json.dumps(
+        {
+            "status": "ok",
+            "bridge_id": str(bridge_id),
+            "provider": provider,
+            "subscription_id": sub_id,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "security_note": (
+                "Configure worker GRAPH_BRIDGE_TOKEN / GDRIVE_BRIDGE_TOKEN / DROPBOX_BRIDGE_TOKEN "
+                "from the OAuth access_token for ingestion until bridge_tokens (encrypted) is wired."
+            ),
+            "oauth_access_token": access_token,
+        }
+    )
+
+
+async def list_bridges(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+    user_id = arguments["user_id"]
+    include_disconnected = bool(arguments.get("include_disconnected", False))
+
+    async with engine.pg_pool.acquire() as conn:
+        rows = await bridge_repo.list_for_user(conn, user_id, include_disconnected=include_disconnected)
+    return json.dumps({"bridges": [bridge_repo.subscription_to_public_dict(r) for r in rows]})
+
+
+async def disconnect_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+    user_id = arguments["user_id"]
+    bridge_id = uuid.UUID(arguments["bridge_id"])
+    async with engine.pg_pool.acquire() as conn:
+        row = await bridge_repo.get_by_id(conn, bridge_id)
+        if not row or str(row["user_id"]) != user_id:
+            raise ValueError("bridge not found for user")
+
+    prov = row["provider"]
+    token = ""
+    if prov == "sharepoint":
+        token = (cfg.GRAPH_BRIDGE_TOKEN or "").strip()
+    elif prov == "gdrive":
+        token = (cfg.GDRIVE_BRIDGE_TOKEN or "").strip()
+    elif prov == "dropbox":
+        token = (cfg.DROPBOX_BRIDGE_TOKEN or "").strip()
+
+    if prov == "sharepoint" and row["subscription_id"] and token:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.delete(
+                f"https://graph.microsoft.com/v1.0/subscriptions/{row['subscription_id']}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if r.status_code not in (200, 204, 404):
+                log.warning("Graph subscription delete: %s %s", r.status_code, r.text[:200])
+    elif prov == "gdrive" and row["subscription_id"] and row["resource_id"] and token:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                "https://www.googleapis.com/drive/v3/channels/stop",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"id": row["subscription_id"], "resourceId": row["resource_id"]},
+            )
+            if r.status_code not in (200, 204):
+                log.warning("Drive channel stop: %s %s", r.status_code, r.text[:200])
+
+    async with engine.pg_pool.acquire() as conn:
+        await bridge_repo.mark_status(conn, bridge_id, "DISCONNECTED")
+
+    return json.dumps({"status": "ok", "bridge_id": str(bridge_id), "state": "DISCONNECTED"})
+
+
+async def force_resync_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+    user_id = arguments["user_id"]
+    bridge_id = uuid.UUID(arguments["bridge_id"])
+    async with engine.pg_pool.acquire() as conn:
+        row = await bridge_repo.get_by_id(conn, bridge_id)
+        if not row or str(row["user_id"]) != user_id:
+            raise ValueError("bridge not found for user")
+        await conn.execute(
+            "UPDATE bridge_subscriptions SET cursor = NULL, updated_at = NOW() WHERE id = $1",
+            bridge_id,
+        )
+
+    prov = row["provider"]
+    rcli = bridge_redis()
+    rid = row["resource_id"]
+    if prov == "sharepoint" and "|" in rid:
+        site, drive = _parse_sharepoint_resource(rid)
+        ck = f"bridge:cursor:sharepoint:{site}:{drive}"
+        rcli.delete(ck)
+
+    q = Queue("default", connection=Redis.from_url(cfg.REDIS_URL))
+    job_id: str | None = None
+    if prov == "sharepoint":
+        if "|" not in rid or rid == "pending":
+            raise ValueError("sharepoint force_resync requires resource_id 'site_id|drive_id'")
+        site, drive = _parse_sharepoint_resource(rid)
+        payload = {
+            "notifications": [
+                {
+                    "clientState": row["client_state"],
+                    "resource": f"sites/{site}/drives/{drive}/root",
+                    "changeType": "updated",
+                }
+            ]
+        }
+        job = q.enqueue(
+            process_bridge_event,
+            kwargs={"provider": "sharepoint", "payload": payload},
+            job_timeout="30m",
+        )
+        job_id = job.id
+    elif prov == "gdrive":
+        ch = row["subscription_id"] or ""
+        payload = {
+            "channel_id": ch,
+            "resource_id": rid,
+            "resource_state": "update",
+            "message_number": "manual",
+        }
+        job = q.enqueue(
+            process_bridge_event,
+            kwargs={"provider": "gdrive", "payload": payload},
+            job_timeout="30m",
+        )
+        job_id = job.id
+    elif prov == "dropbox":
+        payload = {"list_folder": {"accounts": [rid]}}
+        job = q.enqueue(
+            process_bridge_event,
+            kwargs={"provider": "dropbox", "payload": payload},
+            job_timeout="30m",
+        )
+        job_id = job.id
+
+    return json.dumps(
+        {"status": "enqueued", "bridge_id": str(bridge_id), "provider": prov, "job_id": job_id}
+    )
+
+
+def bridge_redis() -> Redis:
+    return Redis.from_url(cfg.REDIS_URL)
+
+
+async def bridge_status(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+    user_id = arguments["user_id"]
+    bridge_id = uuid.UUID(arguments["bridge_id"])
+    async with engine.pg_pool.acquire() as conn:
+        row = await bridge_repo.get_by_id(conn, bridge_id)
+        if not row or str(row["user_id"]) != user_id:
+            raise ValueError("bridge not found for user")
+    out = bridge_repo.subscription_to_public_dict(row)
+    now = datetime.now(timezone.utc)
+    if row["expires_at"]:
+        out["expires_in_seconds"] = max(0, int((row["expires_at"] - now).total_seconds()))
+    return json.dumps(out)

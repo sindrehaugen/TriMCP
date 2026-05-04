@@ -1,0 +1,127 @@
+# TriMCP Multi-User / on-prem stack (Phase 5) — seven services.
+# Diff vs repo root docker-compose.yml (dev): dev exposes four data services only (redis, postgres
+# ankane/pgvector, mongo, minio) for laptop work; this file adds worker, webhook-receiver, caddy,
+# uses pgvector/pgvector:pg16, standard MinIO :9000/:9001, and wires app containers to the stack.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: trimcp-postgres
+    environment:
+      POSTGRES_USER: mcp_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mcp_password}
+      POSTGRES_DB: memory_meta
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcp_user -d memory_meta"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:7.0
+    container_name: trimcp-mongo
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: trimcp-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: trimcp-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mcp_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+
+  webhook-receiver:
+    build:
+      context: ../..
+      dockerfile: deploy/multiuser/Dockerfile
+    command:
+      [
+        "uvicorn",
+        "trimcp.webhook_receiver.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+      ]
+    container_name: trimcp-webhooks
+    env_file:
+      - ${TRIMCP_ENV_FILE:-./env.example}
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "${WEBHOOK_PORT:-8080}:8080"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: deploy/multiuser/Dockerfile
+    container_name: trimcp-worker
+    env_file:
+      - ${TRIMCP_ENV_FILE:-./env.example}
+    environment:
+      MONGO_URI: mongodb://mongodb:27017
+      PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
+      MINIO_SECURE: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: trimcp-caddy
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - webhook-receiver
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  mongo_data:
+  redis_data:
+  minio_data:
+  caddy_data:
+  caddy_config:

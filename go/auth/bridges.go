@@ -11,7 +11,7 @@ import (
 // ErrCloudOAuthNotConfigured is returned when bridges has no cloud/Azure section.
 var ErrCloudOAuthNotConfigured = errors.New("cloud oauth not configured")
 
-// ErrNoMSALAccount means the MSAL cache has no home account — user must run interactive/device flow once.
+// ErrNoMSALAccount is retained for API compatibility; EnsureCloudAccessToken runs device code when the cache is empty.
 var ErrNoMSALAccount = errors.New("no msal account in cache; interactive sign-in required")
 
 // BridgesFile matches §6.3 layout (subset). OAuth token material must never be logged by callers.

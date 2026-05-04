@@ -5,6 +5,7 @@ go 1.22
 require (
 	github.com/99designs/keyring v1.2.2
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.4.2
+	github.com/pkg/browser v0.0.0-20210911075715-681adbf594b8
 )
 
 require (

@@ -45,3 +45,26 @@ func (p PlatformNotifier) Error(title, message string) {
 		p.Log.Warn("messagebox_failed", "err", err, "output", string(out))
 	}
 }
+
+func (p PlatformNotifier) ConfirmConnectivity(title, message string) bool {
+	if p.Log != nil {
+		p.Log.Warn("user notification", "title", title, "message", message)
+	}
+	esc := func(s string) string {
+		return strings.ReplaceAll(strings.ReplaceAll(s, "`", "``"), "'", "''")
+	}
+	ps := "Add-Type -AssemblyName System.Windows.Forms; " +
+		"$r = [System.Windows.Forms.MessageBox]::Show('" + esc(message) + "', '" + esc(title) + "', " +
+		"[System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question); " +
+		"if ($r -eq [System.Windows.Forms.DialogResult]::Yes) { exit 0 } else { exit 1 }"
+	ctx, cancel := context.WithTimeout(context.Background(), notifyExecTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+	cmd.Stdin = nil
+	out, err := cmd.CombinedOutput()
+	if err != nil && p.Log != nil {
+		p.Log.Warn("messagebox_confirm_failed", "err", err, "output", string(out))
+		return false
+	}
+	return true
+}

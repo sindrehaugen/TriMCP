@@ -9,6 +9,9 @@ import (
 type UserNotifier interface {
 	// Error shows a blocking error dialog (or best-effort stderr in headless environments).
 	Error(title, message string)
+	// ConfirmConnectivity asks after a failed reachability check (e.g. Multi-User Postgres TCP).
+	// Returns true if the user wants to retry (e.g. VPN was connected).
+	ConfirmConnectivity(title, message string) bool
 }
 
 // LogNotifier logs only (CI / headless fallback).
@@ -22,4 +25,11 @@ func (l LogNotifier) Error(title, message string) {
 		return
 	}
 	_, _ = os.Stderr.WriteString(title + ": " + message + "\n")
+}
+
+func (l LogNotifier) ConfirmConnectivity(title, message string) bool {
+	if l.Log != nil {
+		l.Log.Warn("connectivity prompt (no UI)", "title", title, "message", message)
+	}
+	return false
 }

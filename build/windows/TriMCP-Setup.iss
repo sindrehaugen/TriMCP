@@ -1,144 +1,357 @@
-; TriMCP Inno Setup Script
-; Implements Phase 5 / Section 6.2 Wizard Flow
+; TriMCP Inno Setup — Phase 5 seven-screen flow with branching (Local / Office Shared / Cloud).
+; Silent install: TriMCP-Setup.exe /VERYSILENT /MODE=cloud /TENANT=contoso.onmicrosoft.com /BACKEND=cuda
+;               /MODE=multiuser /SERVERADDR=https://trimcp.corp.example
+;               /BRIDGES=sharepoint,dropbox /BACKEND=auto
+;
+; Writes UTF-8 %APPDATA%\TriMCP\mode.txt (local | multiuser | cloud) and .env (TRIMCP_* keys).
+
+#define MyAppName "TriMCP"
+#define MyAppVersion "1.0.0"
 
 [Setup]
-AppName=TriMCP
-AppVersion=1.0.0
-DefaultDirName={autopf}\TriMCP
-DefaultGroupName=TriMCP
+AppId={{8E7F6D5C-4B3A-2918-CDEF-0123456789AB}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+DefaultDirName={autopf}\{#MyAppName}
+DefaultGroupName={#MyAppName}
 OutputDir=Output
 OutputBaseFilename=TriMCP-Setup
 Compression=lzma
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
 PrivilegesRequired=admin
+WizardStyle=modern
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Tasks]
+Name: "launchclaude"; Description: "Offer to open Claude Desktop when the installer finishes"; GroupDescription: "After installing:"; Flags: unchecked
+Name: "dockerlogontask"; Description: "Register a log-on task to run: docker compose for the bundled multi-user stack file (requires Docker in PATH)"; GroupDescription: "Local / Docker:"; Flags: unchecked
 
 [Files]
-; Core application files
 Source: "trimcp-launch.exe"; DestDir: "{app}"; Flags: ignoreversion
-; Embedded Python
 Source: "assets\python\*"; DestDir: "{app}\python"; Flags: ignoreversion recursesubdirs createallsubdirs
-; Models and Wheels
 Source: "assets\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "assets\wheels\*"; DestDir: "{app}\wheels"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\deploy\multiuser\docker-compose.yml"; DestDir: "{app}\deploy\multiuser"; Flags: ignoreversion
+Source: "..\..\deploy\multiuser\Caddyfile"; DestDir: "{app}\deploy\multiuser"; Flags: ignoreversion
+Source: "..\..\deploy\multiuser\env.example"; DestDir: "{app}\deploy\multiuser"; Flags: ignoreversion
+Source: "..\..\deploy\multiuser\Dockerfile"; DestDir: "{app}\deploy\multiuser"; Flags: ignoreversion
 
 [Dirs]
 Name: "{userappdata}\TriMCP"
 Name: "{userappdata}\TriMCP\logs"
 
+[Icons]
+Name: "{group}\{#MyAppName}"; Filename: "{app}\trimcp-launch.exe"
+
+[Run]
+Filename: "{app}\trimcp-launch.exe"; Description: "Start TriMCP launcher (stdio shim)"; Flags: nowait postinstall skipifsilent
+Filename: "{localappdata}\Programs\Claude\Claude.exe"; Flags: shellexec runasoriginaluser nowait skipifsilent skipifdoesntexist; Tasks: launchclaude
+
 [Code]
 var
   ModePage: TInputOptionWizardPage;
-  DockerCheckPage: TOutputMsgWizardPage;
-  ServerAddressPage: TInputQueryWizardPage;
-  CloudSignInPage: TOutputMsgWizardPage;
+  DockerPage: TOutputMsgWizardPage;
+  ServerPage: TInputQueryWizardPage;
+  CloudIntroPage: TOutputMsgWizardPage;
+  CloudTenantPage: TInputQueryWizardPage;
   HardwarePage: TInputOptionWizardPage;
   BridgesPage: TInputOptionWizardPage;
+  SilentModeStr: string;
+  SilentServerAddr: string;
+  SilentTenant: string;
+  SilentBridges: string;
+  SilentBackend: string;
+
+function GetSilentParam(const Key: string): string;
+begin
+  Result := ExpandConstant('{param:' + Key + '|}');
+end;
+
+function IsSilentInstall: Boolean;
+begin
+  Result := WizardSilent or WizardVerySilent;
+end;
+
+procedure LoadSilentParams;
+begin
+  SilentModeStr := LowerCase(Trim(GetSilentParam('MODE')));
+  SilentServerAddr := Trim(GetSilentParam('SERVERADDR'));
+  SilentTenant := Trim(GetSilentParam('TENANT'));
+  SilentBridges := Trim(GetSilentParam('BRIDGES'));
+  SilentBackend := Trim(GetSilentParam('BACKEND'));
+  if SilentBackend = '' then
+    SilentBackend := 'auto';
+  if SilentModeStr = '' then
+    SilentModeStr := 'local';
+  if (SilentModeStr = 'office') or (SilentModeStr = 'multi-user') or (SilentModeStr = 'multi_user') then
+    SilentModeStr := 'multiuser';
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  LoadSilentParams;
+  Result := True;
+end;
 
 procedure InitializeWizard;
 begin
-  // Screen 2: Mode Selection
   ModePage := CreateInputOptionPage(wpWelcome,
-    'Mode Selection', 'Choose how you want to connect to TriMCP.',
-    'Select the deployment mode that matches your organization''s setup:',
-    True, False);
-  ModePage.Add('Local - Just for me. Data stays on this computer. (Requires Docker)');
-  ModePage.Add('Office Shared - Connect to my company''s TriMCP server.');
-  ModePage.Add('Cloud - Connect to a cloud TriMCP deployment.');
-  ModePage.Values[0] := True; // Default to Local
+    'How will you use TriMCP?',
+    'Pick the deployment path that matches your organization.',
+    'Your choice determines how TriMCP stores data and connects to services.',
+    True);
+  ModePage.Add('Local — Just for me on this PC (Docker Desktop runs databases on localhost)');
+  ModePage.Add('Office Shared — Connect to my company''s TriMCP server (multi-user)');
+  ModePage.Add('Cloud — Connect to TriMCP hosted in Microsoft Azure');
+  ModePage.Values[0] := True;
 
-  // Screen 3a: Docker Desktop Check (Local Path)
-  DockerCheckPage := CreateOutputMsgPage(ModePage.ID,
-    'Docker Desktop Check', 'Checking prerequisites for Local mode.',
-    'Local mode requires Docker Desktop to run the local database stack.' + #13#10#13#10 +
-    'If Docker Desktop is not installed, please download and install it from docker.com before continuing.');
+  DockerPage := CreateOutputMsgPage(ModePage.ID,
+    'Docker Desktop',
+    'Local mode needs Docker Desktop.',
+    'Docker Desktop runs the local PostgreSQL, MongoDB, Redis, and MinIO stack.' + #13#10 + #13#10 +
+    'If it is not installed yet, download it from https://www.docker.com/products/docker-desktop/ ' +
+    'and start it before using TriMCP.' + #13#10 + #13#10 +
+    'Click Next when you are ready to continue.');
 
-  // Screen 3b: Server Address (Multi-User Path)
-  ServerAddressPage := CreateInputQueryPage(DockerCheckPage.ID,
-    'Server Address', 'Enter your Office Shared server details.',
-    'Please enter the URL provided by your IT administrator:');
-  ServerAddressPage.Add('Server URL:', False);
+  ServerPage := CreateInputQueryPage(DockerPage.ID,
+    'Office Shared server',
+    'Connection details from IT',
+    'Paste the base URL for your TriMCP deployment (for example the HTTPS URL of the company gateway):');
+  ServerPage.Add('Server URL:', False);
 
-  // Screen 3c: Sign In (Cloud Path)
-  CloudSignInPage := CreateOutputMsgPage(ServerAddressPage.ID,
-    'Cloud Authentication', 'Sign in to your Cloud deployment.',
-    'Authentication will be handled securely via your web browser on first launch.' + #13#10#13#10 +
-    'You will be prompted to sign in with your Microsoft work or school account.');
+  CloudIntroPage := CreateOutputMsgPage(ServerPage.ID,
+    'Cloud sign-in',
+    'Microsoft 365 sign-in',
+    'TriMCP will use Microsoft Entra ID (device code flow) the first time you start the launcher.' + #13#10 + #13#10 +
+    'You will complete sign-in in the browser when prompted.');
 
-  // Screen 4: Hardware Acceleration
-  HardwarePage := CreateInputOptionPage(CloudSignInPage.ID,
-    'Hardware Acceleration', 'Configure AI inference hardware.',
-    'TriMCP auto-detects your hardware for optimal performance. You can override this below:',
-    True, False);
-  HardwarePage.Add('Use Recommended (Auto-detected GPU/NPU)');
-  HardwarePage.Add('CPU Only (Slowest, most compatible)');
+  CloudTenantPage := CreateInputQueryPage(CloudIntroPage.ID,
+    'Azure AD tenant',
+    'Tenant identifier',
+    'Enter your organization''s tenant domain or ID (example: contoso.onmicrosoft.com):');
+  CloudTenantPage.Add('Tenant:', False);
+
+  HardwarePage := CreateInputOptionPage(CloudTenantPage.ID,
+    'Hardware acceleration',
+    'Inference backend',
+    'TriMCP can use your GPU or NPU when available. Pick a fallback if auto-detection is wrong.',
+    True);
+  HardwarePage.Add('Recommended — auto-detect (best available)');
+  HardwarePage.Add('CPU only');
+  HardwarePage.Add('NVIDIA CUDA');
+  HardwarePage.Add('AMD ROCm');
+  HardwarePage.Add('Intel OpenVINO / NPU');
+  HardwarePage.Add('Apple Metal (MPS)');
   HardwarePage.Values[0] := True;
 
-  // Screen 5: Document Bridges (optional)
   BridgesPage := CreateInputOptionPage(HardwarePage.ID,
-    'Document Bridges', 'Connect to your document libraries?',
-    'Select the services you want to connect. You can configure these later.',
-    False, False);
-  BridgesPage.Add('Microsoft SharePoint / OneDrive');
-  BridgesPage.Add('Google Workspace / Drive');
+    'Document bridges (optional)',
+    'Connect document sources',
+    'You can enable these now or configure them later. OAuth sign-in runs when you first use each bridge.',
+    False);
+  BridgesPage.Add('Microsoft SharePoint / OneDrive (Graph)');
+  BridgesPage.Add('Google Drive');
   BridgesPage.Add('Dropbox');
+end;
+
+function ModeIndex: Integer;
+begin
+  if IsSilentInstall then
+  begin
+    if SilentModeStr = 'multiuser' then Result := 1
+    else if SilentModeStr = 'cloud' then Result := 2
+    else Result := 0;
+  end
+  else
+    Result := ModePage.SelectedValueIndex;
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
-  
-  // Branching logic based on Mode Selection
-  if PageID = DockerCheckPage.ID then
-    Result := (ModePage.SelectedValueIndex <> 0); // Skip if NOT Local
-    
-  if PageID = ServerAddressPage.ID then
-    Result := (ModePage.SelectedValueIndex <> 1); // Skip if NOT Office Shared
-    
-  if PageID = CloudSignInPage.ID then
-    Result := (ModePage.SelectedValueIndex <> 2); // Skip if NOT Cloud
+  if IsSilentInstall then
+  begin
+    Result := True;
+    Exit;
+  end;
+
+  if PageID = DockerPage.ID then
+    Result := ModeIndex <> 0;
+
+  if PageID = ServerPage.ID then
+    Result := ModeIndex <> 1;
+
+  if PageID = CloudIntroPage.ID then
+    Result := ModeIndex <> 2;
+
+  if PageID = CloudTenantPage.ID then
+    Result := ModeIndex <> 2;
 end;
 
-procedure CurPageChanged(CurPageID: Integer);
+function NextButtonClick(CurPageID: Integer; var NextPageID: Integer): Boolean;
 begin
-  // Update Next button text if needed
+  Result := True;
+  if IsSilentInstall then Exit;
+
+  if CurPageID = ServerPage.ID then
+  begin
+    if ModeIndex = 1 then
+    begin
+      if Trim(ServerPage.Values[0]) = '' then
+      begin
+        MsgBox('Enter the server URL supplied by IT, then click Next.', mbError, MB_OK);
+        Result := False;
+      end;
+    end;
+  end;
+
+  if CurPageID = CloudTenantPage.ID then
+  begin
+    if ModeIndex = 2 then
+    begin
+      if Trim(CloudTenantPage.Values[0]) = '' then
+      begin
+        MsgBox('Enter your Microsoft 365 / Entra tenant domain.', mbError, MB_OK);
+        Result := False;
+      end;
+    end;
+  end;
+end;
+
+function HardwareBackend: string;
+begin
+  if IsSilentInstall then
+  begin
+    Result := SilentBackend;
+    Exit;
+  end;
+  case HardwarePage.SelectedValueIndex of
+    0: Result := 'auto';
+    1: Result := 'cpu';
+    2: Result := 'cuda';
+    3: Result := 'rocm';
+    4: Result := 'openvino_npu';
+    5: Result := 'mps';
+  else
+    Result := 'auto';
+  end;
+end;
+
+function BridgesList: string;
+var
+  parts: string;
+begin
+  if IsSilentInstall then
+  begin
+    Result := SilentBridges;
+    Exit;
+  end;
+  parts := '';
+  if BridgesPage.Values[0] then
+  begin
+    if parts <> '' then parts := parts + ',';
+    parts := parts + 'sharepoint';
+  end;
+  if BridgesPage.Values[1] then
+  begin
+    if parts <> '' then parts := parts + ',';
+    parts := parts + 'gdrive';
+  end;
+  if BridgesPage.Values[2] then
+  begin
+    if parts <> '' then parts := parts + ',';
+    parts := parts + 'dropbox';
+  end;
+  Result := parts;
+end;
+
+function ModeFileValue: string;
+begin
+  case ModeIndex of
+    0: Result := 'local';
+    1: Result := 'multiuser';
+    2: Result := 'cloud';
+  else
+    Result := 'local';
+  end;
+end;
+
+procedure WriteCloudBridgesJson(const AppDataDir, Tenant: string);
+var
+  lines: TArrayOfString;
+  t: string;
+begin
+  if Trim(Tenant) = '' then Exit;
+  { Minimal escape for double quotes in tenant string }
+  t := Tenant;
+  StringChangeEx(t, '\', '\\', True);
+  StringChangeEx(t, '"', '\"', True);
+  SetArrayLength(lines, 8);
+  lines[0] := '{';
+  lines[1] := '  "cloud": {';
+  lines[2] := '    "tenant_id": "' + t + '",';
+  lines[3] := '    "client_id": "",';
+  lines[4] := '    "scopes": ["https://graph.microsoft.com/User.Read"],';
+  lines[5] := '    "msal_cache_file": "msal_cache.bin"';
+  lines[6] := '  }';
+  lines[7] := '}';
+  SaveStringsToFile(AppDataDir + '\bridges.json', lines, False);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  AppDataDir: String;
-  ModeStr: String;
-  EnvContent: TArrayOfString;
+  AppDataDir, modeStr, serverUrl, tenant, bridges, backend: string;
+  envLines: TArrayOfString;
+  composePath: string;
+  schExit: Integer;
 begin
-  if CurStep = ssPostInstall then
+  if CurStep <> ssPostInstall then Exit;
+
+  AppDataDir := ExpandConstant('{userappdata}\TriMCP');
+  LoadSilentParams;
+
+  if IsSilentInstall then
   begin
-    AppDataDir := ExpandConstant('{userappdata}\TriMCP');
-    
-    // Write mode.txt
-    if ModePage.SelectedValueIndex = 0 then ModeStr := 'local'
-    else if ModePage.SelectedValueIndex = 1 then ModeStr := 'multiuser'
-    else ModeStr := 'cloud';
-    
-    SaveStringToFile(AppDataDir + '\mode.txt', ModeStr, False);
-    
-    // Write .env
-    SetArrayLength(EnvContent, 3);
-    EnvContent[0] := 'TRIMCP_MODE=' + ModeStr;
-    
-    if ModeStr = 'multiuser' then
-      EnvContent[1] := 'TRIMCP_SERVER_URL=' + ServerAddressPage.Values[0]
-    else
-      EnvContent[1] := 'TRIMCP_SERVER_URL=';
-      
-    if HardwarePage.SelectedValueIndex = 1 then
-      EnvContent[2] := 'TRIMCP_BACKEND=cpu'
-    else
-      EnvContent[2] := 'TRIMCP_BACKEND=auto';
-      
-    SaveStringsToFile(AppDataDir + '\.env', EnvContent, False);
+    modeStr := SilentModeStr;
+    serverUrl := SilentServerAddr;
+    tenant := SilentTenant;
+    bridges := SilentBridges;
+    backend := SilentBackend;
+  end
+  else
+  begin
+    modeStr := ModeFileValue;
+    serverUrl := ServerPage.Values[0];
+    tenant := CloudTenantPage.Values[0];
+    bridges := BridgesList;
+    backend := HardwareBackend;
+  end;
+
+  if modeStr = 'office' then modeStr := 'multiuser';
+
+  SaveStringToFile(AppDataDir + '\mode.txt', modeStr, False);
+
+  SetArrayLength(envLines, 6);
+  envLines[0] := 'TRIMCP_MODE=' + modeStr;
+  envLines[1] := 'TRIMCP_SERVER_URL=' + serverUrl;
+  envLines[2] := 'TRIMCP_TENANT=' + tenant;
+  envLines[3] := 'TRIMCP_BRIDGES=' + bridges;
+  envLines[4] := 'TRIMCP_BACKEND=' + backend;
+  envLines[5] := 'TRIMCP_APP_ROOT=' + ExpandConstant('{app}');
+  SaveStringsToFile(AppDataDir + '\.env', envLines, False);
+
+  if modeStr = 'cloud' then
+    WriteCloudBridgesJson(AppDataDir, tenant);
+
+  if (not IsSilentInstall) and (modeStr = 'local') and WizardIsTaskSelected('dockerlogontask') then
+  begin
+    composePath := ExpandConstant('{app}\deploy\multiuser\docker-compose.yml');
+    if FileExists(composePath) then
+      Exec('schtasks.exe',
+        '/Create /F /TN "TriMCP Local Stack" /TR "cmd.exe /c docker compose -f \"' + composePath + '\" up -d" /SC ONLOGON /RL LIMITED',
+        '', SW_HIDE, ewWaitUntilTerminated, schExit);
   end;
 end;
-
-[Run]
-; Launch Claude Desktop or Cursor instructions could go here
-Filename: "{app}\trimcp-launch.exe"; Description: "Launch TriMCP Background Service"; Flags: nowait postinstall skipifsilent

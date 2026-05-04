@@ -1,0 +1,95 @@
+"""
+Google Drive — changes.list + channel watch (§10.3, Appendix H.4).
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, Iterator
+from urllib.parse import urlencode
+
+import httpx
+
+from trimcp.bridges.base import BridgeAuthError, BridgeProvider, redis_client
+from trimcp.config import cfg
+
+log = logging.getLogger("trimcp.bridges.gdrive")
+
+DRIVE_API = "https://www.googleapis.com/drive/v3"
+CHANGES_FIELDS = "nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,modifiedTime,md5Checksum))"
+
+
+class GoogleDriveBridge(BridgeProvider):
+    """Drive v3 changes.list pagination."""
+
+    @property
+    def provider_key(self) -> str:
+        return "gdrive"
+
+    def bearer_token(self) -> str:
+        token = (cfg.GDRIVE_BRIDGE_TOKEN or "").strip()
+        if not token:
+            try:
+                return self.refresh_oauth_token()
+            except BridgeAuthError:
+                raise
+        return token
+
+    def _cursor_key(self, channel_id: str) -> str:
+        return f"bridge:cursor:gdrive:{channel_id}"
+
+    def walk_delta(self, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        channel_id = context.get("channel_id") or ""
+        if not channel_id:
+            log.warning("Google Drive: missing channel_id in context")
+            return
+        r = redis_client()
+        ck = self._cursor_key(channel_id)
+        raw = r.get(ck)
+        page_token: str | None = raw.decode("utf-8") if raw else None
+        if not page_token:
+            log.warning(
+                "Google Drive: no start page token for channel=%s — run initial changes.getStartPageToken or connect flow",
+                channel_id,
+            )
+            return
+
+        headers = {"Authorization": f"Bearer {self.bearer_token()}"}
+        with httpx.Client(timeout=60.0, headers=headers) as client:
+            while page_token:
+                q = urlencode({"pageToken": page_token, "fields": CHANGES_FIELDS})
+                url = f"{DRIVE_API}/changes?{q}"
+                resp = client.get(url)
+                if resp.status_code == 401:
+                    raise BridgeAuthError("Drive API 401 — set GDRIVE_BRIDGE_TOKEN or implement OAuth refresh")
+                resp.raise_for_status()
+                data = resp.json()
+                for ch in data.get("changes", []):
+                    yield ch
+                page_token = data.get("nextPageToken")
+                new_start = data.get("newStartPageToken")
+                if new_start:
+                    r.set(ck, new_start)
+                if not page_token:
+                    break
+
+    def download_file(self, file_ref: dict[str, Any]) -> bytes:
+        file_id = file_ref["file_id"]
+        q = urlencode({"alt": "media"})
+        url = f"{DRIVE_API}/files/{file_id}?{q}"
+        headers = {"Authorization": f"Bearer {self.bearer_token()}"}
+        with httpx.Client(timeout=120.0, headers=headers) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            return resp.content
+
+
+def process_gdrive_event(payload: dict[str, Any]) -> dict[str, Any]:
+    bridge = GoogleDriveBridge()
+    count = 0
+    try:
+        for _ in bridge.walk_delta(payload):
+            count += 1
+    except BridgeAuthError as e:
+        log.error("%s", e)
+        return {"status": "error", "error": str(e)}
+    return {"status": "ok", "changes_seen": count}

@@ -103,3 +103,19 @@ def process_code_indexing(filepath: str, raw_code: str, language: str, user_id: 
             await engine.disconnect()
 
     return run_async(_index())
+
+
+def process_bridge_event(provider: str, payload: dict) -> dict:
+    """
+    RQ worker: process a validated webhook payload for a document bridge.
+
+    `provider`: sharepoint | gdrive | dropbox (see §10.3 / Appendix H).
+    """
+    from trimcp.bridges import dispatch_bridge_event
+
+    log.info("[Bridge worker] provider=%s keys=%s", provider, list(payload.keys()))
+    try:
+        return dispatch_bridge_event(provider, payload)
+    except ValueError as e:
+        log.error("[Bridge worker] %s", e)
+        return {"status": "error", "error": str(e)}

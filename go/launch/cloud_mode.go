@@ -17,10 +17,8 @@ func runCloud(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot str
 		switch {
 		case errors.Is(err, auth.ErrCloudOAuthNotConfigured):
 			n.Error("TriMCP", "Cloud sign-in is not configured. Re-run the TriMCP installer for Cloud mode.")
-		case errors.Is(err, auth.ErrNoMSALAccount):
-			n.Error("TriMCP", "You need to sign in to Microsoft 365. Open TriMCP from the Start menu once to complete sign-in.")
 		default:
-			n.Error("TriMCP", "Could not refresh your cloud session. Check the network or try signing in again.")
+			n.Error("TriMCP", "Could not refresh your cloud session. Check the network or complete sign-in, then try again.")
 		}
 		if log != nil {
 			log.Warn("msal_refresh_failed", "err", err)

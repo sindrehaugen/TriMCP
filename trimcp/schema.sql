@@ -129,3 +129,25 @@ CREATE INDEX IF NOT EXISTS idx_code_embedding_hnsw
 
 CREATE INDEX IF NOT EXISTS idx_kg_nodes_embedding_hnsw
     ON kg_nodes        USING hnsw (embedding vector_cosine_ops);
+
+-- --- Document bridge subscriptions (Enterprise §10.7, Appendix H.2 / GAPS audit) ---
+CREATE TABLE IF NOT EXISTS bridge_subscriptions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         TEXT NOT NULL,
+    provider        TEXT NOT NULL CHECK (provider IN ('sharepoint', 'gdrive', 'dropbox')),
+    resource_id     TEXT NOT NULL,
+    subscription_id TEXT,
+    cursor          TEXT,
+    status          TEXT NOT NULL DEFAULT 'ACTIVE'
+                    CHECK (status IN ('REQUESTED','VALIDATING','ACTIVE','DEGRADED','EXPIRED','DISCONNECTED')),
+    expires_at      TIMESTAMPTZ,
+    client_state    TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_bridge_subs_user_provider
+    ON bridge_subscriptions (user_id, provider);
+CREATE INDEX IF NOT EXISTS idx_bridge_subs_expires_active
+    ON bridge_subscriptions (expires_at)
+    WHERE status = 'ACTIVE';

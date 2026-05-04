@@ -1,7 +1,7 @@
 """
 Tri-Stack MCP Server
 Wraps TriStackEngine in the official MCP Python SDK (stdio transport).
-Exposes 5 tools to any MCP-compatible LLM client (Claude Desktop, Cursor, etc.).
+Exposes MCP tools to any MCP-compatible LLM client (Claude Desktop, Cursor, etc.).
 GC background task is co-launched on startup for absolute data purity.
 """
 import asyncio
@@ -14,6 +14,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 from trimcp import MemoryPayload, MediaPayload, TriStackEngine, run_gc_loop
+from trimcp import bridge_mcp_handlers
 
 logging.basicConfig(
     level=logging.INFO,
@@ -162,6 +163,105 @@ TOOLS = [
             "required": ["user_id", "session_id"],
         },
     ),
+    Tool(
+        name="connect_bridge",
+        description=(
+            "Start OAuth for a document bridge (SharePoint / Google Drive / Dropbox). "
+            "Creates a bridge_subscriptions row and returns auth_url when OAuth is configured."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string", "description": "Owning user id"},
+                "provider": {
+                    "type": "string",
+                    "enum": ["sharepoint", "gdrive", "dropbox"],
+                    "description": "Bridge provider",
+                },
+            },
+            "required": ["user_id", "provider"],
+        },
+    ),
+    Tool(
+        name="complete_bridge_auth",
+        description=(
+            "Exchange OAuth authorization code, create provider push subscription / watch "
+            "when webhook base URL is set, and mark bridge ACTIVE."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string"},
+                "bridge_id": {"type": "string", "description": "UUID from connect_bridge"},
+                "provider": {
+                    "type": "string",
+                    "enum": ["sharepoint", "gdrive", "dropbox"],
+                },
+                "authorization_code": {"type": "string", "description": "OAuth code from redirect"},
+                "code": {"type": "string", "description": "Alias for authorization_code"},
+                "resource_id": {
+                    "type": "string",
+                    "description": (
+                        "Provider resource: SharePoint 'site_id|drive_id'; "
+                        "Drive: folder or root as used by watch; Dropbox: account id"
+                    ),
+                },
+            },
+            "required": ["user_id", "bridge_id", "provider"],
+        },
+    ),
+    Tool(
+        name="list_bridges",
+        description="List bridge subscriptions for a user.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string"},
+                "include_disconnected": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Include DISCONNECTED rows",
+                },
+            },
+            "required": ["user_id"],
+        },
+    ),
+    Tool(
+        name="disconnect_bridge",
+        description="Stop provider subscription / channel when tokens are configured; mark DISCONNECTED.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string"},
+                "bridge_id": {"type": "string"},
+            },
+            "required": ["user_id", "bridge_id"],
+        },
+    ),
+    Tool(
+        name="force_resync_bridge",
+        description="Clear stored cursor, optional Redis cursor key, enqueue a full bridge sync job.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string"},
+                "bridge_id": {"type": "string"},
+            },
+            "required": ["user_id", "bridge_id"],
+        },
+    ),
+    Tool(
+        name="bridge_status",
+        description="Return one bridge subscription row (public fields) and expiry hint.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string"},
+                "bridge_id": {"type": "string"},
+            },
+            "required": ["user_id", "bridge_id"],
+        },
+    ),
 ]
 
 
@@ -195,7 +295,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         # --- API Cache Layer ---
         # Cache read-heavy determinisic queries
         CACHEABLE_TOOLS = {"semantic_search", "search_codebase", "graph_search"}
-        MUTATION_TOOLS = {"store_memory", "store_media", "index_code_file"}
+        MUTATION_TOOLS = {
+            "store_memory",
+            "store_media",
+            "index_code_file",
+            "connect_bridge",
+            "complete_bridge_auth",
+            "disconnect_bridge",
+            "force_resync_bridge",
+        }
         
         # Read-after-write invalidation via generation counter
         if name in MUTATION_TOOLS:
@@ -281,6 +389,30 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 session_id=arguments["session_id"],
             )
             return [TextContent(type="text", text=json.dumps({"context": context}))]
+
+        if name == "connect_bridge":
+            text = await bridge_mcp_handlers.connect_bridge(engine, arguments)
+            return [TextContent(type="text", text=text)]
+
+        if name == "complete_bridge_auth":
+            text = await bridge_mcp_handlers.complete_bridge_auth(engine, arguments)
+            return [TextContent(type="text", text=text)]
+
+        if name == "list_bridges":
+            text = await bridge_mcp_handlers.list_bridges(engine, arguments)
+            return [TextContent(type="text", text=text)]
+
+        if name == "disconnect_bridge":
+            text = await bridge_mcp_handlers.disconnect_bridge(engine, arguments)
+            return [TextContent(type="text", text=text)]
+
+        if name == "force_resync_bridge":
+            text = await bridge_mcp_handlers.force_resync_bridge(engine, arguments)
+            return [TextContent(type="text", text=text)]
+
+        if name == "bridge_status":
+            text = await bridge_mcp_handlers.bridge_status(engine, arguments)
+            return [TextContent(type="text", text=text)]
 
         raise ValueError(f"Unknown tool: {name}")
 
