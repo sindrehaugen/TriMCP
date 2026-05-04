@@ -1,41 +1,45 @@
-version: '3.8'
+# TriMCP Infrastructure — Source of Truth
 
-services:  
-  \# 1\. Working Memory (Current Data)  
-  redis:  
-    image: redis:7-alpine  
-    container\_name: tri-stack-redis  
-    ports:  
-      \- "6379:6379"  
-    volumes:  
-      \- redis\_data:/data  
-    restart: unless-stopped
+Authoritative Compose and proxy configuration live **in the repository root** (not under `Instructions/`). This page summarizes how to run the stacks.
 
-  \# 2\. Semantic Index (What Data is Stored)  
-  postgres:  
-    image: ankane/pgvector:v0.5.1 \# PostgreSQL 15 with pgvector pre-installed  
-    container\_name: tri-stack-postgres  
-    environment:  
-      POSTGRES\_USER: mcp\_user  
-      POSTGRES\_PASSWORD: mcp\_password  
-      POSTGRES\_DB: memory\_meta  
-    ports:  
-      \- "5432:5432"  
-    volumes:  
-      \- pg\_data:/var/lib/postgresql/data  
-    restart: unless-stopped
+## Local mode (quad-DB only, localhost binds)
 
-  \# 3\. Episodic Archive (The Complete Data)  
-  mongodb:  
-    image: mongo:7.0  
-    container\_name: tri-stack-mongo  
-    ports:  
-      \- "27017:27017"  
-    volumes:  
-      \- mongo\_data:/data/db  
-    restart: unless-stopped
+Prefer:
 
-volumes:  
-  redis\_data:  
-  pg\_data:  
-  mongo\_data:  
+```bash
+docker compose -f docker-compose.local.yml up -d
+```
+
+- Postgres: **`pgvector/pgvector:pg16`** (`memory_meta` database).
+- Ports are bound to **127.0.0.1** only (see `docker-compose.local.yml`).
+- **No** Caddy, webhook receiver, or worker service in this file — intended for laptop / Local mode (`trimcp-launch` starts `server.py` and `start_worker.py` on the host).
+
+Env vars for Python processes should match `.env.example` / your installer-generated `.env` (`PG_DSN`, `REDIS_URL`, `MONGO_URI`, MinIO keys, etc.).
+
+## Multi-user / demo full stack (7 services)
+
+Root file:
+
+```bash
+docker compose -f docker-compose.yml up -d
+```
+
+Includes: Redis, Postgres (pgvector **pg16**), MongoDB, MinIO (API/console mapped to host **9002/9003**), **worker**, **webhook-receiver**, **Caddy**.
+
+- Reverse proxy uses the root **`Caddyfile`** (routes **`/webhooks/*`** → `webhook-receiver:8080`).
+- `worker` / `webhook-receiver` use image names **`trimcp-worker`** and **`trimcp-webhooks`** — build or pull those images before relying on this file; see **`deploy/multiuser/`** below for building from source.
+
+## Build-from-source stack (recommended for on‑prem images)
+
+From the repo root:
+
+```bash
+docker compose -f deploy/multiuser/docker-compose.yml --env-file deploy/multiuser/env.example build
+docker compose -f deploy/multiuser/docker-compose.yml --env-file deploy/multiuser/env.example up -d
+```
+
+Uses **`deploy/multiuser/Dockerfile`**, **`deploy/multiuser/env.example`**, and mounts **`../../Caddyfile`** for Caddy.
+
+## Bridge subscription renewal (production note)
+
+Renewal scheduling is implemented in **`trimcp/cron.py`** (`python -m trimcp.cron`). It is **not** started by **`start_worker.py`**. For long-running SharePoint / Google Drive push subscriptions, plan a separate container or systemd unit for the cron process until it is wired into the default worker/compose flow.
