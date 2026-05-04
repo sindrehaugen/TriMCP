@@ -38,6 +38,10 @@ class _Config:
 
     # --- Embeddings ---
     EMBED_BATCH_CHUNK: int = int(os.getenv("EMBED_BATCH_CHUNK", "64"))
+    # Enterprise §8 — hardware backend / OpenVINO NPU (see trimcp.embeddings, openvino_npu_export).
+    TRIMCP_BACKEND: str = (os.getenv("TRIMCP_BACKEND") or "").strip().lower()
+    TRIMCP_OPENVINO_MODEL_DIR: str = (os.getenv("TRIMCP_OPENVINO_MODEL_DIR") or "").strip()
+    TRIMCP_OPENVINO_SEQ_LEN: int = int(os.getenv("TRIMCP_OPENVINO_SEQ_LEN", "512"))
 
     # --- MinIO Object Storage ---
     MINIO_ENDPOINT: str = os.getenv("MINIO_ENDPOINT", "localhost:9000")

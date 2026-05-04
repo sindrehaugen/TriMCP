@@ -142,11 +142,17 @@ class GraphRAGTraverser:
 
     # --- Step 3: Hydrate source documents from MongoDB ---
 
-    async def _hydrate_sources(self, mongo_ref_ids: set[str]) -> list[dict]:
+    async def _hydrate_sources(
+        self,
+        mongo_ref_ids: set[str],
+        restrict_user_id: str | None = None,
+    ) -> list[dict]:
         """
         KG edges/nodes can point at either `episodes` (chat/summary memories) or
         `code_files` (indexed source files). Try both collections so graph_search
         surfaces entities extracted from code as well as from conversations.
+        When restrict_user_id is set (private graph search), only include documents
+        owned by that user.
         """
         db = self.mongo_client.memory_archive
         sources = []
@@ -163,6 +169,8 @@ class GraphRAGTraverser:
             try:
                 doc = await db.episodes.find_one({"_id": oid})
                 if doc:
+                    if restrict_user_id is not None and doc.get("user_id") != restrict_user_id:
+                        continue
                     raw = doc.get("raw_data", "")
                     sources.append({
                         "mongo_ref_id": ref_id,
@@ -174,6 +182,8 @@ class GraphRAGTraverser:
 
                 code_doc = await db.code_files.find_one({"_id": oid})
                 if code_doc:
+                    if restrict_user_id is not None and code_doc.get("user_id") != restrict_user_id:
+                        continue
                     raw = code_doc.get("raw_code", "")
                     sources.append({
                         "mongo_ref_id": ref_id,
@@ -189,10 +199,20 @@ class GraphRAGTraverser:
 
     # --- Public API ---
 
-    async def search(self, query: str, max_depth: int = 2, anchor_top_k: int = 1) -> Subgraph:
+    async def search(
+        self,
+        query: str,
+        max_depth: int = 2,
+        anchor_top_k: int = 1,
+        *,
+        private: bool = False,
+        user_id: str | None = None,
+    ) -> Subgraph:
         """
         Full GraphRAG traversal pipeline.
         Returns a Subgraph with nodes, edges, and hydrated source excerpts.
+        private=True: hydrate only Mongo sources belonging to user_id (Phase 0;
+        anchor/BFS remain global on kg_nodes/kg_edges).
         """
         anchors = await self._find_anchor(query, top_k=anchor_top_k)
         if not anchors:
@@ -223,7 +243,8 @@ class GraphRAGTraverser:
         # Collect all unique mongo_ref_ids for source hydration
         all_refs = {n.mongo_ref_id for n in nodes if n.mongo_ref_id}
         all_refs |= {e.mongo_ref_id for e in edges if e.mongo_ref_id}
-        sources = await self._hydrate_sources(all_refs)
+        restrict = user_id if private else None
+        sources = await self._hydrate_sources(all_refs, restrict_user_id=restrict)
 
         # Deduplicate edges (BFS can traverse same edge from both directions)
         seen_edges: set[tuple] = set()

@@ -1,16 +1,20 @@
 """
-Phase 5 — Jina Embeddings
-Wraps jinaai/jina-embeddings-v2-base-code (768-dim, code-optimized) via sentence-transformers.
-Model is loaded once at module level; inference is offloaded to a thread pool so the
-async event loop is never blocked.
-Falls back to the deterministic hash-based stub when the model is unavailable (CI / low-RAM).
+Phase 5 / Phase 1 enterprise — Jina embeddings with hardware backend abstraction (§8.2).
+
+``EmbeddingBackend`` routes inference through CPU / CUDA / ROCm / XPU / OpenVINO NPU / MPS.
+Module-level ``embed`` and ``embed_batch`` preserve the public contract used by the
+orchestrator and RQ worker: async APIs, 768 dimensions, thread-pool offload for blocking stacks.
+
+Vector dimension and cosine semantics are unchanged — PostgreSQL pgvector ingestion is unaffected.
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import logging
+import os
 import random
+from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
@@ -20,91 +24,365 @@ log = logging.getLogger("tri-stack-embeddings")
 
 MODEL_ID = "jinaai/jina-embeddings-v2-base-code"
 VECTOR_DIM = 768
-# One worker — model is not thread-safe; serialise inference
-_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jina-embed")
 
+# Model encode is not thread-safe across mixed backends — single worker serializes.
+_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trimcp-embed")
 
-# --- Model loader (cached — loaded once per process) ---
-
-@lru_cache(maxsize=1)
-def _load_model():
-    """Load model synchronously. Called from the executor thread on first use."""
-    try:
-        from sentence_transformers import SentenceTransformer  # noqa: PLC0415
-        log.info(f"Loading embedding model: {MODEL_ID}")
-        model = SentenceTransformer(MODEL_ID, trust_remote_code=True)
-        log.info("Embedding model ready.")
-        return model
-    except Exception as e:
-        log.warning(f"Could not load {MODEL_ID}: {e}. Using hash stub.")
-        return None
+# Lazy singleton selected by ``detect_backend()``.
+_backend: EmbeddingBackend | None = None
 
 
 def _stub_vector(text: str) -> list[float]:
-    """Deterministic 768-dim mock — identical text → identical vector."""
+    """Deterministic 768-dim mock — identical inputs → identical vectors (CI / failures)."""
     seed = int(hashlib.md5(text.encode()).hexdigest(), 16) % (2**31)
     rng = random.Random(seed)
     return [rng.uniform(-1.0, 1.0) for _ in range(VECTOR_DIM)]
 
 
-def _sync_embed(text: str) -> list[float]:
-    """Blocking encode — runs inside the executor thread."""
-    log.debug("Embedding start: %r...", text[:50])
-    model = _load_model()
-    if model is None:
-        log.debug("No model, using stub for %r", text[:20])
-        return _stub_vector(text)
+def _is_rocm() -> bool:
     try:
-        log.debug("Model encode starting...")
-        vector = model.encode(text, normalize_embeddings=True)
-        log.debug("Model encode finished.")
-        return vector.tolist()
+        import torch
+
+        hip = getattr(torch.version, "hip", None)
+        return bool(hip)
+    except Exception:
+        return False
+
+
+def _torch_mps_available() -> bool:
+    try:
+        import torch
+
+        return bool(
+            hasattr(torch.backends, "mps")
+            and torch.backends.mps.is_available()
+            and torch.backends.mps.is_built()
+        )
+    except Exception:
+        return False
+
+
+def _torch_xpu_available() -> bool:
+    try:
+        import torch
+
+        return bool(hasattr(torch, "xpu") and torch.xpu.is_available())
+    except Exception:
+        return False
+
+
+def _intel_npu_available() -> bool:
+    """
+    Conservative auto-detect: OpenVINO Runtime exposes an NPU device, or the user
+    pre-declares intent via TRIMCP_OPENVINO_MODEL_DIR (export present).
+    """
+    model_dir = cfg.TRIMCP_OPENVINO_MODEL_DIR
+    if model_dir and os.path.isdir(model_dir):
+        return any(model_dir_path_has_openvino_xml(model_dir))
+
+    try:
+        from openvino import Core
+
+        core = Core()
+        devs = [d for d in core.available_devices if "NPU" in d.upper()]
+        return bool(devs)
+    except Exception:
+        return False
+
+
+def model_dir_path_has_openvino_xml(model_dir: str) -> list[str]:
+    """Return basenames of .xml files looks like OpenVINO IR."""
+    try:
+        names = []
+        for root, _, files in os.walk(model_dir):
+            for f in files:
+                if f.endswith(".xml"):
+                    names.append(f)
+            break
+        return names
+    except Exception:
+        return []
+
+
+@lru_cache(maxsize=8)
+def _load_sentence_transformer(device: str):
+    """Load SentenceTransformer once per logical device string."""
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError:
+        log.warning("sentence_transformers not installed.")
+        return None
+    try:
+        log.info("Loading embedding model %s on device %r", MODEL_ID, device)
+        model = SentenceTransformer(MODEL_ID, trust_remote_code=True, device=device)
+        log.info("Embedding model ready (device=%r).", device)
+        return model
     except Exception as e:
-        log.error(f"Embedding inference failed: {e}. Falling back to stub.")
-        return _stub_vector(text)
+        log.warning("Could not load %s on %r: %s", MODEL_ID, device, e)
+        return None
+
+
+class EmbeddingBackend(ABC):
+    """Abstract embedding provider; batch-first API (§8.2)."""
+
+    @abstractmethod
+    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Blocking batch encode; length of output must match length of ``texts``."""
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(_executor, self._sync_embed_batch, texts)
+
+
+class CPUBackend(EmbeddingBackend):
+    """Baseline torch CPU / SentenceTransformer."""
+
+    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
+        model = _load_sentence_transformer("cpu")
+        if model is None:
+            return [_stub_vector(t) for t in texts]
+        try:
+            vectors = model.encode(
+                texts,
+                normalize_embeddings=True,
+                batch_size=min(32, len(texts)),
+                show_progress_bar=False,
+            )
+            return [v.tolist() for v in vectors]
+        except Exception as e:
+            log.error("CPU batch embedding failed: %s", e)
+            return [_stub_vector(t) for t in texts]
+
+
+class CUDABackend(EmbeddingBackend):
+    """NVIDIA CUDA — PyTorch CUDA device (non-ROCm wheels)."""
+
+    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
+        model = _load_sentence_transformer("cuda")
+        if model is None:
+            return [_stub_vector(t) for t in texts]
+        try:
+            vectors = model.encode(
+                texts,
+                normalize_embeddings=True,
+                batch_size=min(32, len(texts)),
+                show_progress_bar=False,
+            )
+            return [v.tolist() for v in vectors]
+        except Exception as e:
+            log.error("CUDA batch embedding failed: %s", e)
+            return [_stub_vector(t) for t in texts]
+
+
+class ROCmBackend(EmbeddingBackend):
+    """AMD ROCm — PyTorch exposes CUDA APIs on ROCm builds."""
+
+    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
+        model = _load_sentence_transformer("cuda")
+        if model is None:
+            return [_stub_vector(t) for t in texts]
+        try:
+            vectors = model.encode(
+                texts,
+                normalize_embeddings=True,
+                batch_size=min(32, len(texts)),
+                show_progress_bar=False,
+            )
+            return [v.tolist() for v in vectors]
+        except Exception as e:
+            log.error("ROCm batch embedding failed: %s", e)
+            return [_stub_vector(t) for t in texts]
+
+
+class XPUBackend(EmbeddingBackend):
+    """Intel GPU via torch.xpu."""
+
+    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
+        model = _load_sentence_transformer("xpu")
+        if model is None:
+            return [_stub_vector(t) for t in texts]
+        try:
+            vectors = model.encode(
+                texts,
+                normalize_embeddings=True,
+                batch_size=min(32, len(texts)),
+                show_progress_bar=False,
+            )
+            return [v.tolist() for v in vectors]
+        except Exception as e:
+            log.error("XPU batch embedding failed: %s", e)
+            return [_stub_vector(t) for t in texts]
+
+
+class MPSBackend(EmbeddingBackend):
+    """Apple Silicon MPS."""
+
+    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
+        model = _load_sentence_transformer("mps")
+        if model is None:
+            return [_stub_vector(t) for t in texts]
+        try:
+            vectors = model.encode(
+                texts,
+                normalize_embeddings=True,
+                batch_size=min(32, len(texts)),
+                show_progress_bar=False,
+            )
+            return [v.tolist() for v in vectors]
+        except Exception as e:
+            log.error("MPS batch embedding failed: %s", e)
+            return [_stub_vector(t) for t in texts]
+
+
+def _mean_pool(last_hidden_state, attention_mask):
+    import torch
+
+    mask = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
+    summed = torch.sum(last_hidden_state * mask, dim=1)
+    counts = torch.clamp(mask.sum(dim=1), min=1e-9)
+    return summed / counts
+
+
+@lru_cache(maxsize=2)
+def _load_openvino_npu_bundle(model_dir: str, seq_len: int):
+    from optimum.intel import OVModelForFeatureExtraction
+    from transformers import AutoTokenizer
+
+    model = OVModelForFeatureExtraction.from_pretrained(model_dir)
+    tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+    return model, tokenizer, seq_len
+
+
+class OpenVINONPUBackend(EmbeddingBackend):
+    """
+    Intel NPU via pre-exported OpenVINO IR (static shapes). Requires TRIMCP_OPENVINO_MODEL_DIR.
+    Long texts: truncated to seq_len (export-time bound); full token chunking can be layered later.
+    """
+
+    def __init__(self, model_dir: str | None = None):
+        self.model_dir = (model_dir or cfg.TRIMCP_OPENVINO_MODEL_DIR or "").strip()
+        if not self.model_dir:
+            log.warning("OpenVINONPUBackend: TRIMCP_OPENVINO_MODEL_DIR not set — will stub.")
+
+    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
+        if not self.model_dir or not os.path.isdir(self.model_dir):
+            return [_stub_vector(t) for t in texts]
+        seq_len = cfg.TRIMCP_OPENVINO_SEQ_LEN
+        try:
+            model, tokenizer, _ = _load_openvino_npu_bundle(self.model_dir, seq_len)
+        except Exception as e:
+            log.error("OpenVINO NPU load failed: %s", e)
+            return [_stub_vector(t) for t in texts]
+
+        try:
+            import numpy as np
+            import torch
+
+            encoded = tokenizer(
+                texts,
+                padding="max_length",
+                truncation=True,
+                max_length=seq_len,
+                return_tensors="pt",
+            )
+            # Optimum OV models accept dict of numpy or torch depending on version —
+            # convert to numpy for widest compatibility.
+            inputs = {k: v.numpy() for k, v in encoded.items()}
+            out = model(**inputs)
+            last = out.last_hidden_state if hasattr(out, "last_hidden_state") else out[0]
+            if not isinstance(last, torch.Tensor):
+                last = torch.tensor(last)
+            mask = encoded["attention_mask"]
+            pooled = _mean_pool(last, mask)
+            pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
+            return pooled.detach().cpu().numpy().astype(np.float64).tolist()
+        except Exception as e:
+            log.error("OpenVINO NPU inference failed: %s", e)
+            return [_stub_vector(t) for t in texts]
+
+
+_BACKEND_BUILDERS = {
+    "cpu": CPUBackend,
+    "cuda": CUDABackend,
+    "rocm": ROCmBackend,
+    "xpu": XPUBackend,
+    "openvino_npu": OpenVINONPUBackend,
+    "openvino": OpenVINONPUBackend,
+    "mps": MPSBackend,
+}
+
+
+def detect_backend() -> EmbeddingBackend:
+    """
+    Select backend from TRIMCP_BACKEND or auto-detect (§8.2 / §8.4 parity with Go wizard).
+    """
+    pref = cfg.TRIMCP_BACKEND
+    if pref:
+        if pref not in _BACKEND_BUILDERS:
+            log.warning("Unknown TRIMCP_BACKEND=%r — falling back to auto-detect.", pref)
+        else:
+            log.info("Embedding backend forced by TRIMCP_BACKEND=%s", pref)
+            return _BACKEND_BUILDERS[pref]()
+
+    try:
+        import torch
+    except ImportError:
+        log.warning("torch not importable — using CPU backend stub path.")
+        return CPUBackend()
+
+    if torch.cuda.is_available() and not _is_rocm():
+        log.info("Auto-selected CUDABackend (CUDA available, not ROCm).")
+        return CUDABackend()
+    if _is_rocm() and torch.cuda.is_available():
+        log.info("Auto-selected ROCmBackend.")
+        return ROCmBackend()
+    if _torch_xpu_available():
+        log.info("Auto-selected XPUBackend.")
+        return XPUBackend()
+    if _intel_npu_available():
+        log.info("Auto-selected OpenVINONPUBackend.")
+        return OpenVINONPUBackend()
+    if _torch_mps_available():
+        log.info("Auto-selected MPSBackend.")
+        return MPSBackend()
+
+    log.info("Auto-selected CPUBackend.")
+    return CPUBackend()
+
+
+def get_backend() -> EmbeddingBackend:
+    global _backend
+    if _backend is None:
+        _backend = detect_backend()
+    return _backend
+
+
+def reset_backend_singleton_for_tests() -> None:
+    """Test hook: clear lazy singleton so ``detect_backend`` runs again."""
+    global _backend
+    _backend = None
+
+
+# --- Public async API (stable for orchestrator / graph / worker) ---
 
 
 async def embed(text: str) -> list[float]:
-    """
-    Async entry point. Offloads blocking model inference to the thread executor
-    so the event loop stays responsive during embedding.
-    """
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_executor, _sync_embed, text)
-
-
-def _sync_batch(texts: list[str]) -> list[list[float]]:
-    """Blocking batch encode — runs inside the executor thread."""
-    model = _load_model()
-    if model is None:
-        return [_stub_vector(t) for t in texts]
-    try:
-        vectors = model.encode(
-            texts,
-            normalize_embeddings=True,
-            batch_size=32,
-            show_progress_bar=False,
-        )
-        return [v.tolist() for v in vectors]
-    except Exception as e:
-        log.error(f"Batch embedding failed: {e}. Falling back to stub.")
-        return [_stub_vector(t) for t in texts]
+    vecs = await get_backend().embed([text])
+    return vecs[0] if vecs else _stub_vector(text)
 
 
 async def embed_batch(texts: list[str]) -> list[list[float]]:
     """
-    Batch encode — more efficient than N individual calls for code indexing.
-    Chunked into cfg.EMBED_BATCH_CHUNK groups at the Python level so a file with
-    thousands of AST nodes cannot exhaust memory by holding every input string
-    and every output tensor simultaneously. Between chunks control returns to
-    the event loop, so other saga steps aren't starved during a large index.
+    Chunked batches at ``cfg.EMBED_BATCH_CHUNK`` so large AST runs yield to the event loop.
     """
     if not texts:
         return []
+    backend = get_backend()
     loop = asyncio.get_event_loop()
     results: list[list[float]] = []
     for start in range(0, len(texts), cfg.EMBED_BATCH_CHUNK):
-        chunk = texts[start:start + cfg.EMBED_BATCH_CHUNK]
-        chunk_vectors = await loop.run_in_executor(_executor, _sync_batch, chunk)
-        results.extend(chunk_vectors)
+        chunk = texts[start : start + cfg.EMBED_BATCH_CHUNK]
+        results.extend(await backend.embed(chunk))
     return results

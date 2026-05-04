@@ -28,38 +28,37 @@ class CodeChunk:
 
 def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | None:
     """
-    Attempt Tree-sitter parse. Returns None if bindings are missing so the
+    Attempt Tree-sitter parse via tree-sitter-language-pack (enterprise bundle).
+    Returns None if the pack is missing or the grammar cannot load so the
     caller can fall back gracefully — no hard import-time crash.
     """
     try:
-        from tree_sitter import Language, Parser
+        from tree_sitter_language_pack import get_parser
     except ImportError:
         return None
 
     try:
-        if language == "python":
-            import tree_sitter_python as ts_lang
-            lang = Language(ts_lang.language())
-        elif language == "javascript":
-            import tree_sitter_javascript as ts_lang
-            lang = Language(ts_lang.language())
-        elif language == "typescript":
-            import tree_sitter_typescript as ts_lang
-            lang = Language(ts_lang.language_typescript())
-        elif language == "go":
-            import tree_sitter_go as ts_lang
-            lang = Language(ts_lang.language())
-        elif language == "rust":
-            import tree_sitter_rust as ts_lang
-            lang = Language(ts_lang.language())
-        else:
-            return None
-    except Exception as e:
-        log.warning(f"Tree-sitter language binding unavailable for '{language}': {e}")
+        from tree_sitter_language_pack import has_language as _pack_has_language
+    except ImportError:
+        from typing import get_args
+
+        from tree_sitter_language_pack import SupportedLanguage
+
+        _ALLOWED_PACK = frozenset(get_args(SupportedLanguage))
+
+        def _pack_has_language(name: str) -> bool:
+            return name in _ALLOWED_PACK
+
+    if not _pack_has_language(language):
+        log.warning("Tree-sitter language pack has no grammar for %r", language)
         return None
 
-    parser = Parser(lang)
-    tree = parser.parse(raw_code.encode())
+    try:
+        parser = get_parser(language)
+        tree = parser.parse(raw_code.encode("utf-8"))
+    except Exception as e:
+        log.warning("Tree-sitter language pack failed for %r: %s", language, e)
+        return None
 
     # Node types that represent meaningful semantic boundaries
     target_types = {
@@ -101,58 +100,12 @@ def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | Non
     return chunks if chunks else None
 
 
-# --- Line-based fallback splitter ---
-
-def _line_splitter_parse(raw_code: str, language: str) -> list[CodeChunk]:
-    """
-    Heuristic splitter used when Tree-sitter is unavailable.
-    Detects top-level def/class (Python) or function/class (JS) by indentation.
-    """
-    lines = raw_code.splitlines()
-    chunks: list[CodeChunk] = []
-
-    if language == "python":
-        triggers = ("def ", "class ", "async def ")
-    else:
-        triggers = ("function ", "class ", "const ", "let ", "var ", "async function ")
-
-    current_start: int | None = None
-    current_name = "<block>"
-    current_type = "block"
-
-    def _flush(end_line: int):
-        if current_start is not None:
-            block = "\n".join(lines[current_start - 1 : end_line])
-            chunks.append(CodeChunk(
-                node_type=current_type,
-                name=current_name,
-                code_string=block,
-                start_line=current_start,
-                end_line=end_line,
-            ))
-
-    for i, line in enumerate(lines, start=1):
-        stripped = line.lstrip()
-        if any(stripped.startswith(t) for t in triggers) and (
-            language == "python" and not line.startswith(" ")
-            or language != "python"
-        ):
-            _flush(i - 1)
-            current_start = i
-            parts = stripped.split()
-            current_name = parts[1].split("(")[0] if len(parts) > 1 else "<anonymous>"
-            current_type = "class" if "class" in stripped else "function"
-
-    _flush(len(lines))
-    return chunks
-
-
 # --- Public API ---
 
 def parse_file(raw_code: str, language: str) -> Iterator[CodeChunk]:
     """
     Parse source code into CodeChunk objects.
-    Tries Tree-sitter first; falls back to line-based heuristic.
+    Tries Tree-sitter first; falls back to whole-file chunk if unavailable.
     """
     if language not in SUPPORTED_LANGUAGES:
         log.warning(f"Language '{language}' not supported — yielding single whole-file chunk.")
@@ -166,12 +119,9 @@ def parse_file(raw_code: str, language: str) -> Iterator[CodeChunk]:
         return
 
     chunks = _try_treesitter_parse(raw_code, language)
-    if chunks is None:
-        log.info(f"Tree-sitter unavailable for '{language}' — using line splitter fallback.")
-        chunks = _line_splitter_parse(raw_code, language)
 
     if not chunks:
-        # Whole-file fallback: nothing was detected
+        # Whole-file fallback: nothing was detected or tree-sitter failed
         yield CodeChunk(
             node_type="file",
             name="<whole_file>",

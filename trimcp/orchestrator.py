@@ -226,6 +226,7 @@ class TriStackEngine:
         db = self.mongo_client.memory_archive
         await db.episodes.create_index("user_id")
         await db.code_files.create_index("filepath")
+        await db.code_files.create_index("user_id")
 
     async def _generate_embedding(self, text: str) -> list[float]:
         return await _embeddings.embed(text)
@@ -543,14 +544,32 @@ class TriStackEngine:
 
     # --- Code Indexing ---
 
-    async def index_code_file(self, filepath: str, raw_code: str, language: str) -> dict:
+    async def index_code_file(
+        self,
+        filepath: str,
+        raw_code: str,
+        language: str,
+        *,
+        user_id: Optional[str] = None,
+        private: bool = False,
+    ) -> dict:
         """
         Offloads indexing to a background worker via RQ.
         Returns a job_id immediately.
+        Shared corpus (default): chunks are stored with user_id IS NULL in Postgres.
+        private=True: requires user_id; chunks and Mongo docs are scoped to that user.
         """
         # Input validation
         if language not in _ALLOWED_LANGUAGES:
             raise ValueError(f"Unsupported language '{language}'. Allowed: {sorted(_ALLOWED_LANGUAGES)}")
+
+        if private:
+            if not user_id:
+                raise ValueError("private indexing requires user_id")
+            if not _SAFE_ID_RE.match(user_id):
+                raise ValueError("Invalid user_id format")
+        elif user_id is not None and not _SAFE_ID_RE.match(user_id):
+            raise ValueError("Invalid user_id format")
 
         self._validate_path(filepath)
 
@@ -560,8 +579,11 @@ class TriStackEngine:
         import hashlib
         file_hash = hashlib.md5(raw_code.encode()).hexdigest()
 
+        scope_user = user_id if private else None
+        scope_key = f"private:{scope_user}" if scope_user else "shared"
+
         # Quick check for skip (sync)
-        cached_hash = await self.redis_client.get(f"hash:{filepath}")
+        cached_hash = await self.redis_client.get(f"hash:{scope_key}:{filepath}")
         if cached_hash and cached_hash.decode() == file_hash:
             return {"status": "skipped", "reason": "unchanged", "filepath": filepath}
 
@@ -572,7 +594,7 @@ class TriStackEngine:
         q = Queue(connection=self.redis_sync_client)
         job = q.enqueue(
             process_code_indexing,
-            args=(filepath, raw_code, language),
+            args=(filepath, raw_code, language, scope_user),
             job_timeout='10m'
         )
         
@@ -599,29 +621,65 @@ class TriStackEngine:
 
     # --- Graph Search ---
 
-    async def graph_search(self, query: str, max_depth: int = 2) -> dict:
+    async def graph_search(
+        self,
+        query: str,
+        max_depth: int = 2,
+        *,
+        user_id: Optional[str] = None,
+        private: bool = False,
+    ) -> dict:
         if self._graph_traverser is None:
             raise RuntimeError("Engine not connected — call connect() first")
+        if private:
+            if not user_id or not _SAFE_ID_RE.match(user_id):
+                raise ValueError("private graph search requires valid user_id")
+        elif user_id is not None and not _SAFE_ID_RE.match(user_id):
+            raise ValueError("Invalid user_id format")
         max_depth = max(1, min(max_depth, _MAX_DEPTH))
-        subgraph = await self._graph_traverser.search(query, max_depth=max_depth)
+        subgraph = await self._graph_traverser.search(
+            query,
+            max_depth=max_depth,
+            private=private,
+            user_id=user_id if private else None,
+        )
         return subgraph.to_dict()
 
     # --- Codebase Search ---
 
     async def search_codebase(
-        self, query: str, language_filter: Optional[str] = None, top_k: int = 5
+        self,
+        query: str,
+        language_filter: Optional[str] = None,
+        top_k: int = 5,
+        *,
+        user_id: Optional[str] = None,
+        private: bool = False,
     ) -> list[dict]:
         top_k = max(1, min(top_k, _MAX_TOP_K))
         if language_filter and language_filter not in _ALLOWED_LANGUAGES:
             raise ValueError(f"Invalid language_filter '{language_filter}'")
+        if private:
+            if not user_id or not _SAFE_ID_RE.match(user_id):
+                raise ValueError("private codebase search requires valid user_id")
+        elif user_id is not None and not _SAFE_ID_RE.match(user_id):
+            raise ValueError("Invalid user_id format")
 
         vector = await self._generate_embedding(query)
         candidate_k = top_k * 4
         
         async with self.pg_pool.acquire() as conn:
-            # We handle language_filter by injecting it into both CTEs
-            lang_clause = "AND language = $5" if language_filter else ""
-            query_params = [json.dumps(vector), candidate_k, query, top_k]
+            # Shared (default): only rows with user_id IS NULL. Private: scoped to user_id.
+            if private:
+                scope_clause = "AND user_id = $5"
+                query_params: list = [json.dumps(vector), candidate_k, query, top_k, user_id]
+                next_i = 6
+            else:
+                scope_clause = "AND user_id IS NULL"
+                query_params = [json.dumps(vector), candidate_k, query, top_k]
+                next_i = 5
+
+            lang_clause = f"AND language = ${next_i}" if language_filter else ""
             if language_filter:
                 query_params.append(language_filter)
 
@@ -629,7 +687,7 @@ class TriStackEngine:
                 WITH vector_candidates AS (
                     SELECT id, embedding <=> $1::vector AS distance
                     FROM code_metadata
-                    WHERE 1=1 {lang_clause}
+                    WHERE 1=1 {scope_clause} {lang_clause}
                     ORDER BY distance ASC
                     LIMIT $2
                 ),
@@ -641,7 +699,7 @@ class TriStackEngine:
                     SELECT id, ts_rank_cd(content_fts, query) AS ts_score
                     FROM code_metadata, 
                     LATERAL websearch_to_tsquery('english', $3) AS query
-                    WHERE content_fts @@ query {lang_clause}
+                    WHERE content_fts @@ query {scope_clause} {lang_clause}
                     ORDER BY ts_score DESC
                     LIMIT $2
                 ),

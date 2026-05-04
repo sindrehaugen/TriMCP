@@ -60,6 +60,14 @@ CREATE TABLE IF NOT EXISTS code_metadata (
     created_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Migration: user_id on code chunks — NULL = shared (enterprise default), non-NULL = private to that user
+DO $$ 
+BEGIN 
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='code_metadata' AND column_name='user_id') THEN
+        ALTER TABLE code_metadata ADD COLUMN user_id VARCHAR(128);
+    END IF;
+END $$;
+
 -- Migration: Add content_fts if it doesn't exist
 DO $$ 
 BEGIN 
@@ -71,6 +79,8 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_code_fts       ON code_metadata USING GIN (content_fts);
 CREATE INDEX IF NOT EXISTS idx_code_mongo_ref ON code_metadata (mongo_ref_id);
 CREATE INDEX IF NOT EXISTS idx_code_filepath  ON code_metadata (filepath);
+CREATE INDEX IF NOT EXISTS idx_code_user      ON code_metadata (user_id);
+CREATE INDEX IF NOT EXISTS idx_code_user_path ON code_metadata (user_id, filepath);
 
 -- --- Knowledge-graph nodes (entities, upserted by label) ---
 -- mongo_ref_id is nullable here: a node may outlive the document that first

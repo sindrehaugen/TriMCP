@@ -1,20 +1,17 @@
-# TriMCP — The Semantic Memory Engine
+# TriMCP — Enterprise-Grade AI Memory Layer
 
-TriMCP is not just another standard Model Context Protocol (MCP) server. It is a cutting-edge **Semantic Memory Engine** designed to be the cognitive core for AI agents. By operating as an MCP Protocol Native engine, it empowers LLMs to persist, structure, and recall knowledge autonomously across an advanced multi-database architecture.
+TriMCP is the ultimate **Enterprise-Grade AI Memory Layer**, designed to serve as the cognitive core for autonomous agents. Operating as an MCP Protocol Native engine, it empowers LLMs to persist, structure, and recall knowledge across a highly optimized, multi-database architecture. TriMCP v2.2 brings unprecedented scale, enabling true self-awareness of codebases, enterprise document indexing, and seamless cloud or on-premise deployments.
 
-Most remarkably, TriMCP possesses **Recursive Capability**—it uses its own MCP tools to ingest, parse, and index its own AST, achieving true self-awareness of its codebase.
+## 🌟 v2.2 Capabilities & Core Features
 
-## 🌟 Key Features
-
-- **Quad-DB Architecture**: Highly optimized data segregation across four distinct layers:
-  - **MongoDB** (Episodic Archive) for raw, heavy payloads and transcripts.
-  - **PostgreSQL/pgvector** (Semantic Index) for ACID-compliant vector embeddings and Knowledge Graph triplets.
-  - **Redis** (Working Memory) for sub-millisecond summary caching and RQ background job queues.
-  - **MinIO** (Media Store) for large audio, video, and image files.
-- **Advanced GraphRAG Capabilities**: Combines pgvector cosine similarity search to find anchor nodes with BFS graph traversal over Knowledge Graph edges (up to 3 hops). It dynamically hydrates source excerpts from MongoDB to return a rich, structured subgraph.
-- **Token-Saving Caching System**: A robust API call caching layer built on Redis that drastically reduces LLM token usage on repeated semantic and graph searches. It features **O(1) read-after-write invalidation via generation counters**, guaranteeing that agents never receive stale context after a mutation.
-- **Saga Pattern Guarantee**: Powered by the core `TriStackEngine`, memory ingestion employs atomic distributed writes. Any failure in Postgres automatically triggers a rollback in MongoDB, maintaining absolute data purity.
-- **Background Garbage Collection (GC)**: An independent hourly safety net that purges orphaned MongoDB documents, protecting the engine against hard-kills mid-transaction.
+- **Semantic Search & GraphRAG**: Combines pgvector cosine similarity search with BFS Knowledge Graph traversal (up to 3 hops). Dynamically hydrates source excerpts from MongoDB for rich, structured subgraphs and codebase entity mapping.
+- **3 Deployment Modes**: Flexible deployment via a single native installer (`trimcp-launch`) for **Local** (Docker Desktop), **Multi-User** (On-Premise), and **Cloud** (Azure/AWS/GCP via Terraform/Bicep).
+- **Hardware Acceleration**: Auto-detects and utilizes the best available compute backend, supporting CPU, NVIDIA CUDA, AMD ROCm, Intel NPU/XPU (OpenVINO), and Apple Silicon.
+- **305+ Programming Languages**: Comprehensive AST parsing powered by `tree-sitter-language-pack`, replacing hardcoded grammars for universal codebase understanding.
+- **Universal File Format Extraction**: Extracts, chunks, and indexes Office (Word, Excel, PowerPoint), PDF (with OCR fallback), CAD (DXF/DWG/Revit), Adobe CS, Diagrams (Visio/Mermaid), and MS Project files.
+- **Push-Architecture Document Bridges**: Real-time webhook receivers for SharePoint/MS Graph, Google Drive, Dropbox, and Miro. Documents are indexed automatically upon creation or modification.
+- **Quad-DB Architecture**: Data segregation across MongoDB (Episodic Archive), PostgreSQL/pgvector (Semantic Index), Redis (Working Memory & Queues), and MinIO (Media Store).
+- **Saga Pattern Guarantee**: Atomic distributed writes ensure absolute data purity. Any failure in Postgres automatically triggers a rollback in MongoDB.
 
 ## 🛠️ Tech Stack
 
@@ -34,24 +31,27 @@ Most remarkably, TriMCP possesses **Recursive Capability**—it uses its own MCP
 - **Python 3.10+** - Required by the MCP SDK.
 - **pip** - For managing Python dependencies.
 
-## 🚀 Getting Started
+## 🚀 Quick Start
 
-### 1. Clone the Repository
+TriMCP v2.2 introduces a unified native installer (`trimcp-launch`) that handles environment setup, hardware acceleration detection, and service orchestration across three deployment modes.
 
-```bash
-git clone https://github.com/sindrehaugen/TriMCP.git
-cd TriMCP
-```
+### 1. Installation & Deployment Mode
 
-### 2. Environment Setup
+Download and run the installer for your platform (Windows EXE/MSI, macOS DMG, or Linux). During installation, select your deployment mode:
 
-Copy the example environment file:
+- **Local Mode**: Installs Docker Desktop automatically and runs the Quad-DB stack locally. Best for solo developers.
+- **Multi-User Mode**: Connects to an on-premise server. Requires Azure AD UPN resolution.
+- **Cloud Mode**: Connects to managed cloud services (AWS/Azure/GCP) provisioned via our Terraform/Bicep modules.
+
+### 2. Environment Configuration
+
+If running from source or configuring the server manually, copy the environment template:
 
 ```bash
 cp .env.example .env
 ```
 
-Configure the following variables in `.env` if needed (the defaults usually work for local Docker setup):
+Core variables required in `.env`:
 
 | Variable                | Description                                       | Example                                                |
 | ----------------------- | ------------------------------------------------- | ------------------------------------------------------ |
@@ -59,88 +59,19 @@ Configure the following variables in `.env` if needed (the defaults usually work
 | `PG_DSN`                | PostgreSQL connection string                      | `postgresql://mcp_user:mcp_password@localhost:5432/memory_meta` |
 | `REDIS_URL`             | Redis connection string                           | `redis://localhost:6379/0`                             |
 | `MINIO_ENDPOINT`        | MinIO connection endpoint                         | `localhost:9000`                                       |
-| `MINIO_ACCESS_KEY`      | MinIO access key                                  | `minioadmin`                                           |
-| `MINIO_SECRET_KEY`      | MinIO secret key                                  | `minioadmin`                                           |
-| `PG_MIN_POOL`           | Minimum PG connection pool size                   | `1`                                                    |
-| `PG_MAX_POOL`           | Maximum PG connection pool size                   | `10`                                                   |
-| `REDIS_TTL`             | Redis cache TTL in seconds                        | `3600`                                                 |
-| `GC_INTERVAL_SECONDS`   | How often the GC runs                             | `3600`                                                 |
-| `GC_ORPHAN_AGE_SECONDS` | Minimum age before a document is considered an orphan | `300`                                                  |
+| `DROPBOX_APP_SECRET`    | Secret for Dropbox webhook HMAC validation        | `your_dropbox_secret`                                  |
+| `GRAPH_CLIENT_STATE`    | Client state token for MS Graph webhooks          | `your_graph_state`                                     |
+| `DRIVE_CHANNEL_TOKEN`   | Channel token for Google Drive webhooks           | `your_drive_token`                                     |
 
 *Note: Never commit `.env` to version control.*
 
-### 3. Database Setup
+### 3. Start the Server
 
-Start the quad-database stack using Docker Compose:
-
-```bash
-docker compose up -d
-```
-
-Verify all containers are healthy:
-
-```bash
-docker ps --format "table {{.Names}}\t{{.Status}}"
-```
-
-### 4. Install Dependencies
-
-Create and activate a virtual environment:
-
-```bash
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
-# macOS / Linux
-source .venv/bin/activate
-```
-
-Install core dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-**Optional Dependencies (Recommended for full capability):**
-
-AST parsing (falls back to line splitter without this):
-```bash
-pip install tree-sitter==0.20.4 tree-sitter-python==0.20.4 tree-sitter-javascript==0.20.1
-```
-
-Semantic embeddings (falls back to hash stub without this):
-```bash
-pip install sentence-transformers>=2.3.1 transformers>=4.36.2 torch>=2.1.2
-```
-
-GraphRAG entity extraction (falls back to regex without this):
-```bash
-pip install spacy>=3.7.0
-python -m spacy download en_core_web_sm
-```
-
-### 5. Start the Server
-
-Start the standard MCP server (listens on stdio):
+The `trimcp-launch` shim automatically manages the background worker (`start_worker.py`) and the FastAPI webhook receiver. To start the MCP server manually for development (listens on stdio):
 
 ```bash
 python server.py
 ```
-
-Alternatively, to start the async background worker for async indexing:
-
-```bash
-.venv\Scripts\python.exe start_worker.py
-```
-
-To start the SSE (HTTP) server:
-
-```bash
-.venv\Scripts\python.exe sse_server.py
-```
-*(Listens on `http://localhost:8000/sse`)*
 
 ## 🧠 Architecture Deep-Dive
 
@@ -197,7 +128,6 @@ TriMCP/
 ├── index_all.py             # Bulk recursive code ingestion
 ├── server.py                # MCP stdio server
 ├── admin_server.py          # Admin UI & Observability
-├── sse_server.py            # MCP SSE (HTTP) server
 ├── admin/
 │   └── index.html           # Admin dashboard UI
 ├── trimcp/
@@ -209,14 +139,13 @@ TriMCP/
 │   ├── graph_extractor.py   # Entity + relation extraction (spaCy / regex)
 │   ├── graph_query.py       # GraphRAG BFS traverser
 │   ├── garbage_collector.py # Hourly orphan GC (paginated, retry-enabled)
-│   ├── notifications.py     # SSE notification dispatcher
+│   ├── notifications.py     # Webhook / alert notification dispatcher
 │   └── tasks.py             # RQ async tasks and indexing logic
 ├── tests/
 │   ├── __init__.py
 │   ├── test_integration_engine.py  # End-to-end integration tests
 │   ├── test_mcp_cache.py           # API Caching logic testing
-│   ├── test_notifications.py       # SSE events testing
-│   ├── test_smoke_sse.py           # Smoke testing for SSE
+│   ├── test_notifications.py       # Notification dispatcher tests
 │   └── test_smoke_stdio.py         # Smoke testing for Stdio MCP
 └── docs/                    # Architectural diagrams and documentation
 ```

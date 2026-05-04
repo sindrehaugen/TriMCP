@@ -94,6 +94,8 @@ TOOLS = [
                 "filepath":  {"type": "string", "description": "Absolute or relative path of the file"},
                 "raw_code":  {"type": "string", "description": "Full source code content"},
                 "language":  {"type": "string", "description": "Language: 'python', 'javascript', 'typescript', 'go', 'rust'"},
+                "user_id":   {"type": "string", "description": "Optional. Required when private=true — scopes this index to the user."},
+                "private":   {"type": "boolean", "default": False, "description": "When true, index is private to user_id (shared corpus uses user_id unset)."},
             },
             "required": ["filepath", "raw_code", "language"],
         },
@@ -121,6 +123,8 @@ TOOLS = [
                 "query":           {"type": "string", "description": "Natural language description of the code to find"},
                 "language_filter": {"type": "string", "description": "Optional: filter by language ('python', 'javascript')"},
                 "top_k":           {"type": "integer", "default": 5},
+                "user_id":         {"type": "string", "description": "Optional. Required when private=true — searches only that user's private index."},
+                "private":         {"type": "boolean", "default": False, "description": "When false (default), search the shared corpus only. When true, search only chunks for user_id."},
             },
             "required": ["query"],
         },
@@ -137,6 +141,8 @@ TOOLS = [
             "properties": {
                 "query":     {"type": "string", "description": "Natural language query to anchor the graph search"},
                 "max_depth": {"type": "integer", "default": 2, "description": "BFS hop depth (1-3 recommended)"},
+                "user_id":   {"type": "string", "description": "Optional. Required when private=true — restricts hydrated sources to this user."},
+                "private":   {"type": "boolean", "default": False, "description": "When false (default), hydrate all matching sources. When true, only documents owned by user_id."},
             },
             "required": ["query"],
         },
@@ -235,6 +241,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 filepath=arguments["filepath"],
                 raw_code=arguments["raw_code"],
                 language=arguments["language"],
+                user_id=arguments.get("user_id"),
+                private=bool(arguments.get("private", False)),
             )
             return [TextContent(type="text", text=json.dumps(result))]
 
@@ -249,6 +257,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 query=arguments["query"],
                 language_filter=arguments.get("language_filter"),
                 top_k=int(arguments.get("top_k", 5)),
+                user_id=arguments.get("user_id"),
+                private=bool(arguments.get("private", False)),
             )
             result_text = json.dumps(results)
             if cache_key: await engine.redis_client.setex(cache_key, 300, result_text)
@@ -258,6 +268,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = await engine.graph_search(
                 query=arguments["query"],
                 max_depth=max(1, min(int(arguments.get("max_depth", 2)), 3)),
+                user_id=arguments.get("user_id"),
+                private=bool(arguments.get("private", False)),
             )
             result_text = json.dumps(result, indent=2)
             if cache_key: await engine.redis_client.setex(cache_key, 300, result_text)

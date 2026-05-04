@@ -25,9 +25,10 @@ def run_async(coro):
     finally:
         loop.close()
 
-def process_code_indexing(filepath: str, raw_code: str, language: str):
+def process_code_indexing(filepath: str, raw_code: str, language: str, user_id: Optional[str] = None):
     """
     Worker task: Performs the actual heavy lifting of indexing.
+    user_id=None: shared corpus (enterprise default). Otherwise private to that user.
     """
     log.info("[Worker] Starting indexing for %s", filepath)
     
@@ -42,13 +43,16 @@ def process_code_indexing(filepath: str, raw_code: str, language: str):
             file_hash = hashlib.md5(raw_code.encode()).hexdigest()
             
             # STEP 1: Episodic Commit (MongoDB)
-            inserted_result = await collection.insert_one({
+            doc: dict = {
                 "filepath": filepath,
                 "language": language,
                 "file_hash": file_hash,
                 "raw_code": raw_code,
                 "ingested_at": datetime.utcnow(),
-            })
+            }
+            if user_id:
+                doc["user_id"] = user_id
+            inserted_result = await collection.insert_one(doc)
             inserted_mongo_id = str(inserted_result.inserted_id)
 
             # STEP 2: Batch-embed all AST chunks
@@ -58,24 +62,30 @@ def process_code_indexing(filepath: str, raw_code: str, language: str):
 
             async with engine.pg_pool.acquire() as conn:
                 async with conn.transaction():
-                    await conn.execute("DELETE FROM code_metadata WHERE filepath = $1", filepath)
+                    await conn.execute(
+                        "DELETE FROM code_metadata WHERE filepath = $1 AND (user_id IS NOT DISTINCT FROM $2)",
+                        filepath,
+                        user_id,
+                    )
                     for chunk, vector in zip(chunks, vectors):
                         await conn.execute(
                             """
                             INSERT INTO code_metadata
                                 (filepath, language, node_type, name, start_line, end_line,
-                                 file_hash, embedding, content_fts, mongo_ref_id)
+                                 file_hash, embedding, content_fts, mongo_ref_id, user_id)
                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, 
-                                    to_tsvector('english', $9 || ' ' || $10), $11)
+                                    to_tsvector('english', $9 || ' ' || $10), $11, $12)
                             """,
                             filepath, language, chunk.node_type, chunk.name,
                             chunk.start_line, chunk.end_line,
                             file_hash, json.dumps(vector), chunk.name, chunk.code_string, inserted_mongo_id,
+                            user_id,
                         )
 
             # STEP 3: Cache hash in Redis
+            scope_key = f"private:{user_id}" if user_id else "shared"
             await engine.redis_client.setex(
-                f"hash:{filepath}", 3600, file_hash # Hardcoded TTL for worker
+                f"hash:{scope_key}:{filepath}", 3600, file_hash
             )
             log.info("[Worker] Finished indexing %s (%d chunks)", filepath, len(chunks))
             return {"status": "success", "chunks": len(chunks)}
