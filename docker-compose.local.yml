@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # 1. Working Memory (Current Data)
+  redis:
+    image: redis:7-alpine
+    container_name: tri-stack-redis-local
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data_local:/data
+    restart: unless-stopped
+
+  # 2. Semantic Index (What Data is Stored)
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: tri-stack-postgres-local
+    environment:
+      POSTGRES_USER: mcp_user
+      POSTGRES_PASSWORD: mcp_password
+      POSTGRES_DB: memory_meta
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg_data_local:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # 3. Episodic Archive (The Complete Data)
+  mongodb:
+    image: mongo:7.0
+    container_name: tri-stack-mongo-local
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo_data_local:/data/db
+    restart: unless-stopped
+
+  # 4. Large Dataset Ingestion (Audiovisual)
+  minio:
+    image: minio/minio:latest
+    container_name: trimcp-minio-local
+    environment:
+      MINIO_ROOT_USER: mcp_admin
+      MINIO_ROOT_PASSWORD: super_secure_minio_password
+    ports:
+      - "127.0.0.1:9002:9000"  # S3 API Port
+      - "127.0.0.1:9003:9001"  # Web Console Port
+    volumes:
+      - minio_data_local:/data
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+
+volumes:
+  redis_data_local:
+  pg_data_local:
+  mongo_data_local:
+  minio_data_local:

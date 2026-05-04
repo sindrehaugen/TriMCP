@@ -13,7 +13,7 @@ services:
 
   # 2. Semantic Index (What Data is Stored)
   postgres:
-    image: ankane/pgvector:v0.5.1
+    image: pgvector/pgvector:pg16
     container_name: tri-stack-postgres
     environment:
       POSTGRES_USER: mcp_user
@@ -43,11 +43,51 @@ services:
       MINIO_ROOT_USER: mcp_admin
       MINIO_ROOT_PASSWORD: super_secure_minio_password
     ports:
-      - "9002:9000"  # S3 API Port (Changed from 9000)
-      - "9003:9001"  # Web Console Port (Changed from 9001)
+      - "9002:9000"  # S3 API Port
+      - "9003:9001"  # Web Console Port
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"
+    restart: unless-stopped
+
+  # 5. Background Task Worker
+  worker:
+    image: trimcp-worker
+    container_name: tri-stack-worker
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://mcp_user:mcp_password@postgres:5432/memory_meta
+      - MONGO_URL=mongodb://mongodb:27017
+    depends_on:
+      - redis
+      - postgres
+      - mongodb
+    restart: unless-stopped
+
+  # 6. Webhook Receiver
+  webhook-receiver:
+    image: trimcp-webhooks
+    container_name: tri-stack-webhook-receiver
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    restart: unless-stopped
+    # Exposes 8080 internally for Caddy to proxy to
+
+  # 7. Reverse Proxy (TLS & Routing)
+  caddy:
+    image: caddy:2
+    container_name: tri-stack-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - webhook-receiver
     restart: unless-stopped
 
 volumes:
@@ -55,3 +95,5 @@ volumes:
   pg_data:
   mongo_data:
   minio_data:
+  caddy_data:
+  caddy_config:
