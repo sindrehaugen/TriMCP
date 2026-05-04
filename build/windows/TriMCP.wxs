@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TriMCP WiX Toolset v4 Configuration -->
+<!-- Supports silent enterprise deployment via public properties -->
+
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="TriMCP" Manufacturer="TriMCP Enterprise" Version="1.0.0.0" UpgradeCode="12345678-1234-1234-1234-123456789012">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    
+    <!-- Public Properties for Silent Install (Section 13) -->
+    <Property Id="TRIMCP_MODE" Value="multiuser" /> <!-- local, multiuser, cloud -->
+    <Property Id="TRIMCP_SERVER_URL" Value="" />
+    <Property Id="ALLOWLOCALMODE" Value="1" />
+    <Property Id="TRIMCP_BACKEND" Value="auto" /> <!-- cpu, cuda, rocm, xpu, npu, mps -->
+
+    <Feature Id="MainFeature" Title="TriMCP Core" Level="1">
+      <ComponentGroupRef Id="CoreComponents" />
+      <ComponentGroupRef Id="AppDataComponents" />
+    </Feature>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="TriMCP">
+        <Directory Id="PythonFolder" Name="python" />
+        <Directory Id="ModelsFolder" Name="models" />
+        <Directory Id="WheelsFolder" Name="wheels" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="AppDataFolder">
+      <Directory Id="TriMCPAppDataFolder" Name="TriMCP" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="CoreComponents" Directory="INSTALLFOLDER">
+      <Component Id="MainExecutable" Guid="87654321-4321-4321-4321-210987654321">
+        <File Id="TrimcpLaunchExe" Source="trimcp-launch.exe" KeyPath="yes" />
+      </Component>
+      <!-- Note: In a real build, heat.exe or WiX v4 harvesting would be used to pull in the python, models, and wheels directories -->
+    </ComponentGroup>
+
+    <ComponentGroup Id="AppDataComponents" Directory="TriMCPAppDataFolder">
+      <Component Id="EnvFileComponent" Guid="A1B2C3D4-E5F6-47A8-B9C0-D1E2F3A4B5C6">
+        <RegistryValue Root="HKCU" Key="Software\TriMCP Enterprise\TriMCP" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+        
+        <!-- Write mode.txt -->
+        <IniFile Id="WriteModeTxt" Action="addLine" Directory="TriMCPAppDataFolder" Name="mode.txt" Section="TriMCP" Key="Mode" Value="[TRIMCP_MODE]" />
+        
+        <!-- Write .env file -->
+        <IniFile Id="WriteEnvMode" Action="addLine" Directory="TriMCPAppDataFolder" Name=".env" Section="Config" Key="TRIMCP_MODE" Value="[TRIMCP_MODE]" />
+        <IniFile Id="WriteEnvUrl" Action="addLine" Directory="TriMCPAppDataFolder" Name=".env" Section="Config" Key="TRIMCP_SERVER_URL" Value="[TRIMCP_SERVER_URL]" />
+        <IniFile Id="WriteEnvBackend" Action="addLine" Directory="TriMCPAppDataFolder" Name=".env" Section="Config" Key="TRIMCP_BACKEND" Value="[TRIMCP_BACKEND]" />
+      </Component>
+    </ComponentGroup>
+
+  </Package>
+</Wix>
