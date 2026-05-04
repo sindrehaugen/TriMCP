@@ -9,7 +9,7 @@ TriMCP is the ultimate **Enterprise-Grade AI Memory Layer**, designed to serve a
 - **Hardware Acceleration**: Auto-detects and utilizes the best available compute backend, supporting CPU, NVIDIA CUDA, AMD ROCm, Intel NPU/XPU (OpenVINO), and Apple Silicon.
 - **305+ Programming Languages**: Comprehensive AST parsing powered by `tree-sitter-language-pack`, replacing hardcoded grammars for universal codebase understanding.
 - **Universal File Format Extraction**: Extracts, chunks, and indexes Office (Word, Excel, PowerPoint), PDF (with OCR fallback), CAD (DXF/DWG/Revit), Adobe CS, Diagrams (Visio/Mermaid), and MS Project files.
-- **Push-Architecture Document Bridges**: Real-time webhook receivers for SharePoint/MS Graph, Google Drive, Dropbox, and Miro. Documents are indexed automatically upon creation or modification.
+- **Push-Architecture Document Bridges**: Real-time webhook receivers and integrations for SharePoint, Google Workspace/Drive, Dropbox, and Miro. Documents are indexed automatically upon creation or modification.
 - **Quad-DB Architecture**: Data segregation across MongoDB (Episodic Archive), PostgreSQL/pgvector (Semantic Index), Redis (Working Memory & Queues), and MinIO (Media Store).
 - **Saga Pattern Guarantee**: Atomic distributed writes ensure absolute data purity. Any failure in Postgres automatically triggers a rollback in MongoDB.
 
