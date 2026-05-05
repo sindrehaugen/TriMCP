@@ -34,12 +34,16 @@ _MAX_DEPTH = 3
 # --- Pydantic Models ---
 
 class MemoryPayload(BaseModel):
-    user_id: str
-    session_id: str
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    namespace_id: Optional[str] = None
+    agent_id: str = "default"
     content_type: Literal["chat", "code"]
     summary: str = Field(max_length=_MAX_SUMMARY_LEN)
     heavy_payload: str
     metadata: Optional[dict] = None
+    assertion_type: str = "fact"
+    check_contradictions: bool = False
 
     @field_validator("user_id", "session_id")
     @classmethod
@@ -80,7 +84,7 @@ class VectorRecord(BaseModel):
     user_id: Optional[str] = None
     session_id: Optional[str] = None
     embedding: list[float]
-    mongo_ref_id: str
+    payload_ref: str
 
 
 class MongoDocument(BaseModel):
@@ -244,7 +248,30 @@ class TriStackEngine:
         inserted_result = None
 
         from trimcp.graph_extractor import extract as graph_extract
-        entities, triplets = graph_extract(payload.summary)
+        from trimcp.pii import process as pii_process
+        from trimcp.models import NamespacePIIConfig
+
+        # Fetch namespace PII config (default to empty config if not found or no namespace)
+        pii_config = NamespacePIIConfig()
+        if payload.metadata and payload.metadata.get("namespace_id"):
+            async with self.pg_pool.acquire() as conn:
+                ns_row = await conn.fetchrow(
+                    "SELECT metadata FROM namespaces WHERE id = $1",
+                    payload.metadata["namespace_id"]
+                )
+                if ns_row and "pii" in ns_row["metadata"]:
+                    pii_config = NamespacePIIConfig(**ns_row["metadata"]["pii"])
+
+        # Phase 0.3: PII Redaction Pipeline
+        pii_result = pii_process(payload.summary, pii_config)
+        sanitized_summary = pii_result.sanitized_text
+        
+        # Also sanitize the heavy payload if it's text
+        sanitized_heavy = payload.heavy_payload
+        if isinstance(sanitized_heavy, str):
+            sanitized_heavy = pii_process(sanitized_heavy, pii_config).sanitized_text
+
+        entities, triplets = graph_extract(sanitized_summary)
 
         try:
             # STEP 1: Episodic Commit (MongoDB)
@@ -252,68 +279,154 @@ class TriStackEngine:
                 "user_id": payload.user_id,
                 "session_id": payload.session_id,
                 "type": payload.content_type,
-                "raw_data": payload.heavy_payload,
+                "raw_data": sanitized_heavy,
                 "metadata": payload.metadata,
+                "pii_redacted": pii_result.redacted,
+                "pii_entities_found": pii_result.entities_found,
                 "ingested_at": datetime.utcnow(),
             })
             inserted_mongo_id = str(inserted_result.inserted_id)
             log.debug("[Mongo] Inserted episode. id=%s", inserted_mongo_id)
 
             # Pre-compute all embeddings OUTSIDE the PG transaction
-            all_texts = [payload.summary] + [e.label for e in entities]
+            all_texts = [sanitized_summary] + [e.label for e in entities]
             all_vectors = await _embeddings.embed_batch(all_texts)
             vector = all_vectors[0]
             node_vecs = all_vectors[1:]
 
+
+            # Fetch active and migrating models to insert embeddings
+            async with self.pg_pool.acquire() as conn:
+                models = await conn.fetch("SELECT id FROM embedding_models WHERE status IN ('active', 'migrating')")
+                target_model_ids = [m["id"] for m in models]
+
             # STEP 2 + 2b: Atomic Semantic + Graph Commit (single PG transaction)
-            # Either all three tables (memory_metadata, kg_nodes, kg_edges) commit,
+
+            # Either all three tables (memories, kg_nodes, kg_edges) commit,
             # or PG rolls everything back on exception — no partial Saga state.
             async with self.pg_pool.acquire() as conn:
                 async with conn.transaction():
-                    await conn.execute(
+                    memory_id = await conn.fetchval(
                         """
-                        INSERT INTO memory_metadata (user_id, session_id, embedding, content_fts, mongo_ref_id)
-                        VALUES ($1, $2, $3::vector, to_tsvector('english', $4), $5)
+                        INSERT INTO memories (user_id, session_id, namespace_id, agent_id, embedding, content_fts, payload_ref, pii_redacted, assertion_type)
+                        VALUES ($1, $2, $3::uuid, $4, $5::vector, to_tsvector('english', $6), $7, $8, $9)
+                        RETURNING id
                         """,
-                        payload.user_id, payload.session_id,
-                        json.dumps(vector), payload.summary, inserted_mongo_id,
+                        payload.user_id, payload.session_id, 
+                        payload.namespace_id, payload.agent_id,
+                        json.dumps(vector), sanitized_summary, inserted_mongo_id, pii_result.redacted, payload.assertion_type,
                     )
+                    
+                    # Insert into memory_embeddings for active/migrating models
+                    for model_id in target_model_ids:
+                        await conn.execute(
+                            "INSERT INTO memory_embeddings (memory_id, model_id, embedding) VALUES ($1, $2, $3::vector) ON CONFLICT DO NOTHING",
+                            memory_id, model_id, json.dumps(vector)
+                        )
+
+                    # Phase 0.3: Insert PII vault entries if any
+                    if pii_result.vault_entries and payload.metadata and payload.metadata.get("namespace_id"):
+                        ns_id = payload.metadata["namespace_id"]
+                        await conn.executemany(
+                            """
+                            INSERT INTO pii_redactions (namespace_id, memory_id, token, encrypted_value, entity_type)
+                            VALUES ($1, $2, $3, $4, $5)
+                            """,
+                            [(ns_id, memory_id, v["token"], v["encrypted_value"], v["entity_type"]) for v in pii_result.vault_entries]
+                        )
+
                     for entity, node_vec in zip(entities, node_vecs):
                         await conn.execute(
                             """
-                            INSERT INTO kg_nodes (label, entity_type, embedding, mongo_ref_id)
+                            INSERT INTO kg_nodes (label, entity_type, embedding, payload_ref)
                             VALUES ($1, $2, $3::vector, $4)
                             ON CONFLICT (label) DO UPDATE
                                 SET entity_type  = EXCLUDED.entity_type,
                                     embedding    = EXCLUDED.embedding,
-                                    mongo_ref_id = EXCLUDED.mongo_ref_id,
+                                    payload_ref = EXCLUDED.payload_ref,
                                     updated_at   = NOW()
                             """,
                             entity.label, entity.entity_type,
                             json.dumps(node_vec), inserted_mongo_id,
                         )
+                        
+                        # Get node_id to insert into kg_node_embeddings
+                        node_id = await conn.fetchval("SELECT id FROM kg_nodes WHERE label = $1", entity.label)
+                        if node_id:
+                            for model_id in target_model_ids:
+                                await conn.execute(
+                                    "INSERT INTO kg_node_embeddings (node_id, model_id, embedding) VALUES ($1, $2, $3::vector) ON CONFLICT DO NOTHING",
+                                    node_id, model_id, json.dumps(node_vec)
+                                )
                     for triplet in triplets:
                         await conn.execute(
                             """
-                            INSERT INTO kg_edges (subject_label, predicate, object_label, confidence, mongo_ref_id)
+                            INSERT INTO kg_edges (subject_label, predicate, object_label, confidence, payload_ref)
                             VALUES ($1, $2, $3, $4, $5)
                             ON CONFLICT (subject_label, predicate, object_label) DO UPDATE
                                 SET confidence   = EXCLUDED.confidence,
-                                    mongo_ref_id = EXCLUDED.mongo_ref_id,
+                                    payload_ref = EXCLUDED.payload_ref,
                                     updated_at   = NOW()
                             """,
-                            triplet.subject, triplet.predicate, triplet.obj,
+                            triplet.subject_label, triplet.predicate, triplet.object_label,
                             triplet.confidence, inserted_mongo_id,
                         )
+                    # Phase 2.2: Append to event log for time travel
+                    from trimcp.event_log import append_event
+                    import uuid
+                    
+                    # Serialize entities and triplets
+                    serialized_entities = [{"label": e.label, "entity_type": e.entity_type} for e in entities]
+                    serialized_triplets = [{"subject_label": t.subject_label, "predicate": t.predicate, "object_label": t.object_label, "confidence": t.confidence} for t in triplets]
+                    
+                    await append_event(
+                        conn=conn,
+                        namespace_id=uuid.UUID(payload.namespace_id) if isinstance(payload.namespace_id, str) else payload.namespace_id,
+                        agent_id=payload.agent_id,
+                        event_type="store_memory",
+                        params={
+                            "memory_id": str(memory_id),
+                            "assertion_type": payload.assertion_type.value if hasattr(payload.assertion_type, "value") else str(payload.assertion_type),
+                            "entities": serialized_entities,
+                            "triplets": serialized_triplets
+                        }
+                    )
+
             log.debug("[PG] Atomic commit: vector + %d nodes + %d edges. mongo_ref=%s",
                       len(entities), len(triplets), inserted_mongo_id)
 
             # STEP 3: Working Memory (Redis)
             redis_key = f"cache:{payload.user_id}:{payload.session_id}"
-            await self.redis_client.setex(redis_key, cfg.REDIS_TTL, payload.summary)
+            await self.redis_client.setex(redis_key, cfg.REDIS_TTL, sanitized_summary)
             log.debug("[Redis] Summary cached. key=%s", redis_key)
 
-            return inserted_mongo_id
+            # STEP 4: Phase 1.3 Contradiction Detection
+            contradiction_result = None
+            if payload.check_contradictions:
+                from trimcp.contradictions import detect_contradictions
+                try:
+                    async with self.pg_pool.acquire() as conn:
+                        namespace_id = payload.metadata.get("namespace_id") if payload.metadata else None
+                        if namespace_id:
+                            contradiction_result = await detect_contradictions(
+                                conn=conn,
+                                mongo_client=self.mongo_client,
+                                namespace_id=namespace_id,
+                                memory_id=str(memory_id),
+                                memory_text=sanitized_summary,
+                                assertion_type=payload.assertion_type.value,
+                                embedding=vector,
+                                agent_id=payload.agent_id,
+                                triplets=triplets,
+                                detection_path="sync"
+                            )
+                except Exception as e:
+                    log.error(f"Contradiction detection failed: {e}")
+
+            return {
+                "payload_ref": inserted_mongo_id,
+                "contradiction": contradiction_result
+            }
 
         except Exception as e:
             log.error("[SAGA] Transaction failed: %s", e)
@@ -324,17 +437,17 @@ class TriStackEngine:
                 except Exception as mongo_exc:
                     log.error("[ROLLBACK] Mongo cleanup failed: %s", mongo_exc)
                 # If Step 2+2b committed but Step 3 (Redis) failed, the PG transaction
-                # has already flushed — clean the orphaned rows by mongo_ref_id.
+                # has already flushed — clean the orphaned rows by payload_ref.
                 # kg_nodes are intentionally NOT deleted: labels are shared across
                 # memories via upsert, so removing them could orphan other sagas.
                 try:
                     async with self.pg_pool.acquire() as conn:
                         await conn.execute(
-                            "DELETE FROM memory_metadata WHERE mongo_ref_id = $1",
+                            "DELETE FROM memories WHERE payload_ref = $1",
                             inserted_mongo_id,
                         )
                         await conn.execute(
-                            "DELETE FROM kg_edges WHERE mongo_ref_id = $1",
+                            "DELETE FROM kg_edges WHERE payload_ref = $1",
                             inserted_mongo_id,
                         )
                 except Exception as pg_exc:
@@ -466,8 +579,8 @@ class TriStackEngine:
         async with self.pg_pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT mongo_ref_id FROM memory_metadata
-                WHERE user_id=$1 AND session_id=$2
+                SELECT payload_ref FROM memories
+                WHERE user_id=$1 AND session_id=$2 AND memory_type='episodic'
                 ORDER BY created_at DESC LIMIT 1
                 """,
                 user_id, session_id,
@@ -477,70 +590,333 @@ class TriStackEngine:
 
         from bson import ObjectId
         db = self.mongo_client.memory_archive
-        doc = await db.episodes.find_one({"_id": ObjectId(row["mongo_ref_id"])})
+        doc = await db.episodes.find_one({"_id": ObjectId(row["payload_ref"])})
         return str(doc["raw_data"]) if doc else None
 
     # --- Semantic Search ---
 
-    async def semantic_search(self, user_id: str, query: str, top_k: int = 5) -> list[dict]:
-        if not _SAFE_ID_RE.match(user_id):
-            raise ValueError("Invalid user_id format")
+    async def semantic_search(
+        self,
+        query: str,
+        namespace_id: str,
+        agent_id: str,
+        top_k: int = 5,
+        as_of=None,
+    ) -> list[dict]:
         top_k = max(1, min(top_k, _MAX_TOP_K))
 
-        vector = await self._generate_embedding(query)
-        # Hybrid Search (RRF): Combine pgvector and Full Text Search
-        # We fetch more candidates from each and then fuse them.
-        candidate_k = top_k * 4 
+        # Fetch namespace cognitive config and temporal retention
+        from trimcp.models import NamespaceCognitiveConfig
+        cognitive_config = NamespaceCognitiveConfig()
+        temporal_retention_days = 90
+        
         async with self.pg_pool.acquire() as conn:
+            ns_row = await conn.fetchrow("SELECT metadata FROM namespaces WHERE id = $1", namespace_id)
+            if ns_row:
+                meta = ns_row["metadata"]
+                if "cognitive" in meta:
+                    cognitive_config = NamespaceCognitiveConfig(**meta["cognitive"])
+                if "temporal_retention_days" in meta:
+                    temporal_retention_days = meta["temporal_retention_days"]
+
+            vector = await self._generate_embedding(query)
+            candidate_k = top_k * 4 
+            
+            # Build temporal filter
+            temporal_clause = ""
+            if temporal_retention_days is not None:
+                temporal_clause = f"AND m.created_at >= NOW() - INTERVAL '{temporal_retention_days} days'"
+            if as_of:
+                temporal_clause += f" AND m.created_at <= '{as_of.isoformat()}'"
+
+            # Check for active embedding model
+            active_model_id = await conn.fetchval("SELECT id FROM embedding_models WHERE status = 'active' LIMIT 1")
+            
+            if active_model_id:
+                distance_expr = "me.embedding <=> $1::vector"
+                join_clause = f"JOIN memory_embeddings me ON m.id = me.memory_id AND me.model_id = '{active_model_id}'"
+            else:
+                distance_expr = "m.embedding <=> $1::vector"
+                join_clause = ""
+
             rows = await conn.fetch(
-                """
+                f"""
                 WITH vector_candidates AS (
-                    SELECT mongo_ref_id, embedding <=> $1::vector AS distance
-                    FROM memory_metadata
-                    WHERE user_id = $2
+                    SELECT 
+                        m.payload_ref, 
+                        m.id AS memory_id,
+                        {distance_expr} AS distance,
+                        COALESCE(s.salience_score, 1.0) AS raw_salience,
+                        COALESCE(s.updated_at, m.created_at) AS last_updated
+                    FROM memories m
+                    {join_clause}
+                    LEFT JOIN memory_salience s ON m.id = s.memory_id AND s.agent_id = $3
+                    WHERE m.namespace_id = $2 AND m.memory_type = 'episodic' {temporal_clause}
+                      AND COALESCE(s.salience_score, 1.0) > 0.0
                     ORDER BY distance ASC
-                    LIMIT $3
+                    LIMIT $4
                 ),
                 vector_ranked AS (
-                    SELECT mongo_ref_id, ROW_NUMBER() OVER (ORDER BY distance ASC) as rank
+                    SELECT *, ROW_NUMBER() OVER (ORDER BY distance ASC) as rank
                     FROM vector_candidates
                 ),
                 fts_candidates AS (
-                    SELECT mongo_ref_id, ts_rank_cd(content_fts, query) AS ts_score
-                    FROM memory_metadata, 
-                    LATERAL websearch_to_tsquery('english', $4) AS query
-                    WHERE user_id = $2 AND content_fts @@ query
+                    SELECT 
+                        m.payload_ref, 
+                        m.id AS memory_id,
+                        ts_rank_cd(m.content_fts, query) AS ts_score,
+                        COALESCE(s.salience_score, 1.0) AS raw_salience,
+                        COALESCE(s.updated_at, m.created_at) AS last_updated
+                    FROM memories m
+                    LEFT JOIN memory_salience s ON m.id = s.memory_id AND s.agent_id = $3,
+                    LATERAL websearch_to_tsquery('english', $5) AS query
+                    WHERE m.namespace_id = $2 AND m.content_fts @@ query AND m.memory_type = 'episodic' {temporal_clause}
+                      AND COALESCE(s.salience_score, 1.0) > 0.0
                     ORDER BY ts_score DESC
-                    LIMIT $3
+                    LIMIT $4
                 ),
                 fts_ranked AS (
-                    SELECT mongo_ref_id, ROW_NUMBER() OVER (ORDER BY ts_score DESC) as rank
+                    SELECT *, ROW_NUMBER() OVER (ORDER BY ts_score DESC) as rank
                     FROM fts_candidates
                 )
                 SELECT 
-                    COALESCE(v.mongo_ref_id, f.mongo_ref_id) AS mongo_ref_id,
+                    COALESCE(v.payload_ref, f.payload_ref) AS payload_ref,
+                    COALESCE(v.memory_id, f.memory_id) AS memory_id,
                     (COALESCE(1.0 / (60 + v.rank), 0.0) +
-                     COALESCE(1.0 / (60 + f.rank), 0.0)) AS score
+                     COALESCE(1.0 / (60 + f.rank), 0.0)) AS base_score,
+                    COALESCE(v.raw_salience, f.raw_salience) AS raw_salience,
+                    COALESCE(v.last_updated, f.last_updated) AS last_updated
                 FROM vector_ranked v
-                FULL OUTER JOIN fts_ranked f ON v.mongo_ref_id = f.mongo_ref_id
-                ORDER BY score DESC
-                LIMIT $5
-                """,
-                json.dumps(vector), user_id, candidate_k, query, top_k,
+                FULL OUTER JOIN fts_ranked f ON v.payload_ref = f.payload_ref
+                """
+                ,
+                json.dumps(vector), namespace_id, agent_id, candidate_k, query
             )
+
+            from trimcp.salience import compute_decayed_score, ranking_score, reinforce
+            
+            scored_results = []
+            memory_ids_to_reinforce = []
+            
+            for row in rows:
+                decayed_salience = compute_decayed_score(
+                    s_last=row["raw_salience"],
+                    updated_at=row["last_updated"],
+                    half_life_days=cognitive_config.half_life_days
+                )
+                final_score = ranking_score(
+                    cosine_sim=row["base_score"], # Using RRF base score as the similarity metric
+                    salience=decayed_salience,
+                    alpha=cognitive_config.alpha
+                )
+                scored_results.append({
+                    "payload_ref": row["payload_ref"],
+                    "memory_id": row["memory_id"],
+                    "score": final_score,
+                })
+            
+            # Sort by final score and take top_k
+            scored_results.sort(key=lambda x: x["score"], reverse=True)
+            top_results = scored_results[:top_k]
+            
+            # Reinforce retrieved memories
+            for res in top_results:
+                await reinforce(
+                    conn, 
+                    str(res["memory_id"]), 
+                    agent_id, 
+                    namespace_id, 
+                    delta=cognitive_config.reinforcement_delta
+                )
 
         from bson import ObjectId
         db = self.mongo_client.memory_archive
         results = []
-        for row in rows:
-            doc = await db.episodes.find_one({"_id": ObjectId(row["mongo_ref_id"])})
+        for res in top_results:
+            doc = await db.episodes.find_one({"_id": ObjectId(res["payload_ref"])})
             if doc:
                 results.append({
-                    "mongo_ref_id": row["mongo_ref_id"],
-                    "score": row["score"],
+                    "payload_ref": res["payload_ref"],
+                    "score": res["score"],
                     "raw_data": doc.get("raw_data"),
                 })
         return results
+
+    async def unredact_memory(self, memory_id: str, namespace_id: str, agent_id: str) -> dict:
+        """
+        [Phase 0.3] MCP Admin Tool: Reverses pseudonymisation for a given memory.
+        Requires elevated permissions (handled externally) and reversible=true in policy.
+        """
+        from trimcp.signing import decrypt_signing_key, require_master_key
+        
+        master_key = require_master_key()
+        
+        async with self.pg_pool.acquire() as conn:
+            # Check if namespace allows reversibility
+            ns_row = await conn.fetchrow("SELECT metadata FROM namespaces WHERE id = $1", namespace_id)
+            if not ns_row or "pii" not in ns_row["metadata"] or not ns_row["metadata"]["pii"].get("reversible"):
+                raise ValueError("Namespace PII policy does not allow unredaction (reversible=False).")
+
+            # Fetch the memory
+            mem_row = await conn.fetchrow("SELECT payload_ref, pii_redacted FROM memories WHERE id = $1", memory_id)
+            if not mem_row:
+                raise ValueError("Memory not found.")
+            
+            if not mem_row["pii_redacted"]:
+                return {"status": "not_redacted"}
+
+            # Fetch the vault entries
+            vault_rows = await conn.fetch(
+                "SELECT token, encrypted_value FROM pii_redactions WHERE memory_id = $1",
+                memory_id
+            )
+            
+            if not vault_rows:
+                return {"status": "no_vault_entries"}
+
+            from bson import ObjectId
+            db = self.mongo_client.memory_archive
+            doc = await db.episodes.find_one({"_id": ObjectId(mem_row["payload_ref"])})
+            if not doc:
+                raise ValueError("MongoDB payload missing.")
+
+            raw_data = doc.get("raw_data", "")
+            if not isinstance(raw_data, str):
+                return {"status": "raw_data_not_string"}
+
+            # Reconstruct
+            for v_row in vault_rows:
+                token = v_row["token"]
+                encrypted_val = v_row["encrypted_value"]
+                try:
+                    original_val = decrypt_signing_key(encrypted_val, master_key).decode('utf-8')
+                    raw_data = raw_data.replace(token, original_val)
+                except Exception as e:
+                    log.warning("Failed to decrypt token %s: %s", token, e)
+
+            # Log the unredact event
+            from trimcp.event_log import append_event
+            await append_event(
+                conn=conn,
+                namespace_id=namespace_id,
+                agent_id=agent_id,
+                event_type="unredact",
+                params={"memory_id": memory_id},
+                result_summary={"status": "success", "tokens_unredacted": len(vault_rows)}
+            )
+
+            return {
+                "status": "success",
+                "unredacted_text": raw_data
+            }
+
+    # --- Phase 1.1: Cognitive Layer (Salience) ---
+
+    async def boost_memory(self, memory_id: str, agent_id: str, namespace_id: str, factor: float = 0.2) -> dict:
+        """
+        [Phase 1.1] MCP Tool: Boosts the salience of a memory for the calling agent.
+        """
+        factor = max(0.0, min(1.0, factor))
+        from trimcp.salience import reinforce
+        async with self.pg_pool.acquire() as conn:
+            await reinforce(conn, memory_id, agent_id, namespace_id, delta=factor)
+            
+            from trimcp.event_log import append_event
+            await append_event(
+                conn=conn,
+                namespace_id=namespace_id,
+                agent_id=agent_id,
+                event_type="boost_memory",
+                params={"memory_id": memory_id, "factor": factor},
+                result_summary={"status": "success"}
+            )
+        return {"status": "success", "boosted_by": factor}
+
+    async def forget_memory(self, memory_id: str, agent_id: str, namespace_id: str) -> dict:
+        """
+        [Phase 1.1] MCP Tool: Sets salience to 0.0 for the calling agent.
+        """
+        async with self.pg_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO memory_salience (memory_id, agent_id, namespace_id, salience_score, updated_at, access_count)
+                VALUES ($1::uuid, $2, $3::uuid, 0.0, NOW(), 1)
+                ON CONFLICT (memory_id, agent_id) DO UPDATE
+                    SET salience_score = 0.0,
+                        updated_at = NOW(),
+                        access_count = memory_salience.access_count + 1
+                """,
+                memory_id, agent_id, namespace_id
+            )
+            
+            from trimcp.event_log import append_event
+            await append_event(
+                conn=conn,
+                namespace_id=namespace_id,
+                agent_id=agent_id,
+                event_type="forget_memory",
+                params={"memory_id": memory_id},
+                result_summary={"status": "success"}
+            )
+        return {"status": "success", "forgotten": True}
+
+    # --- Phase 1.3: Contradictions ---
+
+    async def list_contradictions(self, namespace_id: str, resolution: Optional[str] = None, agent_id: Optional[str] = None) -> list[dict]:
+        """
+        [Phase 1.3] MCP Tool: List contradictions.
+        """
+        async with self.pg_pool.acquire() as conn:
+            query = "SELECT * FROM contradictions WHERE namespace_id = $1::uuid"
+            params = [namespace_id]
+            idx = 2
+            if resolution:
+                query += f" AND resolution = ${idx}"
+                params.append(resolution)
+                idx += 1
+            if agent_id:
+                query += f" AND agent_id = ${idx}"
+                params.append(agent_id)
+                idx += 1
+                
+            query += " ORDER BY detected_at DESC LIMIT 50"
+            rows = await conn.fetch(query, *params)
+            
+            return [dict(r) for r in rows]
+
+    async def resolve_contradiction(self, contradiction_id: str, resolution: str, resolved_by: str, note: Optional[str] = None) -> dict:
+        """
+        [Phase 1.3] MCP Tool: Resolve a contradiction.
+        resolution values: resolved_a | resolved_b | both_valid
+        """
+        if resolution not in ("resolved_a", "resolved_b", "both_valid"):
+            raise ValueError("Invalid resolution value")
+            
+        async with self.pg_pool.acquire() as conn:
+            # We could append an event to the event log here
+            await conn.execute(
+                """
+                UPDATE contradictions
+                SET resolution = $1, resolved_at = NOW(), resolved_by = $2
+                WHERE id = $3::uuid
+                """,
+                resolution, resolved_by, contradiction_id
+            )
+            
+            # Fetch namespace_id to log event
+            row = await conn.fetchrow("SELECT namespace_id FROM contradictions WHERE id = $1::uuid", contradiction_id)
+            if row:
+                from trimcp.event_log import append_event
+                await append_event(
+                    conn=conn,
+                    namespace_id=str(row["namespace_id"]),
+                    agent_id=resolved_by,
+                    event_type="resolve_contradiction",
+                    params={"contradiction_id": contradiction_id, "resolution": resolution, "note": note},
+                    result_summary={"status": "success"}
+                )
+                
+        return {"status": "success", "resolution": resolution}
 
     # --- Code Indexing ---
 
@@ -624,24 +1000,23 @@ class TriStackEngine:
     async def graph_search(
         self,
         query: str,
+        namespace_id: str = None,
         max_depth: int = 2,
-        *,
-        user_id: Optional[str] = None,
-        private: bool = False,
+        top_k_anchors: int = 3,
+        restrict_user_id: Optional[str] = None,
+        as_of=None,
     ) -> dict:
         if self._graph_traverser is None:
             raise RuntimeError("Engine not connected — call connect() first")
-        if private:
-            if not user_id or not _SAFE_ID_RE.match(user_id):
-                raise ValueError("private graph search requires valid user_id")
-        elif user_id is not None and not _SAFE_ID_RE.match(user_id):
-            raise ValueError("Invalid user_id format")
         max_depth = max(1, min(max_depth, _MAX_DEPTH))
         subgraph = await self._graph_traverser.search(
             query,
+            namespace_id=namespace_id,
             max_depth=max_depth,
-            private=private,
-            user_id=user_id if private else None,
+            anchor_top_k=top_k_anchors,
+            user_id=restrict_user_id,
+            private=bool(restrict_user_id),
+            as_of=as_of
         )
         return subgraph.to_dict()
 
@@ -686,8 +1061,8 @@ class TriStackEngine:
             sql = f"""
                 WITH vector_candidates AS (
                     SELECT id, embedding <=> $1::vector AS distance
-                    FROM code_metadata
-                    WHERE 1=1 {scope_clause} {lang_clause}
+                    FROM memories
+                    WHERE memory_type = 'code_chunk' {scope_clause} {lang_clause}
                     ORDER BY distance ASC
                     LIMIT $2
                 ),
@@ -697,9 +1072,9 @@ class TriStackEngine:
                 ),
                 fts_candidates AS (
                     SELECT id, ts_rank_cd(content_fts, query) AS ts_score
-                    FROM code_metadata, 
+                    FROM memories, 
                     LATERAL websearch_to_tsquery('english', $3) AS query
-                    WHERE content_fts @@ query {scope_clause} {lang_clause}
+                    WHERE content_fts @@ query AND memory_type = 'code_chunk' {scope_clause} {lang_clause}
                     ORDER BY ts_score DESC
                     LIMIT $2
                 ),
@@ -726,8 +1101,8 @@ class TriStackEngine:
             ids = [r["id"] for r in fused_rows]
             rows = await conn.fetch(
                 """
-                SELECT id, filepath, language, node_type, name, start_line, end_line, mongo_ref_id
-                FROM code_metadata
+                SELECT id, filepath, language, node_type, name, start_line, end_line, payload_ref
+                FROM memories
                 WHERE id = ANY($1::uuid[])
                 """,
                 ids,
@@ -746,14 +1121,14 @@ class TriStackEngine:
                         "start_line": r["start_line"],
                         "end_line": r["end_line"],
                         "score": fr["score"],
-                        "mongo_ref_id": r["mongo_ref_id"],
+                        "payload_ref": r["payload_ref"],
                     })
 
         from bson import ObjectId
         db = self.mongo_client.memory_archive
         final_results = []
         for res in results_ordered:
-            doc = await db.code_files.find_one({"_id": ObjectId(res["mongo_ref_id"])})
+            doc = await db.code_files.find_one({"_id": ObjectId(res["payload_ref"])})
             res["raw_code_preview"] = doc["raw_code"][:500] if doc else None
             final_results.append(res)
             
@@ -782,3 +1157,87 @@ async def _test():
 
 if __name__ == "__main__":
     asyncio.run(_test())
+
+    # --- Phase 2.1: Re-embedding Migrations ---
+
+    async def start_migration(self, target_model_id: str) -> dict:
+        async with self.pg_pool.acquire() as conn:
+            # Check if model exists
+            model = await conn.fetchrow("SELECT id FROM embedding_models WHERE id = $1::uuid", target_model_id)
+            if not model:
+                raise ValueError("Target model not found")
+            
+            # Check if there's already a running migration
+            active = await conn.fetchrow("SELECT id FROM embedding_migrations WHERE status IN ('running', 'validating')")
+            if active:
+                raise ValueError(f"Migration {active['id']} is already in progress")
+            
+            await conn.execute("UPDATE embedding_models SET status = 'migrating' WHERE id = $1::uuid", target_model_id)
+            
+            mig_id = await conn.fetchval(
+                "INSERT INTO embedding_migrations (target_model_id) VALUES ($1::uuid) RETURNING id",
+                target_model_id
+            )
+            return {"migration_id": str(mig_id), "status": "running"}
+
+    async def migration_status(self, migration_id: str) -> dict:
+        async with self.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, target_model_id, status, last_memory_id, last_node_id, started_at, completed_at FROM embedding_migrations WHERE id = $1::uuid",
+                migration_id
+            )
+            if not row:
+                raise ValueError("Migration not found")
+            return dict(row)
+
+    async def validate_migration(self, migration_id: str) -> dict:
+        async with self.pg_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT status, target_model_id FROM embedding_migrations WHERE id = $1::uuid", migration_id)
+            if not row or row["status"] != "validating":
+                raise ValueError("Migration not found or not in validating state")
+                
+            # Quality gate: Check if counts match
+            mem_count = await conn.fetchval("SELECT count(*) FROM memories")
+            emb_count = await conn.fetchval("SELECT count(*) FROM memory_embeddings WHERE model_id = $1::uuid", row["target_model_id"])
+            
+            if emb_count < mem_count:
+                return {"status": "failed", "reason": f"Missing memory embeddings: {mem_count} memories, {emb_count} embeddings"}
+                
+            return {"status": "passed", "message": "All memories and nodes have been embedded"}
+
+    async def commit_migration(self, migration_id: str) -> dict:
+        async with self.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow("SELECT status, target_model_id FROM embedding_migrations WHERE id = $1::uuid", migration_id)
+                if not row or row["status"] != "validating":
+                    raise ValueError("Migration not ready to commit")
+                    
+                target_model_id = row["target_model_id"]
+                
+                # Retire old active models
+                await conn.execute("UPDATE embedding_models SET status = 'retired', retired_at = now() WHERE status = 'active'")
+                
+                # Set new model to active
+                await conn.execute("UPDATE embedding_models SET status = 'active' WHERE id = $1::uuid", target_model_id)
+                
+                # Mark migration as committed
+                await conn.execute("UPDATE embedding_migrations SET status = 'committed', completed_at = now() WHERE id = $1::uuid", migration_id)
+                
+                return {"status": "committed", "active_model_id": str(target_model_id)}
+
+    async def abort_migration(self, migration_id: str) -> dict:
+        async with self.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow("SELECT target_model_id FROM embedding_migrations WHERE id = $1::uuid", migration_id)
+                if not row:
+                    raise ValueError("Migration not found")
+                    
+                target_model_id = row["target_model_id"]
+                
+                await conn.execute("UPDATE embedding_migrations SET status = 'aborted', completed_at = now() WHERE id = $1::uuid", migration_id)
+                
+                # We don't necessarily delete the embeddings, they might be useful, 
+                # but we set the model status back to retired or pending
+                await conn.execute("UPDATE embedding_models SET status = 'retired' WHERE id = $1::uuid", target_model_id)
+                
+                return {"status": "aborted"}

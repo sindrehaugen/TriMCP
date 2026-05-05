@@ -7,6 +7,8 @@ GC background task is co-launched on startup for absolute data purity.
 import asyncio
 import json
 import logging
+import uuid
+from datetime import datetime
 from typing import Any
 
 from mcp.server import Server
@@ -39,13 +41,15 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "user_id":       {"type": "string", "description": "Unique user identifier"},
-                "session_id":    {"type": "string", "description": "Session or conversation ID"},
-                "content_type":  {"type": "string", "enum": ["chat", "code"], "description": "Type of content"},
+                "namespace_id":  {"type": "string"},
+                "agent_id":      {"type": "string"},
+                "content":       {"type": "string"},
                 "summary":       {"type": "string", "description": "Short summary used for embedding"},
                 "heavy_payload": {"type": "string", "description": "Full raw content to archive"},
+                "content_type":  {"type": "string", "enum": ["chat", "code"], "description": "Type of content"},
+                "check_contradictions": {"type": "boolean", "default": False},
             },
-            "required": ["user_id", "session_id", "content_type", "summary", "heavy_payload"],
+            "required": ["namespace_id", "agent_id", "content"],
         },
     ),
     Tool(
@@ -75,11 +79,12 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "user_id": {"type": "string"},
+                "namespace_id": {"type": "string"},
+                "agent_id": {"type": "string"},
                 "query":   {"type": "string", "description": "Natural language search query"},
                 "top_k":   {"type": "integer", "default": 5, "description": "Max results to return"},
             },
-            "required": ["user_id", "query"],
+            "required": ["namespace_id", "agent_id", "query"],
         },
     ),
     Tool(
@@ -262,6 +267,128 @@ TOOLS = [
             "required": ["user_id", "bridge_id"],
         },
     ),
+    Tool(
+        name="boost_memory",
+        description="[Phase 1.1] Boosts the salience of a memory for the calling agent.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "namespace_id": {"type": "string"},
+                "factor": {"type": "number", "default": 0.2},
+            },
+            "required": ["memory_id", "agent_id", "namespace_id"],
+        },
+    ),
+    Tool(
+        name="forget_memory",
+        description="[Phase 1.1] Sets salience to 0.0 for the calling agent.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "namespace_id": {"type": "string"},
+            },
+            "required": ["memory_id", "agent_id", "namespace_id"],
+        },
+    ),
+    Tool(
+        name="list_contradictions",
+        description="[Phase 1.3] List detected contradictions.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {"type": "string"},
+                "resolution": {"type": "string", "description": "Filter by resolution status (e.g. 'unresolved')"},
+                "agent_id": {"type": "string"},
+            },
+            "required": ["namespace_id"],
+        },
+    ),
+    Tool(
+        name="resolve_contradiction",
+        description="[Phase 1.3] Resolve a contradiction.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "contradiction_id": {"type": "string"},
+                "resolution": {"type": "string", "enum": ["resolved_a", "resolved_b", "both_valid"]},
+                "resolved_by": {"type": "string"},
+                "note": {"type": "string"},
+            },
+            "required": ["contradiction_id", "resolution", "resolved_by"],
+        },
+    ),
+    Tool(
+        name="unredact_memory",
+        description="[ADMIN] Reverses pseudonymisation for a given memory. Requires elevated permissions.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string"},
+                "namespace_id": {"type": "string"},
+                "agent_id": {"type": "string"},
+            },
+            "required": ["memory_id", "namespace_id", "agent_id"],
+        },
+    ),
+    Tool(
+        name="start_migration",
+        description="[Phase 2.1] Start an embedding migration.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "target_model_id": {"type": "string"},
+            },
+            "required": ["target_model_id"],
+        },
+    ),
+    Tool(
+        name="migration_status",
+        description="[Phase 2.1] Check the status of an embedding migration.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "migration_id": {"type": "string"},
+            },
+            "required": ["migration_id"],
+        },
+    ),
+    Tool(
+        name="validate_migration",
+        description="[Phase 2.1] Run quality gate checks on a finished migration.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "migration_id": {"type": "string"},
+            },
+            "required": ["migration_id"],
+        },
+    ),
+    Tool(
+        name="commit_migration",
+        description="[Phase 2.1] Commit a validated migration, making it the active model.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "migration_id": {"type": "string"},
+            },
+            "required": ["migration_id"],
+        },
+    ),
+    Tool(
+        name="abort_migration",
+        description="[Phase 2.1] Abort a migration and clean up.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "migration_id": {"type": "string"},
+            },
+            "required": ["migration_id"],
+        },
+    ),
 ]
 
 
@@ -326,17 +453,21 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
         if name == "store_memory":
             payload = MemoryPayload(**arguments)
-            mongo_id = await engine.store_memory(payload)
-            return [TextContent(type="text", text=json.dumps({"status": "ok", "mongo_ref_id": mongo_id}))]
+            result = await engine.store_memory(payload)
+            response = {"status": "ok", "payload_ref": result["payload_ref"]}
+            if result.get("contradiction"):
+                response["contradiction"] = result["contradiction"]
+            return [TextContent(type="text", text=json.dumps(response))]
 
         if name == "store_media":
             payload = MediaPayload(**arguments)
             mongo_id = await engine.store_media(payload)
-            return [TextContent(type="text", text=json.dumps({"status": "ok", "mongo_ref_id": mongo_id, "storage": "minio"}))]
+            return [TextContent(type="text", text=json.dumps({"status": "ok", "payload_ref": mongo_id, "storage": "minio"}))]
 
         if name == "semantic_search":
             results = await engine.semantic_search(
-                user_id=arguments["user_id"],
+                namespace_id=arguments["namespace_id"],
+                agent_id=arguments["agent_id"],
                 query=arguments["query"],
                 top_k=int(arguments.get("top_k", 5)),
             )
@@ -414,6 +545,75 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             text = await bridge_mcp_handlers.bridge_status(engine, arguments)
             return [TextContent(type="text", text=text)]
 
+        if name == "boost_memory":
+            res = await engine.boost_memory(
+                memory_id=arguments["memory_id"],
+                agent_id=arguments["agent_id"],
+                namespace_id=arguments["namespace_id"],
+                factor=float(arguments.get("factor", 0.2)),
+            )
+            return [TextContent(type="text", text=json.dumps(res))]
+
+        if name == "forget_memory":
+            res = await engine.forget_memory(
+                memory_id=arguments["memory_id"],
+                agent_id=arguments["agent_id"],
+                namespace_id=arguments["namespace_id"],
+            )
+            return [TextContent(type="text", text=json.dumps(res))]
+
+        if name == "list_contradictions":
+            # Convert datetime objects to string before json.dumps
+            res = await engine.list_contradictions(
+                namespace_id=arguments["namespace_id"],
+                resolution=arguments.get("resolution"),
+                agent_id=arguments.get("agent_id"),
+            )
+            for r in res:
+                for k, v in r.items():
+                    if isinstance(v, datetime):
+                        r[k] = v.isoformat()
+                    elif isinstance(v, uuid.UUID):
+                        r[k] = str(v)
+            return [TextContent(type="text", text=json.dumps(res))]
+
+        if name == "resolve_contradiction":
+            res = await engine.resolve_contradiction(
+                contradiction_id=arguments["contradiction_id"],
+                resolution=arguments["resolution"],
+                resolved_by=arguments["resolved_by"],
+                note=arguments.get("note"),
+            )
+            return [TextContent(type="text", text=json.dumps(res))]
+
+        if name == "unredact_memory":
+            result = await engine.unredact_memory(
+                memory_id=arguments["memory_id"],
+                namespace_id=arguments["namespace_id"],
+                agent_id=arguments["agent_id"]
+            )
+            return [TextContent(type="text", text=json.dumps(result))]
+
+        if name == "start_migration":
+            res = await engine.start_migration(arguments["target_model_id"])
+            return [TextContent(type="text", text=json.dumps(res))]
+
+        if name == "migration_status":
+            res = await engine.migration_status(arguments["migration_id"])
+            return [TextContent(type="text", text=json.dumps(res))]
+
+        if name == "validate_migration":
+            res = await engine.validate_migration(arguments["migration_id"])
+            return [TextContent(type="text", text=json.dumps(res))]
+
+        if name == "commit_migration":
+            res = await engine.commit_migration(arguments["migration_id"])
+            return [TextContent(type="text", text=json.dumps(res))]
+
+        if name == "abort_migration":
+            res = await engine.abort_migration(arguments["migration_id"])
+            return [TextContent(type="text", text=json.dumps(res))]
+
         raise ValueError(f"Unknown tool: {name}")
 
     except (ValueError, TypeError) as e:
@@ -433,6 +633,10 @@ async def main():
 
     gc_task = asyncio.create_task(run_gc_loop())
     log.info("GC background task started.")
+
+    from trimcp.re_embedder import start_re_embedder
+    start_re_embedder(engine.pg_pool, engine.mongo_client)
+    log.info("Re-embedder background task started.")
 
     try:
         async with stdio_server() as (read_stream, write_stream):
