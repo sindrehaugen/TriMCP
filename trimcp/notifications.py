@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import asyncio
-import logging
 import json
-import httpx
+import logging
 from email.message import EmailMessage
-import aiosmtplib
+
+import httpx
 
 log = logging.getLogger("trimcp-notifications")
 
@@ -67,13 +69,22 @@ class NotificationDispatcher:
             log.error(f"Failed to send Teams notification: {e}")
 
     async def _send_email(self, title: str, message: str):
-        if not self.smtp_host: return
+        if not self.smtp_host:
+            return
+        try:
+            import aiosmtplib
+        except ImportError:
+            log.warning(
+                "Email alert skipped: aiosmtplib is not installed "
+                "(install optional dep or configure SMTP off)"
+            )
+            return
         try:
             msg = EmailMessage()
             msg.set_content(message)
-            msg['Subject'] = title
-            msg['From'] = "trimcp-alerts@example.com"
-            msg['To'] = "admin@example.com"
+            msg["Subject"] = title
+            msg["From"] = "trimcp-alerts@example.com"
+            msg["To"] = "admin@example.com"
             await aiosmtplib.send(msg, hostname=self.smtp_host, port=25, timeout=5)
         except Exception as e:
             log.error(f"Failed to send Email notification: {e}")

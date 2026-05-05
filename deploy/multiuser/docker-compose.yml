@@ -1,7 +1,7 @@
-# TriMCP Multi-User / on-prem stack (Phase 5) — seven services.
-# Diff vs repo root docker-compose.yml (dev): dev exposes four data services only (redis, postgres
-# ankane/pgvector, mongo, minio) for laptop work; this file adds worker, webhook-receiver, caddy,
-# uses pgvector/pgvector:pg16, standard MinIO :9000/:9001, and wires app containers to the stack.
+# TriMCP v1.0 — prefer repository-root docker-compose.yml (admin + cron + a2a + Caddy).
+#
+# This file remains for alternate port mappings. Shared env: ../compose.stack.env
+#   cd deploy/multiuser && docker compose up -d --build
 
 services:
   postgres:
@@ -32,7 +32,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     container_name: trimcp-redis
     ports:
       - "${REDIS_PORT:-6379}:6379"
@@ -41,7 +41,7 @@ services:
     restart: unless-stopped
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
     container_name: trimcp-minio
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mcp_admin}
@@ -52,6 +52,14 @@ services:
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"
+    restart: unless-stopped
+
+  # [D7] Never bundled in the worker image — HTTP OpenAI-compatible surface on 11435.
+  cognitive:
+    image: ghcr.io/sindrehaugen/trimcp-cognitive:v1
+    container_name: trimcp-cognitive
+    ports:
+      - "${COGNITIVE_PORT:-11435}:11435"
     restart: unless-stopped
 
   webhook-receiver:
@@ -69,7 +77,7 @@ services:
       ]
     container_name: trimcp-webhooks
     env_file:
-      - ${TRIMCP_ENV_FILE:-./env.example}
+      - ../compose.stack.env
     environment:
       REDIS_URL: redis://redis:6379/0
     ports:
@@ -84,7 +92,7 @@ services:
       dockerfile: deploy/multiuser/Dockerfile
     container_name: trimcp-worker
     env_file:
-      - ${TRIMCP_ENV_FILE:-./env.example}
+      - ../compose.stack.env
     environment:
       MONGO_URI: mongodb://mongodb:27017
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
@@ -93,6 +101,8 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
       MINIO_SECURE: "false"
+      TRIMCP_LLM_PROVIDER: ${TRIMCP_LLM_PROVIDER:-local-cognitive-model}
+      TRIMCP_COGNITIVE_BASE_URL: ${TRIMCP_COGNITIVE_BASE_URL:-http://cognitive:11435}
     depends_on:
       postgres:
         condition: service_healthy
@@ -102,10 +112,127 @@ services:
         condition: service_started
       minio:
         condition: service_started
+      cognitive:
+        condition: service_started
+    restart: unless-stopped
+
+  # APScheduler: bridge renewal, re-embedding sweeps, cognitive maintenance.
+  cron:
+    build:
+      context: ../..
+      dockerfile: deploy/multiuser/Dockerfile
+    command: ["python", "-m", "trimcp.cron"]
+    container_name: trimcp-cron
+    env_file:
+      - ../compose.stack.env
+    environment:
+      PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
+      TRIMCP_LLM_PROVIDER: ${TRIMCP_LLM_PROVIDER:-local-cognitive-model}
+      TRIMCP_COGNITIVE_BASE_URL: ${TRIMCP_COGNITIVE_BASE_URL:-http://cognitive:11435}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      cognitive:
+        condition: service_started
+    restart: unless-stopped
+
+  admin:
+    build:
+      context: ../..
+      dockerfile: deploy/multiuser/Dockerfile
+    command:
+      [
+        "uvicorn",
+        "admin_server:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8003",
+      ]
+    container_name: trimcp-admin
+    env_file:
+      - ../compose.stack.env
+    environment:
+      PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
+      TRIMCP_LLM_PROVIDER: ${TRIMCP_LLM_PROVIDER:-local-cognitive-model}
+      TRIMCP_COGNITIVE_BASE_URL: ${TRIMCP_COGNITIVE_BASE_URL:-http://cognitive:11435}
+    ports:
+      - "${ADMIN_PORT:-8003}:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      cognitive:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/api/health')",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 50s
+    restart: unless-stopped
+
+  a2a:
+    build:
+      context: ../..
+      dockerfile: deploy/multiuser/Dockerfile
+    command:
+      [
+        "uvicorn",
+        "trimcp.a2a_server:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8004",
+      ]
+    container_name: trimcp-a2a
+    env_file:
+      - ../compose.stack.env
+    environment:
+      PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
+      TRIMCP_LLM_PROVIDER: ${TRIMCP_LLM_PROVIDER:-local-cognitive-model}
+      TRIMCP_COGNITIVE_BASE_URL: ${TRIMCP_COGNITIVE_BASE_URL:-http://cognitive:11435}
+      TRIMCP_A2A_URL: ${TRIMCP_A2A_URL:-http://localhost:8004}
+    ports:
+      - "${A2A_PORT:-8004}:8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      cognitive:
+        condition: service_started
     restart: unless-stopped
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.8-alpine
     container_name: trimcp-caddy
     ports:
       - "${CADDY_HTTP_PORT:-80}:80"
@@ -116,6 +243,7 @@ services:
       - caddy_config:/config
     depends_on:
       - webhook-receiver
+      - admin
     restart: unless-stopped
 
 volumes:

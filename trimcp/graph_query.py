@@ -85,20 +85,29 @@ class GraphRAGTraverser:
                 # Phase 2.2: Time Travel Anchor Search
                 rows = await conn.fetch(
                     """
-                    WITH memory_events AS (
-                        SELECT 
+                    WITH ns AS (
+                        SELECT id, parent_id, (metadata->'fork_config'->>'forked_from_as_of')::timestamptz AS forked_as_of
+                        FROM namespaces WHERE id = $3::uuid
+                    ),
+                    memory_events AS (
+                        SELECT DISTINCT ON ((params->>'memory_id')::uuid)
                             (params->>'memory_id')::uuid AS memory_id,
                             event_type,
-                            params->'entities' AS entities,
-                            ROW_NUMBER() OVER (PARTITION BY (params->>'memory_id')::uuid ORDER BY event_seq DESC) as rn
+                            params->'entities' AS entities
                         FROM event_log
-                        WHERE namespace_id = $3::uuid AND occurred_at <= $4
+                        CROSS JOIN ns
+                        WHERE (
+                            (namespace_id = ns.id AND occurred_at <= $4)
+                            OR 
+                            (namespace_id = ns.parent_id AND occurred_at <= LEAST($4, ns.forked_as_of))
+                        )
                           AND event_type IN ('store_memory', 'forget_memory')
+                        ORDER BY (params->>'memory_id')::uuid, occurred_at DESC, event_seq DESC
                     ),
                     active_memories AS (
                         SELECT memory_id, entities 
                         FROM memory_events 
-                        WHERE rn = 1 AND event_type = 'store_memory'
+                        WHERE event_type = 'store_memory'
                     ),
                     historical_nodes AS (
                         SELECT DISTINCT ON (label)
@@ -158,20 +167,29 @@ class GraphRAGTraverser:
                     # Phase 2.2: Time Travel Edge Traversal
                     rows = await conn.fetch(
                         """
-                        WITH memory_events AS (
-                            SELECT 
-                                (params->>'memory_id')::uuid AS memory_id,
-                                event_type,
-                                params->'triplets' AS triplets,
-                                ROW_NUMBER() OVER (PARTITION BY (params->>'memory_id')::uuid ORDER BY event_seq DESC) as rn
-                            FROM event_log
-                            WHERE namespace_id = $2::uuid AND occurred_at <= $3
-                              AND event_type IN ('store_memory', 'forget_memory')
-                        ),
+                    WITH ns AS (
+                        SELECT id, parent_id, (metadata->'fork_config'->>'forked_from_as_of')::timestamptz AS forked_as_of
+                        FROM namespaces WHERE id = $2::uuid
+                    ),
+                    memory_events AS (
+                        SELECT DISTINCT ON ((params->>'memory_id')::uuid)
+                            (params->>'memory_id')::uuid AS memory_id,
+                            event_type,
+                            params->'triplets' AS triplets
+                        FROM event_log
+                        CROSS JOIN ns
+                        WHERE (
+                            (namespace_id = ns.id AND occurred_at <= $3)
+                            OR 
+                            (namespace_id = ns.parent_id AND occurred_at <= LEAST($3, ns.forked_as_of))
+                        )
+                          AND event_type IN ('store_memory', 'forget_memory')
+                        ORDER BY (params->>'memory_id')::uuid, occurred_at DESC, event_seq DESC
+                    ),
                         active_memories AS (
                             SELECT memory_id, triplets 
                             FROM memory_events 
-                            WHERE rn = 1 AND event_type = 'store_memory'
+                            WHERE event_type = 'store_memory'
                         ),
                         historical_edges AS (
                             SELECT 
@@ -307,20 +325,29 @@ class GraphRAGTraverser:
             if as_of and namespace_id:
                 rows = await conn.fetch(
                     """
-                    WITH memory_events AS (
-                        SELECT 
+                    WITH ns AS (
+                        SELECT id, parent_id, (metadata->'fork_config'->>'forked_from_as_of')::timestamptz AS forked_as_of
+                        FROM namespaces WHERE id = $2::uuid
+                    ),
+                    memory_events AS (
+                        SELECT DISTINCT ON ((params->>'memory_id')::uuid)
                             (params->>'memory_id')::uuid AS memory_id,
                             event_type,
-                            params->'entities' AS entities,
-                            ROW_NUMBER() OVER (PARTITION BY (params->>'memory_id')::uuid ORDER BY event_seq DESC) as rn
+                            params->'entities' AS entities
                         FROM event_log
-                        WHERE namespace_id = $2::uuid AND occurred_at <= $3
+                        CROSS JOIN ns
+                        WHERE (
+                            (namespace_id = ns.id AND occurred_at <= $3)
+                            OR 
+                            (namespace_id = ns.parent_id AND occurred_at <= LEAST($3, ns.forked_as_of))
+                        )
                           AND event_type IN ('store_memory', 'forget_memory')
+                        ORDER BY (params->>'memory_id')::uuid, occurred_at DESC, event_seq DESC
                     ),
                     active_memories AS (
                         SELECT memory_id, entities 
                         FROM memory_events 
-                        WHERE rn = 1 AND event_type = 'store_memory'
+                        WHERE event_type = 'store_memory'
                     ),
                     historical_nodes AS (
                         SELECT DISTINCT ON (label)

@@ -51,7 +51,7 @@ async def test_stdio_smoke_memory():
                 }),
                 timeout=30.0
             )
-            assert 'mongo_ref_id' in res.content[0].text
+            assert 'payload_ref' in res.content[0].text
             
             res_ctx = await asyncio.wait_for(
                 session.call_tool('get_recent_context', {

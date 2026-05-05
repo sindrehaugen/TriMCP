@@ -63,18 +63,18 @@ def process_code_indexing(filepath: str, raw_code: str, language: str, user_id: 
             async with engine.pg_pool.acquire() as conn:
                 async with conn.transaction():
                     await conn.execute(
-                        "DELETE FROM code_metadata WHERE filepath = $1 AND (user_id IS NOT DISTINCT FROM $2)",
+                        "DELETE FROM memories WHERE filepath = $1 AND (user_id IS NOT DISTINCT FROM $2)",
                         filepath,
                         user_id,
                     )
                     for chunk, vector in zip(chunks, vectors):
                         await conn.execute(
                             """
-                            INSERT INTO code_metadata
+                            INSERT INTO memories
                                 (filepath, language, node_type, name, start_line, end_line,
-                                 file_hash, embedding, content_fts, mongo_ref_id, user_id)
+                                 file_hash, embedding, content_fts, payload_ref, user_id, memory_type)
                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, 
-                                    to_tsvector('english', $9 || ' ' || $10), $11, $12)
+                                    to_tsvector('english', $9 || ' ' || $10), $11, $12, 'code_chunk')
                             """,
                             filepath, language, chunk.node_type, chunk.name,
                             chunk.start_line, chunk.end_line,

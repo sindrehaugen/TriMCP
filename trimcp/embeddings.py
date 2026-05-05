@@ -255,6 +255,82 @@ def _load_openvino_npu_bundle(model_dir: str, seq_len: int):
     return model, tokenizer, seq_len
 
 
+class CognitiveRemoteBackend(EmbeddingBackend):
+    """
+    OpenAI-compatible ``/v1/embeddings`` against the bundled cognitive image [D2/D7].
+
+    Base URL example: ``http://cognitive:11435`` (no trailing ``/v1`` — it is appended).
+    Auth: optional ``TRIMCP_COGNITIVE_API_KEY`` env var sent as ``Bearer`` if non-empty.
+    """
+
+    def __init__(self) -> None:
+        self._base = (cfg.TRIMCP_COGNITIVE_BASE_URL or "").rstrip("/")
+        self._model = (cfg.TRIMCP_COGNITIVE_EMBEDDING_MODEL or "").strip() or None
+
+    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
+        if not self._base:
+            log.warning("CognitiveRemoteBackend: empty base URL — stubbing.")
+            return [_stub_vector(t) for t in texts]
+        import httpx
+
+        api_key = cfg.TRIMCP_COGNITIVE_API_KEY
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        url = f"{self._base}/v1/embeddings"
+        payload: dict = {"input": texts}
+        if self._model:
+            payload["model"] = self._model
+
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                r = client.post(url, json=payload, headers=headers)
+                r.raise_for_status()
+                data = r.json()
+        except Exception as e:
+            log.error("Cognitive embedding HTTP failed: %s", e)
+            return [_stub_vector(t) for t in texts]
+
+        rows = data.get("data") if isinstance(data, dict) else None
+        if not rows or not isinstance(rows, list):
+            log.error("Cognitive embedding response missing data[]: %s", data)
+            return [_stub_vector(t) for t in texts]
+
+        # OpenAI-style payloads include ``index``; sort defensively when batched.
+        indexed: list[tuple[int, list[float]]] = []
+        for item in rows:
+            if not isinstance(item, dict):
+                log.error("Invalid embedding row from cognitive: %r", item)
+                return [_stub_vector(t) for t in texts]
+            emb = item.get("embedding")
+            if not isinstance(emb, list):
+                log.error("Invalid embedding row from cognitive: %r", item)
+                return [_stub_vector(t) for t in texts]
+            idx = int(item["index"]) if "index" in item else len(indexed)
+            indexed.append((idx, [float(x) for x in emb]))
+        indexed.sort(key=lambda t: t[0])
+        vectors = [v for _, v in indexed]
+
+        if len(vectors) != len(texts):
+            log.error(
+                "Cognitive embedding count mismatch: got %d expected %d",
+                len(vectors),
+                len(texts),
+            )
+            return [_stub_vector(t) for t in texts]
+
+        bad_dims = [len(v) for v in vectors if len(v) != VECTOR_DIM]
+        if bad_dims:
+            log.warning(
+                "Cognitive returned non-%d-dim vectors (dims=%s); PG schema expects %d",
+                VECTOR_DIM,
+                bad_dims[:5],
+                VECTOR_DIM,
+            )
+        return vectors
+
+
 class OpenVINONPUBackend(EmbeddingBackend):
     """
     Intel NPU via pre-exported OpenVINO IR (static shapes). Requires TRIMCP_OPENVINO_MODEL_DIR.
@@ -317,14 +393,27 @@ _BACKEND_BUILDERS = {
 def detect_backend() -> EmbeddingBackend:
     """
     Select backend from TRIMCP_BACKEND or auto-detect (§8.2 / §8.4 parity with Go wizard).
+
+    When ``TRIMCP_COGNITIVE_BASE_URL`` is set and ``TRIMCP_BACKEND`` is unset or unknown,
+    embeddings use the bundled cognitive HTTP API [D2/D7] instead of loading SentenceTransformer.
     """
     pref = cfg.TRIMCP_BACKEND
+    cognitive_url = (cfg.TRIMCP_COGNITIVE_BASE_URL or "").strip()
+
     if pref:
         if pref not in _BACKEND_BUILDERS:
             log.warning("Unknown TRIMCP_BACKEND=%r — falling back to auto-detect.", pref)
         else:
             log.info("Embedding backend forced by TRIMCP_BACKEND=%s", pref)
             return _BACKEND_BUILDERS[pref]()
+
+    if cognitive_url:
+        log.info(
+            "Embedding backend: CognitiveRemoteBackend (%s) [TRIMCP_LLM_PROVIDER=%s]",
+            cognitive_url,
+            cfg.TRIMCP_LLM_PROVIDER or "local-cognitive-model",
+        )
+        return CognitiveRemoteBackend()
 
     try:
         import torch

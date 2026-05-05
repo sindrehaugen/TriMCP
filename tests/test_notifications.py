@@ -1,15 +1,19 @@
-import asyncio
+import sys
 import pytest
-from unittest.mock import patch, AsyncMock
+import pytest_asyncio
+from unittest.mock import patch, AsyncMock, MagicMock
 from trimcp.notifications import NotificationDispatcher
 
-@pytest.fixture
-def dispatcher():
+
+@pytest_asyncio.fixture
+async def dispatcher():
     d = NotificationDispatcher()
     d.slack_webhook = "http://slack.webhook.local"
     d.teams_webhook = "http://teams.webhook.local"
     d.smtp_host = "smtp.mock.local"
-    return d
+    yield d
+    if d._worker_task is not None:
+        await d.stop_worker()
 
 @pytest.mark.asyncio
 async def test_slack_dispatch(dispatcher):
@@ -34,14 +38,16 @@ async def test_teams_dispatch(dispatcher):
 @pytest.mark.asyncio
 async def test_email_dispatch(dispatcher):
     """Verify SMTP emails are constructed and sent correctly."""
-    with patch("aiosmtplib.send", new_callable=AsyncMock) as mock_send:
+    fake = MagicMock()
+    fake.send = AsyncMock()
+    with patch.dict(sys.modules, {"aiosmtplib": fake}):
         await dispatcher._send_email("Test Alert", "System is down")
-        mock_send.assert_called_once()
-        msg = mock_send.call_args[0][0]
-        assert msg["Subject"] == "Test Alert"
-        assert msg["To"] == "admin@example.com"
-        assert msg["From"] == "trimcp-alerts@example.com"
-        assert mock_send.call_args[1]["hostname"] == "smtp.mock.local"
+    fake.send.assert_called_once()
+    msg = fake.send.call_args[0][0]
+    assert msg["Subject"] == "Test Alert"
+    assert msg["To"] == "admin@example.com"
+    assert msg["From"] == "trimcp-alerts@example.com"
+    assert fake.send.call_args[1]["hostname"] == "smtp.mock.local"
 
 @pytest.mark.asyncio
 async def test_snmp_dispatch(dispatcher):

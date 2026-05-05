@@ -41,13 +41,11 @@ The following items were previously listed as gaps; they now exist in the reposi
 
 ---
 
-### 2. Root `docker-compose.yml` uses pre-built image names
+### 2. Root `docker-compose.yml` — resolved for source builds
 
-**Status:** Services `worker` and `webhook-receiver` reference `trimcp-worker` and `trimcp-webhooks` images without `build:`.
+**Status:** Repo-root **`docker-compose.yml`** now uses **`build`** (`deploy/multiuser/Dockerfile`) for **`worker`** and **`webhook-receiver`**, plus pinned data-plane images and the **`cognitive`** sidecar [D2/D7].
 
-**Impact:** Fresh clones need either published images or a manual `docker build` aligning with tag names before `compose up`.
-
-**Remediation:** Prefer documenting `deploy/multiuser/docker-compose.yml` for builds from source, or add optional `build` blocks / documented `Makefile` targets.
+**Residual:** Operators who prefer pre-published images can still retag local builds or mirror `ghcr.io/sindrehaugen/trimcp-cognitive:v1` offline.
 
 ---
 

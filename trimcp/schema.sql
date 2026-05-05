@@ -122,11 +122,19 @@ CREATE TABLE IF NOT EXISTS kg_nodes (
     label        TEXT NOT NULL,
     entity_type  VARCHAR(64) NOT NULL DEFAULT 'UNKNOWN',
     embedding    VECTOR(768),
+    embedding_model_id UUID,
     payload_ref  CHAR(24),
     created_at   TIMESTAMPTZ DEFAULT NOW(),
     updated_at   TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (label)
 ) PARTITION BY HASH (label);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='kg_nodes' AND column_name='embedding_model_id') THEN
+        ALTER TABLE kg_nodes ADD COLUMN embedding_model_id UUID;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS kg_nodes_0 PARTITION OF kg_nodes FOR VALUES WITH (MODULUS 4, REMAINDER 0);
 CREATE TABLE IF NOT EXISTS kg_nodes_1 PARTITION OF kg_nodes FOR VALUES WITH (MODULUS 4, REMAINDER 1);
@@ -339,11 +347,88 @@ CREATE TABLE IF NOT EXISTS event_log_default PARTITION OF event_log DEFAULT;
 CREATE INDEX IF NOT EXISTS idx_event_log_ns_time ON event_log (namespace_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_event_log_ns_seq  ON event_log (namespace_id, event_seq);
 CREATE INDEX IF NOT EXISTS idx_event_log_parent  ON event_log (parent_event_id) WHERE parent_event_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_event_log_memory_id ON event_log (((params->>'memory_id')::uuid));
+CREATE INDEX IF NOT EXISTS idx_event_log_event_type ON event_log (event_type);
+CREATE INDEX IF NOT EXISTS idx_event_log_params_gin ON event_log USING GIN (params);
 
 DO $$
 BEGIN
     REVOKE ALL ON event_log FROM PUBLIC;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
         GRANT INSERT, SELECT ON event_log TO trimcp_app;
+    END IF;
+END $$;
+
+-- --- Phase 3.1: A2A (Agent-to-Agent) Sharing Grants ---
+CREATE TABLE IF NOT EXISTS a2a_grants (
+    id                   UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_namespace_id   UUID        NOT NULL REFERENCES namespaces(id),
+    owner_agent_id       TEXT        NOT NULL,
+    target_namespace_id  UUID,                       -- NULL = any bearer is valid
+    target_agent_id      TEXT,                       -- NULL = any agent
+    scopes               JSONB       NOT NULL,
+    token_hash           BYTEA       NOT NULL UNIQUE, -- SHA-256 of sharing token
+    status               TEXT        NOT NULL DEFAULT 'active'
+                                     CHECK (status IN ('active', 'revoked', 'expired')),
+    expires_at           TIMESTAMPTZ NOT NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Active-token lookup (most frequent hot path)
+CREATE INDEX IF NOT EXISTS idx_a2a_grants_token_active
+    ON a2a_grants (token_hash)
+    WHERE status = 'active';
+
+-- Owner namespace list-grants query
+CREATE INDEX IF NOT EXISTS idx_a2a_grants_owner
+    ON a2a_grants (owner_namespace_id, status);
+
+-- Expiry sweep (background janitor)
+CREATE INDEX IF NOT EXISTS idx_a2a_grants_expires
+    ON a2a_grants (expires_at)
+    WHERE status = 'active';
+
+DO $$
+BEGIN
+    REVOKE ALL ON a2a_grants FROM PUBLIC;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
+        GRANT INSERT, SELECT, UPDATE ON a2a_grants TO trimcp_app;
+    END IF;
+END $$;
+
+-- --- Phase 3.2: Multi-namespace resource quotas ---
+-- Counters are incremented atomically on the hot path (single TX, small UPDATE set).
+-- Namespace-wide rows use agent_id IS NULL; per-agent rows set agent_id.
+-- Enforcement applies only where matching rows exist (no row => no limit for that scope).
+CREATE TABLE IF NOT EXISTS resource_quotas (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    namespace_id    UUID NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    agent_id        TEXT,
+    resource_type   TEXT NOT NULL,
+    limit_amount    BIGINT NOT NULL CHECK (limit_amount >= 0),
+    used_amount     BIGINT NOT NULL DEFAULT 0 CHECK (used_amount >= 0),
+    reset_at        TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (agent_id IS NULL OR (length(agent_id) >= 1 AND length(agent_id) <= 128)),
+    CHECK (resource_type <> '')
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_resource_quotas_ns_res
+    ON resource_quotas (namespace_id, resource_type)
+    WHERE agent_id IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_resource_quotas_ns_agent_res
+    ON resource_quotas (namespace_id, agent_id, resource_type)
+    WHERE agent_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_resource_quotas_ns_type
+    ON resource_quotas (namespace_id, resource_type);
+
+DO $$
+BEGIN
+    REVOKE ALL ON resource_quotas FROM PUBLIC;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON resource_quotas TO trimcp_app;
     END IF;
 END $$;

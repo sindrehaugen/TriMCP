@@ -1,3 +1,8 @@
+# Cryptographic signing (Phase 0.2 — HMAC-SHA256 + AES-256-GCM key storage + JWT bridge)
+cryptography>=42.0.0
+jcs>=0.3.0          # RFC 8785 canonical JSON — required for all JCS signing inputs
+PyJWT>=2.8.0        # JWT Bearer token validation (uses cryptography backend for RS256/ES256)
+
 # Async Database Drivers
 redis>=5.0.1
 asyncpg>=0.29.0
@@ -15,7 +20,8 @@ starlette>=0.36.0
 fastapi>=0.109.0
 uvicorn>=0.27.0
 httpx>=0.27.0
-aiosmtplib>=3.0.1
+# SMTP alerts (lazy-imported in trimcp.notifications — safe to omit in minimal dev installs)
+aiosmtplib>=3.0.1,<4
 
 # Phase 2: Graphify — entity/relation extraction
 spacy>=3.7.0
@@ -39,6 +45,9 @@ torch>=2.1.2
 
 # Phase 7: Quad-Stack Media Ingestion
 minio>=7.2.0
+
+# Phase 1.2: Sleep consolidation — clustering (HDBSCAN)
+scikit-learn>=1.3.0
 
 # Testing
 pytest>=8.0.0

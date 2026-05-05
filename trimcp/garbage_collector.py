@@ -1,8 +1,8 @@
 """
 Tri-Stack Garbage Collector
 Runs every hour as an async background task.
-Finds MongoDB documents older than 5 minutes with no matching mongo_ref_id
-in either PG table (memory_metadata or code_metadata), then deletes them.
+Finds MongoDB documents older than 5 minutes with no matching payload_ref
+in either PG table (memories or memories), then deletes them.
 Guarantees data purity even if the Python process is hard-killed mid-transaction.
 
 Hardening:
@@ -79,20 +79,20 @@ async def _fetch_pg_refs(pg_pool: asyncpg.Pool) -> set[str]:
     """
     pg_refs: set[str] = set()
 
-    for table in ("memory_metadata", "code_metadata"):
+    for table in ("memories",):
         offset = 0
         while True:
             async with pg_pool.acquire() as conn:
                 # Parameterised LIMIT/OFFSET — table name is from a hardcoded tuple, not user input
                 rows = await conn.fetch(
-                    f"SELECT mongo_ref_id FROM {table} "   # noqa: S608 — table is not user-controlled
-                    f"WHERE mongo_ref_id IS NOT NULL "
+                    f"SELECT payload_ref FROM {table} "   # noqa: S608 — table is not user-controlled
+                    f"WHERE payload_ref IS NOT NULL "
                     f"LIMIT $1 OFFSET $2",
                     PAGE_SIZE, offset,
                 )
             if not rows:
                 break
-            pg_refs.update(row["mongo_ref_id"] for row in rows)
+            pg_refs.update(row["payload_ref"] for row in rows)
             offset += PAGE_SIZE
 
             if len(rows) < PAGE_SIZE:

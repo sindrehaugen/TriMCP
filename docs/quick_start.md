@@ -1,37 +1,28 @@
 # TriMCP Quick Start Guide
 
-Welcome to TriMCP v2.2. This guide covers the installation of the TriMCP client, selecting your deployment mode, and connecting the engine to your preferred LLM interface (Cursor or Claude Desktop).
+Welcome to **TriMCP v1.0**. This guide covers running the engine **from source** (Docker + Python), selecting a deployment posture, and connecting the MCP server to Cursor or Claude Desktop. Package installers, when available, layer on top of the same `server.py` and Compose stack.
 
-## 1. Download and Install
+## 1. Prerequisite: stack and repo
 
-TriMCP provides a unified native installer (`trimcp-launch`) for all supported platforms.
+- Install **Docker Desktop** (or compatible engine) and **Python 3.9+**.
+- Clone the repository and install dependencies (`pip install -r requirements.txt` or your env manager).
 
-- **Windows**: Download the `.exe` or `.msi` (Enterprise) installer.
-- **macOS**: Download the `.dmg` (Universal Binary for Apple Silicon and Intel).
-- **Linux**: Download the standalone binary.
+## 2. Deployment posture (conceptual)
 
-Run the installer. The setup wizard will prompt you to select your **Deployment Mode**.
+### Local (default dev)
 
-## 2. Select Deployment Mode
+- Run **PostgreSQL**, **MongoDB**, **Redis**, and **MinIO** via the repo’s `docker-compose` (see [deploy/README.md](../deploy/README.md)).
+- Copy `.env.example` → `.env` and set connection strings.
 
-During installation, you must choose how TriMCP connects to its underlying Quad-DB storage stack:
+### Multi-user
 
-### Local Mode
-Best for solo developers and highly sensitive, offline-only data.
-- **How it works**: The installer automatically configures Docker Desktop on your machine to run PostgreSQL/pgvector, MongoDB, Redis, and MinIO locally.
-- **Requirements**: Docker Desktop must be installed and running.
+- Same services, hosted for a team: enforce **namespace isolation**, **HMAC/JWT auth**, and **quotas** in production (see `admin_server.py`, tests under `tests/test_a2a.py` and `tests/test_quotas.py`).
 
-### Multi-User Mode
-Best for single-office teams sharing a centralized knowledge base.
-- **How it works**: Connects to an on-premise server running the TriMCP database stack.
-- **Requirements**: You will be prompted for your Active Directory UPN (User Principal Name) for identity resolution and the internal IP/hostname of your office server. Requires office LAN or VPN access.
+### Cloud
 
-### Cloud Mode
-Best for distributed enterprises and remote workforces.
-- **How it works**: Connects to managed cloud services (AWS, Azure, or GCP) provisioned by your IT department.
-- **Requirements**: Requires your corporate IAM identity/SSO login and the cloud endpoint URL provided by your administrator.
+- Use managed equivalents for each store; point `.env` at cloud URIs. No code changes required for the v1.0 paths.
 
-## 3. Connect to Your LLM Client
+## 3. Connect to your LLM client
 
 TriMCP operates as a Model Context Protocol (MCP) server over standard input/output (`stdio`). Once installed, configure your client to point to the `server.py` entrypoint.
 
@@ -63,11 +54,21 @@ Add the following configuration:
 }
 ```
 
-*Note: In Multi-User and Cloud modes, authentication and connection strings are managed automatically by the `trimcp-launch` shim and your local environment variables. You do not need to hardcode database credentials into the MCP configuration.*
+*Note: In shared deployments, manage **secrets** via your platform; do not hardcode database passwords in MCP JSON when avoid.*
 
-## 4. Verify Installation
+## 4. Verify installation
 
 Once connected, restart your LLM client and ask:
 > "What MCP tools do you have available for TriMCP?"
 
-You should see tools like `semantic_search`, `store_memory`, `index_code_file`, and `graph_search` ready for use.
+You should see tools such as `semantic_search` (with optional `as_of`), `graph_search`, `store_memory`, `index_code_file`, bridge tools, salience, contradictions, replay, and migration tools — see `server.py` for the authoritative list.
+
+---
+
+## Architecture reference
+
+**v1.0 runtime** (temporal engine, A2A protocol, cognitive / background workers, Mermaid diagrams): [architecture-v1.md](./architecture-v1.md).
+
+Phase **0.1** / **0.2** (multi-tenant model, signing): [architecture-phase-0-1-0-2.md](./architecture-phase-0-1-0-2.md).
+
+**Docker Compose** defaults: [deploy/README.md](../deploy/README.md).

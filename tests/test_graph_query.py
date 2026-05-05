@@ -37,7 +37,7 @@ def traverser(mock_pg_pool, mock_mongo_client):
 async def test_find_anchor(traverser, mock_pg_pool):
     _, conn = mock_pg_pool
     conn.fetch.return_value = [
-        {"label": "Redis", "entity_type": "TOOL", "mongo_ref_id": "123", "distance": 0.1}
+        {"label": "Redis", "entity_type": "TOOL", "payload_ref": "123", "distance": 0.1}
     ]
     
     anchors = await traverser._find_anchor("query", top_k=1)
@@ -57,7 +57,7 @@ async def test_bfs(traverser, mock_pg_pool):
             "subject_label": "Redis",
             "predicate": "caches",
             "object_label": "Data",
-            "mongo_ref_id": "456",
+            "payload_ref": "456",
             "decayed_confidence": 0.9
         }
     ]
@@ -94,21 +94,21 @@ async def test_search_full_pipeline(traverser, mock_pg_pool, mock_mongo_client):
     
     # Setup step 1: find anchor
     async def mock_find_anchor(*args, **kwargs):
-        return [GraphNode(label="Anchor", entity_type="CONCEPT", mongo_ref_id="abc", distance=0.0)]
+        return [GraphNode(label="Anchor", entity_type="CONCEPT", payload_ref="abc", distance=0.0)]
         
     traverser._find_anchor = mock_find_anchor
     
     # Setup step 2: bfs
     async def mock_bfs(*args, **kwargs):
-        edges = [GraphEdge(subject="Anchor", predicate="is", obj="Target", confidence=1.0, mongo_ref_id="def")]
+        edges = [GraphEdge(subject="Anchor", predicate="is", obj="Target", confidence=1.0, payload_ref="def")]
         return {"Anchor", "Target"}, edges
         
     traverser._bfs = mock_bfs
     
     # Setup step 3: node metadata query
     conn.fetch.return_value = [
-        {"label": "Anchor", "entity_type": "CONCEPT", "mongo_ref_id": "abc"},
-        {"label": "Target", "entity_type": "CONCEPT", "mongo_ref_id": "xyz"}
+        {"label": "Anchor", "entity_type": "CONCEPT", "payload_ref": "abc"},
+        {"label": "Target", "entity_type": "CONCEPT", "payload_ref": "xyz"}
     ]
     
     # Setup step 4: hydrate
