@@ -26,22 +26,20 @@ Azure OpenAI uses a different URL shape and authenticates either via
 (Azure AD / managed identity).  Pass ``azure_api_version`` if the default
 is too new for your deployment.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import List, Optional, Type
 
-import httpx
-from pydantic import ValidationError
-
+from trimcp.providers._http_utils import post_with_error_handling
 from trimcp.providers.base import (
     LLMProvider,
     LLMProviderError,
-    LLMTimeoutError,
-    LLMValidationError,
     Message,
     ResponseModelT,
+    _redact_api_key,
+    validate_base_url,
 )
 from trimcp.providers.local_cognitive import _parse_and_validate
 
@@ -90,17 +88,20 @@ class OpenAICompatProvider(LLMProvider):
         provider_name: str = "openai_compat",
         is_azure: bool = False,
         azure_api_version: str = "2024-10-21",
-        use_strict_json_schema: Optional[bool] = None,
+        use_strict_json_schema: bool | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
-        self._base_url               = base_url.rstrip("/")
-        self._api_key                = api_key
-        self._model                  = model
-        self._provider_name          = provider_name
-        self._is_azure               = is_azure
-        self._azure_api_version      = azure_api_version
+        # SSRF guard — reject private / loopback IPs and enforce HTTPS.
+        validate_base_url(base_url)
+
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._model = model
+        self._provider_name = provider_name
+        self._is_azure = is_azure
+        self._azure_api_version = azure_api_version
         self._use_strict_json_schema = use_strict_json_schema
-        self._timeout                = timeout
+        self._timeout = timeout
 
     # ------------------------------------------------------------------
     # LLMProvider interface
@@ -108,8 +109,8 @@ class OpenAICompatProvider(LLMProvider):
 
     async def complete(
         self,
-        messages: List[Message],
-        response_model: Type[ResponseModelT],
+        messages: list[Message],
+        response_model: type[ResponseModelT],
     ) -> ResponseModelT:
         schema = response_model.model_json_schema()
         msg_dicts = [{"role": m.role.value, "content": m.content} for m in messages]
@@ -121,7 +122,9 @@ class OpenAICompatProvider(LLMProvider):
         for attempt in range(2):
             body = self._build_request_body(msg_dicts, schema, response_model.__name__, strict)
             try:
-                raw = await self._post(body)
+                raw = await self.execute_with_retry(
+                    lambda b=body: self._post(b),
+                )
             except LLMProviderError as exc:
                 if (
                     attempt == 0
@@ -144,6 +147,16 @@ class OpenAICompatProvider(LLMProvider):
 
     def model_identifier(self) -> str:
         return f"{self._provider_name}/{self._model}"
+
+    def __repr__(self) -> str:
+        parts = [
+            f"model={self._model!r}",
+            f"provider={self._provider_name!r}",
+            f"api_key={_redact_api_key(self._api_key)!r}",
+        ]
+        if self._is_azure:
+            parts.append("azure=True")
+        return f"OpenAICompatProvider({', '.join(parts)})"
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -168,31 +181,34 @@ class OpenAICompatProvider(LLMProvider):
         else:
             # Embed schema in system prompt and request untyped JSON.
             schema_str = json.dumps(schema, indent=2)
-            messages   = list(messages)  # shallow copy
-            messages.insert(0, {
-                "role": "system",
-                "content": (
-                    "You MUST return ONLY valid JSON that strictly matches "
-                    f"this JSON Schema. No markdown. No commentary.\n\n{schema_str}"
-                ),
-            })
+            messages = list(messages)  # shallow copy
+            messages.insert(
+                0,
+                {
+                    "role": "system",
+                    "content": (
+                        "You MUST return ONLY valid JSON that strictly matches "
+                        f"this JSON Schema. No markdown. No commentary.\n\n{schema_str}"
+                    ),
+                },
+            )
             response_format = {"type": "json_object"}
 
         return {
-            "model":           self._model,
-            "messages":        messages,
+            "model": self._model,
+            "messages": messages,
             "response_format": response_format,
         }
 
     def _build_headers(self) -> dict:
         if self._is_azure:
             return {
-                "api-key":      self._api_key,
+                "api-key": self._api_key,
                 "Content-Type": "application/json",
             }
         return {
             "Authorization": f"Bearer {self._api_key}",
-            "Content-Type":  "application/json",
+            "Content-Type": "application/json",
         }
 
     def _build_url(self) -> str:
@@ -201,31 +217,21 @@ class OpenAICompatProvider(LLMProvider):
         return f"{self._base_url}/chat/completions"
 
     async def _post(self, body: dict) -> str:
+        data = await post_with_error_handling(
+            url=self._build_url(),
+            body=body,
+            timeout=self._timeout,
+            model_id=self.model_identifier(),
+            headers=self._build_headers(),
+            error_prefix=f"HTTP request to {self.model_identifier()} failed",
+        )
+
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(
-                    self._build_url(),
-                    headers=self._build_headers(),
-                    json=body,
-                )
-        except httpx.TimeoutException as exc:
-            raise LLMTimeoutError(
-                f"{self.model_identifier()} timed out after {self._timeout}s",
-                provider=self.model_identifier(),
-            ) from exc
-        except httpx.RequestError as exc:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
             raise LLMProviderError(
-                f"HTTP request to {self.model_identifier()} failed: {exc}",
+                f"{self.model_identifier()} response missing expected structure: {str(data)[:300]}",
                 provider=self.model_identifier(),
             ) from exc
 
-        if not resp.is_success:
-            raise LLMProviderError(
-                f"{self.model_identifier()} returned HTTP {resp.status_code}",
-                provider=self.model_identifier(),
-                status_code=resp.status_code,
-                upstream_message=resp.text[:500],
-            )
-
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        return content

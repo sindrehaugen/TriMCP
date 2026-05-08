@@ -1,14 +1,75 @@
 import asyncio
-import logging
+import gc
 import json
+import logging
 from typing import Any
+
 import asyncpg
 from bson import ObjectId
 
-from trimcp.config import cfg
 from trimcp import embeddings as _embeddings
 
 log = logging.getLogger(__name__)
+
+
+def _record_vram_metrics(worker_id: str = "default") -> None:
+    """Record CUDA VRAM usage to Prometheus gauges (Item 49).
+
+    Gracefully no-ops when torch is missing or running on CPU.
+    Resets the peak memory allocator stat after reading so each
+    measurement window is independent.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+    except (ImportError, RuntimeError):
+        return
+
+    try:
+        from trimcp.observability import (
+            REEMBEDDER_VRAM_ALLOCATED,
+            REEMBEDDER_VRAM_PEAK,
+            REEMBEDDER_VRAM_RESERVED,
+        )
+
+        allocated = torch.cuda.memory_allocated()
+        reserved = torch.cuda.memory_reserved()
+        peak = torch.cuda.max_memory_allocated()
+
+        REEMBEDDER_VRAM_ALLOCATED.labels(worker_id=worker_id).set(allocated)
+        REEMBEDDER_VRAM_RESERVED.labels(worker_id=worker_id).set(reserved)
+        REEMBEDDER_VRAM_PEAK.labels(worker_id=worker_id).set(peak)
+
+        # Reset peak so the next measurement captures a fresh window
+        torch.cuda.reset_peak_memory_stats()
+
+        log.debug(
+            "VRAM metrics recorded: allocated=%d reserved=%d peak=%d",
+            allocated,
+            reserved,
+            peak,
+        )
+    except Exception:
+        log.debug("VRAM metric recording skipped (metrics not available)", exc_info=True)
+
+
+def _release_embedding_batch_memory(worker_id: str = "default") -> None:
+    """Free Python refs and return unused blocks to the CUDA allocator after a batch.
+
+    Also records VRAM usage metrics for Prometheus (Item 49).
+    """
+    _record_vram_metrics(worker_id=worker_id)
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except (ImportError, RuntimeError):
+        pass
+
 
 async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
     """
@@ -29,7 +90,7 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
                     LIMIT 1
                     """
                 )
-                
+
                 if not migration:
                     await asyncio.sleep(10)
                     continue
@@ -38,7 +99,7 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
                 target_model_id = migration["target_model_id"]
                 last_memory_id = migration["last_memory_id"]
                 last_node_id = migration["last_node_id"]
-                model_name = migration["model_name"]
+                migration["model_name"]
 
                 # Process memories
                 # We use keyset pagination on memories.id
@@ -61,25 +122,46 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
                     memories_batch = await conn.fetch(memories_query, last_memory_id)
 
                 if memories_batch:
-                    # Hydrate from Mongo
+                    # Hydrate from Mongo using optimized bulk lookup
                     db = mongo_client.memory_archive
                     texts_to_embed = []
                     valid_memories = []
+
+                    # Map valid ObjectIds to their original memories
+                    ref_to_row = {}
+                    oids = []
                     for row in memories_batch:
-                        doc = await db.episodes.find_one({"_id": ObjectId(row["payload_ref"])})
-                        if doc and doc.get("raw_data"):
-                            # We re-embed the raw_data or summary. 
-                            # Since we don't store summary separately in Mongo, we embed raw_data.
-                            # In a real scenario, we'd ensure we embed the exact same text.
-                            texts_to_embed.append(doc["raw_data"])
-                            valid_memories.append(row["id"])
-                    
+                        ref = row.get("payload_ref")
+                        if ref:
+                            try:
+                                oid = ObjectId(ref)
+                                oids.append(oid)
+                                ref_to_row[oid] = row
+                            except Exception:
+                                log.warning(
+                                    "Skipping invalid ObjectId payload_ref in re-embedder: %s", ref
+                                )
+
+                    if oids:
+                        docs = {}
+                        cursor = db.episodes.find({"_id": {"$in": oids}}, {"raw_data": 1})
+                        async for doc in cursor:
+                            docs[doc["_id"]] = doc
+
+                        # Process in order to align properly
+                        for oid in oids:
+                            doc = docs.get(oid)
+                            if doc and doc.get("raw_data"):
+                                texts_to_embed.append(doc["raw_data"])
+                                valid_memories.append(ref_to_row[oid]["id"])
+
                     if texts_to_embed:
                         # Embed batch
                         # Note: In a real implementation, we'd use the specific model_name
                         # For this MVP, we use the default embedder
-                        vectors = await _embeddings.embed_batch(texts_to_embed)
-                        
+                        batch = await _embeddings.embed_batch(texts_to_embed)
+                        vectors = batch
+
                         # Insert into memory_embeddings
                         async with conn.transaction():
                             for mem_id, vec in zip(valid_memories, vectors):
@@ -89,16 +171,24 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
                                     VALUES ($1, $2, $3::vector)
                                     ON CONFLICT DO NOTHING
                                     """,
-                                    mem_id, target_model_id, json.dumps(vec)
+                                    mem_id,
+                                    target_model_id,
+                                    json.dumps(vec),
                                 )
-                            
+
                             # Update migration state
                             new_last_id = memories_batch[-1]["id"]
                             await conn.execute(
                                 "UPDATE embedding_migrations SET last_memory_id = $1 WHERE id = $2",
-                                new_last_id, migration_id
+                                new_last_id,
+                                migration_id,
                             )
-                    continue # Loop immediately to process next batch
+
+                        del batch
+                        del vectors
+                        del texts_to_embed
+                        _release_embedding_batch_memory()
+                    continue  # Loop immediately to process next batch
 
                 # If memories are done, process kg_nodes
                 nodes_query = """
@@ -122,9 +212,10 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
                 if nodes_batch:
                     texts_to_embed = [row["label"] for row in nodes_batch]
                     valid_nodes = [row["id"] for row in nodes_batch]
-                    
-                    vectors = await _embeddings.embed_batch(texts_to_embed)
-                    
+
+                    batch = await _embeddings.embed_batch(texts_to_embed)
+                    vectors = batch
+
                     async with conn.transaction():
                         for node_id, vec in zip(valid_nodes, vectors):
                             await conn.execute(
@@ -133,26 +224,37 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
                                 VALUES ($1, $2, $3::vector)
                                 ON CONFLICT DO NOTHING
                                 """,
-                                node_id, target_model_id, json.dumps(vec)
+                                node_id,
+                                target_model_id,
+                                json.dumps(vec),
                             )
-                        
+
                         new_last_id = nodes_batch[-1]["id"]
                         await conn.execute(
                             "UPDATE embedding_migrations SET last_node_id = $1 WHERE id = $2",
-                            new_last_id, migration_id
+                            new_last_id,
+                            migration_id,
                         )
+
+                    del batch
+                    del vectors
+                    del texts_to_embed
+                    _release_embedding_batch_memory()
                     continue
 
                 # If both are done, mark as validating
                 await conn.execute(
                     "UPDATE embedding_migrations SET status = 'validating' WHERE id = $1",
-                    migration_id
+                    migration_id,
                 )
-                log.info(f"Migration {migration_id} finished processing. Status set to validating.")
+                log.info(
+                    "Migration %s finished processing. Status set to validating.", migration_id
+                )
 
         except Exception as e:
-            log.error(f"Re-embedding worker error: {e}")
+            log.error("Re-embedding worker error: %s", e)
             await asyncio.sleep(10)
+
 
 def start_re_embedder(pg_pool, mongo_client):
     asyncio.create_task(run_re_embedding_worker(pg_pool, mongo_client))

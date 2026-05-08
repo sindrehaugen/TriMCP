@@ -1,9 +1,10 @@
 import asyncio
 import logging
-import hashlib
-from trimcp.orchestrator import TriStackEngine, MemoryPayload
+
+from trimcp.orchestrator import MemoryPayload, TriStackEngine
 
 logging.basicConfig(level=logging.INFO)
+
 
 async def test_path_traversal(engine):
     print("\n--- Testing Path Traversal Protection ---")
@@ -11,7 +12,7 @@ async def test_path_traversal(engine):
         "../../etc/passwd",
         "C:\\Windows\\System32\\config\\SAM",
         "/etc/shadow",
-        "nested/../../../secret.txt"
+        "nested/../../../secret.txt",
     ]
     for path in bad_paths:
         try:
@@ -20,18 +21,19 @@ async def test_path_traversal(engine):
         except ValueError as e:
             print(f"PASS: {path} rejected: {e}")
 
+
 async def test_hybrid_search(engine):
     print("\n--- Testing Hybrid Search (RRF) ---")
     user_id = "test_verify_user"
     session_id = "session_1"
-    
+
     # 1. Ingest test data
     payload = MemoryPayload(
         user_id=user_id,
         session_id=session_id,
         content_type="chat",
         summary="Scaling TriMCP with async queues and hybrid search.",
-        heavy_payload="Detailed technical documentation about the TriMCP scalability expansion plan."
+        heavy_payload="Detailed technical documentation about the TriMCP scalability expansion plan.",
     )
     await engine.store_memory(payload)
     print("Ingested test memory.")
@@ -48,6 +50,7 @@ async def test_hybrid_search(engine):
     else:
         print("FAIL: no results found for valid query")
 
+
 async def test_async_queue(engine):
     print("\n--- Testing Async Job Queue ---")
     try:
@@ -58,11 +61,12 @@ async def test_async_queue(engine):
             status = await engine.get_job_status(res.get("job_id"))
             print(f"Job status check: {status}")
         elif res.get("status") == "skipped":
-             print("Job skipped (already indexed).")
+            print("Job skipped (already indexed).")
         else:
-             print(f"Unexpected status: {res.get('status')}")
+            print(f"Unexpected status: {res.get('status')}")
     except Exception as e:
         print(f"Error during async queue test: {e}")
+
 
 async def main():
     engine = TriStackEngine()
@@ -73,6 +77,7 @@ async def main():
         await test_async_queue(engine)
     finally:
         await engine.disconnect()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

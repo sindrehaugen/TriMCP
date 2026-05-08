@@ -1,5 +1,9 @@
 #!/bin/bash
 set -e
+#
+# Prerequisites: Universal binary at build/macos/trimcp-launch (built in CI via
+# go/cmd/trimcp-launch: lipo amd64+arm64). That binary is copied as CFBundleExecutable.
+#
 
 APP_NAME="TriMCP"
 APP_DIR="build/macos/${APP_NAME}.app"
@@ -16,9 +20,23 @@ mkdir -p "${APP_DIR}/Contents/Frameworks"
 cp build/macos/trimcp-launch "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
 # Copy Python framework and assets
+mkdir -p "${APP_DIR}/Contents/Resources/app"
 cp -R build/macos/assets/python/* "${APP_DIR}/Contents/Frameworks/"
 cp -R build/macos/assets/models "${APP_DIR}/Contents/Resources/"
 cp -R build/macos/assets/wheels "${APP_DIR}/Contents/Resources/"
+
+# Copy TriMCP v1.0 deployment stack
+cp docker-compose.yml "${APP_DIR}/Contents/Resources/app/"
+cp Caddyfile "${APP_DIR}/Contents/Resources/app/"
+cp requirements.txt "${APP_DIR}/Contents/Resources/app/"
+cp -R trimcp "${APP_DIR}/Contents/Resources/app/"
+cp -R admin "${APP_DIR}/Contents/Resources/app/"
+cp -R deploy "${APP_DIR}/Contents/Resources/app/"
+cp *.py "${APP_DIR}/Contents/Resources/app/"
+
+# Copy IDE patching script
+cp build/macos/Patch-IDEConfig.sh "${APP_DIR}/Contents/Resources/"
+chmod +x "${APP_DIR}/Contents/Resources/Patch-IDEConfig.sh"
 
 # Create Info.plist
 cat > "${APP_DIR}/Contents/Info.plist" <<EOF

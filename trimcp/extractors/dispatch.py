@@ -1,14 +1,56 @@
-"""Extension → async extractor routing (Appendix J.1)."""
+"""Extension → async extractor routing (Appendix J.1).
+
+Queue dispatch (§5.4): lane-based priority routing via RQ.
+Real-time / API extractions land on ``high_priority``; batch / webhook
+processing lands on ``batch_processing``.  The worker dequeues
+``high_priority`` first (see ``start_worker.py``).
+"""
+
 from __future__ import annotations
 
 import logging
 import mimetypes
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
-from trimcp.extractors.core import empty_skipped, ExtractionResult
+if TYPE_CHECKING:
+    from rq import Queue
+
+from trimcp.extractors.core import ExtractionResult, empty_skipped
 from trimcp.extractors.encryption import maybe_encrypted_skip
 
 log = logging.getLogger(__name__)
+
+# ── Priority queue lane names ──────────────────────────────────────────
+HIGH_PRIORITY_QUEUE = "high_priority"
+"""Queue lane for user-facing / real-time API calls (default priority > 0)."""
+
+BATCH_QUEUE = "batch_processing"
+"""Queue lane for webhooks, bridge resyncs, and bulk ``index_all.py`` runs."""
+
+_DEFAULT_QUEUE = "default"
+"""Legacy queue name — retained for backward compatibility with RQ defaults."""
+
+
+def get_queue_name(priority: int = 0) -> str:
+    """Map a numeric priority to a Redis queue lane name.
+
+    * ``priority > 0``  → ``"high_priority"``
+    * ``priority == 0`` → ``"batch_processing"``
+    """
+    return HIGH_PRIORITY_QUEUE if priority > 0 else BATCH_QUEUE
+
+
+def get_priority_queue(priority: int, connection: Any) -> Queue:
+    """Return an RQ ``Queue`` routed to the correct lane for *priority*.
+
+    Thin wrapper so enqueue sites don't have to import RQ themselves.
+    ``connection`` must be a *sync* Redis client (``redis.Redis``).
+    """
+    from rq import Queue
+
+    return Queue(get_queue_name(priority), connection=connection)
+
 
 Handler = Callable[[bytes], Awaitable[ExtractionResult]]
 
@@ -68,13 +110,15 @@ def ensure_registered() -> None:
     global _initialized
     if _initialized:
         return
-    from trimcp.extractors import adobe_ext  # noqa: F401
-    from trimcp.extractors import cad_ext  # noqa: F401
-    from trimcp.extractors import diagrams  # noqa: F401
-    from trimcp.extractors import email_ext  # noqa: F401
-    from trimcp.extractors import pdf_ext  # noqa: F401
-    from trimcp.extractors import plaintext  # noqa: F401
-    from trimcp.extractors import project_ext  # noqa: F401
+    from trimcp.extractors import (
+        adobe_ext,  # noqa: F401
+        cad_ext,  # noqa: F401
+        diagrams,  # noqa: F401
+        email_ext,  # noqa: F401
+        pdf_ext,  # noqa: F401
+        plaintext,  # noqa: F401
+        project_ext,  # noqa: F401
+    )
     from trimcp.extractors.office_excel import extract_xls, extract_xlsx
     from trimcp.extractors.office_pptx import extract_ppt, extract_pptx
     from trimcp.extractors.office_word import extract_doc, extract_docx
@@ -126,22 +170,34 @@ async def extract_bytes(
     filename: str | None = None,
     mime_type: str | None = None,
 ) -> ExtractionResult:
-    ensure_registered()
-    ext = _resolve_ext(filename, mime_type)
-    if not ext or ext not in _REGISTRY:
-        return empty_skipped(
-            "dispatch",
-            "unsupported_format",
-            warnings=[f"unknown or unregistered extension: {ext!r} (file={filename!r})"],
-        )
-    enc = maybe_encrypted_skip(blob, filename=filename, extension=ext)
-    if enc is not None:
-        return enc
-    try:
-        return await _REGISTRY[ext](blob)
-    except Exception as e:
-        log.warning("extract_bytes failed ext=%s: %s", ext, e, exc_info=True)
-        return empty_skipped("dispatch", "extraction_failed", warnings=[str(e)])
+    from trimcp.observability import get_tracer
+
+    tracer = get_tracer()
+
+    with tracer.start_as_current_span("extractors.dispatch") as span:
+        span.set_attribute("trimcp.filename", filename or "unknown")
+        span.set_attribute("trimcp.mime_type", mime_type or "unknown")
+
+        ensure_registered()
+        ext = _resolve_ext(filename, mime_type)
+        if not ext or ext not in _REGISTRY:
+            return empty_skipped(
+                "dispatch",
+                "unsupported_format",
+                warnings=[f"unknown or unregistered extension: {ext!r} (file={filename!r})"],
+            )
+
+        span.set_attribute("trimcp.extension", ext)
+
+        enc = maybe_encrypted_skip(blob, filename=filename, extension=ext)
+        if enc is not None:
+            return enc
+        try:
+            return await _REGISTRY[ext](blob)
+        except Exception as e:
+            log.warning("extract_bytes failed ext=%s: %s", ext, e, exc_info=True)
+            span.record_exception(e)
+            return empty_skipped("dispatch", "extraction_failed", warnings=[str(e)])
 
 
 async def extract_with_fallback(

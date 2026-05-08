@@ -1,4 +1,5 @@
 """J.9 Outlook .msg and RFC 822 .eml with recursive attachments."""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,8 +9,8 @@ from email import policy
 from email.parser import BytesParser
 from typing import Any
 
-from trimcp.extractors.core import ExtractionResult, Section, empty_skipped
 from trimcp.extractors.common import html_to_text
+from trimcp.extractors.core import ExtractionResult, Section, empty_skipped
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ def _msg_metadata(msg: Any) -> dict[str, Any]:
 async def extract_msg(blob: bytes) -> ExtractionResult:
     import os
     import tempfile
+
     from extract_msg import Message
 
     warnings: list[str] = []
@@ -77,7 +79,9 @@ async def extract_msg(blob: bytes) -> ExtractionResult:
             f"Date: {getattr(msg, 'date', '') or ''}\n"
         )
         sections.append(
-            Section(text=headers.strip(), structure_path="Headers", section_type="metadata", order=order)
+            Section(
+                text=headers.strip(), structure_path="Headers", section_type="metadata", order=order
+            )
         )
         order += 1
     except Exception as e:

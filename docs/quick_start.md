@@ -63,6 +63,14 @@ Once connected, restart your LLM client and ask:
 
 You should see tools such as `semantic_search` (with optional `as_of`), `graph_search`, `store_memory`, `index_code_file`, bridge tools, salience, contradictions, replay, and migration tools — see `server.py` for the authoritative list.
 
+## 5. Administrative Operations
+
+Certain tools in TriMCP (like `manage_namespace`, `rotate_signing_key`, or `get_health`) require administrative privileges. To use these tools via an LLM client:
+1.  Ensure you have set `TRIMCP_ADMIN_OVERRIDE=true` in your environment (for local dev) OR
+2.  Pass `"is_admin": true` in the tool's input arguments.
+
+Note: In production environments, admin tools should be restricted to authorized maintenance accounts via the `admin_server.py` HMAC layer.
+
 ---
 
 ## Architecture reference

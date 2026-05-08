@@ -22,6 +22,7 @@ Override bases if needed::
 
 Exit code ``0`` = PASS, ``1`` = FAIL.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -80,19 +81,34 @@ def _ok(step: str) -> None:
 
 
 async def _step_health(client: httpx.AsyncClient, api_key: str) -> None:
-    path = "/api/health"
+    path = "/api/health/v1"
     r = await client.get(path, headers=_admin_hmac_headers(api_key, "GET", path))
     if r.status_code != 200:
         body = r.text[:500]
-        _fail("Admin /api/health", f"HTTP {r.status_code}: {body}")
+        _fail("Admin /api/health/v1", f"HTTP {r.status_code}: {body}")
     data = r.json()
+
+    if data.get("status") != "ok":
+        _fail(
+            "Admin /api/health/v1",
+            f"Status is {data.get('status')!r} — Full report: {json.dumps(data)}",
+        )
+
+    # Specific database checks
+    db_report = data.get("databases", {})
     for key in ("postgres", "mongo", "redis"):
-        if data.get(key) != "up":
+        if db_report.get(key) != "up":
             _fail(
-                "Admin /api/health",
-                f"{key!r} expected 'up', got {data.get(key)!r} — full payload: {json.dumps(data)}",
+                "Admin /api/health/v1 (Databases)",
+                f"{key!r} expected 'up', got {db_report.get(key)!r}",
             )
-    _ok("Admin /api/health (postgres, mongo, redis up)")
+
+    # Cognitive sidecar check (soft warning in orchestrator, but verify script should be strict)
+    cog_report = data.get("cognitive", {})
+    if cog_report.get("engine") != "up":
+        print(f"[WARN] Cognitive engine state: {cog_report.get('engine')}")
+
+    _ok("Admin /api/health/v1 (Full Tri-Stack deep check passed)")
 
 
 async def _step_a2a(base: str) -> None:
@@ -182,11 +198,15 @@ async def _async_main(admin_base: str, a2a_base: str) -> None:
         _fail("Configuration", "TRIMCP_API_KEY is empty (required for HMAC admin calls)")
 
     limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
-    async with httpx.AsyncClient(base_url=admin_base.rstrip("/"), timeout=60.0, limits=limits) as admin_client:
+    async with httpx.AsyncClient(
+        base_url=admin_base.rstrip("/"), timeout=60.0, limits=limits
+    ) as admin_client:
         await _step_health(admin_client, api_key)
     await _step_a2a(a2a_base)
     await _step_consolidation()
-    async with httpx.AsyncClient(base_url=admin_base.rstrip("/"), timeout=60.0, limits=limits) as admin_client:
+    async with httpx.AsyncClient(
+        base_url=admin_base.rstrip("/"), timeout=60.0, limits=limits
+    ) as admin_client:
         await _step_event_log(admin_client, api_key)
 
 

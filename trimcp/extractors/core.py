@@ -7,6 +7,7 @@ into multiple parts is allowed (same structure_path / order, distinct part_index
 text from two Sections (e.g. two Excel sheets or two slides) is never allowed, so semantic
 chunking cannot splice across sheet or slide boundaries.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

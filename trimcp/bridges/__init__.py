@@ -4,11 +4,12 @@ Document bridge providers (SharePoint / Google Drive / Dropbox).
 RQ worker imports `dispatch_bridge_event` from here, or the concrete
 `SharePointBridge`, `GoogleDriveBridge`, `DropboxBridge` classes to download files.
 """
+
 from __future__ import annotations
 
 from typing import Any
 
-from trimcp.bridges.base import BridgeProvider, BridgeAuthError, redis_client
+from trimcp.bridges.base import BridgeAuthError, BridgeProvider, redis_client
 from trimcp.bridges.dropbox import DropboxBridge, process_dropbox_event
 from trimcp.bridges.gdrive import GoogleDriveBridge, process_gdrive_event
 from trimcp.bridges.sharepoint import SharePointBridge, process_sharepoint_event

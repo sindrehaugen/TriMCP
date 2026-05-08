@@ -21,18 +21,24 @@ FROM python:3.12-slim-bookworm AS runtime
 
 WORKDIR /app
 
+# Install dependencies from wheels
 COPY --from=builder /wheels /wheels
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt --no-index --find-links=/wheels \
     && rm -rf /wheels \
+    # Download spaCy model required for Graphify (Phase 2)
+    && python -m spacy download en_core_web_sm \
+    # Create non-root user
     && useradd --system --uid 10001 --no-create-home trimcp
 
+# Copy application code
 COPY trimcp ./trimcp
-COPY start_worker.py .
+COPY start_worker.py health_probe.py ./
 COPY admin_server.py server.py ./
 COPY admin ./admin
 
+# Ensure the app directory is owned by our non-root user
 RUN chown -R trimcp:trimcp /app
 
 USER trimcp
@@ -40,7 +46,8 @@ USER trimcp
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
+# Robust healthcheck verifying backend connectivity
 HEALTHCHECK --interval=60s --timeout=15s --start-period=90s --retries=3 \
-    CMD python -c "from trimcp.config import cfg; cfg.validate()"
+    CMD python health_probe.py
 
 CMD ["python", "start_worker.py"]

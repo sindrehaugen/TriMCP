@@ -33,6 +33,8 @@
           <a href="#quotas" class="hover:text-slate-200">Quotas</a>
           <span class="text-slate-600">·</span>
           <a href="#graph" class="hover:text-slate-200">Graph</a>
+          <span class="text-slate-600">·</span>
+          <a href="#embedding-migration" class="hover:text-slate-200">Embeddings</a>
         </nav>
       </div>
       <div class="flex flex-wrap items-end gap-2 w-full sm:w-auto">
@@ -339,6 +341,97 @@
       </div>
     </section>
 
+    <!-- Embedding migration -->
+    <section id="embedding-migration" class="scroll-mt-24" x-data="embeddingMigrationPanel" x-init="mount($root)">
+      <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-4">
+        <div>
+          <h2 class="text-lg font-semibold">Embedding migration</h2>
+          <p class="text-sm text-slate-500 mt-1">
+            <code class="text-sky-300">/api/admin/embedding-models</code> ·
+            <code class="text-sky-300">/api/admin/embedding-migrations/…</code>
+          </p>
+        </div>
+        <button type="button" @click="loadAll()" :disabled="loading"
+                class="self-start rounded-md bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-700 disabled:opacity-50">
+          <span x-show="!loading">Refresh</span>
+          <span x-show="loading">Loading…</span>
+        </button>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+          <h3 class="text-sm font-medium text-slate-300 mb-3">Registered models</h3>
+          <div class="overflow-x-auto">
+            <table class="w-full text-xs font-mono">
+              <thead>
+                <tr class="text-left text-slate-500 border-b border-slate-800">
+                  <th class="pb-2 pr-2">name</th>
+                  <th class="pb-2 pr-2">dim</th>
+                  <th class="pb-2 pr-2">status</th>
+                  <th class="pb-2">id</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="m in models" :key="m.id">
+                  <tr class="border-b border-slate-800/80 text-slate-300">
+                    <td class="py-2 pr-2" x-text="m.name"></td>
+                    <td class="py-2 pr-2" x-text="m.dimension"></td>
+                    <td class="py-2 pr-2">
+                      <span class="text-sky-400" x-text="m.status"></span>
+                    </td>
+                    <td class="py-2 truncate max-w-[8rem]" :title="m.id" x-text="m.id"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+          <p x-show="!models.length && !loading" class="text-slate-500 text-sm mt-2">No models in registry.</p>
+        </div>
+
+        <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-4 space-y-4">
+          <h3 class="text-sm font-medium text-slate-300">Run migration</h3>
+          <label class="block">
+            <span class="text-xs text-slate-500">target_model_id (UUID)</span>
+            <input type="text" x-model="targetModelId"
+                   class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs font-mono"
+                   placeholder="uuid of retired / candidate model"
+                   autocomplete="off">
+          </label>
+          <button type="button" @click="startMigration()"
+                  class="rounded-md bg-emerald-700 hover:bg-emerald-600 px-3 py-2 text-sm font-medium disabled:opacity-50"
+                  :disabled="loading || !targetModelId.trim()">
+            Start migration
+          </button>
+
+          <div class="border-t border-slate-800 pt-4 space-y-2">
+            <label class="block">
+              <span class="text-xs text-slate-500">active migration_id (fill after start or paste)</span>
+              <input type="text" x-model="migrationId"
+                     class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs font-mono"
+                     placeholder="uuid"
+                     autocomplete="off">
+            </label>
+            <div class="flex flex-wrap gap-2">
+              <button type="button" @click="refreshStatus()"
+                      class="rounded-md bg-slate-700 hover:bg-slate-600 px-3 py-1.5 text-xs">Status</button>
+              <button type="button" @click="validateMigration()"
+                      class="rounded-md bg-amber-700/80 hover:bg-amber-600 px-3 py-1.5 text-xs">Validate</button>
+              <button type="button" @click="commitMigration()"
+                      class="rounded-md bg-sky-700 hover:bg-sky-600 px-3 py-1.5 text-xs">Commit</button>
+              <button type="button" @click="abortMigration()"
+                      class="rounded-md bg-rose-900/80 hover:bg-rose-800 px-3 py-1.5 text-xs">Abort</button>
+            </div>
+            <p class="text-[10px] text-slate-500">Validate runs a count gate; commit retires previous active models. Operations require a valid migration id.</p>
+          </div>
+
+          <template x-if="statusJson">
+            <pre class="text-[11px] font-mono text-emerald-300/90 bg-slate-950 border border-slate-800 rounded-lg p-3 overflow-x-auto max-h-64"
+                 x-text="statusJson"></pre>
+          </template>
+        </div>
+      </div>
+    </section>
+
     <!-- GC -->
     <section class="scroll-mt-24">
       <h2 class="text-lg font-semibold border-b border-slate-800 pb-2 mb-4">Maintenance</h2>
@@ -418,14 +511,35 @@
         apiKey: localStorage.getItem('trimcp_api_key') || '',
         defaultNs: localStorage.getItem('trimcp_default_ns') || '',
         toasts: [],
-        health: { mongo: 'loading', postgres: 'loading', redis: 'loading', rq_queue: 'loading' },
+        health: { status: 'loading', databases: {}, cognitive: {}, security: {} },
         loadingHealth: false,
         lastHealthAt: null,
         gcLoading: false,
         gcResult: null,
 
         get healthRows() {
-          return this.health;
+            // Flatten v1 response for the grid view
+            const rows = { 'Overall': this.health.status };
+            
+            // Security
+            if (this.health.security?.master_key) {
+                rows['Master Key'] = this.health.security.master_key;
+            }
+
+            // Databases
+            for (const [db, stat] of Object.entries(this.health.databases || {})) {
+                rows[`DB: ${db}`] = stat;
+            }
+
+            // Cognitive
+            if (this.health.cognitive?.engine) {
+                rows['AI Engine'] = this.health.cognitive.engine;
+            }
+            if (this.health.cognitive?.backend_type) {
+                rows['AI Backend'] = this.health.cognitive.backend_type;
+            }
+
+            return rows;
         },
 
         init() { this.loadHealth(); },
@@ -444,13 +558,13 @@
         async loadHealth() {
           this.loadingHealth = true;
           try {
-            const res = await signedFetch(this.apiKey, '/api/health');
+            const res = await signedFetch(this.apiKey, '/api/health/v1');
             if (!res.ok) throw new Error('HTTP ' + res.status);
             this.health = await res.json();
             this.lastHealthAt = new Date().toISOString();
           } catch (e) {
             this.toast(String(e.message || e), 'error');
-            this.health = { mongo: 'error', postgres: 'error', redis: 'error', rq_queue: 'error' };
+            this.health = { status: 'error', databases: { error: 'failed to fetch' } };
           } finally {
             this.loadingHealth = false;
           }
@@ -601,6 +715,133 @@
           if (p >= 90) return 'bg-red-500';
           if (p >= 80) return 'bg-amber-500';
           return 'bg-sky-500';
+        },
+      }));
+
+      /* ---------- Embedding migration ---------- */
+      Alpine.data('embeddingMigrationPanel', () => ({
+        shell: null,
+        models: [],
+        targetModelId: '',
+        migrationId: '',
+        statusJson: '',
+        loading: false,
+        _poll: null,
+
+        mount(shell) {
+          this.shell = shell;
+          this.loadAll();
+        },
+
+        async loadAll() {
+          this.loading = true;
+          try {
+            const res = await signedFetch(this.shell.apiKey, '/api/admin/embedding-models');
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
+            this.models = data.models || [];
+          } catch (e) {
+            this.shell.toast('Embedding models: ' + (e.message || e), 'error');
+          } finally {
+            this.loading = false;
+          }
+        },
+
+        _midPath(suffix) {
+          const id = (this.migrationId || '').trim();
+          if (!id) throw new Error('Set migration id');
+          return '/api/admin/embedding-migrations/' + encodeURIComponent(id) + suffix;
+        },
+
+        _stopPoll() {
+          if (this._poll) {
+            clearInterval(this._poll);
+            this._poll = null;
+          }
+        },
+
+        _maybeStartPoll(st) {
+          this._stopPoll();
+          const s = (st && st.status) ? String(st.status) : '';
+          if (s === 'running' || s === 'validating') {
+            this._poll = setInterval(() => this.refreshStatus(true), 5000);
+          }
+        },
+
+        async startMigration() {
+          this.loading = true;
+          try {
+            const body = { target_model_id: this.targetModelId.trim() };
+            const res = await signedFetch(this.shell.apiKey, '/api/admin/embedding-migrations/start', {
+              method: 'POST',
+              body: JSON.stringify(body),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
+            this.migrationId = data.migration_id || this.migrationId;
+            this.statusJson = JSON.stringify(data, null, 2);
+            this.shell.toast('Migration started', 'ok');
+            await this.loadAll();
+            await this.refreshStatus(true);
+          } catch (e) {
+            this.shell.toast('Start migration: ' + (e.message || e), 'error');
+          } finally {
+            this.loading = false;
+          }
+        },
+
+        async refreshStatus(silent) {
+          if (!this.migrationId.trim()) {
+            if (!silent) this.shell.toast('Set migration id first', 'error');
+            return;
+          }
+          try {
+            const res = await signedFetch(this.shell.apiKey, this._midPath('/status'));
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
+            this.statusJson = JSON.stringify(data, null, 2);
+            this._maybeStartPoll(data);
+          } catch (e) {
+            if (!silent) this.shell.toast('Status: ' + (e.message || e), 'error');
+          }
+        },
+
+        async validateMigration() {
+          try {
+            const res = await signedFetch(this.shell.apiKey, this._midPath('/validate'), { method: 'POST', body: '{}' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
+            this.statusJson = JSON.stringify(data, null, 2);
+            await this.refreshStatus(true);
+          } catch (e) {
+            this.shell.toast('Validate: ' + (e.message || e), 'error');
+          }
+        },
+
+        async commitMigration() {
+          try {
+            const res = await signedFetch(this.shell.apiKey, this._midPath('/commit'), { method: 'POST', body: '{}' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
+            this.statusJson = JSON.stringify(data, null, 2);
+            this._stopPoll();
+            await this.loadAll();
+          } catch (e) {
+            this.shell.toast('Commit: ' + (e.message || e), 'error');
+          }
+        },
+
+        async abortMigration() {
+          try {
+            const res = await signedFetch(this.shell.apiKey, this._midPath('/abort'), { method: 'POST', body: '{}' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
+            this.statusJson = JSON.stringify(data, null, 2);
+            this._stopPoll();
+            await this.loadAll();
+          } catch (e) {
+            this.shell.toast('Abort: ' + (e.message || e), 'error');
+          }
         },
       }));
 

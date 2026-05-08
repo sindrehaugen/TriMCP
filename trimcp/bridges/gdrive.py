@@ -1,10 +1,12 @@
 """
 Google Drive — changes.list + channel watch (§10.3, Appendix H.4).
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 from urllib.parse import urlencode
 
 import httpx
@@ -26,6 +28,9 @@ class GoogleDriveBridge(BridgeProvider):
         return "gdrive"
 
     def bearer_token(self) -> str:
+        override = getattr(self, "_oauth_token_override", None)
+        if override:
+            return override
         token = (cfg.GDRIVE_BRIDGE_TOKEN or "").strip()
         if not token:
             try:
@@ -39,38 +44,54 @@ class GoogleDriveBridge(BridgeProvider):
 
     def walk_delta(self, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
         channel_id = context.get("channel_id") or ""
-        if not channel_id:
-            log.warning("Google Drive: missing channel_id in context")
-            return
-        r = redis_client()
-        ck = self._cursor_key(channel_id)
-        raw = r.get(ck)
-        page_token: str | None = raw.decode("utf-8") if raw else None
-        if not page_token:
-            log.warning(
-                "Google Drive: no start page token for channel=%s — run initial changes.getStartPageToken or connect flow",
-                channel_id,
-            )
-            return
+        self._oauth_token_override = None
+        env_tok = (cfg.GDRIVE_BRIDGE_TOKEN or "").strip()
+        if env_tok:
+            self._oauth_token_override = env_tok
+        elif channel_id:
+            from trimcp.bridge_runtime import resolve_stored_oauth_access_token
 
-        headers = {"Authorization": f"Bearer {self.bearer_token()}"}
-        with httpx.Client(timeout=60.0, headers=headers) as client:
-            while page_token:
-                q = urlencode({"pageToken": page_token, "fields": CHANGES_FIELDS})
-                url = f"{DRIVE_API}/changes?{q}"
-                resp = client.get(url)
-                if resp.status_code == 401:
-                    raise BridgeAuthError("Drive API 401 — set GDRIVE_BRIDGE_TOKEN or implement OAuth refresh")
-                resp.raise_for_status()
-                data = resp.json()
-                for ch in data.get("changes", []):
-                    yield ch
-                page_token = data.get("nextPageToken")
-                new_start = data.get("newStartPageToken")
-                if new_start:
-                    r.set(ck, new_start)
-                if not page_token:
-                    break
+            t = resolve_stored_oauth_access_token("gdrive", subscription_id=str(channel_id))
+            if t:
+                self._oauth_token_override = t
+
+        try:
+            if not channel_id:
+                log.warning("Google Drive: missing channel_id in context")
+                return
+
+            r = redis_client()
+            ck = self._cursor_key(channel_id)
+            raw = r.get(ck)
+            page_token: str | None = raw.decode("utf-8") if raw else None
+            if not page_token:
+                log.warning(
+                    "Google Drive: no start page token for channel=%s — run initial changes.getStartPageToken or connect flow",
+                    channel_id,
+                )
+                return
+
+            headers = {"Authorization": f"Bearer {self.bearer_token()}"}
+            with httpx.Client(timeout=60.0, headers=headers) as client:
+                while page_token:
+                    q = urlencode({"pageToken": page_token, "fields": CHANGES_FIELDS})
+                    url = f"{DRIVE_API}/changes?{q}"
+                    resp = client.get(url)
+                    if resp.status_code == 401:
+                        raise BridgeAuthError(
+                            "Drive API 401 — set GDRIVE_BRIDGE_TOKEN or implement OAuth refresh"
+                        )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    yield from data.get("changes", [])
+                    page_token = data.get("nextPageToken")
+                    new_start = data.get("newStartPageToken")
+                    if new_start:
+                        r.set(ck, new_start)
+                    if not page_token:
+                        break
+        finally:
+            self._oauth_token_override = None
 
     def download_file(self, file_ref: dict[str, Any]) -> bytes:
         file_id = file_ref["file_id"]

@@ -1,4 +1,5 @@
 """J.5 / J.6 Excel extraction (openpyxl + LibreOffice legacy)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -156,7 +157,9 @@ def extract_xlsx_sync(blob: bytes) -> ExtractionResult:
             {
                 "creator": getattr(props, "creator", None),
                 "created": props.created.isoformat() if getattr(props, "created", None) else None,
-                "modified": props.modified.isoformat() if getattr(props, "modified", None) else None,
+                "modified": props.modified.isoformat()
+                if getattr(props, "modified", None)
+                else None,
             }
         )
     except Exception:
@@ -188,7 +191,12 @@ def extract_xlsx_sync(blob: bytes) -> ExtractionResult:
             sections.extend(secs)
             for line in comment_extra:
                 sections.append(
-                    Section(text=line, structure_path=f"Sheet: {sheet_name}", section_type="metadata", order=order)
+                    Section(
+                        text=line,
+                        structure_path=f"Sheet: {sheet_name}",
+                        section_type="metadata",
+                        order=order,
+                    )
                 )
                 order += 1
         elif nrows <= SHEET_ROW_SAMPLE:
@@ -213,7 +221,14 @@ def extract_xlsx_sync(blob: bytes) -> ExtractionResult:
                 f"Large sheet sampled: {sheet_name} ({nrows} rows; header + first 100 + 100 random middle + last 100)"
             )
             txt = md + ("\n\n" + "\n".join(comment_extra) if comment_extra else "")
-            sections.append(Section(text=txt, structure_path=f"Sheet: {sheet_name}", section_type="sheet", order=order))
+            sections.append(
+                Section(
+                    text=txt,
+                    structure_path=f"Sheet: {sheet_name}",
+                    section_type="sheet",
+                    order=order,
+                )
+            )
             order += 1
         else:
             summary_txt, sw = _summarize_large_sheet(ws, sheet_name)
@@ -221,7 +236,12 @@ def extract_xlsx_sync(blob: bytes) -> ExtractionResult:
             if comment_extra:
                 summary_txt += "\n\n" + "\n".join(comment_extra)
             sections.append(
-                Section(text=summary_txt, structure_path=f"Sheet: {sheet_name}", section_type="sheet", order=order)
+                Section(
+                    text=summary_txt,
+                    structure_path=f"Sheet: {sheet_name}",
+                    section_type="sheet",
+                    order=order,
+                )
             )
             order += 1
 

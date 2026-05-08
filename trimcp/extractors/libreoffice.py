@@ -1,4 +1,5 @@
 """LibreOffice headless conversion (J.4, J.6, J.8, J.22 local mode)."""
+
 from __future__ import annotations
 
 import logging

@@ -68,4 +68,6 @@ export TRIMCP_RENDER_CLOUD="$CLOUD"
 python3 "$ROOT/scripts/_render_env.py" "$TEMPLATE" "$CTX_JSON" "$CLOUD"
 
 echo ""
-echo "# --- Fetch passwords with cloud CLI from secret ARNs in outputs (never commit) ---"
+echo "# --- Optional: Docker Compose dev secret bootstrap (local stack) ---"
+echo "#   python3 \"$ROOT/scripts/bootstrap-compose-secrets.py\""
+echo "#   (writes deploy/compose.stack.env.generated; loaded after compose.stack.env)"

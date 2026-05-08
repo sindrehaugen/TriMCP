@@ -1,4 +1,5 @@
 """J.19 OCR helpers and image OCR (pytesseract)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +8,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from PIL import Image
+    pass
 
 from trimcp.extractors.core import Section
 
@@ -61,7 +62,9 @@ async def ocr_image_bytes(blob: bytes, *, lang: str = "eng") -> tuple[str, list[
     return await ocr_pil_image(img, lang=lang)
 
 
-async def ocr_pdf_to_sections(blob: bytes, *, lang: str = "eng") -> tuple[str, list[Section], list[str]]:
+async def ocr_pdf_to_sections(
+    blob: bytes, *, lang: str = "eng"
+) -> tuple[str, list[Section], list[str]]:
     try:
         from pdf2image import convert_from_bytes
     except ImportError as e:

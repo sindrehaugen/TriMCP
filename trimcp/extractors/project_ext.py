@@ -1,4 +1,5 @@
 """J.17 — Project files: .mpp (optional MPXJ sidecar), .pub (LibreOffice → docx)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -40,7 +41,9 @@ def _extract_mpp_sync(blob: bytes) -> ExtractionResult:
         except ValueError as e:
             return empty_skipped("mpp", "mpp_bad_command", warnings=[str(e)])
         if not argv:
-            return empty_skipped("mpp", "mpp_bad_command", warnings=["TRIMCP_MPXJ_EXTRACTOR expanded to empty argv"])
+            return empty_skipped(
+                "mpp", "mpp_bad_command", warnings=["TRIMCP_MPXJ_EXTRACTOR expanded to empty argv"]
+            )
         proc = subprocess.run(
             argv,
             capture_output=True,
@@ -52,7 +55,7 @@ def _extract_mpp_sync(blob: bytes) -> ExtractionResult:
             return empty_skipped(
                 "mpp",
                 "mpp_sidecar_failed",
-                warnings=[(proc.stderr or proc.stdout or "exit %s" % proc.returncode)[:500]],
+                warnings=[(proc.stderr or proc.stdout or f"exit {proc.returncode}")[:500]],
             )
         raw = (proc.stdout or "").strip()
         try:

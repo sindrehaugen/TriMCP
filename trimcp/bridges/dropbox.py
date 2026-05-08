@@ -1,11 +1,13 @@
 """
 Dropbox — list_folder/continue + webhooks (§10.3, Appendix H.5).
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 import httpx
 
@@ -25,6 +27,9 @@ class DropboxBridge(BridgeProvider):
         return "dropbox"
 
     def bearer_token(self) -> str:
+        override = getattr(self, "_oauth_token_override", None)
+        if override:
+            return override
         token = (cfg.DROPBOX_BRIDGE_TOKEN or "").strip()
         if not token:
             try:
@@ -37,8 +42,23 @@ class DropboxBridge(BridgeProvider):
         return f"bridge:cursor:dropbox:{account_id}"
 
     def walk_delta(self, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
-        for account_id in context.get("accounts") or []:
-            yield from self._continue_for_account(str(account_id))
+        accounts = list(context.get("accounts") or [])
+        self._oauth_token_override = None
+        env_tok = (cfg.DROPBOX_BRIDGE_TOKEN or "").strip()
+        if env_tok:
+            self._oauth_token_override = env_tok
+        elif accounts:
+            from trimcp.bridge_runtime import resolve_stored_oauth_access_token
+
+            t = resolve_stored_oauth_access_token("dropbox", resource_id=str(accounts[0]))
+            if t:
+                self._oauth_token_override = t
+
+        try:
+            for account_id in accounts:
+                yield from self._continue_for_account(str(account_id))
+        finally:
+            self._oauth_token_override = None
 
     def _continue_for_account(self, account_id: str) -> Iterator[dict[str, Any]]:
         r = redis_client()
@@ -62,11 +82,12 @@ class DropboxBridge(BridgeProvider):
                     json={"cursor": cursor},
                 )
                 if resp.status_code == 401:
-                    raise BridgeAuthError("Dropbox 401 — set DROPBOX_BRIDGE_TOKEN or reconnect OAuth")
+                    raise BridgeAuthError(
+                        "Dropbox 401 — set DROPBOX_BRIDGE_TOKEN or reconnect OAuth"
+                    )
                 resp.raise_for_status()
                 data = resp.json()
-                for ent in data.get("entries", []):
-                    yield ent
+                yield from data.get("entries", [])
                 cursor = data.get("cursor", cursor)
                 r.set(ck, cursor)
                 if not data.get("has_more"):
@@ -78,9 +99,10 @@ class DropboxBridge(BridgeProvider):
             "Authorization": f"Bearer {self.bearer_token()}",
             "Dropbox-API-Arg": json.dumps({"path": path}),
         }
-        with httpx.Client(timeout=120.0, headers=headers) as client:
+        with httpx.Client(timeout=120.0) as client:
             resp = client.post(
                 "https://content.dropboxapi.com/2/files/download",
+                headers=headers,
                 content=b"",
             )
             resp.raise_for_status()

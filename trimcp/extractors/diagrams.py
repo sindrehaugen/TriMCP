@@ -1,9 +1,9 @@
 """J.14 Diagrams: .vsdx, .drawio, .mermaid — text + relationships; never crash worker."""
+
 from __future__ import annotations
 
 import asyncio
 import base64
-import io
 import logging
 import re
 import tempfile
@@ -183,7 +183,12 @@ def _drawio_text_sync(blob: bytes) -> ExtractionResult:
     body = "\n".join(uniq).strip()
     if not body:
         warnings.append("drawio_no_mxcell_values")
-    sec = Section(text=body or "(no text extracted)", structure_path="draw.io", section_type="diagram", order=0)
+    sec = Section(
+        text=body or "(no text extracted)",
+        structure_path="draw.io",
+        section_type="diagram",
+        order=0,
+    )
     return ExtractionResult(
         method="drawio",
         text=sec.text,
@@ -209,7 +214,9 @@ def _mermaid_sections_sync(blob: bytes) -> ExtractionResult:
     order = 0
     if len(parts) <= 1:
         sections.append(
-            Section(text=text.strip(), structure_path="Mermaid", section_type="diagram", order=order)
+            Section(
+                text=text.strip(), structure_path="Mermaid", section_type="diagram", order=order
+            )
         )
     else:
         for i, chunk in enumerate(parts):

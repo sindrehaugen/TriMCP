@@ -3,23 +3,47 @@ Tri-Stack MCP Server
 Wraps TriStackEngine in the official MCP Python SDK (stdio transport).
 Exposes MCP tools to any MCP-compatible LLM client (Claude Desktop, Cursor, etc.).
 GC background task is co-launched on startup for absolute data purity.
+
+HTTP HMAC auth and optional Redis-backed replay protection (``NonceStore``) apply
+only to the Starlette **admin** stack in ``admin_server.py``. This process does not
+mount ``HMACAuthMiddleware``. When ``TRIMCP_DISTRIBUTED_REPLAY`` is truthy and
+``REDIS_URL`` is configured, admins should run the HTTP admin server with that env set
+so all instances share the same nonce ledger.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import uuid
-from datetime import datetime
+import os
+import re
+import secrets
+import sys
+import traceback
 from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import TextContent, Tool
 
-from trimcp import MemoryPayload, MediaPayload, TriStackEngine, run_gc_loop
-from trimcp import bridge_mcp_handlers
-from trimcp.temporal import parse_as_of
+from trimcp import (
+    TriStackEngine,
+    a2a_mcp_handlers,
+    admin_mcp_handlers,
+    bridge_mcp_handlers,
+    code_mcp_handlers,
+    contradiction_mcp_handlers,
+    graph_mcp_handlers,
+    memory_mcp_handlers,
+    migration_mcp_handlers,
+    replay_mcp_handlers,
+    run_gc_loop,
+    snapshot_mcp_handlers,
+)
+from trimcp.auth import RateLimitError, ScopeError
+from trimcp.config import redact_secrets_in_text
+from trimcp.mcp_errors import McpError, UnknownToolError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,12 +72,16 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "namespace_id":  {"type": "string"},
-                "agent_id":      {"type": "string"},
-                "content":       {"type": "string"},
-                "summary":       {"type": "string", "description": "Short summary used for embedding"},
+                "namespace_id": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "content": {"type": "string"},
+                "summary": {"type": "string", "description": "Short summary used for embedding"},
                 "heavy_payload": {"type": "string", "description": "Full raw content to archive"},
-                "content_type":  {"type": "string", "enum": ["chat", "code"], "description": "Type of content"},
+                "content_type": {
+                    "type": "string",
+                    "enum": ["chat", "code"],
+                    "description": "Type of content",
+                },
                 "check_contradictions": {"type": "boolean", "default": False},
             },
             "required": ["namespace_id", "agent_id", "content"],
@@ -68,13 +96,27 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "user_id":           {"type": "string"},
-                "session_id":        {"type": "string"},
-                "media_type":        {"type": "string", "enum": ["audio", "video", "image"]},
-                "file_path_on_disk": {"type": "string", "description": "Local path to the media file"},
-                "summary":           {"type": "string", "description": "AI-generated summary of the media content"},
+                "namespace_id": {"type": "string"},
+                "user_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "media_type": {"type": "string", "enum": ["audio", "video", "image"]},
+                "file_path_on_disk": {
+                    "type": "string",
+                    "description": "Local path to the media file",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "AI-generated summary of the media content",
+                },
             },
-            "required": ["user_id", "session_id", "media_type", "file_path_on_disk", "summary"],
+            "required": [
+                "namespace_id",
+                "user_id",
+                "session_id",
+                "media_type",
+                "file_path_on_disk",
+                "summary",
+            ],
         },
     ),
     Tool(
@@ -88,9 +130,21 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "namespace_id": {"type": "string"},
-                "agent_id":     {"type": "string"},
-                "query":        {"type": "string", "description": "Natural language search query"},
-                "top_k":        {"type": "integer", "default": 5, "description": "Max results to return"},
+                "agent_id": {"type": "string"},
+                "query": {"type": "string", "description": "Natural language search query"},
+                "limit": {
+                    "type": "integer",
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Maximum results to return after offset",
+                },
+                "offset": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Skip this many ranked hits before returning the page",
+                },
                 "as_of": {
                     "type": "string",
                     "format": "date-time",
@@ -114,11 +168,25 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "filepath":  {"type": "string", "description": "Absolute or relative path of the file"},
-                "raw_code":  {"type": "string", "description": "Full source code content"},
-                "language":  {"type": "string", "description": "Language: 'python', 'javascript', 'typescript', 'go', 'rust'"},
-                "user_id":   {"type": "string", "description": "Optional. Required when private=true — scopes this index to the user."},
-                "private":   {"type": "boolean", "default": False, "description": "When true, index is private to user_id (shared corpus uses user_id unset)."},
+                "filepath": {
+                    "type": "string",
+                    "description": "Absolute or relative path of the file",
+                },
+                "raw_code": {"type": "string", "description": "Full source code content"},
+                "language": {
+                    "type": "string",
+                    "description": "Language: 'python', 'javascript', 'typescript', 'go', 'rust'",
+                },
+                "namespace_id": {"type": "string", "description": "Namespace ID for scoping."},
+                "user_id": {
+                    "type": "string",
+                    "description": "Optional. Required when private=true — scopes this index to the user.",
+                },
+                "private": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "When true, index is private to user_id (shared corpus uses user_id unset).",
+                },
             },
             "required": ["filepath", "raw_code", "language"],
         },
@@ -129,7 +197,10 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "job_id": {"type": "string", "description": "The job_id returned by index_code_file"},
+                "job_id": {
+                    "type": "string",
+                    "description": "The job_id returned by index_code_file",
+                },
             },
             "required": ["job_id"],
         },
@@ -143,11 +214,25 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "query":           {"type": "string", "description": "Natural language description of the code to find"},
-                "language_filter": {"type": "string", "description": "Optional: filter by language ('python', 'javascript')"},
-                "top_k":           {"type": "integer", "default": 5},
-                "user_id":         {"type": "string", "description": "Optional. Required when private=true — searches only that user's private index."},
-                "private":         {"type": "boolean", "default": False, "description": "When false (default), search the shared corpus only. When true, search only chunks for user_id."},
+                "query": {
+                    "type": "string",
+                    "description": "Natural language description of the code to find",
+                },
+                "namespace_id": {"type": "string", "description": "Namespace ID to search within."},
+                "language_filter": {
+                    "type": "string",
+                    "description": "Optional: filter by language ('python', 'javascript')",
+                },
+                "top_k": {"type": "integer", "default": 5},
+                "user_id": {
+                    "type": "string",
+                    "description": "Optional. Required when private=true — searches only that user's private index.",
+                },
+                "private": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "When false (default), search the shared corpus only. When true, search only chunks for user_id.",
+                },
             },
             "required": ["query"],
         },
@@ -163,10 +248,25 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "query":     {"type": "string", "description": "Natural language query to anchor the graph search"},
-                "max_depth": {"type": "integer", "default": 2, "description": "BFS hop depth (1-3 recommended)"},
-                "user_id":   {"type": "string", "description": "Optional. When supplied, restricts hydrated sources to this user."},
-                "private":   {"type": "boolean", "default": False, "description": "When true, only hydrate sources owned by user_id."},
+                "query": {
+                    "type": "string",
+                    "description": "Natural language query to anchor the graph search",
+                },
+                "namespace_id": {"type": "string", "description": "Namespace ID to search within."},
+                "max_depth": {
+                    "type": "integer",
+                    "default": 2,
+                    "description": "BFS hop depth (1-3 recommended)",
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "Optional. When supplied, restricts hydrated sources to this user.",
+                },
+                "private": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "When true, only hydrate sources owned by user_id.",
+                },
                 "as_of": {
                     "type": "string",
                     "format": "date-time",
@@ -176,6 +276,30 @@ TOOLS = [
                         "Omit to traverse the current graph."
                     ),
                 },
+                "max_edges_per_node": {
+                    "type": "integer",
+                    "default": 512,
+                    "minimum": 1,
+                    "maximum": 2048,
+                    "description": (
+                        "Max incident edges loaded per BFS hop (SQL LIMIT, highest confidence first). "
+                        "Prevents OOM on hub nodes."
+                    ),
+                },
+                "edge_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5000,
+                    "description": (
+                        "Optional page size on the deduplicated edge list (omit for full page from edge_offset)."
+                    ),
+                },
+                "edge_offset": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Offset into deduplicated edges when using edge_limit.",
+                },
             },
             "required": ["query"],
         },
@@ -183,16 +307,31 @@ TOOLS = [
     Tool(
         name="get_recent_context",
         description=(
-            "Retrieve the most recent cached context for a user/session from Redis. "
-            "Sub-millisecond — does not touch PostgreSQL or MongoDB."
+            "Retrieve the N most recent episodic memories for an agent. "
+            "Useful for manual context reconstruction or auditing."
         ),
         inputSchema={
             "type": "object",
             "properties": {
-                "user_id":    {"type": "string"},
-                "session_id": {"type": "string"},
+                "namespace_id": {"type": "string"},
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent identifier; 'default' if not specified.",
+                },
+                "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 100},
+                "offset": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Skip this many most-recent rows before returning limit rows",
+                },
+                "as_of": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Optional point-in-time reference (Phase 2.2).",
+                },
             },
-            "required": ["user_id", "session_id"],
+            "required": ["namespace_id"],
         },
     ),
     Tool(
@@ -328,7 +467,10 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "namespace_id": {"type": "string"},
-                "resolution": {"type": "string", "description": "Filter by resolution status (e.g. 'unresolved')"},
+                "resolution": {
+                    "type": "string",
+                    "description": "Filter by resolution status (e.g. 'unresolved')",
+                },
                 "agent_id": {"type": "string"},
             },
             "required": ["namespace_id"],
@@ -336,16 +478,23 @@ TOOLS = [
     ),
     Tool(
         name="resolve_contradiction",
-        description="[Phase 1.3] Resolve a contradiction.",
+        description="[Phase 1.3] Resolve a contradiction. Requires namespace_id for RLS enforcement.",
         inputSchema={
             "type": "object",
             "properties": {
                 "contradiction_id": {"type": "string"},
-                "resolution": {"type": "string", "enum": ["resolved_a", "resolved_b", "both_valid"]},
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Tenant namespace (RLS-enforced — only contradictions in the caller's namespace can be resolved).",
+                },
+                "resolution": {
+                    "type": "string",
+                    "enum": ["resolved_a", "resolved_b", "both_valid", "false_positive"],
+                },
                 "resolved_by": {"type": "string"},
                 "note": {"type": "string"},
             },
-            "required": ["contradiction_id", "resolution", "resolved_by"],
+            "required": ["contradiction_id", "namespace_id", "resolution", "resolved_by"],
         },
     ),
     Tool(
@@ -357,8 +506,12 @@ TOOLS = [
                 "memory_id": {"type": "string"},
                 "namespace_id": {"type": "string"},
                 "agent_id": {"type": "string"},
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
             },
-            "required": ["memory_id", "namespace_id", "agent_id"],
+            "required": ["memory_id", "namespace_id", "agent_id", "admin_api_key"],
         },
     ),
     Tool(
@@ -416,9 +569,6 @@ TOOLS = [
             "required": ["migration_id"],
         },
     ),
-    # ------------------------------------------------------------------
-    # Phase 2.3 — Memory Replay tools
-    # ------------------------------------------------------------------
     Tool(
         name="replay_observe",
         description=(
@@ -452,8 +602,12 @@ TOOLS = [
                     "default": 500,
                     "description": "Hard cap on the number of events returned in one call (default: 500).",
                 },
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
             },
-            "required": ["namespace_id"],
+            "required": ["namespace_id", "admin_api_key"],
         },
     ),
     Tool(
@@ -499,16 +653,63 @@ TOOLS = [
                 "config_overrides": {
                     "type": "object",
                     "description": (
-                        "Optional overrides applied during re-execute mode.  "
-                        "Supported keys: prompt_suffix, llm_provider, llm_model, llm_temperature."
+                        "Optional overrides for re-execute mode only. "
+                        "Allowed keys: llm_provider (enum: local-cognitive-model, openai, "
+                        "azure_openai, deepseek, moonshot_kimi, openai_compatible, "
+                        "google_gemini, anthropic), llm_model, llm_credentials, llm_temperature. "
+                        "Extra keys and free-text prompt edits are rejected."
                     ),
                 },
                 "agent_id_filter": {
                     "type": "string",
                     "description": "Optional: replay only events from this agent_id.",
                 },
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
             },
-            "required": ["source_namespace_id", "target_namespace_id", "fork_seq"],
+            "required": ["source_namespace_id", "target_namespace_id", "fork_seq", "admin_api_key"],
+        },
+    ),
+    Tool(
+        name="replay_reconstruct",
+        description=(
+            "[Phase 2.3] Reconstruct a byte-identical state by replaying an empty target "
+            "namespace from the source namespace's event_log up to end_seq.  All events "
+            "are applied deterministically — no LLM re-execution.  UUIDs are remapped "
+            "(original → new) to avoid constraint violations."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "source_namespace_id": {
+                    "type": "string",
+                    "description": "Namespace to replay events FROM.",
+                },
+                "target_namespace_id": {
+                    "type": "string",
+                    "description": "Namespace to replay events INTO (should be empty for true reconstruction).",
+                },
+                "end_seq": {
+                    "type": "integer",
+                    "description": "Inclusive upper bound: replay events with event_seq <= end_seq.",
+                },
+                "start_seq": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Inclusive lower bound on event_seq (default: 1).",
+                },
+                "agent_id_filter": {
+                    "type": "string",
+                    "description": "Optional: replay only events from this agent_id.",
+                },
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
+            },
+            "required": ["source_namespace_id", "target_namespace_id", "end_seq", "admin_api_key"],
         },
     ),
     Tool(
@@ -523,8 +724,12 @@ TOOLS = [
                     "type": "string",
                     "description": "UUID returned by replay_fork.",
                 },
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
             },
-            "required": ["run_id"],
+            "required": ["run_id", "admin_api_key"],
         },
     ),
     Tool(
@@ -545,10 +750,6 @@ TOOLS = [
             "required": ["memory_id"],
         },
     ),
-
-    # ------------------------------------------------------------------
-    # Phase 3.1 — A2A (Agent-to-Agent) Protocol Tools
-    # ------------------------------------------------------------------
     Tool(
         name="a2a_create_grant",
         description=(
@@ -559,24 +760,40 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "namespace_id":        {"type": "string", "description": "Owner namespace UUID."},
-                "agent_id":            {"type": "string", "description": "Owner agent ID."},
-                "scopes":              {
+                "namespace_id": {"type": "string", "description": "Owner namespace UUID."},
+                "agent_id": {"type": "string", "description": "Owner agent ID."},
+                "scopes": {
                     "type": "array",
                     "description": "List of scope objects. Each has resource_type, resource_id, and permissions.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "resource_type": {"type": "string", "enum": ["namespace", "memory", "kg_node", "subgraph"]},
-                            "resource_id":   {"type": "string"},
-                            "permissions":   {"type": "array", "items": {"type": "string", "enum": ["read"]}},
+                            "resource_type": {
+                                "type": "string",
+                                "enum": ["namespace", "memory", "kg_node", "subgraph"],
+                            },
+                            "resource_id": {"type": "string"},
+                            "permissions": {
+                                "type": "array",
+                                "items": {"type": "string", "enum": ["read"]},
+                            },
                         },
                         "required": ["resource_type", "resource_id"],
                     },
                 },
-                "target_namespace_id": {"type": "string", "description": "Optional: restrict to a specific recipient namespace."},
-                "target_agent_id":     {"type": "string", "description": "Optional: restrict to a specific recipient agent."},
-                "expires_in_seconds":  {"type": "integer", "default": 3600, "description": "Token lifetime (60–2592000 s)."},
+                "target_namespace_id": {
+                    "type": "string",
+                    "description": "Optional: restrict to a specific recipient namespace.",
+                },
+                "target_agent_id": {
+                    "type": "string",
+                    "description": "Optional: restrict to a specific recipient agent.",
+                },
+                "expires_in_seconds": {
+                    "type": "integer",
+                    "default": 3600,
+                    "description": "Token lifetime (60–2592000 s).",
+                },
             },
             "required": ["namespace_id", "agent_id", "scopes"],
         },
@@ -591,8 +808,8 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "namespace_id": {"type": "string", "description": "Owner namespace UUID."},
-                "agent_id":     {"type": "string", "description": "Owner agent ID."},
-                "grant_id":     {"type": "string", "description": "UUID of the grant to revoke."},
+                "agent_id": {"type": "string", "description": "Owner agent ID."},
+                "grant_id": {"type": "string", "description": "UUID of the grant to revoke."},
             },
             "required": ["namespace_id", "agent_id", "grant_id"],
         },
@@ -606,10 +823,13 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "namespace_id":     {"type": "string", "description": "Owner namespace UUID."},
-                "agent_id":         {"type": "string", "description": "Owner agent ID."},
-                "include_inactive": {"type": "boolean", "default": False,
-                                     "description": "Include revoked and expired grants for audit purposes."},
+                "namespace_id": {"type": "string", "description": "Owner namespace UUID."},
+                "agent_id": {"type": "string", "description": "Owner agent ID."},
+                "include_inactive": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Include revoked and expired grants for audit purposes.",
+                },
             },
             "required": ["namespace_id", "agent_id"],
         },
@@ -625,18 +845,209 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "sharing_token":        {"type": "string", "description": "Token provided by the owning agent."},
-                "consumer_namespace_id": {"type": "string", "description": "UUID of the namespace consuming the token."},
-                "consumer_agent_id":    {"type": "string", "description": "Agent ID of the consumer."},
-                "query":                {"type": "string", "description": "Semantic search query string."},
-                "resource_type":        {"type": "string", "enum": ["namespace", "memory", "kg_node", "subgraph"],
-                                          "default": "namespace",
-                                          "description": "Resource type to validate against granted scopes."},
-                "resource_id":          {"type": "string",
-                                          "description": "Specific resource ID to validate; omit for namespace-level grants."},
-                "top_k":                {"type": "integer", "default": 5},
+                "sharing_token": {
+                    "type": "string",
+                    "description": "Token provided by the owning agent.",
+                },
+                "consumer_namespace_id": {
+                    "type": "string",
+                    "description": "UUID of the namespace consuming the token.",
+                },
+                "consumer_agent_id": {"type": "string", "description": "Agent ID of the consumer."},
+                "query": {"type": "string", "description": "Semantic search query string."},
+                "resource_type": {
+                    "type": "string",
+                    "enum": ["namespace", "memory", "kg_node", "subgraph"],
+                    "default": "namespace",
+                    "description": "Resource type to validate against granted scopes.",
+                },
+                "resource_id": {
+                    "type": "string",
+                    "description": "Specific resource ID to validate; omit for namespace-level grants.",
+                },
+                "top_k": {"type": "integer", "default": 5},
             },
             "required": ["sharing_token", "consumer_namespace_id", "query"],
+        },
+    ),
+    Tool(
+        name="manage_namespace",
+        description="[ADMIN] Manage namespaces: create, list, grant, revoke, update_metadata.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "enum": ["create", "list", "grant", "revoke", "update_metadata"],
+                },
+                "namespace_id": {"type": "string"},
+                "create": {
+                    "type": "object",
+                    "properties": {
+                        "slug": {"type": "string"},
+                        "parent_id": {"type": "string"},
+                        "metadata": {"type": "object"},
+                    },
+                    "required": ["slug"],
+                },
+                "metadata_patch": {"type": "object"},
+                "grantee_namespace_id": {"type": "string"},
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
+            },
+            "required": ["command", "admin_api_key"],
+        },
+    ),
+    Tool(
+        name="verify_memory",
+        description="[Phase 0.2] Verify the integrity and causal provenance of a memory.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string"},
+                "as_of": {"type": "string", "format": "date-time"},
+            },
+            "required": ["memory_id"],
+        },
+    ),
+    Tool(
+        name="trigger_consolidation",
+        description="[ADMIN] Manually trigger a sleep-consolidation run for a namespace.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {"type": "string"},
+                "since_timestamp": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Optional filter for events since this point.",
+                },
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
+            },
+            "required": ["namespace_id", "admin_api_key"],
+        },
+    ),
+    Tool(
+        name="consolidation_status",
+        description="[ADMIN] Check the status of a consolidation run.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
+            },
+            "required": ["run_id", "admin_api_key"],
+        },
+    ),
+    Tool(
+        name="manage_quotas",
+        description="[ADMIN] Manage resource quotas for a namespace.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "enum": ["set", "list", "delete", "reset"]},
+                "namespace_id": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "resource_type": {
+                    "type": "string",
+                    "enum": ["llm_tokens", "storage_bytes", "memory_count"],
+                },
+                "limit": {"type": "integer"},
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
+            },
+            "required": ["command", "namespace_id", "admin_api_key"],
+        },
+    ),
+    Tool(
+        name="rotate_signing_key",
+        description="[ADMIN] Generate a new active signing key and retire the current one.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
+            },
+            "required": ["admin_api_key"],
+        },
+    ),
+    Tool(
+        name="get_health",
+        description="[ADMIN] Comprehensive system health check (v1.0).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
+            },
+            "required": ["admin_api_key"],
+        },
+    ),
+    Tool(
+        name="create_snapshot",
+        description="Create a named point-in-time reference (snapshot) for a namespace.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {"type": "string"},
+                "name": {"type": "string"},
+                "agent_id": {"type": "string", "default": "default"},
+                "snapshot_at": {"type": "string", "format": "date-time"},
+                "metadata": {"type": "object"},
+            },
+            "required": ["namespace_id", "name"],
+        },
+    ),
+    Tool(
+        name="list_snapshots",
+        description="List all snapshots for a given namespace.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {"type": "string"},
+            },
+            "required": ["namespace_id"],
+        },
+    ),
+    Tool(
+        name="delete_snapshot",
+        description="Delete a point-in-time reference (snapshot) for a namespace.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {"type": "string"},
+                "snapshot_id": {"type": "string"},
+            },
+            "required": ["namespace_id", "snapshot_id"],
+        },
+    ),
+    Tool(
+        name="compare_states",
+        description="Diff the memory state between two points in time.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {"type": "string"},
+                "as_of_a": {"type": "string", "format": "date-time"},
+                "as_of_b": {"type": "string", "format": "date-time"},
+                "query": {"type": "string"},
+                "top_k": {"type": "integer", "default": 10},
+            },
+            "required": ["namespace_id", "as_of_a", "as_of_b"],
         },
     ),
 ]
@@ -644,486 +1055,536 @@ TOOLS = [
 
 # --- Tool Handlers ---
 
+
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     return TOOLS
 
 
-def _err(msg: str, is_error: bool = True) -> list[TextContent]:
-    log.warning("Tool error: %s", msg)
-    # The SDK exposes isError through CallToolResult at the server level, but typically
-    # a tool handler raising an exception or returning specific error types causes the 
-    # server to format the response with isError=True. If we want to return TextContent
-    # directly and signal an error to the MCP server, we should raise an exception,
-    # or rely on the caller to format.
-    # Actually, the python SDK expects exceptions for `isError=True` inside `call_tool`, 
-    # or the return value must be a `CallToolResult`. But since we return `list[TextContent]`,
-    # returning text does NOT set `isError=True`.
-    # Let's change this to raise ValueError which the SDK catches and turns into an error result,
-    # or we can just raise a generic Exception.
-    raise ValueError(msg)
+def _check_admin(arguments: dict[str, Any]) -> None:
+    """Validate admin privileges against server-side authentication state.
+
+    .. deprecated::
+        Admin MCP handlers in :mod:`trimcp.admin_mcp_handlers` now use the
+        ``@require_scope("admin")`` decorator instead.  This function remains
+        for handlers that haven't been migrated yet (``unredact_memory``,
+        replay handlers).  New admin tools MUST use the decorator.
+
+    Authorisation order (first match wins):
+      1. TRIMCP_ADMIN_OVERRIDE=true  — development bypass (INSECURE in production)
+      2. TRIMCP_ADMIN_API_KEY        — constant-time comparison against the
+         ``admin_api_key`` argument supplied by the MCP client.
+
+    Only server-side state (environment) can confer admin rights. After a successful
+    check, :func:`call_tool` passes :func:`_model_kwargs` (delegates to
+    :func:`trimcp.mcp_args.model_kwargs`) into namespace/quota admin handlers so
+    ``admin_api_key`` never reaches ``extra='forbid'`` models.
+
+    Raises:
+        ValueError:  -32001 when the caller is not authorised.
+    """
+    # 1. Dev override — intentionally first so local dev is frictionless
+    if os.environ.get("TRIMCP_ADMIN_OVERRIDE") == "true":
+        return
+
+    # 2. Server-side API key validation
+    server_key = os.environ.get("TRIMCP_ADMIN_API_KEY", "")
+    if not server_key:
+        raise ValueError(
+            "Server misconfigured: TRIMCP_ADMIN_API_KEY is not set. "
+            "Set the environment variable or enable TRIMCP_ADMIN_OVERRIDE for development. (-32001)"
+        )
+
+    provided_key: str | None = arguments.get("admin_api_key")
+    if not provided_key or not isinstance(provided_key, str) or not provided_key.strip():
+        raise ValueError("Unauthorized administrative attempt: missing admin_api_key (-32001)")
+
+    if not secrets.compare_digest(provided_key.strip(), server_key):
+        log.warning("Admin auth rejected: invalid admin_api_key")
+        raise ValueError("Unauthorized administrative attempt: invalid admin_api_key (-32001)")
+
+
+def _model_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Strip MCP auth-only keys before ``**`` into ``extra='forbid'`` domain models."""
+    from trimcp.mcp_args import model_kwargs
+
+    return model_kwargs(arguments)
+
+
+# ── JSON-RPC 2.0 Error Response Helper ─────────────────────────────────────
+# Standard error codes per JSON-RPC 2.0:
+#   -32600  Invalid Request
+#   -32601  Method not found
+#   -32602  Invalid params
+#   -32603  Internal error
+# MCP extended codes (server-errors -32000..-32099):
+#   -32001  Admin authentication required
+#   -32005  Scope forbidden
+#   -32013  Resource quota exceeded
+#   -32029  Rate limit exceeded
+
+# Regex to extract embedded MCP error codes from exception messages:
+# e.g. "Unauthorized administrative attempt: missing admin_api_key (-32001)"
+_MCP_ERROR_CODE_RE = re.compile(r"\((-32\d{3})\)")
+
+
+def _extract_mcp_code(msg: str, default: int = -32602) -> int:
+    """Extract an MCP extended error code embedded in an exception message.
+
+    Some callers (e.g. ``_check_admin``) embed codes like ``(-32001)`` in
+    their ``ValueError`` message strings.  This function extracts them so
+    the JSON-RPC response preserves the intended error code.
+    """
+    m = _MCP_ERROR_CODE_RE.search(msg)
+    if m:
+        return int(m.group(1))
+    return default
+
+
+def _jsonrpc_error_response(
+    code: int,
+    message: str,
+    *,
+    detail: str | None = None,
+    data: dict[str, Any] | None = None,
+) -> list[TextContent]:
+    """Return a JSON-RPC 2.0 error response as ``TextContent``.
+
+    Args:
+        code: Standard JSON-RPC 2.0 or MCP extended error code.
+        message: Short human-readable error summary.
+        detail: Optional detail string included under ``error.data.detail``.
+        data: Optional extra fields merged into ``error.data``.
+
+    Returns:
+        A single-element ``TextContent`` list containing the serialized
+        JSON-RPC error object.  The MCP SDK treats this as a *successful*
+        tool result; the error payload is for the *client* to interpret.
+    """
+    error: dict[str, Any] = {"code": code, "message": message}
+    error_data: dict[str, Any] = {}
+    if detail is not None:
+        error_data["detail"] = detail
+    if data:
+        error_data.update(data)
+    if error_data:
+        error["data"] = error_data
+    return [
+        TextContent(
+            type="text",
+            text=json.dumps({"jsonrpc": "2.0", "error": error}),
+        )
+    ]
+
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     if engine is None:
-        raise RuntimeError("Engine not initialized")
+        return _jsonrpc_error_response(
+            -32603,
+            "Internal error",
+            detail="Engine not initialized",
+        )
 
-    try:
-        # --- API Cache Layer ---
-        # Cache read-heavy determinisic queries
-        CACHEABLE_TOOLS = {"semantic_search", "search_codebase", "graph_search"}
-        MUTATION_TOOLS = {
-            "store_memory",
-            "store_media",
-            "index_code_file",
-            "connect_bridge",
-            "complete_bridge_auth",
-            "disconnect_bridge",
-            "force_resync_bridge",
-        }
-        
-        # Read-after-write invalidation via generation counter
-        if name in MUTATION_TOOLS:
-            await engine.redis_client.incr("mcp_cache_generation")
-            
-        cache_key = None
-        if name in CACHEABLE_TOOLS:
-            import hashlib
-            args_str = json.dumps(arguments, sort_keys=True)
-            args_hash = hashlib.md5(args_str.encode()).hexdigest()
-            
-            gen = await engine.redis_client.get("mcp_cache_generation")
-            gen_val = gen.decode() if gen else "0"
-            cache_key = f"mcp_cache:v{gen_val}:{name}:{args_hash}"
-            
-            cached_val = await engine.redis_client.get(cache_key)
-            if cached_val:
-                log.info(f"API Cache hit for tool {name}")
-                return [TextContent(type="text", text=cached_val.decode())]
+    from trimcp.observability import instrument_tool_call
 
-        from trimcp import quotas as _quotas
-
+    async with instrument_tool_call(name):
         try:
-            q_res = await _quotas.consume_for_tool(engine.pg_pool, name, arguments)
-        except _quotas.QuotaExceededError as exc:
-            # Surface without the generic "Invalid input:" wrapper (see outer except).
-            raise ValueError(f"{MCP_QUOTA_EXCEEDED_PREFIX}: {exc}") from exc
+            # --- API Cache Layer ---
+            CACHEABLE_TOOLS = {"semantic_search", "search_codebase", "graph_search"}
+            MUTATION_TOOLS = {
+                "store_memory",
+                "store_media",
+                "index_code_file",
+                "connect_bridge",
+                "complete_bridge_auth",
+                "disconnect_bridge",
+                "force_resync_bridge",
+                "create_snapshot",
+                "delete_snapshot",
+                "manage_namespace",
+                "manage_quotas",
+                "rotate_signing_key",
+                "trigger_consolidation",
+                "resolve_contradiction",
+                "boost_memory",
+                "forget_memory",
+                "a2a_create_grant",
+                "a2a_revoke_grant",
+                "start_migration",
+                "commit_migration",
+                "abort_migration",
+                "unredact_memory",
+                "replay_reconstruct",
+            }
 
-        try:
-            if name == "store_memory":
-                payload = MemoryPayload(**arguments)
-                result = await engine.store_memory(payload)
-                response = {"status": "ok", "payload_ref": result["payload_ref"]}
-                if result.get("contradiction"):
-                    response["contradiction"] = result["contradiction"]
-                return [TextContent(type="text", text=json.dumps(response))]
+            if name in MUTATION_TOOLS:
+                from trimcp.mcp_args import bump_cache_generation, purge_document_cache
 
-            if name == "store_media":
-                payload = MediaPayload(**arguments)
-                mongo_id = await engine.store_media(payload)
-                return [TextContent(type="text", text=json.dumps({"status": "ok", "payload_ref": mongo_id, "storage": "minio"}))]
+                await bump_cache_generation(engine.redis_client)
 
-            if name == "semantic_search":
-                try:
-                    as_of_dt = parse_as_of(arguments.get("as_of"))
-                except ValueError as exc:
-                    await q_res.rollback()
-                    return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
-                results = await engine.semantic_search(
-                    namespace_id=arguments["namespace_id"],
-                    agent_id=arguments["agent_id"],
-                    query=arguments["query"],
-                    top_k=int(arguments.get("top_k", 5)),
-                    as_of=as_of_dt,
+                # Document-level cache purge: when a specific memory or snapshot
+                # is deleted, evict any cached responses that referenced it.
+                doc_id = arguments.get("memory_id") or arguments.get("snapshot_id")
+                if name in ("forget_memory", "delete_snapshot") and doc_id:
+                    ns_id = arguments.get("namespace_id")
+                    if ns_id:
+                        try:
+                            await purge_document_cache(
+                                engine.redis_client,
+                                namespace_id=str(ns_id),
+                                memory_id=str(doc_id),
+                            )
+                        except Exception as exc:
+                            log.warning(
+                                "%s: document cache purge failed: %s",
+                                name,
+                                exc,
+                            )
+
+            # --- Quota check (MOVED BEFORE cache — Prompt 24 fix) ---
+            from trimcp import quotas as _quotas
+
+            try:
+                q_res = await _quotas.consume_for_tool(engine.pg_pool, name, arguments)
+            except _quotas.QuotaExceededError as exc:
+                raise ValueError(f"{MCP_QUOTA_EXCEEDED_PREFIX}: {exc}") from exc
+
+            # --- API Cache Layer ---
+            CACHEABLE_TOOLS = {"semantic_search", "search_codebase", "graph_search"}
+
+            from trimcp.mcp_args import build_cache_key
+
+            cache_key = None
+            if name in CACHEABLE_TOOLS:
+                gen = await engine.redis_client.get("mcp_cache_generation")
+                gen_val = gen.decode() if gen else "0"
+                ns_id = arguments.get("namespace_id")
+                cache_key = build_cache_key(
+                    tool_name=name,
+                    arguments=arguments,
+                    generation=gen_val,
+                    namespace_id=ns_id,
                 )
-                result_text = json.dumps(results)
-                if cache_key: await engine.redis_client.setex(cache_key, 300, result_text)
-                return [TextContent(type="text", text=result_text)]
+                cached_val = await engine.redis_client.get(cache_key)
+                if cached_val:
+                    log.info("API Cache hit for tool %s (ns=%s)", name, (ns_id or "global")[:8])
+                    return [TextContent(type="text", text=cached_val.decode())]
 
-            if name == "index_code_file":
-                result = await engine.index_code_file(
-                    filepath=arguments["filepath"],
-                    raw_code=arguments["raw_code"],
-                    language=arguments["language"],
-                    user_id=arguments.get("user_id"),
-                    private=bool(arguments.get("private", False)),
-                )
-                return [TextContent(type="text", text=json.dumps(result))]
+            # --- Tool dispatch ---
+            try:
+                if name == "store_memory":
+                    result_text = await memory_mcp_handlers.handle_store_memory(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
 
-            if name == "check_indexing_status":
-                result = await engine.get_job_status(
-                    job_id=arguments["job_id"],
-                )
-                return [TextContent(type="text", text=json.dumps(result))]
+                if name == "store_media":
+                    result_text = await memory_mcp_handlers.handle_store_media(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
 
-            if name == "search_codebase":
-                results = await engine.search_codebase(
-                    query=arguments["query"],
-                    language_filter=arguments.get("language_filter"),
-                    top_k=int(arguments.get("top_k", 5)),
-                    user_id=arguments.get("user_id"),
-                    private=bool(arguments.get("private", False)),
-                )
-                result_text = json.dumps(results)
-                if cache_key: await engine.redis_client.setex(cache_key, 300, result_text)
-                return [TextContent(type="text", text=result_text)]
-
-            if name == "graph_search":
-                try:
-                    as_of_dt = parse_as_of(arguments.get("as_of"))
-                except ValueError as exc:
-                    return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
-                result = await engine.graph_search(
-                    query=arguments["query"],
-                    max_depth=max(1, min(int(arguments.get("max_depth", 2)), 3)),
-                    restrict_user_id=arguments.get("user_id"),
-                    as_of=as_of_dt,
-                )
-                result_text = json.dumps(result, indent=2)
-                if cache_key: await engine.redis_client.setex(cache_key, 300, result_text)
-                return [TextContent(type="text", text=result_text)]
-
-            if name == "get_recent_context":
-                context = await engine.recall_memory(
-                    user_id=arguments["user_id"],
-                    session_id=arguments["session_id"],
-                )
-                return [TextContent(type="text", text=json.dumps({"context": context}))]
-
-            if name == "connect_bridge":
-                text = await bridge_mcp_handlers.connect_bridge(engine, arguments)
-                return [TextContent(type="text", text=text)]
-
-            if name == "complete_bridge_auth":
-                text = await bridge_mcp_handlers.complete_bridge_auth(engine, arguments)
-                return [TextContent(type="text", text=text)]
-
-            if name == "list_bridges":
-                text = await bridge_mcp_handlers.list_bridges(engine, arguments)
-                return [TextContent(type="text", text=text)]
-
-            if name == "disconnect_bridge":
-                text = await bridge_mcp_handlers.disconnect_bridge(engine, arguments)
-                return [TextContent(type="text", text=text)]
-
-            if name == "force_resync_bridge":
-                text = await bridge_mcp_handlers.force_resync_bridge(engine, arguments)
-                return [TextContent(type="text", text=text)]
-
-            if name == "bridge_status":
-                text = await bridge_mcp_handlers.bridge_status(engine, arguments)
-                return [TextContent(type="text", text=text)]
-
-            if name == "boost_memory":
-                res = await engine.boost_memory(
-                    memory_id=arguments["memory_id"],
-                    agent_id=arguments["agent_id"],
-                    namespace_id=arguments["namespace_id"],
-                    factor=float(arguments.get("factor", 0.2)),
-                )
-                return [TextContent(type="text", text=json.dumps(res))]
-
-            if name == "forget_memory":
-                res = await engine.forget_memory(
-                    memory_id=arguments["memory_id"],
-                    agent_id=arguments["agent_id"],
-                    namespace_id=arguments["namespace_id"],
-                )
-                return [TextContent(type="text", text=json.dumps(res))]
-
-            if name == "list_contradictions":
-                # Convert datetime objects to string before json.dumps
-                res = await engine.list_contradictions(
-                    namespace_id=arguments["namespace_id"],
-                    resolution=arguments.get("resolution"),
-                    agent_id=arguments.get("agent_id"),
-                )
-                for r in res:
-                    for k, v in r.items():
-                        if isinstance(v, datetime):
-                            r[k] = v.isoformat()
-                        elif isinstance(v, uuid.UUID):
-                            r[k] = str(v)
-                return [TextContent(type="text", text=json.dumps(res))]
-
-            if name == "resolve_contradiction":
-                res = await engine.resolve_contradiction(
-                    contradiction_id=arguments["contradiction_id"],
-                    resolution=arguments["resolution"],
-                    resolved_by=arguments["resolved_by"],
-                    note=arguments.get("note"),
-                )
-                return [TextContent(type="text", text=json.dumps(res))]
-
-            if name == "unredact_memory":
-                result = await engine.unredact_memory(
-                    memory_id=arguments["memory_id"],
-                    namespace_id=arguments["namespace_id"],
-                    agent_id=arguments["agent_id"]
-                )
-                return [TextContent(type="text", text=json.dumps(result))]
-
-            if name == "start_migration":
-                res = await engine.start_migration(arguments["target_model_id"])
-                return [TextContent(type="text", text=json.dumps(res))]
-
-            if name == "migration_status":
-                res = await engine.migration_status(arguments["migration_id"])
-                return [TextContent(type="text", text=json.dumps(res))]
-
-            if name == "validate_migration":
-                res = await engine.validate_migration(arguments["migration_id"])
-                return [TextContent(type="text", text=json.dumps(res))]
-
-            if name == "commit_migration":
-                res = await engine.commit_migration(arguments["migration_id"])
-                return [TextContent(type="text", text=json.dumps(res))]
-
-            if name == "abort_migration":
-                res = await engine.abort_migration(arguments["migration_id"])
-                return [TextContent(type="text", text=json.dumps(res))]
-
-            # ------------------------------------------------------------------
-            # Phase 2.3 — Memory Replay
-            # ------------------------------------------------------------------
-
-            if name == "replay_observe":
-                from trimcp.replay import ObservationalReplay
-                ns_id = uuid.UUID(arguments["namespace_id"])
-                start_seq = int(arguments.get("start_seq", 1))
-                end_seq = int(arguments["end_seq"]) if "end_seq" in arguments else None
-                agent_filter = arguments.get("agent_id_filter")
-                max_events = int(arguments.get("max_events", 500))
-
-                replay = ObservationalReplay(pool=engine.pg_pool)
-                lines: list[str] = []
-                count = 0
-                async for item in replay.execute(
-                    source_namespace_id=ns_id,
-                    start_seq=start_seq,
-                    end_seq=end_seq,
-                    agent_id_filter=agent_filter,
-                ):
-                    lines.append(json.dumps(item))
-                    if item.get("type") == "event":
-                        count += 1
-                        if count >= max_events:
-                            # Append a truncation notice and break; the generator
-                            # will be GC'd and close cleanly via aclose().
-                            lines.append(json.dumps({
-                                "type": "truncated",
-                                "reason": "max_events_reached",
-                                "events_returned": count,
-                            }))
-                            break
-                return [TextContent(type="text", text="\n".join(lines))]
-
-            if name == "replay_fork":
-                from trimcp.replay import ForkedReplay, _create_run
-                src_ns = uuid.UUID(arguments["source_namespace_id"])
-                tgt_ns = uuid.UUID(arguments["target_namespace_id"])
-                fork_seq = int(arguments["fork_seq"])
-                start_seq = int(arguments.get("start_seq", 1))
-                replay_mode = arguments.get("replay_mode", "deterministic")
-                config_overrides = arguments.get("config_overrides")
-                agent_filter = arguments.get("agent_id_filter")
-
-                # Pre-create the replay_runs row so we can return run_id
-                # immediately — before the background task has had a chance to run.
-                async with engine.pg_pool.acquire() as pre_conn:
-                    fork_run_id = await _create_run(
-                        pre_conn,
-                        source_namespace_id=src_ns,
-                        target_namespace_id=tgt_ns,
-                        mode="forked",
-                        replay_mode=replay_mode,
-                        start_seq=start_seq,
-                        end_seq=fork_seq,
-                        divergence_seq=fork_seq,
-                        config_overrides=config_overrides,
+                if name == "semantic_search":
+                    result_text = await memory_mcp_handlers.handle_semantic_search(
+                        engine, arguments
                     )
+                    if cache_key:
+                        await engine.redis_client.setex(cache_key, 300, result_text)
+                    return [TextContent(type="text", text=result_text)]
 
-                replay = ForkedReplay(pool=engine.pg_pool)
+                if name == "index_code_file":
+                    result_text = await code_mcp_handlers.handle_index_code_file(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
 
-                async def _run_fork() -> None:
-                    try:
-                        async for _ in replay.execute(
-                            source_namespace_id=src_ns,
-                            target_namespace_id=tgt_ns,
-                            fork_seq=fork_seq,
-                            start_seq=start_seq,
-                            replay_mode=replay_mode,
-                            config_overrides=config_overrides,
-                            agent_id_filter=agent_filter,
-                            _existing_run_id=fork_run_id,
-                        ):
-                            pass  # progress is persisted to replay_runs in DB
-                    except Exception:
-                        log.exception(
-                            "Background ForkedReplay task failed run_id=%s", fork_run_id
-                        )
-
-                asyncio.create_task(_run_fork(), name=f"fork-{fork_run_id}")
-                return [TextContent(type="text", text=json.dumps({
-                    "status":           "started",
-                    "run_id":           str(fork_run_id),
-                    "source_namespace": str(src_ns),
-                    "target_namespace": str(tgt_ns),
-                    "fork_seq":         fork_seq,
-                    "replay_mode":      replay_mode,
-                }))]
-
-            if name == "replay_status":
-                from trimcp.replay import get_run_status, ReplayRunNotFoundError
-                try:
-                    status = await get_run_status(
-                        pool=engine.pg_pool,
-                        run_id=uuid.UUID(arguments["run_id"]),
+                if name == "check_indexing_status":
+                    result_text = await code_mcp_handlers.handle_check_indexing_status(
+                        engine, arguments
                     )
-                    return [TextContent(type="text", text=json.dumps(status))]
-                except ReplayRunNotFoundError as exc:
-                    return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
+                    return [TextContent(type="text", text=result_text)]
 
-            if name == "get_event_provenance":
-                from trimcp.replay import get_event_provenance
-                provenance = await get_event_provenance(
-                    pool=engine.pg_pool,
-                    memory_id=uuid.UUID(arguments["memory_id"]),
-                )
-                return [TextContent(type="text", text=json.dumps(provenance))]
+                if name == "search_codebase":
+                    result_text = await code_mcp_handlers.handle_search_codebase(engine, arguments)
+                    if cache_key:
+                        await engine.redis_client.setex(cache_key, 300, result_text)
+                    return [TextContent(type="text", text=result_text)]
 
-            # ------------------------------------------------------------------
-            # Phase 3.1 — A2A (Agent-to-Agent) Protocol Tools
-            # ------------------------------------------------------------------
+                if name == "graph_search":
+                    result_text = await graph_mcp_handlers.handle_graph_search(engine, arguments)
+                    if cache_key:
+                        await engine.redis_client.setex(cache_key, 300, result_text)
+                    return [TextContent(type="text", text=result_text)]
 
-            if name == "a2a_create_grant":
-                from trimcp.a2a import (
-                    A2AGrantRequest, A2AScope, create_grant,
-                )
-                from trimcp.auth import NamespaceContext
-                ns_id = uuid.UUID(arguments["namespace_id"])
-                agent_id_val = arguments.get("agent_id", "default")
-                caller_ctx = NamespaceContext(
-                    namespace_id=ns_id,
-                    agent_id=agent_id_val,
-                )
-                scopes_raw = arguments.get("scopes", [])
-                if isinstance(scopes_raw, str):
-                    scopes_raw = json.loads(scopes_raw)
-                scopes = [A2AScope.model_validate(s) for s in scopes_raw]
-                req = A2AGrantRequest(
-                    target_namespace_id=arguments.get("target_namespace_id"),
-                    target_agent_id=arguments.get("target_agent_id"),
-                    scopes=scopes,
-                    expires_in_seconds=int(arguments.get("expires_in_seconds", 3600)),
-                )
-                async with engine.pg_pool.acquire() as conn:
-                    resp = await create_grant(conn, caller_ctx, req)
-                return [TextContent(type="text", text=json.dumps({
-                    "grant_id": str(resp.grant_id),
-                    "sharing_token": resp.sharing_token,
-                    "expires_at": resp.expires_at.isoformat(),
-                }))]
+                if name == "get_recent_context":
+                    result_text = await memory_mcp_handlers.handle_get_recent_context(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
 
-            if name == "a2a_revoke_grant":
-                from trimcp.a2a import revoke_grant
-                from trimcp.auth import NamespaceContext
-                ns_id = uuid.UUID(arguments["namespace_id"])
-                agent_id_val = arguments.get("agent_id", "default")
-                grant_id = uuid.UUID(arguments["grant_id"])
-                caller_ctx = NamespaceContext(
-                    namespace_id=ns_id,
-                    agent_id=agent_id_val,
-                )
-                async with engine.pg_pool.acquire() as conn:
-                    revoked = await revoke_grant(conn, grant_id, caller_ctx)
-                return [TextContent(type="text", text=json.dumps({
-                    "grant_id": str(grant_id),
-                    "revoked": revoked,
-                }))]
+                if name == "connect_bridge":
+                    text = await bridge_mcp_handlers.connect_bridge(engine, arguments)
+                    return [TextContent(type="text", text=text)]
 
-            if name == "a2a_list_grants":
-                from trimcp.a2a import list_grants
-                from trimcp.auth import NamespaceContext
-                ns_id = uuid.UUID(arguments["namespace_id"])
-                agent_id_val = arguments.get("agent_id", "default")
-                include_inactive = bool(arguments.get("include_inactive", False))
-                caller_ctx = NamespaceContext(
-                    namespace_id=ns_id,
-                    agent_id=agent_id_val,
-                )
-                async with engine.pg_pool.acquire() as conn:
-                    grants = await list_grants(conn, caller_ctx, include_inactive=include_inactive)
-                return [TextContent(type="text", text=json.dumps(grants))]
+                if name == "complete_bridge_auth":
+                    text = await bridge_mcp_handlers.complete_bridge_auth(engine, arguments)
+                    return [TextContent(type="text", text=text)]
 
-            if name == "a2a_query_shared":
-                from trimcp.a2a import (
-                    verify_token, enforce_scope,
-                    A2AAuthorizationError, A2AScopeViolationError,
-                    A2A_CODE_UNAUTHORIZED, A2A_CODE_SCOPE_VIOLATION,
-                )
-                from trimcp.auth import NamespaceContext
-                sharing_token = arguments["sharing_token"]
-                query = arguments["query"]
-                resource_type = arguments.get("resource_type", "namespace")
-                resource_id = arguments.get("resource_id", "")
-                top_k = int(arguments.get("top_k", 5))
-                consumer_ns_id = uuid.UUID(arguments["consumer_namespace_id"])
-                consumer_agent_id = arguments.get("consumer_agent_id", "default")
-                consumer_ctx = NamespaceContext(
-                    namespace_id=consumer_ns_id,
-                    agent_id=consumer_agent_id,
-                )
-                async with engine.pg_pool.acquire() as conn:
-                    try:
-                        verified = await verify_token(conn, sharing_token, consumer_ctx)
-                    except A2AAuthorizationError as exc:
-                        raise ValueError(f"A2A authorization failure (-32010): {exc}")
-                effective_resource_id = resource_id or str(verified.owner_namespace_id)
-                try:
-                    enforce_scope(verified.scopes, resource_type, effective_resource_id)
-                except A2AScopeViolationError as exc:
-                    raise ValueError(f"A2A scope violation (-32011): {exc}")
-                results = await engine.semantic_search(
-                    namespace_id=str(verified.owner_namespace_id),
-                    agent_id=verified.owner_agent_id,
-                    query=query,
-                    top_k=top_k,
-                )
-                return [TextContent(type="text", text=json.dumps({
-                    "grant_id": str(verified.grant_id),
-                    "owner_namespace_id": str(verified.owner_namespace_id),
-                    "results": results,
-                }))]
+                if name == "list_bridges":
+                    text = await bridge_mcp_handlers.list_bridges(engine, arguments)
+                    return [TextContent(type="text", text=text)]
 
+                if name == "disconnect_bridge":
+                    text = await bridge_mcp_handlers.disconnect_bridge(engine, arguments)
+                    return [TextContent(type="text", text=text)]
 
-            raise ValueError(f"Unknown tool: {name}")
-        except Exception:
-            await q_res.rollback()
-            raise
+                if name == "force_resync_bridge":
+                    text = await bridge_mcp_handlers.force_resync_bridge(engine, arguments)
+                    return [TextContent(type="text", text=text)]
 
-    except (ValueError, TypeError) as e:
-        es = str(e)
-        if es.startswith(MCP_QUOTA_EXCEEDED_PREFIX):
-            raise ValueError(es) from e
-        raise ValueError(f"Invalid input: {e}") from e
-    except Exception as e:
-        log.exception("Unhandled error in tool '%s'", name)
-        raise RuntimeError(f"Internal error: {type(e).__name__}")
+                if name == "bridge_status":
+                    text = await bridge_mcp_handlers.bridge_status(engine, arguments)
+                    return [TextContent(type="text", text=text)]
+
+                if name == "boost_memory":
+                    result_text = await memory_mcp_handlers.handle_boost_memory(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "forget_memory":
+                    result_text = await memory_mcp_handlers.handle_forget_memory(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "list_contradictions":
+                    result_text = await contradiction_mcp_handlers.handle_list_contradictions(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "resolve_contradiction":
+                    result_text = await contradiction_mcp_handlers.handle_resolve_contradiction(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "unredact_memory":
+                    _check_admin(arguments)
+                    result_text = await memory_mcp_handlers.handle_unredact_memory(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "start_migration":
+                    result_text = await migration_mcp_handlers.handle_start_migration(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "migration_status":
+                    result_text = await migration_mcp_handlers.handle_migration_status(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "validate_migration":
+                    result_text = await migration_mcp_handlers.handle_validate_migration(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "commit_migration":
+                    result_text = await migration_mcp_handlers.handle_commit_migration(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "abort_migration":
+                    result_text = await migration_mcp_handlers.handle_abort_migration(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "replay_observe":
+                    _check_admin(arguments)
+                    result_text = await replay_mcp_handlers.handle_replay_observe(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "replay_reconstruct":
+                    _check_admin(arguments)
+                    result_text = await replay_mcp_handlers.handle_replay_reconstruct(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "replay_fork":
+                    _check_admin(arguments)
+                    result_text = await replay_mcp_handlers.handle_replay_fork(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "replay_status":
+                    _check_admin(arguments)
+                    result_text = await replay_mcp_handlers.handle_replay_status(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "get_event_provenance":
+                    result_text = await replay_mcp_handlers.handle_get_event_provenance(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "a2a_create_grant":
+                    result_text = await a2a_mcp_handlers.handle_a2a_create_grant(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "a2a_revoke_grant":
+                    result_text = await a2a_mcp_handlers.handle_a2a_revoke_grant(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "a2a_list_grants":
+                    result_text = await a2a_mcp_handlers.handle_a2a_list_grants(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "a2a_query_shared":
+                    result_text = await a2a_mcp_handlers.handle_a2a_query_shared(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "manage_namespace":
+                    result_text = await admin_mcp_handlers.handle_manage_namespace(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "verify_memory":
+                    result_text = await admin_mcp_handlers.handle_verify_memory(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "trigger_consolidation":
+                    result_text = await admin_mcp_handlers.handle_trigger_consolidation(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "consolidation_status":
+                    result_text = await admin_mcp_handlers.handle_consolidation_status(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "manage_quotas":
+                    result_text = await admin_mcp_handlers.handle_manage_quotas(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "rotate_signing_key":
+                    result_text = await admin_mcp_handlers.handle_rotate_signing_key(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "get_health":
+                    result_text = await admin_mcp_handlers.handle_get_health(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "create_snapshot":
+                    result_text = await snapshot_mcp_handlers.handle_create_snapshot(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "list_snapshots":
+                    result_text = await snapshot_mcp_handlers.handle_list_snapshots(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "delete_snapshot":
+                    result_text = await snapshot_mcp_handlers.handle_delete_snapshot(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "compare_states":
+                    result_text = await snapshot_mcp_handlers.handle_compare_states(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                raise UnknownToolError(name)
+            except Exception:
+                await q_res.rollback()
+                raise
+
+        except McpError as e:
+            return _jsonrpc_error_response(e.code, e.message, data=e.data)
+        except ScopeError as e:
+            return _jsonrpc_error_response(
+                -32005,
+                "Scope forbidden",
+                detail=str(e),
+            )
+        except RateLimitError as e:
+            return _jsonrpc_error_response(
+                -32029,
+                "Rate limit exceeded",
+                detail=str(e),
+            )
+        except (ValueError, TypeError) as e:
+            msg = str(e)
+            if msg.startswith(MCP_QUOTA_EXCEEDED_PREFIX):
+                return _jsonrpc_error_response(
+                    -32013,
+                    "Resource quota exceeded",
+                    detail=msg,
+                )
+            if msg.startswith("Rate limit exceeded"):
+                return _jsonrpc_error_response(
+                    -32029,
+                    "Rate limit exceeded",
+                    detail=msg,
+                )
+            # Check for embedded MCP error codes (e.g. (-32001) from _check_admin)
+            mcp_code = _extract_mcp_code(msg)
+            if mcp_code != -32602:
+                return _jsonrpc_error_response(
+                    mcp_code,
+                    msg,
+                    detail=msg,
+                )
+            return _jsonrpc_error_response(
+                -32602,
+                "Invalid params",
+                detail=msg,
+            )
+        except Exception as e:
+            log.exception("Unhandled error in tool '%s'", name)
+            return _jsonrpc_error_response(
+                -32603,
+                "Internal error",
+                data={
+                    "type": type(e).__name__,
+                    "detail": str(e),
+                },
+            )
 
 
 # --- Startup / Shutdown ---
 
+
 async def main():
     global engine
     engine = TriStackEngine()
-    await engine.connect()
-    log.info("TriStackEngine connected to all three databases.")
+
+    from trimcp.observability import init_observability
+
+    init_observability()
+    log.info("Observability layer initialized.")
+
+    try:
+        await engine.connect()
+    except Exception as exc:
+        log.critical("FATAL: Startup failure: %s", redact_secrets_in_text(str(exc)))
+        sys.exit(1)
+
+    log.info("TriStackEngine connected to all database layers.")
 
     gc_task = asyncio.create_task(run_gc_loop())
     log.info("GC background task started.")
 
     from trimcp.re_embedder import start_re_embedder
+
     start_re_embedder(engine.pg_pool, engine.mongo_client)
     log.info("Re-embedder background task started.")
 

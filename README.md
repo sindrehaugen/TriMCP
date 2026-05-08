@@ -6,10 +6,11 @@ Longer-horizon roadmap items (universal installers, 300+ language packs, broad f
 
 ## v1.0 capabilities
 
-- **Semantic search & GraphRAG**: pgvector nearest-neighbor search, MongoDB hydration, BFS over `kg_edges` with structured subgraphs.
+- **Semantic search & GraphRAG**: pgvector nearest-neighbor search, MongoDB hydration, BFS over `kg_edges` with structured subgraphs. Includes automated spaCy entity extraction (bundled).
+- **Zero-Config Deployment**: Automated PostgreSQL schema initialization with extensions (vector, pgcrypto) and mandatory Row Level Security (RLS) policies.
 - **Temporal queries**: Optional **`as_of`** (ISO 8601) on `semantic_search` and `graph_search` via `trimcp/temporal.py` and orchestrator filters.
 - **A2A protocol**: Grant/verify token flow and JSON-RPC skills on **`trimcp/a2a_server.py`** (`trimcp/a2a.py`, `a2a_grants` table).
-- **Quotas & auth**: Namespace-scoped consumption and HMAC-aware admin API patterns (see tests and config).
+- **Quotas & auth**: Namespace-scoped consumption and HMAC-aware admin API patterns with deep v1.0 health monitoring.
 - **Cognitive workers**: **`python -m trimcp.cron`** — APScheduler jobs for **document-bridge renewal** and **`ReembeddingWorker`** sweeps; **`ConsolidationWorker`** (`trimcp/consolidation.py`) for sleep-style abstraction (integrate with your scheduler); MCP startup runs **orphan GC** (`run_gc_loop`).
 - **MCP tools**: Memory, media, code indexing (RQ async), bridges, salience, contradictions, embedding migration, **replay** (`replay_observe` / `replay_fork` / `replay_status`), and more — see `TOOLS` in `server.py`.
 - **Quad-DB + Saga**: Mongo payload → Postgres vectors/KG, with rollback on failure; see diagram below.
@@ -53,7 +54,9 @@ flowchart TB
   CRON --> MG
 ```
 
-**Full diagrams** (sequence charts for temporal + A2A, worker data flow): **[docs/architecture-v1.md](docs/architecture-v1.md)**.
+Full diagrams (sequence charts for temporal + A2A, worker data flow): [docs/architecture-v1.md](docs/architecture-v1.md).
+
+**Detailed Feature Guides**: [docs/README.md](docs/README.md) (Multi-tenancy, PII, Cognitive Layer, Replay, etc.).
 
 ## 🛠️ Tech Stack
 

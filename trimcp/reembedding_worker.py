@@ -57,6 +57,7 @@ REEMBED_INCLUDE_KG_NODES      "true" to also refresh kg_nodes embeddings (defaul
 REEMBED_MAX_TEXT_CHARS        Clip text before embedding (default: 4096).
 REEMBED_CRON_INTERVAL_MINUTES APScheduler interval when running via cron (default: 60).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -64,8 +65,8 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import datetime
+from typing import Any
 
 import asyncpg
 
@@ -90,6 +91,7 @@ def current_model_uuid() -> uuid.UUID:
 # Env-driven config (isolated from _Config to avoid touching the shared class)
 # --------------------------------------------------------------------------- #
 
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, str(default)))
@@ -101,12 +103,12 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, "false").lower() in ("1", "true", "yes")
 
 
-BATCH_SIZE:            int  = _env_int("REEMBED_BATCH_SIZE",            32)
-BATCHES_PER_MINUTE:    int  = _env_int("REEMBED_BATCHES_PER_MINUTE",    20)
-MAX_ROWS_PER_RUN:      int  = _env_int("REEMBED_MAX_ROWS_PER_RUN",      0)   # 0 = unlimited
-INCLUDE_KG_NODES:      bool = _env_bool("REEMBED_INCLUDE_KG_NODES",     False)
-MAX_TEXT_CHARS:        int  = _env_int("REEMBED_MAX_TEXT_CHARS",         4096)
-CRON_INTERVAL_MINUTES: int  = _env_int("REEMBED_CRON_INTERVAL_MINUTES", 60)
+BATCH_SIZE: int = _env_int("REEMBED_BATCH_SIZE", 32)
+BATCHES_PER_MINUTE: int = _env_int("REEMBED_BATCHES_PER_MINUTE", 20)
+MAX_ROWS_PER_RUN: int = _env_int("REEMBED_MAX_ROWS_PER_RUN", 0)  # 0 = unlimited
+INCLUDE_KG_NODES: bool = _env_bool("REEMBED_INCLUDE_KG_NODES", False)
+MAX_TEXT_CHARS: int = _env_int("REEMBED_MAX_TEXT_CHARS", 4096)
+CRON_INTERVAL_MINUTES: int = _env_int("REEMBED_CRON_INTERVAL_MINUTES", 60)
 
 
 # --------------------------------------------------------------------------- #
@@ -140,12 +142,13 @@ async def _ensure_schema(conn: asyncpg.Connection) -> None:
 # Pagination helpers — pure SQL, raw asyncpg
 # --------------------------------------------------------------------------- #
 
+
 async def _fetch_memories_batch(
     conn: asyncpg.Connection,
     model_uuid: uuid.UUID,
     batch_size: int,
-    cursor_created_at: Optional[datetime],
-    cursor_id: Optional[uuid.UUID],
+    cursor_created_at: datetime | None,
+    cursor_id: uuid.UUID | None,
 ) -> list[asyncpg.Record]:
     """
     Keyset-paginated SELECT of memories that need re-embedding.
@@ -194,7 +197,7 @@ async def _fetch_kg_nodes_batch(
     conn: asyncpg.Connection,
     model_uuid: uuid.UUID,
     batch_size: int,
-    cursor_id: Optional[uuid.UUID],
+    cursor_id: uuid.UUID | None,
 ) -> list[asyncpg.Record]:
     """Ordered by id ASC; works across HASH partitions."""
     model_str = str(model_uuid)
@@ -227,6 +230,7 @@ async def _fetch_kg_nodes_batch(
 # Mongo text resolution — batch by collection
 # --------------------------------------------------------------------------- #
 
+
 async def _resolve_texts_from_mongo(
     mongo_client: Any,
     rows: list[asyncpg.Record],
@@ -246,7 +250,7 @@ async def _resolve_texts_from_mongo(
 
     for row in rows:
         ref = row.get("payload_ref") or ""
-        if len(ref) != 24:          # MongoDB ObjectId hex is always 24 chars
+        if len(ref) != 24:  # MongoDB ObjectId hex is always 24 chars
             continue
         if row.get("memory_type") == "code_chunk":
             code_refs.append(ref)
@@ -259,9 +263,7 @@ async def _resolve_texts_from_mongo(
     if episodic_refs:
         try:
             oids = [ObjectId(r) for r in episodic_refs]
-            async for doc in db.episodes.find(
-                {"_id": {"$in": oids}}, {"raw_data": 1}
-            ):
+            async for doc in db.episodes.find({"_id": {"$in": oids}}, {"raw_data": 1}):
                 ref = str(doc["_id"])
                 result[ref] = str(doc.get("raw_data", ""))[:max_text_chars]
         except Exception as exc:
@@ -270,9 +272,7 @@ async def _resolve_texts_from_mongo(
     if code_refs:
         try:
             oids = [ObjectId(r) for r in code_refs]
-            async for doc in db.code_files.find(
-                {"_id": {"$in": oids}}, {"raw_code": 1}
-            ):
+            async for doc in db.code_files.find({"_id": {"$in": oids}}, {"raw_code": 1}):
                 ref = str(doc["_id"])
                 result[ref] = str(doc.get("raw_code", ""))[:max_text_chars]
         except Exception as exc:
@@ -290,6 +290,7 @@ def _fallback_text(row: asyncpg.Record, max_chars: int) -> str:
 # --------------------------------------------------------------------------- #
 # Batch update helpers
 # --------------------------------------------------------------------------- #
+
 
 async def _update_memories_batch(
     conn: asyncpg.Connection,
@@ -311,10 +312,7 @@ async def _update_memories_batch(
             WHERE  id         = $3
               AND  created_at = $4
             """,
-            [
-                (json.dumps(vec), model_str, mem_id, created_at)
-                for mem_id, created_at, vec in batch
-            ],
+            [(json.dumps(vec), model_str, mem_id, created_at) for mem_id, created_at, vec in batch],
         )
 
 
@@ -335,13 +333,14 @@ async def _update_kg_nodes_batch(
 # Progress checkpoint
 # --------------------------------------------------------------------------- #
 
+
 async def _checkpoint(
     conn: asyncpg.Connection,
     run_id: uuid.UUID,
     memories_done: int,
     kg_nodes_done: int,
-    cursor_created_at: Optional[datetime],
-    cursor_id: Optional[uuid.UUID],
+    cursor_created_at: datetime | None,
+    cursor_id: uuid.UUID | None,
 ) -> None:
     await conn.execute(
         """
@@ -364,6 +363,7 @@ async def _checkpoint(
 # Worker class
 # --------------------------------------------------------------------------- #
 
+
 class ReembeddingWorker:
     """
     Stateless background worker — instantiate once per process; call
@@ -382,7 +382,7 @@ class ReembeddingWorker:
         self.batch_size = max(1, batch_size)
         # Inter-batch sleep enforces the token-rate cap.
         self._sleep = 60.0 / max(1, batches_per_minute)
-        self.max_rows_per_run = max_rows_per_run   # 0 = unlimited
+        self.max_rows_per_run = max_rows_per_run  # 0 = unlimited
         self.include_kg_nodes = include_kg_nodes
         self.max_text_chars = max_text_chars
 
@@ -425,7 +425,7 @@ class ReembeddingWorker:
         status: str,
         memories_done: int,
         kg_nodes_done: int,
-        error: Optional[str] = None,
+        error: str | None = None,
     ) -> None:
         async with pool.acquire() as conn:
             await conn.execute(
@@ -457,8 +457,8 @@ class ReembeddingWorker:
         run_id: uuid.UUID,
     ) -> int:
         """Returns total memories re-embedded during this phase."""
-        cursor_created_at: Optional[datetime] = None
-        cursor_id: Optional[uuid.UUID] = None
+        cursor_created_at: datetime | None = None
+        cursor_id: uuid.UUID | None = None
         memories_done = 0
 
         while True:
@@ -472,8 +472,11 @@ class ReembeddingWorker:
 
             async with pool.acquire() as conn:
                 rows = await _fetch_memories_batch(
-                    conn, model_uuid, self.batch_size,
-                    cursor_created_at, cursor_id,
+                    conn,
+                    model_uuid,
+                    self.batch_size,
+                    cursor_created_at,
+                    cursor_id,
                 )
 
             if not rows:
@@ -494,9 +497,7 @@ class ReembeddingWorker:
                 ref = row.get("payload_ref") or ""
                 text = mongo_texts.get(ref) or _fallback_text(row, self.max_text_chars)
                 if not text:
-                    log.debug(
-                        "Re-embed: skipping memory %s — no text available.", row["id"]
-                    )
+                    log.debug("Re-embed: skipping memory %s — no text available.", row["id"])
                     continue
                 texts.append(text)
                 selected.append((row["id"], row["created_at"]))
@@ -521,14 +522,18 @@ class ReembeddingWorker:
 
             async with pool.acquire() as conn:
                 await _checkpoint(
-                    conn, run_id,
-                    memories_done, 0,
-                    cursor_created_at, cursor_id,
+                    conn,
+                    run_id,
+                    memories_done,
+                    0,
+                    cursor_created_at,
+                    cursor_id,
                 )
 
             log.info(
                 "Re-embed: %d memories updated this run (batch=%d).",
-                memories_done, len(texts),
+                memories_done,
+                len(texts),
             )
 
             # Rate-limit: honour REEMBED_BATCHES_PER_MINUTE ————————————————
@@ -547,25 +552,20 @@ class ReembeddingWorker:
         memories_done: int,
         model_uuid: uuid.UUID,
     ) -> int:
-        kg_cursor_id: Optional[uuid.UUID] = None
+        kg_cursor_id: uuid.UUID | None = None
         kg_nodes_done = 0
 
         while True:
             async with pool.acquire() as conn:
-                rows = await _fetch_kg_nodes_batch(
-                    conn, model_uuid, self.batch_size, kg_cursor_id
-                )
+                rows = await _fetch_kg_nodes_batch(conn, model_uuid, self.batch_size, kg_cursor_id)
 
             if not rows:
                 break
 
-            texts = [row["label"][:self.max_text_chars] for row in rows]
+            texts = [row["label"][: self.max_text_chars] for row in rows]
             vectors = await self._embed(pool, texts)
 
-            batch = [
-                (row["id"], vec)
-                for row, vec in zip(rows, vectors)
-            ]
+            batch = [(row["id"], vec) for row, vec in zip(rows, vectors)]
 
             async with pool.acquire() as conn:
                 await _update_kg_nodes_batch(conn, batch, model_uuid)
@@ -575,9 +575,12 @@ class ReembeddingWorker:
 
             async with pool.acquire() as conn:
                 await _checkpoint(
-                    conn, run_id,
-                    memories_done, kg_nodes_done,
-                    None, None,
+                    conn,
+                    run_id,
+                    memories_done,
+                    kg_nodes_done,
+                    None,
+                    None,
                 )
 
             log.info("Re-embed: %d kg_nodes updated this run.", kg_nodes_done)
@@ -614,28 +617,29 @@ class ReembeddingWorker:
 
         log.info(
             "Re-embedding run %s started | model=%s | batch=%d | rate=%d/min",
-            run_id, MODEL_ID, self.batch_size, int(60.0 / self._sleep),
+            run_id,
+            MODEL_ID,
+            self.batch_size,
+            int(60.0 / self._sleep),
         )
 
         memories_done = 0
         kg_nodes_done = 0
 
         try:
-            memories_done = await self._run_memories_phase(
-                pool, mongo_client, model_uuid, run_id
-            )
+            memories_done = await self._run_memories_phase(pool, mongo_client, model_uuid, run_id)
 
             if self.include_kg_nodes:
                 kg_nodes_done = await self._run_kg_nodes_phase(
                     pool, run_id, memories_done, model_uuid
                 )
 
-            await self._close_run(
-                pool, run_id, "completed", memories_done, kg_nodes_done
-            )
+            await self._close_run(pool, run_id, "completed", memories_done, kg_nodes_done)
             log.info(
                 "Re-embedding run %s completed | memories=%d kg_nodes=%d",
-                run_id, memories_done, kg_nodes_done,
+                run_id,
+                memories_done,
+                kg_nodes_done,
             )
             return {
                 "run_id": str(run_id),
@@ -646,8 +650,11 @@ class ReembeddingWorker:
 
         except Exception as exc:
             await self._close_run(
-                pool, run_id, "failed",
-                memories_done, kg_nodes_done,
+                pool,
+                run_id,
+                "failed",
+                memories_done,
+                kg_nodes_done,
                 error=str(exc)[:2048],
             )
             log.exception("Re-embedding run %s failed", run_id)
@@ -657,6 +664,7 @@ class ReembeddingWorker:
 # --------------------------------------------------------------------------- #
 # Standalone entry point (``python -m trimcp.reembedding_worker``)
 # --------------------------------------------------------------------------- #
+
 
 async def async_main() -> None:
     logging.basicConfig(
@@ -678,9 +686,7 @@ async def async_main() -> None:
     try:
         from motor.motor_asyncio import AsyncIOMotorClient
 
-        mongo_client = AsyncIOMotorClient(
-            cfg.MONGO_URI, serverSelectionTimeoutMS=5_000
-        )
+        mongo_client = AsyncIOMotorClient(cfg.MONGO_URI, serverSelectionTimeoutMS=5_000)
     except ImportError:
         log.warning("motor not available — re-embedding will use fallback text only.")
 

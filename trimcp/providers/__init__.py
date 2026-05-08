@@ -21,17 +21,24 @@ Quick start::
         response_model=ConsolidatedAbstraction,
     )
 """
+
+from trimcp.providers.anthropic_provider import AnthropicProvider
 from trimcp.providers.base import (
+    DEFAULT_CIRCUIT_BREAKER,
+    DEFAULT_RETRY_POLICY,
+    CircuitBreaker,
     LLMProvider,
     LLMProviderError,
+    LLMRateLimitError,
     LLMTimeoutError,
+    LLMUpstreamError,
     LLMValidationError,
     Message,
     MessageRole,
     ResponseModelT,
+    RetryPolicy,
 )
 from trimcp.providers.factory import get_provider
-from trimcp.providers.anthropic_provider import AnthropicProvider
 from trimcp.providers.google_gemini import GoogleGeminiProvider
 from trimcp.providers.local_cognitive import LocalCognitiveProvider
 from trimcp.providers.openai_compat import OpenAICompatProvider
@@ -40,11 +47,18 @@ __all__ = [
     # Interface
     "LLMProvider",
     "LLMProviderError",
+    "LLMRateLimitError",
     "LLMTimeoutError",
+    "LLMUpstreamError",
     "LLMValidationError",
     "Message",
     "MessageRole",
     "ResponseModelT",
+    # Retry & circuit breaker
+    "RetryPolicy",
+    "DEFAULT_RETRY_POLICY",
+    "CircuitBreaker",
+    "DEFAULT_CIRCUIT_BREAKER",
     # Factory
     "get_provider",
     # Concrete providers (for direct instantiation in tests / custom wiring)

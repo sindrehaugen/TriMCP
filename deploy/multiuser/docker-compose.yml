@@ -4,6 +4,63 @@
 #   cd deploy/multiuser && docker compose up -d --build
 
 services:
+  # ---------------------------------------------------------------------------
+  # env-validator: fail-fast init container.
+  # Exits 0 only when all critical variables are present and non-empty.
+  # All application services depend on this completing successfully so that
+  # missing secrets produce an immediate error at boot, not a cryptic runtime
+  # crash minutes later.
+  # ---------------------------------------------------------------------------
+  env-validator:
+    image: busybox:1.36
+    container_name: trimcp-env-validator
+    env_file:
+      - ../compose.stack.env
+    environment:
+      PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
+    # Each variable is checked; any empty value causes a non-zero exit.
+    # Placeholder dev values that MUST be rotated before production are also
+    # flagged.  Add new required variables here as they are introduced.
+    command: >
+      sh -c '
+        rc=0;
+        for v in
+          TRIMCP_MASTER_KEY
+          TRIMCP_API_KEY
+          TRIMCP_JWT_SECRET
+          TRIMCP_ADMIN_PASSWORD
+          PG_DSN
+          MONGO_URI
+          REDIS_URL
+          MINIO_ENDPOINT
+        ; do
+          val=$(eval echo "\$$v");
+          if [ -z "$val" ]; then
+            echo "[env-validator] FATAL: required variable $v is not set" >&2;
+            rc=1;
+          fi;
+        done;
+        if [ $rc -eq 0 ]; then
+          echo "[env-validator] All required variables present. Boot proceeding.";
+        fi;
+        exit $rc
+      '
+    restart: "no"
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: trimcp-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   postgres:
     image: pgvector/pgvector:pg16
     container_name: trimcp-postgres
@@ -15,6 +72,7 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+      - ../../trimcp/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mcp_user -d memory_meta"]
       interval: 5s
@@ -30,15 +88,11 @@ services:
     volumes:
       - mongo_data:/data/db
     restart: unless-stopped
-
-  redis:
-    image: redis:7.4-alpine
-    container_name: trimcp-redis
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   minio:
     image: minio/minio:RELEASE.2024-11-07T00-52-20Z
@@ -53,6 +107,11 @@ services:
       - minio_data:/data
     command: server /data --console-address ":9001"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   # [D7] Never bundled in the worker image — HTTP OpenAI-compatible surface on 11435.
   cognitive:
@@ -61,6 +120,11 @@ services:
     ports:
       - "${COGNITIVE_PORT:-11435}:11435"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11435/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   webhook-receiver:
     build:
@@ -83,7 +147,15 @@ services:
     ports:
       - "${WEBHOOK_PORT:-8080}:8080"
     depends_on:
-      - redis
+      env-validator:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped
 
   worker:
@@ -94,26 +166,30 @@ services:
     env_file:
       - ../compose.stack.env
     environment:
-      MONGO_URI: mongodb://mongodb:27017
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
-      REDIS_URL: redis://redis:6379/0
-      MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
-      MINIO_SECURE: "false"
-      TRIMCP_LLM_PROVIDER: ${TRIMCP_LLM_PROVIDER:-local-cognitive-model}
-      TRIMCP_COGNITIVE_BASE_URL: ${TRIMCP_COGNITIVE_BASE_URL:-http://cognitive:11435}
+    # GPU access for re-embedding CUDA operations (Item 49)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     depends_on:
+      env-validator:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       mongodb:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       minio:
-        condition: service_started
+        condition: service_healthy
       cognitive:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
   # APScheduler: bridge renewal, re-embedding sweeps, cognitive maintenance.
@@ -129,19 +205,19 @@ services:
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
-      TRIMCP_LLM_PROVIDER: ${TRIMCP_LLM_PROVIDER:-local-cognitive-model}
-      TRIMCP_COGNITIVE_BASE_URL: ${TRIMCP_COGNITIVE_BASE_URL:-http://cognitive:11435}
     depends_on:
+      env-validator:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       mongodb:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       minio:
-        condition: service_started
+        condition: service_healthy
       cognitive:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
   admin:
@@ -164,21 +240,19 @@ services:
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
-      TRIMCP_LLM_PROVIDER: ${TRIMCP_LLM_PROVIDER:-local-cognitive-model}
-      TRIMCP_COGNITIVE_BASE_URL: ${TRIMCP_COGNITIVE_BASE_URL:-http://cognitive:11435}
     ports:
       - "${ADMIN_PORT:-8003}:8003"
     depends_on:
+      env-validator:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       mongodb:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       minio:
-        condition: service_started
-      cognitive:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -190,7 +264,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 50s
+      start_period: 20s
     restart: unless-stopped
 
   a2a:
@@ -213,22 +287,22 @@ services:
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
-      TRIMCP_LLM_PROVIDER: ${TRIMCP_LLM_PROVIDER:-local-cognitive-model}
-      TRIMCP_COGNITIVE_BASE_URL: ${TRIMCP_COGNITIVE_BASE_URL:-http://cognitive:11435}
-      TRIMCP_A2A_URL: ${TRIMCP_A2A_URL:-http://localhost:8004}
     ports:
       - "${A2A_PORT:-8004}:8004"
     depends_on:
+      env-validator:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       mongodb:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
-      minio:
-        condition: service_started
-      cognitive:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped
 
   caddy:
@@ -242,8 +316,10 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - webhook-receiver
-      - admin
+      webhook-receiver:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

@@ -1,4 +1,5 @@
 """J.12 Plain-text family extractors."""
+
 from __future__ import annotations
 
 import asyncio
@@ -44,7 +45,9 @@ def _decode_blob(blob: bytes) -> tuple[str, list[str]]:
         try:
             return blob.decode("utf-8", errors="replace"), warnings + ["decode_utf8_replace"]
         except Exception as e:
-            return blob.decode("latin-1", errors="replace"), warnings + [f"decode_latin1_replace:{e}"]
+            return blob.decode("latin-1", errors="replace"), warnings + [
+                f"decode_latin1_replace:{e}"
+            ]
 
 
 def _numeric_type(v: object) -> bool:
@@ -229,7 +232,9 @@ def _markdown_to_sections(src: str) -> list[Section]:
             body = "".join(chunk).strip()
             if body:
                 path = " / ".join(heading_stack) if heading_stack else "Document"
-                sections.append(Section(text=body, structure_path=path, section_type="body", order=order))
+                sections.append(
+                    Section(text=body, structure_path=path, section_type="body", order=order)
+                )
                 order += 1
             if i < len(tokens) and tokens[i].type == close:
                 i += 1
@@ -239,7 +244,9 @@ def _markdown_to_sections(src: str) -> list[Section]:
             body = f"```{info}\n{t.content}\n```"
             path = " / ".join(heading_stack) if heading_stack else "Document"
             sections.append(
-                Section(text=body, structure_path=f"{path} > code", section_type="code", order=order)
+                Section(
+                    text=body, structure_path=f"{path} > code", section_type="code", order=order
+                )
             )
             order += 1
             i += 1
@@ -247,7 +254,9 @@ def _markdown_to_sections(src: str) -> list[Section]:
         i += 1
 
     if not sections:
-        sections.append(Section(text=src.strip(), structure_path="Document", section_type="body", order=0))
+        sections.append(
+            Section(text=src.strip(), structure_path="Document", section_type="body", order=0)
+        )
     return sections
 
 
@@ -403,7 +412,9 @@ async def extract_rtf(blob: bytes) -> ExtractionResult:
                 warnings=warnings + [str(e)],
             )
         sec = Section(text=plain.strip(), structure_path="RTF", section_type="body", order=0)
-        return ExtractionResult(method="striprtf", text=plain, sections=[sec], metadata={}, warnings=warnings)
+        return ExtractionResult(
+            method="striprtf", text=plain, sections=[sec], metadata={}, warnings=warnings
+        )
 
     return await asyncio.to_thread(_run)
 
@@ -453,7 +464,9 @@ async def extract_xml(blob: bytes) -> ExtractionResult:
         except Exception as e:
             log.warning("xml parse failed: %s", e)
             text, enc_w = _decode_blob(blob)
-            sec = Section(text=text[:500_000].strip(), structure_path="XML", section_type="body", order=0)
+            sec = Section(
+                text=text[:500_000].strip(), structure_path="XML", section_type="body", order=0
+            )
             return ExtractionResult(
                 method="xml",
                 text=text[:500_000],
@@ -462,7 +475,9 @@ async def extract_xml(blob: bytes) -> ExtractionResult:
                 warnings=enc_w + [str(e)],
             )
         sec = Section(text=pretty.strip(), structure_path="XML", section_type="body", order=0)
-        return ExtractionResult(method="lxml", text=pretty, sections=[sec], metadata={}, warnings=warnings)
+        return ExtractionResult(
+            method="lxml", text=pretty, sections=[sec], metadata={}, warnings=warnings
+        )
 
     return await asyncio.to_thread(_run)
 
@@ -496,7 +511,9 @@ async def extract_yaml(blob: bytes) -> ExtractionResult:
                 warnings=warnings + [str(e)],
             )
         sec = Section(text=dumped.strip(), structure_path="YAML", section_type="body", order=0)
-        return ExtractionResult(method="pyyaml", text=dumped, sections=[sec], metadata={}, warnings=warnings)
+        return ExtractionResult(
+            method="pyyaml", text=dumped, sections=[sec], metadata={}, warnings=warnings
+        )
 
     return await asyncio.to_thread(_run)
 

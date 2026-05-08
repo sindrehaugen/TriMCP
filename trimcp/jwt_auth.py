@@ -59,6 +59,7 @@ JSON-RPC 2.0 error codes (server-defined range, extends trimcp.auth)
   -32006  JWT missing required claim  (``namespace_id`` absent)
   -32007  JWT claim invalid  (``namespace_id`` not a valid UUID)
 """
+
 from __future__ import annotations
 
 import logging
@@ -89,22 +90,23 @@ log = logging.getLogger("trimcp.jwt_auth")
 # JSON-RPC 2.0 error codes (JWT-specific, extends trimcp.auth -32001..-32004)
 # ---------------------------------------------------------------------------
 
-_CODE_JWT_INVALID: int = -32005   # expired / bad signature / decode error
-_CODE_JWT_MISSING_CLAIM: int = -32006   # namespace_id absent
-_CODE_JWT_BAD_CLAIM: int = -32007   # namespace_id not a valid UUID
+_CODE_JWT_INVALID: int = -32005  # expired / bad signature / decode error
+_CODE_JWT_MISSING_CLAIM: int = -32006  # namespace_id absent
+_CODE_JWT_BAD_CLAIM: int = -32007  # namespace_id not a valid UUID
 
 _HTTP_UNAUTHORIZED: int = 401
 _HTTP_BAD_REQUEST: int = 400
 
 # Algorithms that require an asymmetric public key
-_ASYMMETRIC_ALGORITHMS: frozenset[str] = frozenset({"RS256", "RS384", "RS512",
-                                                     "ES256", "ES384", "ES512",
-                                                     "PS256", "PS384", "PS512"})
+_ASYMMETRIC_ALGORITHMS: frozenset[str] = frozenset(
+    {"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"}
+)
 
 
 # ---------------------------------------------------------------------------
 # Helpers — JSON-RPC 2.0 error responses (same shape as trimcp.auth)
 # ---------------------------------------------------------------------------
+
 
 def _jsonrpc_error(
     code: int,
@@ -118,9 +120,11 @@ def _jsonrpc_error(
       401 — authentication / token errors (-32005, -32006, -32007)
       400 — only for malformed claim values outside the UUID check
     """
-    http_status = _HTTP_UNAUTHORIZED if code in (_CODE_JWT_INVALID,
-                                                  _CODE_JWT_MISSING_CLAIM,
-                                                  _CODE_JWT_BAD_CLAIM) else _HTTP_BAD_REQUEST
+    http_status = (
+        _HTTP_UNAUTHORIZED
+        if code in (_CODE_JWT_INVALID, _CODE_JWT_MISSING_CLAIM, _CODE_JWT_BAD_CLAIM)
+        else _HTTP_BAD_REQUEST
+    )
     return JSONResponse(
         status_code=http_status,
         content={
@@ -139,6 +143,7 @@ def _jsonrpc_error(
 # Key loading
 # ---------------------------------------------------------------------------
 
+
 def _load_public_key(raw: str) -> str:
     """Resolve a public key from an env-var value.
 
@@ -146,20 +151,34 @@ def _load_public_key(raw: str) -> str:
       - Raw PEM string (starts with ``-----BEGIN``).
       - ``file:///absolute/path/to/key.pem`` URI.
 
+    The file path is validated against an allowed base directory
+    (``TRIMCP_JWT_KEY_DIR`` env var, defaults to CWD) to prevent
+    path traversal.
+
     Returns the PEM string.
     Raises ``ValueError`` on unresolvable input.
     """
+    from pathlib import Path
+
     stripped = raw.strip()
-    if stripped.startswith("-----BEGIN"):
+    if stripped.startswith("-----"):
         return stripped
     if stripped.startswith("file://"):
-        path = stripped[len("file://"):]
-        if not os.path.isfile(path):
-            raise ValueError(f"TRIMCP_JWT_PUBLIC_KEY file not found: {path!r}")
-        return open(path, "r", encoding="utf-8").read().strip()  # noqa: WPS515
+        path_str = stripped[len("file://") :]
+        key_path = Path(path_str).resolve(strict=False)
+
+        # Validate against allowed base directory
+        allowed_dir_raw = os.getenv("TRIMCP_JWT_KEY_DIR", str(Path.cwd()))
+        allowed_base = Path(allowed_dir_raw).resolve(strict=True)
+
+        if not key_path.is_relative_to(allowed_base):
+            raise ValueError(f"TRIMCP_JWT_PUBLIC_KEY path escapes allowed directory: {path_str!r}")
+
+        if not key_path.is_file():
+            raise ValueError(f"TRIMCP_JWT_PUBLIC_KEY file not found: {path_str!r}")
+        return key_path.read_text(encoding="utf-8").strip()
     raise ValueError(
-        "TRIMCP_JWT_PUBLIC_KEY must be a PEM string or a file:// URI; "
-        f"got: {stripped[:40]!r}…"
+        f"TRIMCP_JWT_PUBLIC_KEY must be a PEM string or a file:// URI; got: {stripped[:40]!r}…"
     )
 
 
@@ -177,8 +196,7 @@ def _build_jwt_key(algorithm: str) -> Any:
         return _load_public_key(cfg.TRIMCP_JWT_PUBLIC_KEY)
     if algorithm in _ASYMMETRIC_ALGORITHMS:
         raise RuntimeError(
-            f"Algorithm {algorithm!r} requires TRIMCP_JWT_PUBLIC_KEY to be set "
-            "but it is empty."
+            f"Algorithm {algorithm!r} requires TRIMCP_JWT_PUBLIC_KEY to be set but it is empty."
         )
     if cfg.TRIMCP_JWT_SECRET:
         return cfg.TRIMCP_JWT_SECRET
@@ -192,6 +210,7 @@ def _build_jwt_key(algorithm: str) -> Any:
 # Core decode + claim extraction
 # ---------------------------------------------------------------------------
 
+
 class JWTDecodeError(Exception):
     """Wraps PyJWT errors with structured metadata for middleware handling."""
 
@@ -202,7 +221,10 @@ class JWTDecodeError(Exception):
         self.reason = reason
 
 
-def decode_agent_token(token: str) -> NamespaceContext:
+def decode_agent_token(
+    token: str,
+    audience: str | None = None,
+) -> NamespaceContext:
     """Validate a JWT Bearer token and extract ``NamespaceContext``.
 
     This is the canonical extraction function used by both the middleware
@@ -210,6 +232,15 @@ def decode_agent_token(token: str) -> NamespaceContext:
 
     Args:
         token: Raw JWT string (without the ``Bearer`` prefix).
+        audience:
+            Expected ``aud`` claim value.  When provided (non-None, non-empty),
+            this value is used instead of ``cfg.TRIMCP_JWT_AUDIENCE`` **and**
+            is strictly enforced — a token with a different or missing ``aud``
+            is rejected with ``InvalidAudienceError``.
+
+            When ``None`` the function falls back to the global config.
+            If the resolved value is still empty the ``aud`` claim is required
+            to be present (``require=["aud"]``) but its value is not validated.
 
     Returns:
         A frozen ``NamespaceContext`` with ``namespace_id`` and ``agent_id``.
@@ -230,15 +261,26 @@ def decode_agent_token(token: str) -> NamespaceContext:
             "jwt_server_misconfigured",
         ) from exc
 
-    decode_options: dict[str, Any] = {"require": ["exp"]}
+    # Resolve audience: explicit param > global config > None (claim required, value unchecked)
+    resolved_audience = audience if audience is not None else (cfg.TRIMCP_JWT_AUDIENCE or None)
+    # Resolve issuer: coerce empty string to None so PyJWT skips validation
+    resolved_issuer = cfg.TRIMCP_JWT_ISSUER or None
+
+    # Only require ``aud`` when we have a specific expected value.
+    # PyJWT raises InvalidAudienceError when audience=None but the token
+    # carries an aud claim — so we must drop it from ``require`` when
+    # intentionally not validating the audience value.
+    if resolved_audience:
+        decode_options: dict[str, Any] = {"require": ["exp", "iss", "aud"]}
+    else:
+        decode_options = {"require": ["exp", "iss"]}
+
     decode_kwargs: dict[str, Any] = {
         "algorithms": [algorithm],
         "options": decode_options,
+        "issuer": resolved_issuer,
+        "audience": resolved_audience,
     }
-    if cfg.TRIMCP_JWT_ISSUER:
-        decode_kwargs["issuer"] = cfg.TRIMCP_JWT_ISSUER
-    if cfg.TRIMCP_JWT_AUDIENCE:
-        decode_kwargs["audience"] = cfg.TRIMCP_JWT_AUDIENCE
 
     try:
         payload: dict[str, Any] = jwt.decode(token, key, **decode_kwargs)
@@ -323,6 +365,7 @@ def decode_agent_token(token: str) -> NamespaceContext:
 # Starlette middleware
 # ---------------------------------------------------------------------------
 
+
 class JWTAuthMiddleware(BaseHTTPMiddleware):
     """JWT Bearer token authentication middleware for agent-scoped endpoints.
 
@@ -348,6 +391,13 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         app:               The ASGI application to wrap.
         protected_prefix:  URL path prefix that requires JWT authentication.
                            Defaults to ``cfg.TRIMCP_JWT_PREFIX`` (``/api/v1/``).
+        expected_audience:
+            Expected ``aud`` claim value for this service.  When set, tokens
+            whose ``aud`` does not match are rejected — prevents replay of
+            tokens issued for other services (web frontend, admin UI, etc.)
+            against this endpoint.
+
+            Falls back to ``cfg.TRIMCP_JWT_AUDIENCE`` when ``None``.
     """
 
     def __init__(
@@ -355,12 +405,13 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         app: Any,
         *,
         protected_prefix: str | None = None,
+        expected_audience: str | None = None,
     ) -> None:
         super().__init__(app)
         self._protected_prefix: str = (
-            protected_prefix if protected_prefix is not None
-            else cfg.TRIMCP_JWT_PREFIX
+            protected_prefix if protected_prefix is not None else cfg.TRIMCP_JWT_PREFIX
         )
+        self._expected_audience: str | None = expected_audience
         # Eagerly check key availability; log once at startup rather than per-request.
         try:
             _build_jwt_key(cfg.TRIMCP_JWT_ALGORITHM)
@@ -404,7 +455,10 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             )
 
         try:
-            namespace_ctx = decode_agent_token(token_value.strip())
+            namespace_ctx = decode_agent_token(
+                token_value.strip(),
+                audience=self._expected_audience,
+            )
         except JWTDecodeError as exc:
             return _jsonrpc_error(exc.code, exc.message, exc.reason)
 

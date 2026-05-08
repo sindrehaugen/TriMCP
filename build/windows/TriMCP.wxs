@@ -2,6 +2,13 @@
 <!--
   TriMCP MSI (WiX v4) — enterprise / GPO silent deploy.
 
+  Shim artifact: trimcp-launch.exe must live next to this .wxs (build/windows/).
+  CI builds it from ./go/cmd/trimcp-launch → ../../../build/windows/trimcp-launch.exe
+  (see .github/workflows/release.yml).
+
+  Scope: MSI installs the trimcp-launch shim plus Patch/Write PowerShell helpers under
+  %ProgramFiles%/TriMCP. For the full embedded Python + app tree, use Inno Setup (TriMCP-Setup.iss).
+
   Public properties (set on command line, e.g. msiexec /i TriMCP.msi MODE=cloud TENANT=contoso.onmicrosoft.com):
     MODE       — local | multiuser | cloud
     SERVERADDR — Office Shared server base URL (multiuser)
@@ -34,11 +41,7 @@
     </Feature>
 
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="TriMCP">
-        <Directory Id="PythonFolder" Name="python" />
-        <Directory Id="ModelsFolder" Name="models" />
-        <Directory Id="WheelsFolder" Name="wheels" />
-      </Directory>
+      <Directory Id="INSTALLFOLDER" Name="TriMCP" />
     </StandardDirectory>
 
     <StandardDirectory Id="System64Folder" />
@@ -50,7 +53,18 @@
       <Component Id="UserConfigScript" Guid="A0B1C2D3-E4F5-6789-ABCD-EF0123456789">
         <File Id="WriteUserConfigPs1" Source="scripts\Write-UserConfig.ps1" KeyPath="yes" />
       </Component>
+      <Component Id="PatchIDEConfigScript" Guid="B1C2D3E4-F567-89AB-CDEF-0123456789AB">
+        <File Id="PatchIDEConfigPs1" Source="scripts\Patch-IDEConfig.ps1" KeyPath="yes" />
+      </Component>
     </ComponentGroup>
+
+    <CustomAction
+        Id="PatchTriMCPIDEConfig"
+        Directory="System64Folder"
+        ExeCommand='powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#PatchIDEConfigPs1]&quot; -AppRoot &quot;[INSTALLFOLDER]&quot;'
+        Execute="immediate"
+        Impersonate="yes"
+        Return="check" />
 
     <CustomAction
         Id="WriteTriMCPUserConfig"
@@ -62,6 +76,7 @@
 
     <InstallExecuteSequence>
       <Custom Action="WriteTriMCPUserConfig" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="PatchTriMCPIDEConfig" After="WriteTriMCPUserConfig" Condition="NOT REMOVE" />
     </InstallExecuteSequence>
   </Package>
 </Wix>

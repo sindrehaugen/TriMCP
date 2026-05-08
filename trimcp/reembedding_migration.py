@@ -8,14 +8,16 @@ currently authoritative column while ``embedding_v2`` is filled in the backgroun
 Postgres/asyncpg adapters can wrap this orchestration later; callers pass a ``Store``
 that satisfies :class:`ReembeddingStorePort`.
 """
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import math
-from dataclasses import dataclass
-from enum import Enum
-from typing import Callable, Iterable, Mapping, Protocol, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Protocol
 
 
 def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
@@ -71,7 +73,7 @@ def deterministic_unit_embedding(
     vec: list[float] = []
     counter = 0
     while len(vec) < dimension:
-        blob = hashlib.sha256(f"{model_version}\0{text}\0{counter}".encode("utf-8")).digest()
+        blob = hashlib.sha256(f"{model_version}\0{text}\0{counter}".encode()).digest()
         for i in range(0, len(blob) - 1, 2):
             coord = int.from_bytes(blob[i : i + 2], "big") / 65535.0 - 0.5
             vec.append(coord)
@@ -98,7 +100,7 @@ class MemoryEmbeddingRow:
     embedding_v2_target_model_id: str | None = None
 
 
-class MigrationPhase(str, Enum):
+class MigrationPhase(StrEnum):
     IDLE = "idle"
     BACKFILLING = "backfilling"
     COMMITTED = "committed"
@@ -108,11 +110,9 @@ class MigrationPhase(str, Enum):
 class ReembeddingStorePort(Protocol):
     """Abstract store boundary — production uses asyncpg; tests use an in-memory impl."""
 
-    async def pop_pending_ids(self, limit: int) -> list[str]:
-        ...
+    async def pop_pending_ids(self, limit: int) -> list[str]: ...
 
-    async def load_row(self, memory_id: str) -> MemoryEmbeddingRow | None:
-        ...
+    async def load_row(self, memory_id: str) -> MemoryEmbeddingRow | None: ...
 
     async def write_embedding_v2(
         self,
@@ -120,8 +120,7 @@ class ReembeddingStorePort(Protocol):
         *,
         embedding: Sequence[float],
         model_id: str,
-    ) -> None:
-        ...
+    ) -> None: ...
 
 
 class ReembeddingMigrationOrchestrator:
@@ -137,7 +136,7 @@ class ReembeddingMigrationOrchestrator:
         self,
         *,
         store: ReembeddingStorePort,
-        embed_fn_v2: "EmbeddingFn",
+        embed_fn_v2: EmbeddingFn,
         target_model_id: str,
         dimension: int,
     ):
@@ -161,12 +160,8 @@ class ReembeddingMigrationOrchestrator:
                 continue
             vec = self.embed_fn_v2(row.canonical_text, dimension=self.dimension)
             if len(vec) != self.dimension:
-                raise ValueError(
-                    f"embed_fn_v2 returned dim {len(vec)}, expected {self.dimension}"
-                )
-            await self._store.write_embedding_v2(
-                mid, embedding=vec, model_id=self.target_model_id
-            )
+                raise ValueError(f"embed_fn_v2 returned dim {len(vec)}, expected {self.dimension}")
+            await self._store.write_embedding_v2(mid, embedding=vec, model_id=self.target_model_id)
         async with self._cv:
             self._cv.notify_all()
         return len(ids)
@@ -192,10 +187,7 @@ class InMemoryReembeddingStore:
     _rows: dict[str, MemoryEmbeddingRow]
     _pending: asyncio.Queue[str]
     phase: MigrationPhase = MigrationPhase.IDLE
-    _lock: asyncio.Lock = dataclass(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "_lock", asyncio.Lock())
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     @classmethod
     def from_records(

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Helper for scripts/render-env.sh — Jinja render of client-env-template.j2 from terraform output JSON."""
+
 from __future__ import annotations
 
 import json

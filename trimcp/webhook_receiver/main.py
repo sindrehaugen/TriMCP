@@ -4,26 +4,47 @@ import hashlib
 import hmac
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
-from fastapi import FastAPI, Request, Response, HTTPException, Query, Header
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from redis import Redis
-from rq import Queue
 
 from trimcp.config import cfg
+from trimcp.extractors.dispatch import get_priority_queue
+from trimcp.net_safety import BridgeURLValidationError, validate_webhook_payload_url
 from trimcp.tasks import process_bridge_event
 
 app = FastAPI(title="TriMCP Webhook Receiver")
 
-# In a real app, these would come from env config
-DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET", "dummy_dropbox_secret")
-GRAPH_CLIENT_STATE = os.getenv("GRAPH_CLIENT_STATE", "dummy_graph_state")
-DRIVE_CHANNEL_TOKEN = os.getenv("DRIVE_CHANNEL_TOKEN", "dummy_drive_token")
+
+@app.get("/health")
+async def health():
+    """Baseline healthcheck for container orchestration."""
+    return {"status": "ok"}
 
 
-def enqueue_process_bridge_event(provider: str, payload: Dict[str, Any]) -> str:
-    """Push `process_bridge_event` to RQ. Isolated for tests via monkeypatch."""
-    q = Queue("default", connection=Redis.from_url(cfg.REDIS_URL))
+def _require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(
+            f"{name} must be set in the environment (no default allowed for webhook secrets)"
+        )
+    return value
+
+
+DROPBOX_APP_SECRET = _require_env("DROPBOX_APP_SECRET")
+GRAPH_CLIENT_STATE = _require_env("GRAPH_CLIENT_STATE")
+DRIVE_CHANNEL_TOKEN = _require_env("DRIVE_CHANNEL_TOKEN")
+
+
+def enqueue_process_bridge_event(provider: str, payload: dict[str, Any]) -> str:
+    """Push ``process_bridge_event`` to the ``batch_processing`` queue lane.
+
+    Webhook-triggered events are background work — they use the
+    batch lane so real-time API extractions aren't starved (§5.4).
+    Isolated for tests via monkeypatch.
+    """
+    q = get_priority_queue(0, Redis.from_url(cfg.REDIS_URL))
     job = q.enqueue(
         process_bridge_event,
         kwargs={"provider": provider, "payload": payload},
@@ -59,7 +80,7 @@ async def dropbox_webhook(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     list_folder = parsed.get("list_folder") if isinstance(parsed, dict) else None
-    payload: Dict[str, Any] = {"list_folder": list_folder or {}}
+    payload: dict[str, Any] = {"list_folder": list_folder or {}}
     job_id = enqueue_process_bridge_event("dropbox", payload)
     return {"status": "queued", "job_id": job_id}
 
@@ -67,7 +88,7 @@ async def dropbox_webhook(request: Request):
 @app.post("/webhooks/graph")
 async def graph_webhook(
     request: Request,
-    validationToken: Optional[str] = Query(None),
+    validationToken: str | None = Query(None),
 ):
     """Receive MS Graph webhook notifications and handle validation."""
     # Handle the validation token challenge from MS Graph
@@ -76,13 +97,23 @@ async def graph_webhook(
 
     payload = await request.json()
 
-    # Validate clientState for security
+    # Validate clientState and resource URLs for security (SSRF guard)
     for notification in payload.get("value", []):
         client_state = notification.get("clientState")
         if not client_state or not hmac.compare_digest(client_state, GRAPH_CLIENT_STATE):
             raise HTTPException(status_code=403, detail="Invalid clientState")
 
-    enqueue_payload: Dict[str, Any] = {"notifications": list(payload.get("value", []))}
+        resource = notification.get("resource", "")
+        if resource:
+            try:
+                validate_webhook_payload_url(resource, field_name="resource")
+            except BridgeURLValidationError as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid resource URL in webhook payload: {e}",
+                )
+
+    enqueue_payload: dict[str, Any] = {"notifications": list(payload.get("value", []))}
     job_id = enqueue_process_bridge_event("sharepoint", enqueue_payload)
     return {"status": "queued", "job_id": job_id}
 
@@ -90,11 +121,11 @@ async def graph_webhook(
 @app.post("/webhooks/drive")
 async def drive_webhook(
     request: Request,
-    channel_token: Optional[str] = Header(None, alias="X-Goog-Channel-Token"),
-    resource_state: Optional[str] = Header(None, alias="X-Goog-Resource-State"),
-    channel_id: Optional[str] = Header(None, alias="X-Goog-Channel-Id"),
-    resource_id: Optional[str] = Header(None, alias="X-Goog-Resource-Id"),
-    message_number: Optional[str] = Header(None, alias="X-Goog-Message-Number"),
+    channel_token: str | None = Header(None, alias="X-Goog-Channel-Token"),
+    resource_state: str | None = Header(None, alias="X-Goog-Resource-State"),
+    channel_id: str | None = Header(None, alias="X-Goog-Channel-Id"),
+    resource_id: str | None = Header(None, alias="X-Goog-Resource-Id"),
+    message_number: str | None = Header(None, alias="X-Goog-Message-Number"),
 ):
     """Receive Google Drive webhook notifications."""
     if not channel_token or not hmac.compare_digest(channel_token, DRIVE_CHANNEL_TOKEN):
@@ -106,7 +137,7 @@ async def drive_webhook(
     if resource_state == "sync":
         return {"status": "acknowledged", "reason": "sync_handshake"}
 
-    enqueue_payload: Dict[str, Any] = {
+    enqueue_payload: dict[str, Any] = {
         "channel_id": channel_id or "",
         "resource_id": resource_id or "",
         "resource_state": resource_state,

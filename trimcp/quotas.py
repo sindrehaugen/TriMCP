@@ -4,13 +4,16 @@ Phase 3.2 — Namespace / agent resource quotas (asyncpg, hot-path friendly).
 Only namespaces (and optional per-agent rows) that have rows in ``resource_quotas``
 are enforced. One short transaction batches all counter updates for a tool call.
 """
+
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 from uuid import UUID
 
 import asyncpg
+from asyncpg.exceptions import IntegrityConstraintViolationError
 
 from trimcp.config import cfg
 
@@ -91,46 +94,52 @@ async def consume_resources(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            for resource_type, delta in sorted(deltas.items()):
-                rows = await conn.fetch(
-                    """
-                    SELECT id, agent_id
-                    FROM resource_quotas
-                    WHERE namespace_id = $1
-                      AND resource_type = $2
-                      AND (reset_at IS NULL OR reset_at > now())
-                      AND (
-                          agent_id IS NULL
-                          OR ($3::text IS NOT NULL AND agent_id = $3)
-                      )
-                    ORDER BY (agent_id IS NULL) DESC
-                    """,
-                    namespace_id,
-                    resource_type,
-                    agent_id,
-                )
-                if not rows:
-                    continue
-                for row in rows:
-                    upd = await conn.fetchrow(
+            try:
+                for resource_type, delta in sorted(deltas.items()):
+                    rows = await conn.fetch(
                         """
-                        UPDATE resource_quotas
-                        SET used_amount = used_amount + $1,
-                            updated_at = now()
-                        WHERE id = $2
-                          AND used_amount + $1 <= limit_amount
-                        RETURNING id
+                        SELECT id, agent_id
+                        FROM resource_quotas
+                        WHERE namespace_id = $1
+                          AND resource_type = $2
+                          AND (reset_at IS NULL OR reset_at > now())
+                          AND (
+                              agent_id IS NULL
+                              OR ($3::text IS NOT NULL AND agent_id = $3)
+                          )
+                        ORDER BY (agent_id IS NULL) DESC
+                        FOR UPDATE
                         """,
-                        delta,
-                        row["id"],
+                        namespace_id,
+                        resource_type,
+                        agent_id,
                     )
-                    if upd is None:
-                        scope = "namespace" if row["agent_id"] is None else "agent"
-                        raise QuotaExceededError(
-                            f"Quota exceeded for namespace={namespace_id} "
-                            f"resource={resource_type!r} ({scope} limit)"
+                    if not rows:
+                        continue
+                    for row in rows:
+                        upd = await conn.fetchrow(
+                            """
+                            UPDATE resource_quotas
+                            SET used_amount = used_amount + $1,
+                                updated_at = now()
+                            WHERE id = $2
+                              AND used_amount + $1 <= limit_amount
+                            RETURNING id
+                            """,
+                            delta,
+                            row["id"],
                         )
-                    reservation.steps.append((row["id"], delta))
+                        if upd is None:
+                            scope = "namespace" if row["agent_id"] is None else "agent"
+                            raise QuotaExceededError(
+                                f"Quota exceeded for namespace={namespace_id} "
+                                f"resource={resource_type!r} ({scope} limit)"
+                            )
+                        reservation.steps.append((row["id"], delta))
+            except IntegrityConstraintViolationError as e:
+                raise QuotaExceededError(
+                    f"Quota integrity constraint violated for namespace={namespace_id}: {e}"
+                ) from e
 
     return reservation
 
@@ -147,6 +156,8 @@ def tool_quota_plan(
     amounts: dict[str, int] = {}
 
     if tool_name == "store_memory":
+        if "namespace_id" not in arguments:
+            return None
         ns = UUID(str(arguments["namespace_id"]))
         agent: str | None = str(arguments.get("agent_id") or "default")
         c = arguments.get("content")
@@ -159,6 +170,8 @@ def tool_quota_plan(
         return ns, agent, amounts
 
     if tool_name == "semantic_search":
+        if "namespace_id" not in arguments:
+            return None
         ns = UUID(str(arguments["namespace_id"]))
         agent = str(arguments.get("agent_id") or "default")
         q = arguments.get("query") or ""
@@ -166,12 +179,16 @@ def tool_quota_plan(
         return ns, agent, amounts
 
     if tool_name in ("boost_memory", "forget_memory", "unredact_memory"):
+        if "namespace_id" not in arguments:
+            return None
         ns = UUID(str(arguments["namespace_id"]))
         agent = str(arguments.get("agent_id") or "default")
         amounts[RESOURCE_LLM_TOKENS] = 64
         return ns, agent, amounts
 
     if tool_name == "list_contradictions":
+        if "namespace_id" not in arguments:
+            return None
         ns = UUID(str(arguments["namespace_id"]))
         aid = arguments.get("agent_id")
         agent = str(aid) if aid else None
@@ -179,6 +196,8 @@ def tool_quota_plan(
         return ns, agent, amounts
 
     if tool_name == "a2a_query_shared":
+        if "consumer_namespace_id" not in arguments:
+            return None
         ns = UUID(str(arguments["consumer_namespace_id"]))
         agent = str(arguments.get("consumer_agent_id") or "default")
         q = arguments.get("query") or ""
@@ -186,6 +205,8 @@ def tool_quota_plan(
         return ns, agent, amounts
 
     if tool_name == "api_semantic_search":
+        if "namespace_id" not in arguments:
+            return None
         ns = UUID(str(arguments["namespace_id"]))
         agent = str(arguments.get("agent_id") or "default")
         q = arguments.get("query") or ""
@@ -200,6 +221,8 @@ async def consume_for_tool(
     tool_name: str,
     arguments: dict[str, Any],
 ) -> QuotaReservation:
+    if not cfg.TRIMCP_QUOTAS_ENABLED:
+        return null_reservation()
     plan = tool_quota_plan(tool_name, arguments)
     if plan is None:
         return null_reservation()

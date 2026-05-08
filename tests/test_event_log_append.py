@@ -14,11 +14,12 @@ Exercises:
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 
+from tests.fixtures.fake_asyncpg import RecordingFakeConnection
 from trimcp import event_log as event_log_mod
 from trimcp.event_log import (
     EventLogSequenceError,
@@ -27,9 +28,6 @@ from trimcp.event_log import (
     append_event,
 )
 from trimcp.signing import verify_fields
-
-from tests.fixtures.fake_asyncpg import RecordingFakeConnection
-
 
 # Fixed 32-byte HMAC key — matches patched get_active_key below.
 _RAW_SIGNING_SECRET = hashlib.sha256(b"pytest-event-log-hmac-secret").digest()
@@ -148,7 +146,7 @@ async def test_invalid_agent_id_raises(namespace_id: UUID, bad_agent: str) -> No
 @pytest.mark.asyncio
 async def test_d8_backdated_valid_from_in_params_raises(namespace_id: UUID) -> None:
     conn = RecordingFakeConnection()
-    past = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    past = (datetime.now(UTC) - timedelta(days=365)).isoformat()
     async with conn.transaction():
         with pytest.raises(EventLogTimestampError):
             await append_event(

@@ -20,28 +20,30 @@ Supported models
 ----------------
   claude-opus-4-6 | claude-sonnet-4-6 | claude-haiku-4-5
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
 
-import httpx
 from pydantic import ValidationError
 
+from trimcp.providers._http_utils import post_with_error_handling
 from trimcp.providers.base import (
     LLMProvider,
     LLMProviderError,
-    LLMTimeoutError,
     LLMValidationError,
     Message,
     ResponseModelT,
+    _redact_api_key,
+    validate_base_url,
 )
 
 log = logging.getLogger(__name__)
 
 _ANTHROPIC_API_BASE = "https://api.anthropic.com"
-_ANTHROPIC_VERSION  = "2023-06-01"
-_DEFAULT_TIMEOUT    = 120.0
+_ANTHROPIC_VERSION = "2023-06-01"
+_DEFAULT_TIMEOUT = 120.0
 _DEFAULT_MAX_TOKENS = 4096
 
 
@@ -71,11 +73,14 @@ class AnthropicProvider(LLMProvider):
         timeout: float = _DEFAULT_TIMEOUT,
         base_url: str = _ANTHROPIC_API_BASE,
     ) -> None:
-        self._api_key    = api_key
-        self._model      = model
+        # SSRF guard — reject private / loopback IPs and enforce HTTPS.
+        validate_base_url(base_url)
+
+        self._api_key = api_key
+        self._model = model
         self._max_tokens = max_tokens
-        self._timeout    = timeout
-        self._base_url   = base_url.rstrip("/")
+        self._timeout = timeout
+        self._base_url = base_url.rstrip("/")
 
     # ------------------------------------------------------------------
     # LLMProvider interface
@@ -83,11 +88,11 @@ class AnthropicProvider(LLMProvider):
 
     async def complete(
         self,
-        messages: List[Message],
-        response_model: Type[ResponseModelT],
+        messages: list[Message],
+        response_model: type[ResponseModelT],
     ) -> ResponseModelT:
         tool_name = f"structured_{response_model.__name__.lower()}"
-        schema    = response_model.model_json_schema()
+        schema = response_model.model_json_schema()
 
         # Separate system messages from the conversation turns.
         system_parts = [m.content for m in messages if m.role.value == "system"]
@@ -96,16 +101,16 @@ class AnthropicProvider(LLMProvider):
             for m in messages
             if m.role.value != "system"
         ]
-        system_prompt: Optional[str] = "\n\n".join(system_parts) or None
+        system_prompt: str | None = "\n\n".join(system_parts) or None
 
-        body: Dict[str, Any] = {
-            "model":      self._model,
+        body: dict[str, Any] = {
+            "model": self._model,
             "max_tokens": self._max_tokens,
-            "messages":   turn_messages,
+            "messages": turn_messages,
             "tools": [
                 {
-                    "name":         tool_name,
-                    "description":  f"Return a structured {response_model.__name__} object.",
+                    "name": tool_name,
+                    "description": f"Return a structured {response_model.__name__} object.",
                     "input_schema": schema,
                 }
             ],
@@ -115,40 +120,29 @@ class AnthropicProvider(LLMProvider):
         if system_prompt:
             body["system"] = system_prompt
 
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(
-                    f"{self._base_url}/v1/messages",
-                    headers={
-                        "x-api-key":         self._api_key,
-                        "anthropic-version":  _ANTHROPIC_VERSION,
-                        "Content-Type":       "application/json",
-                    },
-                    json=body,
-                )
-        except httpx.TimeoutException as exc:
-            raise LLMTimeoutError(
-                f"{self.model_identifier()} timed out after {self._timeout}s",
-                provider=self.model_identifier(),
-            ) from exc
-        except httpx.RequestError as exc:
-            raise LLMProviderError(
-                f"HTTP request to Anthropic failed: {exc}",
-                provider=self.model_identifier(),
-            ) from exc
-
-        if not resp.is_success:
-            raise LLMProviderError(
-                f"Anthropic API returned HTTP {resp.status_code}",
-                provider=self.model_identifier(),
-                status_code=resp.status_code,
-                upstream_message=resp.text[:500],
-            )
-
-        data = resp.json()
+        data = await self.execute_with_retry(
+            lambda: post_with_error_handling(
+                url=f"{self._base_url}/v1/messages",
+                body=body,
+                timeout=self._timeout,
+                model_id=self.model_identifier(),
+                headers={
+                    "x-api-key": self._api_key,
+                    "anthropic-version": _ANTHROPIC_VERSION,
+                    "Content-Type": "application/json",
+                },
+                error_prefix="HTTP request to Anthropic failed",
+            ),
+        )
 
         # Locate the tool_use block in the response content list.
-        tool_input = self._extract_tool_input(data, tool_name)
+        try:
+            tool_input = self._extract_tool_input(data, tool_name)
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMProviderError(
+                f"Anthropic response missing expected structure: {str(data)[:300]}",
+                provider=self.model_identifier(),
+            ) from exc
 
         try:
             return response_model.model_validate(tool_input)
@@ -161,6 +155,11 @@ class AnthropicProvider(LLMProvider):
 
     def model_identifier(self) -> str:
         return f"anthropic/{self._model}"
+
+    def __repr__(self) -> str:
+        return (
+            f"AnthropicProvider(model={self._model!r}, api_key={_redact_api_key(self._api_key)!r})"
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers

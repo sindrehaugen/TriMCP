@@ -5,24 +5,35 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse, HTMLResponse, FileResponse, Response
-from starlette.routing import Route
 from starlette.middleware import Middleware
+from starlette.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    StreamingResponse,
+)
+from starlette.routing import Route
 
-from trimcp.auth import BasicAuthMiddleware, HMACAuthMiddleware
+from trimcp.auth import BasicAuthMiddleware, HMACAuthMiddleware, optional_hmac_nonce_store
 from trimcp.config import cfg
-from trimcp.orchestrator import TriStackEngine
 from trimcp.notifications import dispatcher
+from trimcp.observability import OpenTelemetryTraceMiddleware
+from trimcp.orchestrator import TriStackEngine
 from trimcp.temporal import parse_as_of
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("trimcp-admin")
 
 engine: TriStackEngine | None = None
+
+_hmac_nonce_store = optional_hmac_nonce_store()
+
 
 @asynccontextmanager
 async def lifespan(app):
@@ -36,6 +47,7 @@ async def lifespan(app):
     await engine.disconnect()
     logger.info("TriMCP Admin: shutdown complete.")
 
+
 async def get_health(request):
     if not engine:
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
@@ -43,9 +55,20 @@ async def get_health(request):
     health = await engine.check_health()
 
     if any(status == "down" for status in health.values()):
-        await dispatcher.dispatch_alert("Database Health Alert", f"Current health: {json.dumps(health)}")
+        await dispatcher.dispatch_alert(
+            "Database Health Alert", f"Current health: {json.dumps(health)}"
+        )
 
     return JSONResponse(health)
+
+
+async def get_health_v1(request):
+    """GET /api/health/v1 — structured health for Admin UI (``check_health_v1``)."""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    health = await engine.check_health_v1()
+    return JSONResponse(health)
+
 
 async def trigger_gc(request):
     if not engine:
@@ -57,6 +80,7 @@ async def trigger_gc(request):
     except Exception as e:
         logger.error("GC failed: %s", e)
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
 
 async def api_search(request):
     """POST /api/search — unified semantic search with optional temporal filter.
@@ -91,9 +115,7 @@ async def api_search(request):
     from trimcp import quotas as _quotas
 
     try:
-        q_res = await _quotas.consume_for_tool(
-            engine.pg_pool, "api_semantic_search", body
-        )
+        q_res = await _quotas.consume_for_tool(engine.pg_pool, "api_semantic_search", body)
     except _quotas.QuotaExceededError as exc:
         return JSONResponse({"error": str(exc)}, status_code=429)
 
@@ -102,7 +124,8 @@ async def api_search(request):
             namespace_id=body["namespace_id"],
             agent_id=body["agent_id"],
             query=body["query"],
-            top_k=int(body.get("top_k", 5)),
+            limit=int(body.get("limit", body.get("top_k", 5))),
+            offset=int(body.get("offset", 0)),
             as_of=as_of_dt,
         )
         return JSONResponse({"results": results})
@@ -158,34 +181,119 @@ async def api_replay_observe(request):
     agent_filter = body.get("agent_id_filter")
     max_events = int(body.get("max_events", 500))
 
-    try:
-        from trimcp.replay import ObservationalReplay
+    from trimcp.replay import ObservationalReplay
+
+    async def _stream_events() -> AsyncGenerator[str, None]:
+        """Inner async generator — never materialises the full list in RAM."""
         replay = ObservationalReplay(pool=engine.pg_pool)
-        lines: list[str] = []
         count = 0
-        async for item in replay.execute(
-            source_namespace_id=ns_id,
-            start_seq=start_seq,
-            end_seq=end_seq,
-            agent_id_filter=agent_filter,
-        ):
-            lines.append(json.dumps(item))
-            if item.get("type") == "event":
-                count += 1
-                if count >= max_events:
-                    lines.append(json.dumps({
-                        "type": "truncated",
-                        "reason": "max_events_reached",
-                        "events_returned": count,
-                    }))
-                    break
-        return Response(
-            content="\n".join(lines) + "\n",
-            media_type="application/x-ndjson",
-        )
-    except Exception as exc:
-        logger.exception("api_replay_observe failed ns=%s", ns_id)
-        return JSONResponse({"error": "Observational replay failed", "detail": str(exc)}, status_code=500)
+        try:
+            async for item in replay.execute(
+                source_namespace_id=ns_id,
+                start_seq=start_seq,
+                end_seq=end_seq,
+                agent_id_filter=agent_filter,
+            ):
+                yield json.dumps(item) + "\n"
+                if item.get("type") == "event":
+                    count += 1
+                    if count >= max_events:
+                        yield (
+                            json.dumps(
+                                {
+                                    "type": "truncated",
+                                    "reason": "max_events_reached",
+                                    "events_returned": count,
+                                }
+                            )
+                            + "\n"
+                        )
+                        return
+        except Exception as exc:
+            logger.exception("api_replay_observe stream failed ns=%s", ns_id)
+            yield (
+                json.dumps(
+                    {
+                        "type": "error",
+                        "message": f"Stream failed after {count} events: {exc}",
+                    }
+                )
+                + "\n"
+            )
+
+    return StreamingResponse(
+        _stream_events(),
+        media_type="application/x-ndjson",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Snapshot export (streaming NDJSON)
+# ---------------------------------------------------------------------------
+
+
+async def api_snapshot_export(request):
+    """POST /api/snapshot/export
+
+    Stream all memories for a namespace (at a point in time) as NDJSON.
+    Uses a server-side asyncpg cursor — orchestrator RAM stays flat
+    regardless of export size.  GB-scale exports safe.
+
+    Request body (JSON):
+        namespace_id  str   required
+        snapshot_id   str   optional — resolve export to a named snapshot
+        as_of         str   optional ISO 8601 UTC timestamp (default: now)
+
+    Response: ``application/x-ndjson`` with lines of type:
+        metadata — export header (format version, as_of)
+        memory   — one per memory record
+        progress — periodic progress marker
+        complete — final summary
+        error    — terminal error
+    """
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+
+    ns_id = body.get("namespace_id")
+    if not ns_id:
+        return JSONResponse({"error": "Missing required field: namespace_id"}, status_code=422)
+
+    try:
+        uuid.UUID(ns_id)
+    except ValueError:
+        return JSONResponse({"error": "namespace_id is not a valid UUID"}, status_code=422)
+
+    snapshot_id = body.get("snapshot_id")
+    if snapshot_id:
+        try:
+            uuid.UUID(snapshot_id)
+        except ValueError:
+            return JSONResponse({"error": "snapshot_id is not a valid UUID"}, status_code=422)
+
+    as_of_raw = body.get("as_of")
+    from trimcp.temporal import parse_as_of
+
+    as_of_dt = parse_as_of(as_of_raw) if as_of_raw else None
+
+    from trimcp.snapshot_mcp_handlers import stream_snapshot_export
+
+    return StreamingResponse(
+        stream_snapshot_export(engine, ns_id, as_of=as_of_dt, snapshot_id=snapshot_id),
+        media_type="application/x-ndjson",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-cache",
+        },
+    )
 
 
 async def api_replay_fork(request):
@@ -219,37 +327,48 @@ async def api_replay_fork(request):
             status_code=422,
         )
 
-    try:
-        src_ns = uuid.UUID(body["source_namespace_id"])
-        tgt_ns = uuid.UUID(body["target_namespace_id"])
-    except ValueError as exc:
-        return JSONResponse({"error": f"Invalid UUID: {exc}"}, status_code=422)
+    from pydantic import ValidationError
 
-    fork_seq = int(body["fork_seq"])
-    start_seq = int(body.get("start_seq", 1))
-    replay_mode = body.get("replay_mode", "deterministic")
-    if replay_mode not in ("deterministic", "re-execute"):
+    from trimcp.models import ReplayForkRequest
+
+    try:
+        fork_req = ReplayForkRequest.model_validate(
+            {
+                "source_namespace_id": body["source_namespace_id"],
+                "target_namespace_id": body["target_namespace_id"],
+                "fork_seq": int(body["fork_seq"]),
+                "start_seq": int(body.get("start_seq", 1)),
+                "replay_mode": body.get("replay_mode", "deterministic"),
+                "config_overrides": body.get("config_overrides"),
+                "agent_id_filter": body.get("agent_id_filter"),
+            }
+        )
+    except ValidationError as exc:
         return JSONResponse(
-            {"error": "replay_mode must be 'deterministic' or 're-execute'"},
+            {"error": "Invalid request", "detail": exc.errors(include_url=False)},
             status_code=422,
         )
-    config_overrides = body.get("config_overrides")
-    agent_filter = body.get("agent_id_filter")
+
+    # ── Build the frozen execution config (immutable after this point) ──
+    from trimcp.models import FrozenForkConfig
+
+    frozen_config = FrozenForkConfig.from_request(fork_req)
 
     try:
         from trimcp.replay import ForkedReplay, _create_run
+
         # Pre-create the row so run_id is available before the background task runs.
         async with engine.pg_pool.acquire() as pre_conn:
             fork_run_id = await _create_run(
                 pre_conn,
-                source_namespace_id=src_ns,
-                target_namespace_id=tgt_ns,
+                source_namespace_id=frozen_config.source_namespace_id,
+                target_namespace_id=frozen_config.target_namespace_id,
                 mode="forked",
-                replay_mode=replay_mode,
-                start_seq=start_seq,
-                end_seq=fork_seq,
-                divergence_seq=fork_seq,
-                config_overrides=config_overrides,
+                replay_mode=frozen_config.replay_mode,
+                start_seq=frozen_config.start_seq,
+                end_seq=frozen_config.fork_seq,
+                divergence_seq=frozen_config.fork_seq,
+                config_overrides=frozen_config.overrides_dict,
             )
 
         replay = ForkedReplay(pool=engine.pg_pool)
@@ -257,13 +376,7 @@ async def api_replay_fork(request):
         async def _run_fork() -> None:
             try:
                 async for _ in replay.execute(
-                    source_namespace_id=src_ns,
-                    target_namespace_id=tgt_ns,
-                    fork_seq=fork_seq,
-                    start_seq=start_seq,
-                    replay_mode=replay_mode,
-                    config_overrides=config_overrides,
-                    agent_id_filter=agent_filter,
+                    frozen_config=frozen_config,
                     _existing_run_id=fork_run_id,
                 ):
                     pass
@@ -271,18 +384,27 @@ async def api_replay_fork(request):
                 logger.exception("Background ForkedReplay failed run_id=%s", fork_run_id)
 
         asyncio.create_task(_run_fork(), name=f"fork-{fork_run_id}")
-        return JSONResponse({
-            "status":           "started",
-            "run_id":           str(fork_run_id),
-            "source_namespace": str(src_ns),
-            "target_namespace": str(tgt_ns),
-            "fork_seq":         fork_seq,
-            "replay_mode":      replay_mode,
-        }, status_code=202)
+        return JSONResponse(
+            {
+                "status": "started",
+                "run_id": str(fork_run_id),
+                "source_namespace": str(frozen_config.source_namespace_id),
+                "target_namespace": str(frozen_config.target_namespace_id),
+                "fork_seq": frozen_config.fork_seq,
+                "replay_mode": frozen_config.replay_mode,
+            },
+            status_code=202,
+        )
 
     except Exception as exc:
-        logger.exception("api_replay_fork failed src=%s tgt=%s", src_ns, tgt_ns)
-        return JSONResponse({"error": "Fork replay failed to start", "detail": str(exc)}, status_code=500)
+        logger.exception(
+            "api_replay_fork failed src=%s tgt=%s",
+            frozen_config.source_namespace_id,
+            frozen_config.target_namespace_id,
+        )
+        return JSONResponse(
+            {"error": "Fork replay failed to start", "detail": str(exc)}, status_code=500
+        )
 
 
 async def api_replay_status(request):
@@ -300,7 +422,8 @@ async def api_replay_status(request):
         return JSONResponse({"error": "run_id is not a valid UUID"}, status_code=422)
 
     try:
-        from trimcp.replay import get_run_status, ReplayRunNotFoundError
+        from trimcp.replay import ReplayRunNotFoundError, get_run_status
+
         status = await get_run_status(pool=engine.pg_pool, run_id=run_id)
         return JSONResponse(status)
     except ReplayRunNotFoundError as exc:
@@ -326,16 +449,20 @@ async def api_event_provenance(request):
 
     try:
         from trimcp.replay import get_event_provenance
+
         provenance = await get_event_provenance(pool=engine.pg_pool, memory_id=memory_id)
         return JSONResponse(provenance)
     except Exception as exc:
         logger.exception("api_event_provenance failed memory_id=%s", memory_id)
-        return JSONResponse({"error": "Provenance trace failed", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "Provenance trace failed", "detail": str(exc)}, status_code=500
+        )
 
 
 # ---------------------------------------------------------------------------
 # Phase 3.1 — A2A Grant management (HMAC-protected admin endpoints)
 # ---------------------------------------------------------------------------
+
 
 async def api_a2a_create_grant(request):
     """POST /api/a2a/grants/create
@@ -375,20 +502,27 @@ async def api_a2a_create_grant(request):
             expires_in_seconds=int(body.get("expires_in_seconds", 3600)),
         )
     except (KeyError, ValueError) as exc:
-        return JSONResponse({"error": "Bad request parameters", "detail": str(exc)}, status_code=422)
+        return JSONResponse(
+            {"error": "Bad request parameters", "detail": str(exc)}, status_code=422
+        )
 
     try:
         async with engine.pg_pool.acquire() as conn:
             resp = await create_grant(conn, caller_ctx, req)
     except Exception as exc:
         logger.exception("api_a2a_create_grant failed ns=%s", ns_id)
-        return JSONResponse({"error": "Failed to create grant", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "Failed to create grant", "detail": str(exc)}, status_code=500
+        )
 
-    return JSONResponse({
-        "grant_id":      str(resp.grant_id),
-        "sharing_token": resp.sharing_token,
-        "expires_at":    resp.expires_at.isoformat(),
-    }, status_code=201)
+    return JSONResponse(
+        {
+            "grant_id": str(resp.grant_id),
+            "sharing_token": resp.sharing_token,
+            "expires_at": resp.expires_at.isoformat(),
+        },
+        status_code=201,
+    )
 
 
 async def api_a2a_revoke_grant(request):
@@ -422,7 +556,9 @@ async def api_a2a_revoke_grant(request):
         agent_id_val = body.get("agent_id", "default")
         caller_ctx = NamespaceContext(namespace_id=ns_id, agent_id=agent_id_val)
     except (KeyError, ValueError) as exc:
-        return JSONResponse({"error": "Bad request parameters", "detail": str(exc)}, status_code=422)
+        return JSONResponse(
+            {"error": "Bad request parameters", "detail": str(exc)}, status_code=422
+        )
 
     try:
         async with engine.pg_pool.acquire() as conn:
@@ -455,7 +591,9 @@ async def api_a2a_list_grants(request):
     try:
         ns_id = uuid.UUID(ns_id_str)
     except ValueError:
-        return JSONResponse({"error": "namespace_id is required and must be a valid UUID"}, status_code=422)
+        return JSONResponse(
+            {"error": "namespace_id is required and must be a valid UUID"}, status_code=422
+        )
 
     from trimcp.a2a import list_grants
     from trimcp.auth import NamespaceContext
@@ -491,6 +629,19 @@ def _parse_int(raw: str | None, default: int, min_value: int, max_value: int) ->
     return max(min_value, min(max_value, value))
 
 
+def _serialize_pg_row(row: Any) -> dict:
+    d = row if isinstance(row, dict) else dict(row)
+    out: dict[str, Any] = {}
+    for k, v in d.items():
+        if isinstance(v, datetime):
+            out[k] = v.astimezone(UTC).isoformat() if v else None
+        elif isinstance(v, uuid.UUID):
+            out[k] = str(v)
+        else:
+            out[k] = v
+    return out
+
+
 async def api_admin_events(request):
     """GET /api/admin/events
 
@@ -506,8 +657,12 @@ async def api_admin_events(request):
         agent_id = request.query_params.get("agent_id")
         from_dt = parse_as_of(request.query_params.get("from"))
         to_dt = parse_as_of(request.query_params.get("to"))
-        page = _parse_int(request.query_params.get("page"), default=1, min_value=1, max_value=10_000)
-        limit = _parse_int(request.query_params.get("limit"), default=50, min_value=1, max_value=200)
+        page = _parse_int(
+            request.query_params.get("page"), default=1, min_value=1, max_value=10_000
+        )
+        limit = _parse_int(
+            request.query_params.get("limit"), default=50, min_value=1, max_value=200
+        )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=422)
 
@@ -543,7 +698,7 @@ async def api_admin_events(request):
         FROM event_log
         {where_sql}
         ORDER BY occurred_at DESC
-        LIMIT ${i} OFFSET ${i+1}
+        LIMIT ${i} OFFSET ${i + 1}
     """
 
     try:
@@ -552,7 +707,9 @@ async def api_admin_events(request):
             rows = await conn.fetch(items_sql, *args, limit, offset)
     except Exception as exc:
         logger.exception("api_admin_events failed")
-        return JSONResponse({"error": "Failed to query events", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "Failed to query events", "detail": str(exc)}, status_code=500
+        )
 
     items = [
         {
@@ -561,7 +718,7 @@ async def api_admin_events(request):
             "agent_id": r["agent_id"],
             "event_type": r["event_type"],
             "event_seq": r["event_seq"],
-            "occurred_at": r["occurred_at"].astimezone(timezone.utc).isoformat(),
+            "occurred_at": r["occurred_at"].astimezone(UTC).isoformat(),
             "parent_event_id": str(r["parent_event_id"]) if r["parent_event_id"] else None,
         }
         for r in rows
@@ -616,8 +773,7 @@ async def api_admin_events_summary(request):
                 *args,
             )
             by_type_rows = await conn.fetch(
-                f"SELECT event_type, COUNT(*)::bigint AS c FROM event_log {where_sql} GROUP BY event_type ORDER BY c DESC"
-                ,
+                f"SELECT event_type, COUNT(*)::bigint AS c FROM event_log {where_sql} GROUP BY event_type ORDER BY c DESC",
                 *args,
             )
             by_ns_rows = await conn.fetch(
@@ -629,13 +785,15 @@ async def api_admin_events_summary(request):
             )
     except Exception as exc:
         logger.exception("api_admin_events_summary failed")
-        return JSONResponse({"error": "Failed to summarize events", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "Failed to summarize events", "detail": str(exc)}, status_code=500
+        )
 
     return JSONResponse(
         {
             "total_events": int(total_row["total"]) if total_row else 0,
             "latest_occurred_at": (
-                total_row["latest"].astimezone(timezone.utc).isoformat()
+                total_row["latest"].astimezone(UTC).isoformat()
                 if total_row and total_row["latest"] is not None
                 else None
             ),
@@ -661,8 +819,12 @@ async def api_admin_a2a_grants(request):
         status = request.query_params.get("status")
         if status and status not in ("active", "revoked", "expired"):
             return JSONResponse({"error": "status must be active|revoked|expired"}, status_code=422)
-        page = _parse_int(request.query_params.get("page"), default=1, min_value=1, max_value=10_000)
-        limit = _parse_int(request.query_params.get("limit"), default=50, min_value=1, max_value=200)
+        page = _parse_int(
+            request.query_params.get("page"), default=1, min_value=1, max_value=10_000
+        )
+        limit = _parse_int(
+            request.query_params.get("limit"), default=50, min_value=1, max_value=200
+        )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=422)
 
@@ -691,7 +853,7 @@ async def api_admin_a2a_grants(request):
         FROM a2a_grants
         {where_sql}
         ORDER BY created_at DESC
-        LIMIT ${i} OFFSET ${i+1}
+        LIMIT ${i} OFFSET ${i + 1}
     """
 
     try:
@@ -700,19 +862,23 @@ async def api_admin_a2a_grants(request):
             rows = await conn.fetch(items_sql, *args, limit, offset)
     except Exception as exc:
         logger.exception("api_admin_a2a_grants failed")
-        return JSONResponse({"error": "Failed to query A2A grants", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "Failed to query A2A grants", "detail": str(exc)}, status_code=500
+        )
 
     items = [
         {
             "grant_id": str(r["id"]),
             "owner_namespace_id": str(r["owner_namespace_id"]),
             "owner_agent_id": r["owner_agent_id"],
-            "target_namespace_id": str(r["target_namespace_id"]) if r["target_namespace_id"] else None,
+            "target_namespace_id": str(r["target_namespace_id"])
+            if r["target_namespace_id"]
+            else None,
             "target_agent_id": r["target_agent_id"],
             "scopes": json.loads(r["scopes"]) if isinstance(r["scopes"], str) else r["scopes"],
             "status": r["status"],
-            "expires_at": r["expires_at"].astimezone(timezone.utc).isoformat(),
-            "created_at": r["created_at"].astimezone(timezone.utc).isoformat(),
+            "expires_at": r["expires_at"].astimezone(UTC).isoformat(),
+            "created_at": r["created_at"].astimezone(UTC).isoformat(),
         }
         for r in rows
     ]
@@ -760,7 +926,9 @@ async def api_admin_a2a_grants_summary(request):
             )
     except Exception as exc:
         logger.exception("api_admin_a2a_grants_summary failed")
-        return JSONResponse({"error": "Failed to summarize A2A grants", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "Failed to summarize A2A grants", "detail": str(exc)}, status_code=500
+        )
 
     status_counts = {r["status"]: int(r["c"]) for r in rows}
     return JSONResponse(
@@ -801,7 +969,7 @@ async def api_admin_quotas(request):
 
     where_sql = "WHERE namespace_id = $1" if namespace_id else ""
     args: list[object] = [namespace_id] if namespace_id else []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if window == "hour":
         cutoff = now.replace(minute=0, second=0, microsecond=0)
     elif window == "day":
@@ -822,7 +990,9 @@ async def api_admin_quotas(request):
             )
     except Exception as exc:
         logger.exception("api_admin_quotas failed")
-        return JSONResponse({"error": "Failed to query quotas", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "Failed to query quotas", "detail": str(exc)}, status_code=500
+        )
 
     tools = []
     total_used = 0
@@ -841,8 +1011,10 @@ async def api_admin_quotas(request):
                 "used": used,
                 "limit": limit_amount,
                 "remaining": remaining,
-                "reset_at": r["reset_at"].astimezone(timezone.utc).isoformat() if r["reset_at"] else None,
-                "updated_at": r["updated_at"].astimezone(timezone.utc).isoformat() if r["updated_at"] else None,
+                "reset_at": r["reset_at"].astimezone(UTC).isoformat() if r["reset_at"] else None,
+                "updated_at": r["updated_at"].astimezone(UTC).isoformat()
+                if r["updated_at"]
+                else None,
                 "window_start": cutoff.isoformat(),
             }
         )
@@ -853,7 +1025,9 @@ async def api_admin_quotas(request):
             "totals": {
                 "used": total_used,
                 "limit": total_limit,
-                "utilization_pct": round((total_used / total_limit * 100.0), 2) if total_limit > 0 else 0.0,
+                "utilization_pct": round((total_used / total_limit * 100.0), 2)
+                if total_limit > 0
+                else 0.0,
             },
         }
     )
@@ -890,7 +1064,9 @@ async def api_admin_quotas_summary(request):
             )
     except Exception as exc:
         logger.exception("api_admin_quotas_summary failed")
-        return JSONResponse({"error": "Failed to summarize quotas", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "Failed to summarize quotas", "detail": str(exc)}, status_code=500
+        )
 
     near_limit = []
     for r in top_rows:
@@ -927,7 +1103,9 @@ async def api_admin_graph_explore(request):
 
     missing = [f for f in ("namespace_id", "query") if not body.get(f)]
     if missing:
-        return JSONResponse({"error": f"Missing required fields: {', '.join(missing)}"}, status_code=422)
+        return JSONResponse(
+            {"error": f"Missing required fields: {', '.join(missing)}"}, status_code=422
+        )
 
     try:
         namespace_id = str(uuid.UUID(body["namespace_id"]))
@@ -947,15 +1125,122 @@ async def api_admin_graph_explore(request):
         )
     except Exception as exc:
         logger.exception("api_admin_graph_explore failed ns=%s", namespace_id)
-        return JSONResponse({"error": "Graph exploration failed", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "Graph exploration failed", "detail": str(exc)}, status_code=500
+        )
 
     return JSONResponse(result)
+
+
+async def api_admin_embedding_models(request):
+    """GET /api/admin/embedding-models — list embedding model registry rows."""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    try:
+        async with engine.pg_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, name, dimension, status, created_at, retired_at
+                FROM embedding_models
+                ORDER BY created_at DESC
+                """
+            )
+    except Exception as exc:
+        logger.exception("api_admin_embedding_models failed")
+        return JSONResponse({"error": "Failed to list models", "detail": str(exc)}, status_code=500)
+    return JSONResponse({"models": [_serialize_pg_row(r) for r in rows]})
+
+
+async def api_admin_embedding_migration_start(request):
+    """POST /api/admin/embedding-migrations/start — body { \"target_model_id\": uuid }."""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+    tid = body.get("target_model_id")
+    if not tid:
+        return JSONResponse({"error": "target_model_id is required"}, status_code=422)
+    try:
+        out = await engine.start_migration(str(tid))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    except Exception as exc:
+        logger.exception("start_migration failed")
+        return JSONResponse(
+            {"error": "start_migration failed", "detail": str(exc)}, status_code=500
+        )
+    return JSONResponse(out)
+
+
+async def api_admin_embedding_migration_status(request):
+    """GET /api/admin/embedding-migrations/{migration_id}/status"""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    mid = request.path_params.get("migration_id")
+    try:
+        out = await engine.migration_status(mid)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except Exception as exc:
+        logger.exception("migration_status failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse(_serialize_pg_row(out))
+
+
+async def api_admin_embedding_migration_validate(request):
+    """POST /api/admin/embedding-migrations/{migration_id}/validate"""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    mid = request.path_params.get("migration_id")
+    try:
+        out = await engine.validate_migration(mid)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.exception("validate_migration failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse(out)
+
+
+async def api_admin_embedding_migration_commit(request):
+    """POST /api/admin/embedding-migrations/{migration_id}/commit"""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    mid = request.path_params.get("migration_id")
+    try:
+        out = await engine.commit_migration(mid)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.exception("commit_migration failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse(out)
+
+
+async def api_admin_embedding_migration_abort(request):
+    """POST /api/admin/embedding-migrations/{migration_id}/abort"""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    mid = request.path_params.get("migration_id")
+    try:
+        out = await engine.abort_migration(mid)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except Exception as exc:
+        logger.exception("abort_migration failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse(out)
 
 
 app = Starlette(
     debug=False,
     lifespan=lifespan,
     middleware=[
+        # OTel middleware must come first so trace context is established
+        # before any auth or handler logic runs.
+        Middleware(OpenTelemetryTraceMiddleware),
         Middleware(
             BasicAuthMiddleware,
             protected_prefix="/",
@@ -968,11 +1253,13 @@ app = Starlette(
             HMACAuthMiddleware,
             protected_prefix="/api/",
             api_key=cfg.TRIMCP_API_KEY,
-        )
+            nonce_store=_hmac_nonce_store,
+        ),
     ],
     routes=[
         Route("/", endpoint=serve_index),
         Route("/api/health", endpoint=get_health, methods=["GET"]),
+        Route("/api/health/v1", endpoint=get_health_v1, methods=["GET"]),
         Route("/api/gc/trigger", endpoint=trigger_gc, methods=["POST"]),
         Route("/api/search", endpoint=api_search, methods=["POST"]),
         # Phase 2.3 — Replay
@@ -980,23 +1267,62 @@ app = Starlette(
         Route("/api/replay/fork", endpoint=api_replay_fork, methods=["POST"]),
         Route("/api/replay/status/{run_id}", endpoint=api_replay_status, methods=["GET"]),
         Route("/api/replay/provenance/{memory_id}", endpoint=api_event_provenance, methods=["GET"]),
+        # Phase 3 — Snapshot export (streaming NDJSON)
+        Route("/api/snapshot/export", endpoint=api_snapshot_export, methods=["POST"]),
         # Phase 3.1 — A2A Grant Management
-        Route("/api/a2a/grants/create",             endpoint=api_a2a_create_grant, methods=["POST"]),
-        Route("/api/a2a/grants/{grant_id}/revoke",  endpoint=api_a2a_revoke_grant, methods=["POST"]),
-        Route("/api/a2a/grants",                    endpoint=api_a2a_list_grants,  methods=["GET"]),
+        Route("/api/a2a/grants/create", endpoint=api_a2a_create_grant, methods=["POST"]),
+        Route("/api/a2a/grants/{grant_id}/revoke", endpoint=api_a2a_revoke_grant, methods=["POST"]),
+        Route("/api/a2a/grants", endpoint=api_a2a_list_grants, methods=["GET"]),
         # Admin UI feed endpoints
-        Route("/api/admin/events",                    endpoint=api_admin_events, methods=["GET"]),
-        Route("/api/admin/events/summary",            endpoint=api_admin_events_summary, methods=["GET"]),
-        Route("/api/admin/a2a/grants",                endpoint=api_admin_a2a_grants, methods=["GET"]),
-        Route("/api/admin/a2a/grants/summary",        endpoint=api_admin_a2a_grants_summary, methods=["GET"]),
-        Route("/api/admin/a2a/grants/{grant_id}/revoke", endpoint=api_admin_a2a_revoke_grant, methods=["POST"]),
-        Route("/api/admin/quotas",                    endpoint=api_admin_quotas, methods=["GET"]),
-        Route("/api/admin/quotas/summary",            endpoint=api_admin_quotas_summary, methods=["GET"]),
-        Route("/api/admin/graph/explore",             endpoint=api_admin_graph_explore, methods=["POST"]),
-        Route("/api/admin/graph/provenance/{memory_id}", endpoint=api_event_provenance, methods=["GET"]),
+        Route("/api/admin/events", endpoint=api_admin_events, methods=["GET"]),
+        Route("/api/admin/events/summary", endpoint=api_admin_events_summary, methods=["GET"]),
+        Route("/api/admin/a2a/grants", endpoint=api_admin_a2a_grants, methods=["GET"]),
+        Route(
+            "/api/admin/a2a/grants/summary", endpoint=api_admin_a2a_grants_summary, methods=["GET"]
+        ),
+        Route(
+            "/api/admin/a2a/grants/{grant_id}/revoke",
+            endpoint=api_admin_a2a_revoke_grant,
+            methods=["POST"],
+        ),
+        Route("/api/admin/quotas", endpoint=api_admin_quotas, methods=["GET"]),
+        Route("/api/admin/quotas/summary", endpoint=api_admin_quotas_summary, methods=["GET"]),
+        Route("/api/admin/graph/explore", endpoint=api_admin_graph_explore, methods=["POST"]),
+        Route(
+            "/api/admin/graph/provenance/{memory_id}",
+            endpoint=api_event_provenance,
+            methods=["GET"],
+        ),
+        Route("/api/admin/embedding-models", endpoint=api_admin_embedding_models, methods=["GET"]),
+        Route(
+            "/api/admin/embedding-migrations/start",
+            endpoint=api_admin_embedding_migration_start,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/embedding-migrations/{migration_id}/status",
+            endpoint=api_admin_embedding_migration_status,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/embedding-migrations/{migration_id}/validate",
+            endpoint=api_admin_embedding_migration_validate,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/embedding-migrations/{migration_id}/commit",
+            endpoint=api_admin_embedding_migration_commit,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/embedding-migrations/{migration_id}/abort",
+            endpoint=api_admin_embedding_migration_abort,
+            methods=["POST"],
+        ),
     ],
 )
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8003)

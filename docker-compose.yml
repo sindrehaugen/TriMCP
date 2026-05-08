@@ -1,14 +1,11 @@
 # TriMCP v1.0 — self-hosted stack (Decision D1).
-# Zero-config boot: uses committed deploy/compose.stack.env + sensible defaults.
+# Zero-config boot: deploy/compose.stack.env + optional deploy/compose.stack.env.generated
+# (create via: python scripts/bootstrap-compose-secrets.py — also runs from `make up`).
 #
 #   docker compose up -d --build
 #
 # Ports (host): 5432 Postgres, 27017 Mongo, 6379 Redis, 9002 MinIO S3, 9003 MinIO console,
 # 11435 cognitive, 8003 Admin UI + REST API, 8004 A2A, 8080 webhooks, 80 Caddy (UI + webhooks).
-#
-# MCP (stdio): run on the host against published ports, e.g.
-#   PG_DSN=postgresql://mcp_user:mcp_password@127.0.0.1:5432/memory_meta ...
-#   python server.py
 
 services:
   redis:
@@ -19,6 +16,11 @@ services:
     volumes:
       - redis_data:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -31,6 +33,8 @@ services:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+      # Initialize schema on first boot (idempotent)
+      - ./trimcp/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mcp_user -d memory_meta"]
       interval: 5s
@@ -46,6 +50,11 @@ services:
     volumes:
       - mongo_data:/data/db
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   minio:
     image: minio/minio:RELEASE.2024-11-07T00-52-20Z
@@ -60,6 +69,11 @@ services:
       - minio_data:/data
     command: server /data --console-address ":9001"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   cognitive:
     image: ghcr.io/sindrehaugen/trimcp-cognitive:v1
@@ -67,6 +81,11 @@ services:
     ports:
       - "${COGNITIVE_PORT:-11435}:11435"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11435/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   worker:
     build:
@@ -75,23 +94,30 @@ services:
     container_name: tri-stack-worker
     env_file:
       - deploy/compose.stack.env
+      - deploy/compose.stack.env.generated
     environment:
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
-      TRIMCP_LLM_PROVIDER: ${TRIMCP_LLM_PROVIDER:-local-cognitive-model}
-      TRIMCP_COGNITIVE_BASE_URL: ${TRIMCP_COGNITIVE_BASE_URL:-http://cognitive:11435}
+    # GPU access for re-embedding CUDA operations (Item 49)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     depends_on:
       postgres:
         condition: service_healthy
       mongodb:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       minio:
-        condition: service_started
+        condition: service_healthy
       cognitive:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
   # APScheduler: bridge subscription renewal + re-embedding sweeps (cognitive maintenance).
@@ -103,23 +129,20 @@ services:
     container_name: tri-stack-cron
     env_file:
       - deploy/compose.stack.env
+      - deploy/compose.stack.env.generated
     environment:
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
-      TRIMCP_LLM_PROVIDER: ${TRIMCP_LLM_PROVIDER:-local-cognitive-model}
-      TRIMCP_COGNITIVE_BASE_URL: ${TRIMCP_COGNITIVE_BASE_URL:-http://cognitive:11435}
     depends_on:
       postgres:
         condition: service_healthy
       mongodb:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       minio:
-        condition: service_started
-      cognitive:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
   admin:
@@ -138,25 +161,22 @@ services:
     container_name: tri-stack-admin
     env_file:
       - deploy/compose.stack.env
+      - deploy/compose.stack.env.generated
     environment:
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
-      TRIMCP_LLM_PROVIDER: ${TRIMCP_LLM_PROVIDER:-local-cognitive-model}
-      TRIMCP_COGNITIVE_BASE_URL: ${TRIMCP_COGNITIVE_BASE_URL:-http://cognitive:11435}
     ports:
       - "${ADMIN_PORT:-8003}:8003"
     depends_on:
       postgres:
         condition: service_healthy
       mongodb:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       minio:
-        condition: service_started
-      cognitive:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -168,7 +188,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 50s
+      start_period: 20s
     restart: unless-stopped
 
   a2a:
@@ -187,26 +207,20 @@ services:
     container_name: tri-stack-a2a
     env_file:
       - deploy/compose.stack.env
+      - deploy/compose.stack.env.generated
     environment:
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
-      TRIMCP_LLM_PROVIDER: ${TRIMCP_LLM_PROVIDER:-local-cognitive-model}
-      TRIMCP_COGNITIVE_BASE_URL: ${TRIMCP_COGNITIVE_BASE_URL:-http://cognitive:11435}
-      TRIMCP_A2A_URL: ${TRIMCP_A2A_URL:-http://localhost:8004}
     ports:
       - "${A2A_PORT:-8004}:8004"
     depends_on:
       postgres:
         condition: service_healthy
       mongodb:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
-      minio:
-        condition: service_started
-      cognitive:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
   webhook-receiver:
@@ -225,12 +239,14 @@ services:
     container_name: tri-stack-webhook-receiver
     env_file:
       - deploy/compose.stack.env
+      - deploy/compose.stack.env.generated
     environment:
       REDIS_URL: redis://redis:6379/0
     ports:
       - "${WEBHOOK_PORT:-8080}:8080"
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
   caddy:
@@ -244,8 +260,10 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - webhook-receiver
-      - admin
+      webhook-receiver:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

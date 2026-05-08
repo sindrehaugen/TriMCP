@@ -4,11 +4,13 @@ Abstract document-bridge provider (TriMCP Enterprise §10.3, Appendix H).
 Concrete bridges implement delta enumeration and optional OAuth refresh.
 RQ workers import these classes to download files after webhook enqueueing.
 """
+
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Iterator, Optional
+from collections.abc import Iterator
+from typing import Any
 
 log = logging.getLogger("trimcp.bridges.base")
 
@@ -49,12 +51,15 @@ class BridgeProvider(ABC):
         """
         Fetch raw file bytes for indexing. `file_ref` is provider-specific metadata.
         """
-        raise NotImplementedError(f"{self.provider_key}.download_file must be implemented for ingestion")
+        raise NotImplementedError(
+            f"{self.provider_key}.download_file must be implemented for ingestion"
+        )
 
 
 def redis_client():
     """Shared sync Redis handle for cursors and dedupe (worker + bridges)."""
     from redis import Redis
+
     from trimcp.config import cfg
 
     return Redis.from_url(cfg.REDIS_URL)

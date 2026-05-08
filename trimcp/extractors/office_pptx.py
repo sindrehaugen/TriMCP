@@ -1,4 +1,5 @@
 """J.7 / J.8 PowerPoint extraction."""
+
 from __future__ import annotations
 
 import asyncio
@@ -114,7 +115,9 @@ async def extract_pptx(blob: bytes) -> ExtractionResult:
 
         body = "\n\n".join(p for p in slide_text_parts if p)
         sections.append(
-            Section(text=body, structure_path=f"Slide {slide_num}", section_type="slide", order=order)
+            Section(
+                text=body, structure_path=f"Slide {slide_num}", section_type="slide", order=order
+            )
         )
         order += 1
 

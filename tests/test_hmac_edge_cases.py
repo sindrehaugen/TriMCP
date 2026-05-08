@@ -21,8 +21,8 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from trimcp.auth import HMACAuthMiddleware, NamespaceContext, resolve_namespace
 from tests.fixtures.http_hmac_helpers import admin_hmac_headers, compute_admin_hmac
+from trimcp.auth import HMACAuthMiddleware, NamespaceContext, resolve_namespace
 
 _KEY = "fixture-hmac-shared-secret-32b+"
 
@@ -70,7 +70,7 @@ class TestHMACPayloadEdges:
 
     def test_utf8_multibyte_payload(self) -> None:
         app = _app()
-        body = "北極 ✨".encode("utf-8")
+        body = "北極 ✨".encode()
         ts = int(time.time())
         hdr = admin_hmac_headers(
             hex_key_material=_KEY, method="POST", path="/api/echo", body=body, timestamp=ts

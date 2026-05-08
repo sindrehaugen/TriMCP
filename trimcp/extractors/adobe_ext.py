@@ -1,4 +1,5 @@
 """J.15 — Adobe: .psd (psd-tools), .idml (ZIP Story XML), .indd skip; .ai → PDF pipeline."""
+
 from __future__ import annotations
 
 import asyncio
@@ -153,7 +154,8 @@ def _extract_idml_sync(blob: bytes) -> ExtractionResult:
     return ExtractionResult(
         method="idml",
         text=full or "(no text)",
-        sections=sections or [Section(text="(no text)", structure_path="IDML", section_type="body", order=0)],
+        sections=sections
+        or [Section(text="(no text)", structure_path="IDML", section_type="body", order=0)],
         metadata={"story_blocks": len(uniq)},
         warnings=warnings,
     )

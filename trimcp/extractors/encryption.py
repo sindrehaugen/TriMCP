@@ -6,6 +6,7 @@ wrapped in try/except and return False on ambiguity. False negatives are accepta
 for edge formats; false positives yield a skipped ExtractionResult (never a crash).
 Production workers should log ``metadata["audit_log"]`` to the deployment audit sink.
 """
+
 from __future__ import annotations
 
 import io
@@ -14,7 +15,7 @@ import zipfile
 from typing import Any
 
 from trimcp.extractors.common import is_pdf_encrypted_blob, is_zip_encrypted_ooxml
-from trimcp.extractors.core import ExtractionResult, empty_skipped
+from trimcp.extractors.core import ExtractionResult
 
 log = logging.getLogger(__name__)
 

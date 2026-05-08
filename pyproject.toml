@@ -1,0 +1,31 @@
+[project]
+name = "trimcp"
+version = "0"
+readme = "README.md"
+requires-python = ">=3.10"
+# Runtime deps remain in requirements.txt; this stanza anchors tooling.
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["trimcp", "tests"]
+extend-exclude = [
+    "build",
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "scratch",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "G004"]
+# E501 conflicts with legacy long lines; formatter + 100-col cap handle style incrementally.
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["trimcp"]
+
+[tool.ruff.format]
+quote-style = "preserve"
+line-ending = "auto"

@@ -3,10 +3,12 @@ Phase 5 / Phase 1 enterprise — Jina embeddings with hardware backend abstracti
 
 ``EmbeddingBackend`` routes inference through CPU / CUDA / ROCm / XPU / OpenVINO NPU / MPS.
 Module-level ``embed`` and ``embed_batch`` preserve the public contract used by the
-orchestrator and RQ worker: async APIs, 768 dimensions, thread-pool offload for blocking stacks.
+orchestrator and RQ worker: async APIs, dimensions from ``cfg.EMBEDDING.VECTOR_DIM``,
+thread-pool offload for blocking stacks.
 
 Vector dimension and cosine semantics are unchanged — PostgreSQL pgvector ingestion is unaffected.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,14 +18,18 @@ import os
 import random
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from functools import lru_cache
 
 from trimcp.config import cfg
+from trimcp.observability import EMBEDDING_COUNT
 
 log = logging.getLogger("tri-stack-embeddings")
 
+degraded_embedding_flag: ContextVar[bool] = ContextVar("degraded_embedding_flag", default=False)
+
 MODEL_ID = "jinaai/jina-embeddings-v2-base-code"
-VECTOR_DIM = 768
+VECTOR_DIM = cfg.EMBEDDING.VECTOR_DIM
 
 # Model encode is not thread-safe across mixed backends — single worker serializes.
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trimcp-embed")
@@ -33,23 +39,23 @@ _backend: EmbeddingBackend | None = None
 
 
 def _stub_vector(text: str) -> list[float]:
-    """Deterministic 768-dim mock — identical inputs → identical vectors (CI / failures)."""
+    """Deterministic mock vector (``VECTOR_DIM``); identical inputs → identical vectors (CI)."""
     seed = int(hashlib.md5(text.encode()).hexdigest(), 16) % (2**31)
     rng = random.Random(seed)
     return [rng.uniform(-1.0, 1.0) for _ in range(VECTOR_DIM)]
 
 
-def _is_rocm() -> bool:
+def _is_rocm_available() -> bool:
     try:
         import torch
 
         hip = getattr(torch.version, "hip", None)
         return bool(hip)
-    except Exception:
+    except (ImportError, RuntimeError):
         return False
 
 
-def _torch_mps_available() -> bool:
+def _is_mps_available() -> bool:
     try:
         import torch
 
@@ -58,20 +64,20 @@ def _torch_mps_available() -> bool:
             and torch.backends.mps.is_available()
             and torch.backends.mps.is_built()
         )
-    except Exception:
+    except (ImportError, RuntimeError):
         return False
 
 
-def _torch_xpu_available() -> bool:
+def _is_xpu_available() -> bool:
     try:
         import torch
 
         return bool(hasattr(torch, "xpu") and torch.xpu.is_available())
-    except Exception:
+    except (ImportError, RuntimeError):
         return False
 
 
-def _intel_npu_available() -> bool:
+def _is_npu_available() -> bool:
     """
     Conservative auto-detect: OpenVINO Runtime exposes an NPU device, or the user
     pre-declares intent via TRIMCP_OPENVINO_MODEL_DIR (export present).
@@ -86,7 +92,7 @@ def _intel_npu_available() -> bool:
         core = Core()
         devs = [d for d in core.available_devices if "NPU" in d.upper()]
         return bool(devs)
-    except Exception:
+    except (ImportError, RuntimeError, OSError):
         return False
 
 
@@ -136,104 +142,71 @@ class EmbeddingBackend(ABC):
         return await loop.run_in_executor(_executor, self._sync_embed_batch, texts)
 
 
-class CPUBackend(EmbeddingBackend):
+class TorchEmbeddingBackend(EmbeddingBackend):
+    """Base class for PyTorch-based embedding backends using SentenceTransformer."""
+
+    @abstractmethod
+    def get_device(self) -> str:
+        """Return the PyTorch device name or string."""
+
+    def get_backend_name(self) -> str:
+        """Return the name of this backend for logging."""
+        return self.__class__.__name__.replace("Backend", "")
+
+    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
+        device = self.get_device()
+        model = _load_sentence_transformer(device)
+        if model is None:
+            return [_stub_vector(t) for t in texts]
+        try:
+            vectors = model.encode(
+                texts,
+                normalize_embeddings=True,
+                batch_size=min(32, len(texts)),
+                show_progress_bar=False,
+            )
+            return [v.tolist() for v in vectors]
+        except Exception as e:
+            log.error("%s batch embedding failed: %s", self.get_backend_name(), e)
+            return [_stub_vector(t) for t in texts]
+
+
+class CPUBackend(TorchEmbeddingBackend):
     """Baseline torch CPU / SentenceTransformer."""
 
-    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
-        model = _load_sentence_transformer("cpu")
-        if model is None:
-            return [_stub_vector(t) for t in texts]
-        try:
-            vectors = model.encode(
-                texts,
-                normalize_embeddings=True,
-                batch_size=min(32, len(texts)),
-                show_progress_bar=False,
-            )
-            return [v.tolist() for v in vectors]
-        except Exception as e:
-            log.error("CPU batch embedding failed: %s", e)
-            return [_stub_vector(t) for t in texts]
+    def get_device(self) -> str:
+        return "cpu"
 
 
-class CUDABackend(EmbeddingBackend):
+class CUDABackend(TorchEmbeddingBackend):
     """NVIDIA CUDA — PyTorch CUDA device (non-ROCm wheels)."""
 
-    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
-        model = _load_sentence_transformer("cuda")
-        if model is None:
-            return [_stub_vector(t) for t in texts]
-        try:
-            vectors = model.encode(
-                texts,
-                normalize_embeddings=True,
-                batch_size=min(32, len(texts)),
-                show_progress_bar=False,
-            )
-            return [v.tolist() for v in vectors]
-        except Exception as e:
-            log.error("CUDA batch embedding failed: %s", e)
-            return [_stub_vector(t) for t in texts]
+    def get_device(self) -> str:
+        return "cuda"
 
 
-class ROCmBackend(EmbeddingBackend):
+class ROCmBackend(TorchEmbeddingBackend):
     """AMD ROCm — PyTorch exposes CUDA APIs on ROCm builds."""
 
-    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
-        model = _load_sentence_transformer("cuda")
-        if model is None:
-            return [_stub_vector(t) for t in texts]
-        try:
-            vectors = model.encode(
-                texts,
-                normalize_embeddings=True,
-                batch_size=min(32, len(texts)),
-                show_progress_bar=False,
-            )
-            return [v.tolist() for v in vectors]
-        except Exception as e:
-            log.error("ROCm batch embedding failed: %s", e)
-            return [_stub_vector(t) for t in texts]
+    def get_device(self) -> str:
+        return "cuda"
+
+    def get_backend_name(self) -> str:
+        return "ROCm"
 
 
-class XPUBackend(EmbeddingBackend):
+class XPUBackend(TorchEmbeddingBackend):
     """Intel GPU via torch.xpu."""
 
-    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
-        model = _load_sentence_transformer("xpu")
-        if model is None:
-            return [_stub_vector(t) for t in texts]
-        try:
-            vectors = model.encode(
-                texts,
-                normalize_embeddings=True,
-                batch_size=min(32, len(texts)),
-                show_progress_bar=False,
-            )
-            return [v.tolist() for v in vectors]
-        except Exception as e:
-            log.error("XPU batch embedding failed: %s", e)
-            return [_stub_vector(t) for t in texts]
+    def get_device(self) -> str:
+        return "xpu"
 
 
-class MPSBackend(EmbeddingBackend):
+class MPSBackend(TorchEmbeddingBackend):
     """Apple Silicon MPS."""
 
-    def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
-        model = _load_sentence_transformer("mps")
-        if model is None:
-            return [_stub_vector(t) for t in texts]
-        try:
-            vectors = model.encode(
-                texts,
-                normalize_embeddings=True,
-                batch_size=min(32, len(texts)),
-                show_progress_bar=False,
-            )
-            return [v.tolist() for v in vectors]
-        except Exception as e:
-            log.error("MPS batch embedding failed: %s", e)
-            return [_stub_vector(t) for t in texts]
+    def get_device(self) -> str:
+        return "mps"
 
 
 def _mean_pool(last_hidden_state, attention_mask):
@@ -289,8 +262,47 @@ class CognitiveRemoteBackend(EmbeddingBackend):
                 r.raise_for_status()
                 data = r.json()
         except Exception as e:
-            log.error("Cognitive embedding HTTP failed: %s", e)
-            return [_stub_vector(t) for t in texts]
+            # Check for RateLimitError (429 status) or TimeoutException
+            is_rate_limit = isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429
+            is_timeout = isinstance(e, httpx.TimeoutException)
+            if not (is_rate_limit or is_timeout):
+                # Fallback on generic rate limit or timeout indicators in the string representation
+                err_str = str(e).lower()
+                if "rate limit" in err_str or "429" in err_str:
+                    is_rate_limit = True
+                elif "timeout" in err_str or "timed out" in err_str:
+                    is_timeout = True
+
+            if is_rate_limit or is_timeout:
+                reason = "RateLimit" if is_rate_limit else "Timeout"
+                log.warning(
+                    "Primary embedding model failed due to %s. Falling back to smaller model. Error: %s",
+                    reason,
+                    e,
+                )
+                degraded_embedding_flag.set(True)
+
+                # Fallback to secondary model
+                fallback_model = (
+                    getattr(cfg, "TRIMCP_COGNITIVE_FALLBACK_MODEL", None)
+                    or os.getenv("TRIMCP_COGNITIVE_FALLBACK_MODEL", "text-embedding-3-small")
+                ).strip()
+                log.info("CognitiveRemoteBackend: triggering fallback model: %s", fallback_model)
+
+                payload_fallback = dict(payload)
+                payload_fallback["model"] = fallback_model
+
+                try:
+                    with httpx.Client(timeout=60.0) as client:
+                        r = client.post(url, json=payload_fallback, headers=headers)
+                        r.raise_for_status()
+                        data = r.json()
+                except Exception as fe:
+                    log.error("Fallback embedding model also failed: %s", fe)
+                    return [_stub_vector(t) for t in texts]
+            else:
+                log.error("Cognitive embedding HTTP failed: %s", e)
+                return [_stub_vector(t) for t in texts]
 
         rows = data.get("data") if isinstance(data, dict) else None
         if not rows or not isinstance(rows, list):
@@ -322,12 +334,14 @@ class CognitiveRemoteBackend(EmbeddingBackend):
 
         bad_dims = [len(v) for v in vectors if len(v) != VECTOR_DIM]
         if bad_dims:
-            log.warning(
-                "Cognitive returned non-%d-dim vectors (dims=%s); PG schema expects %d",
+            log.error(
+                "Cognitive returned non-%d-dim vectors (dims=%s); PG schema expects %d — "
+                "falling back to stub vectors to prevent data corruption",
                 VECTOR_DIM,
                 bad_dims[:5],
                 VECTOR_DIM,
             )
+            return [_stub_vector(t) for t in texts]
         return vectors
 
 
@@ -421,19 +435,19 @@ def detect_backend() -> EmbeddingBackend:
         log.warning("torch not importable — using CPU backend stub path.")
         return CPUBackend()
 
-    if torch.cuda.is_available() and not _is_rocm():
+    if torch.cuda.is_available() and not _is_rocm_available():
         log.info("Auto-selected CUDABackend (CUDA available, not ROCm).")
         return CUDABackend()
-    if _is_rocm() and torch.cuda.is_available():
+    if _is_rocm_available() and torch.cuda.is_available():
         log.info("Auto-selected ROCmBackend.")
         return ROCmBackend()
-    if _torch_xpu_available():
+    if _is_xpu_available():
         log.info("Auto-selected XPUBackend.")
         return XPUBackend()
-    if _intel_npu_available():
+    if _is_npu_available():
         log.info("Auto-selected OpenVINONPUBackend.")
         return OpenVINONPUBackend()
-    if _torch_mps_available():
+    if _is_mps_available():
         log.info("Auto-selected MPSBackend.")
         return MPSBackend()
 
@@ -458,6 +472,7 @@ def reset_backend_singleton_for_tests() -> None:
 
 
 async def embed(text: str) -> list[float]:
+    degraded_embedding_flag.set(False)
     vecs = await get_backend().embed([text])
     return vecs[0] if vecs else _stub_vector(text)
 
@@ -468,8 +483,12 @@ async def embed_batch(texts: list[str]) -> list[list[float]]:
     """
     if not texts:
         return []
+
+    degraded_embedding_flag.set(False)
+    EMBEDDING_COUNT.labels(model_id=MODEL_ID).inc(len(texts))
+
     backend = get_backend()
-    loop = asyncio.get_event_loop()
+    asyncio.get_event_loop()
     results: list[list[float]] = []
     for start in range(0, len(texts), cfg.EMBED_BATCH_CHUNK):
         chunk = texts[start : start + cfg.EMBED_BATCH_CHUNK]

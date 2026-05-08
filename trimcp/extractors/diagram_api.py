@@ -1,4 +1,5 @@
 """J.14 — Miro / Lucidchart REST extraction (OAuth bearer); not file-byte routed."""
+
 from __future__ import annotations
 
 import json
@@ -9,6 +10,8 @@ from typing import Any
 import httpx
 
 from trimcp.extractors.core import ExtractionResult, Section, empty_skipped
+from trimcp.net_safety import BridgeURLValidationError, validate_extractor_url
+from trimcp.observability import inject_trace_headers
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +58,11 @@ async def miro_extract_board(
             "no_token",
             warnings=["Set TRIMCP_MIRO_ACCESS_TOKEN (or pass access_token=) for Miro extraction"],
         )
+    # SSRF guard: validate base_url before any outbound request
+    try:
+        validate_extractor_url(base_url)
+    except BridgeURLValidationError as e:
+        return empty_skipped("miro_api", "ssrf_blocked", warnings=[str(e)])
     sections: list[Section] = []
     order = 0
     cursor: str | None = None
@@ -69,7 +77,9 @@ async def miro_extract_board(
                     r = await client.get(
                         url,
                         params=params,
-                        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                        headers=inject_trace_headers(
+                            {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+                        ),
                     )
                     r.raise_for_status()
                     payload = r.json()
@@ -78,7 +88,9 @@ async def miro_extract_board(
                     return empty_skipped(
                         "miro_api",
                         "http_error",
-                        warnings=[f"Miro API HTTP {e.response.status_code}: {e.response.text[:300]}"],
+                        warnings=[
+                            f"Miro API HTTP {e.response.status_code}: {e.response.text[:300]}"
+                        ],
                     )
                 except (httpx.RequestError, json.JSONDecodeError, ValueError) as e:
                     log.warning("miro_request_failed: %s", e)
@@ -166,12 +178,19 @@ async def lucidchart_extract_document(
             "no_token",
             warnings=["Set TRIMCP_LUCID_ACCESS_TOKEN (or pass access_token=) for Lucid extraction"],
         )
+    # SSRF guard: validate base_url before any outbound request
+    try:
+        validate_extractor_url(base_url)
+    except BridgeURLValidationError as e:
+        return empty_skipped("lucid_api", "ssrf_blocked", warnings=[str(e)])
     url = f"{base_url.rstrip('/')}/documents/{document_id}"
     try:
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             r = await client.get(
                 url,
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                headers=inject_trace_headers(
+                    {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+                ),
             )
             r.raise_for_status()
             payload = r.json()

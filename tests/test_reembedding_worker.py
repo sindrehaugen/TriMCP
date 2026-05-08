@@ -5,10 +5,16 @@ All async functions are driven via asyncio.run() to sidestep pytest-asyncio.
 Embed calls are stubbed so tests run without a GPU / SentenceTransformer.
 DB interactions use asyncpg AsyncMock — no live Postgres required.
 """
+
 import asyncio
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
+
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,16 +22,14 @@ import pytest
 from trimcp import reembedding_worker as rw
 from trimcp.reembedding_worker import (
     ReembeddingWorker,
-    _DDL_REEMBEDDING_RUNS,
     _fallback_text,
-    _fetch_memories_batch,
     _fetch_kg_nodes_batch,
+    _fetch_memories_batch,
     _resolve_texts_from_mongo,
-    _update_memories_batch,
     _update_kg_nodes_batch,
+    _update_memories_batch,
     current_model_uuid,
 )
-
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -62,7 +66,7 @@ def _fake_memory_record(memory_type: str = "episodic") -> MagicMock:
     rec = MagicMock()
     rec.__getitem__ = lambda s, k: {
         "id": uuid.uuid4(),
-        "created_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "created_at": datetime(2024, 1, 1, tzinfo=UTC),
         "memory_type": memory_type,
         "payload_ref": "a" * 24,
         "name": "test_memory",
@@ -91,6 +95,7 @@ def _fake_kg_record() -> MagicMock:
 # Unit: current_model_uuid() is deterministic
 # --------------------------------------------------------------------------- #
 
+
 def test_current_model_uuid_is_deterministic():
     a = current_model_uuid()
     b = current_model_uuid()
@@ -101,6 +106,7 @@ def test_current_model_uuid_is_deterministic():
 # --------------------------------------------------------------------------- #
 # Unit: _fallback_text
 # --------------------------------------------------------------------------- #
+
 
 def test_fallback_text_uses_name_and_filepath():
     rec = MagicMock()
@@ -127,6 +133,7 @@ def test_fallback_text_empty_when_no_fields():
 # Unit: _fetch_memories_batch — verifies SQL paths without live PG
 # --------------------------------------------------------------------------- #
 
+
 def test_fetch_memories_batch_initial_cursor():
     conn = _make_conn()
     conn.fetch = AsyncMock(return_value=[])
@@ -144,25 +151,26 @@ def test_fetch_memories_batch_initial_cursor():
 def test_fetch_memories_batch_with_cursor():
     conn = _make_conn()
     conn.fetch = AsyncMock(return_value=[])
-    ts = datetime(2024, 6, 1, tzinfo=timezone.utc)
+    ts = datetime(2024, 6, 1, tzinfo=UTC)
     cid = uuid.uuid4()
 
     asyncio.run(_fetch_memories_batch(conn, current_model_uuid(), 32, ts, cid))
 
     conn.fetch.assert_awaited_once()
     sql = conn.fetch.await_args.args[0].lower()
-    assert "created_at" in sql   # composite keyset present
+    assert "created_at" in sql  # composite keyset present
 
 
 # --------------------------------------------------------------------------- #
 # Unit: _fetch_kg_nodes_batch
 # --------------------------------------------------------------------------- #
 
+
 def test_fetch_kg_nodes_batch_initial():
     conn = _make_conn()
     conn.fetch = AsyncMock(return_value=[])
 
-    asyncio.run(_fetch_kg_nodes_batch(conn, 16, None))
+    asyncio.run(_fetch_kg_nodes_batch(conn, current_model_uuid(), 16, None))
 
     sql = conn.fetch.await_args.args[0].lower()
     assert "kg_nodes" in sql
@@ -174,26 +182,25 @@ def test_fetch_kg_nodes_batch_with_cursor():
     conn.fetch = AsyncMock(return_value=[])
     cid = uuid.uuid4()
 
-    asyncio.run(_fetch_kg_nodes_batch(conn, 16, cid))
+    asyncio.run(_fetch_kg_nodes_batch(conn, current_model_uuid(), 16, cid))
 
     sql = conn.fetch.await_args.args[0].lower()
-    assert "where id >" in sql
+    assert "id > $" in sql
 
 
 # --------------------------------------------------------------------------- #
 # Unit: _update_memories_batch — wraps in transaction, uses correct SQL
 # --------------------------------------------------------------------------- #
 
+
 def test_update_memories_batch_calls_executemany():
     conn = _make_conn()
     model_uuid = current_model_uuid()
     mem_id = uuid.uuid4()
-    created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    created_at = datetime(2024, 1, 1, tzinfo=UTC)
     vec = _FAKE_VEC
 
-    asyncio.run(
-        _update_memories_batch(conn, [(mem_id, created_at, vec)], model_uuid)
-    )
+    asyncio.run(_update_memories_batch(conn, [(mem_id, created_at, vec)], model_uuid))
 
     conn.executemany.assert_awaited_once()
     sql = conn.executemany.await_args.args[0].lower()
@@ -212,22 +219,27 @@ def test_update_memories_batch_calls_executemany():
 # Unit: _update_kg_nodes_batch
 # --------------------------------------------------------------------------- #
 
+
 def test_update_kg_nodes_batch_calls_executemany():
     conn = _make_conn()
     node_id = uuid.uuid4()
 
-    asyncio.run(_update_kg_nodes_batch(conn, [(node_id, _FAKE_VEC)]))
+    asyncio.run(_update_kg_nodes_batch(conn, [(node_id, _FAKE_VEC)], current_model_uuid()))
 
     conn.executemany.assert_awaited_once()
     sql = conn.executemany.await_args.args[0].lower()
     assert "update kg_nodes" in sql
     rows = conn.executemany.await_args.args[1]
-    assert rows[0][1] == node_id
+    assert len(rows) == 1
+    # payload row: (json_vec, model_str, node_id)
+    assert rows[0][2] == node_id
+    assert json.loads(rows[0][0]) == _FAKE_VEC
 
 
 # --------------------------------------------------------------------------- #
 # Unit: _resolve_texts_from_mongo — batch lookup, collection routing
 # --------------------------------------------------------------------------- #
+
 
 def test_resolve_texts_returns_episodic_raw_data():
     ref = "b" * 24
@@ -250,9 +262,7 @@ def test_resolve_texts_returns_episodic_raw_data():
     # ObjectId is imported *locally* inside the function; patch it at its
     # source so that ObjectId(ref) just returns the string ref unchanged.
     with patch("bson.ObjectId", side_effect=lambda x: _FakeId(x)):
-        result = asyncio.run(
-            _resolve_texts_from_mongo(mongo_client, [rec], max_text_chars=512)
-        )
+        result = asyncio.run(_resolve_texts_from_mongo(mongo_client, [rec], max_text_chars=512))
 
     assert result.get(ref) == "hello world"
 
@@ -260,6 +270,7 @@ def test_resolve_texts_returns_episodic_raw_data():
 # --------------------------------------------------------------------------- #
 # Integration: ReembeddingWorker.run_once — happy path, no rows
 # --------------------------------------------------------------------------- #
+
 
 def test_worker_run_once_no_stale_rows():
     """When there are no stale memories, the worker completes with 0 updates."""
@@ -273,9 +284,7 @@ def test_worker_run_once_no_stale_rows():
 
     with patch.object(rw, "_embeddings") as mock_emb:
         mock_emb.embed_batch = AsyncMock(return_value=[])
-        result = asyncio.run(
-            ReembeddingWorker(batch_size=8, batches_per_minute=600).run_once(pool)
-        )
+        result = asyncio.run(ReembeddingWorker(batch_size=8, batches_per_minute=600).run_once(pool))
 
     assert result["status"] == "completed"
     assert result["memories_done"] == 0
@@ -285,6 +294,7 @@ def test_worker_run_once_no_stale_rows():
 # --------------------------------------------------------------------------- #
 # Integration: ReembeddingWorker.run_once — processes one batch of memories
 # --------------------------------------------------------------------------- #
+
 
 def test_worker_processes_one_memory_batch():
     """Worker fetches one page of rows, embeds them, and marks run completed."""
@@ -303,7 +313,7 @@ def test_worker_processes_one_memory_batch():
         result = asyncio.run(
             ReembeddingWorker(
                 batch_size=32,
-                batches_per_minute=600,    # sleep ≈ 0.1 s
+                batches_per_minute=600,  # sleep ≈ 0.1 s
             ).run_once(pool, mongo_client=None)
         )
 
@@ -317,6 +327,7 @@ def test_worker_processes_one_memory_batch():
 # --------------------------------------------------------------------------- #
 # Integration: max_rows_per_run stops early
 # --------------------------------------------------------------------------- #
+
 
 def test_worker_respects_max_rows_per_run():
     conn = _make_conn()
@@ -348,6 +359,7 @@ def test_worker_respects_max_rows_per_run():
 # Integration: embed failure propagates and run is marked 'failed'
 # --------------------------------------------------------------------------- #
 
+
 def test_worker_marks_run_failed_on_embed_error():
     conn = _make_conn()
     conn.fetchval = AsyncMock(return_value=uuid.uuid4())
@@ -368,14 +380,15 @@ def test_worker_marks_run_failed_on_embed_error():
 
     # The final UPDATE must set status='failed'
     final_execute_calls = conn.execute.await_args_list
-    assert any(
-        "failed" in str(call) for call in final_execute_calls
-    ), "Expected status='failed' in final UPDATE"
+    assert any("failed" in str(call) for call in final_execute_calls), (
+        "Expected status='failed' in final UPDATE"
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Integration: kg_nodes phase runs when include_kg_nodes=True
 # --------------------------------------------------------------------------- #
+
 
 def test_worker_processes_kg_nodes_when_enabled():
     conn = _make_conn()

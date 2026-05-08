@@ -7,6 +7,7 @@ is available locally. This module does not download weights by itself unless you
 
 Export output is loaded at runtime by `OpenVINONPUBackend` via `TRIMCP_OPENVINO_MODEL_DIR`.
 """
+
 from __future__ import annotations
 
 import logging

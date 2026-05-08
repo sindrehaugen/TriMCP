@@ -43,3 +43,7 @@ Uses **`deploy/multiuser/Dockerfile`**, **`deploy/multiuser/env.example`**, and 
 ## Bridge subscription renewal (production note)
 
 Renewal scheduling is implemented in **`trimcp/cron.py`** (`python -m trimcp.cron`). It is **not** started by **`start_worker.py`**. For long-running SharePoint / Google Drive push subscriptions, plan a separate container or systemd unit for the cron process until it is wired into the default worker/compose flow.
+
+## Bootstrap secrets and version control
+
+`scripts/bootstrap-compose-secrets.py` can emit **`deploy/compose.stack.env.generated`** with real passwords and keys. Treat that file like any secrets artifact: **never commit it to Git** (or any VCS). Use the committed templates (`deploy/compose.stack.env`, `.env.example`) for structure only; inject production values via CI secrets, a password manager, or host-only env files.

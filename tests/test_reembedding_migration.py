@@ -21,7 +21,9 @@ DIM = 24
 
 
 def _embed_v2(text: str, *, dimension: int) -> list[float]:
-    return deterministic_unit_embedding(text, model_version="targets/v2-stable", dimension=dimension)
+    return deterministic_unit_embedding(
+        text, model_version="targets/v2-stable", dimension=dimension
+    )
 
 
 def _gate_all_pass(
@@ -40,9 +42,7 @@ def _gate_all_pass(
         ([3.0, 4.0], [6.0, 8.0], 1.0),
     ],
 )
-def test_cosine_similarity_known_pairs(
-    a: list[float], b: list[float], want: float
-) -> None:
+def test_cosine_similarity_known_pairs(a: list[float], b: list[float], want: float) -> None:
     assert math.isclose(cosine_similarity(a, b), want, abs_tol=1e-9)
 
 
@@ -95,6 +95,7 @@ async def _drain_backlog(
             break
 
 
+@pytest.mark.asyncio
 async def test_worker_drains_queue_shadow_v2_reads_stay_on_v1() -> None:
     ids = [f"m{i}" for i in range(10)]
     records: dict[str, MemoryEmbeddingRow] = {}
@@ -104,9 +105,7 @@ async def test_worker_drains_queue_shadow_v2_reads_stay_on_v1() -> None:
         records[mid] = MemoryEmbeddingRow(mid, text, embedding_v1=v1)
 
     store = InMemoryReembeddingStore.from_records(records, initial_pending=ids)
-    read_snap_before = {
-        mid: list(store.active_embedding(mid) or []) for mid in ids
-    }
+    read_snap_before = {mid: list(store.active_embedding(mid) or []) for mid in ids}
     orch = ReembeddingMigrationOrchestrator(
         store=store,
         embed_fn_v2=_embed_v2,
@@ -126,6 +125,7 @@ async def test_worker_drains_queue_shadow_v2_reads_stay_on_v1() -> None:
         assert list(store.active_embedding(mid) or []) == list(row.embedding_v1)
 
 
+@pytest.mark.asyncio
 async def test_commit_promotes_shadow_to_authoritative_reads() -> None:
     mid = "only"
     text = "commit swap"
@@ -154,6 +154,7 @@ async def test_commit_promotes_shadow_to_authoritative_reads() -> None:
     assert cosine_similarity(store.active_embedding(mid) or [], promoted) >= 1.0 - 1e-9
 
 
+@pytest.mark.asyncio
 async def test_concurrent_reads_unchanged_during_backfill() -> None:
     ids = [f"c{i}" for i in range(16)]
     records: dict[str, MemoryEmbeddingRow] = {}
@@ -207,6 +208,7 @@ def test_quality_gate_neighbor_overlap_aggregate() -> None:
     assert _gate_all_pass(failing, threshold=0.7) is False
 
 
+@pytest.mark.asyncio
 async def test_abort_clears_queue_and_shadow_without_touching_authoritative_v1() -> None:
     ids = ["a", "b", "c"]
     records = {
@@ -241,6 +243,7 @@ async def test_abort_clears_queue_and_shadow_without_touching_authoritative_v1()
         assert store._rows[mid].embedding_v2 is None
 
 
+@pytest.mark.asyncio
 async def test_orchestrator_returns_zero_after_abort() -> None:
     store = InMemoryReembeddingStore.from_records(
         {

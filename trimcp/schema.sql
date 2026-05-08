@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS namespaces (
     metadata   JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+CREATE INDEX IF NOT EXISTS idx_namespaces_parent_id ON namespaces(parent_id);
+CREATE INDEX IF NOT EXISTS idx_namespaces_created_at ON namespaces(created_at DESC);
+
 -- --- Phase 0.2: Cryptographic Signing Keys ---
 CREATE TABLE IF NOT EXISTS signing_keys (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -68,6 +71,8 @@ CREATE TABLE IF NOT EXISTS memories (
 
 CREATE TABLE IF NOT EXISTS memories_default PARTITION OF memories DEFAULT;
 
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+
 -- Data Migration from legacy tables
 DO $$
 BEGIN
@@ -100,6 +105,25 @@ BEGIN
     END IF;
 END $$;
 
+-- memory_type / assertion_type — align with trimcp.models MemoryType / AssertionType
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.check_constraints
+        WHERE constraint_name = 'ck_memories_memory_type'
+    ) THEN
+        ALTER TABLE memories ADD CONSTRAINT ck_memories_memory_type
+            CHECK (memory_type IN ('episodic', 'consolidated', 'decision', 'code_chunk'));
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.check_constraints
+        WHERE constraint_name = 'ck_memories_assertion_type'
+    ) THEN
+        ALTER TABLE memories ADD CONSTRAINT ck_memories_assertion_type
+            CHECK (assertion_type IN ('fact', 'opinion', 'preference', 'observation'));
+    END IF;
+END $$;
+
 -- Indexes for memories
 CREATE INDEX IF NOT EXISTS idx_memories_fts ON memories USING GIN (content_fts);
 CREATE INDEX IF NOT EXISTS idx_memories_payload_ref ON memories (payload_ref);
@@ -108,6 +132,18 @@ CREATE INDEX IF NOT EXISTS idx_memories_user_session ON memories (user_id, sessi
 CREATE INDEX IF NOT EXISTS idx_memories_filepath ON memories (filepath);
 CREATE INDEX IF NOT EXISTS idx_memories_user_path ON memories (user_id, filepath);
 CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw ON memories USING hnsw (embedding vector_cosine_ops);
+
+-- payload_ref CHECK constraint — enforce MongoDB ObjectId hex format (24 hex chars)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.check_constraints
+        WHERE constraint_name = 'ck_payload_ref_objectid_format'
+    ) THEN
+        ALTER TABLE memories ADD CONSTRAINT ck_payload_ref_objectid_format
+            CHECK (payload_ref ~ '^[a-f0-9]{24}$');
+    END IF;
+END $$;
 
 -- --- Knowledge-graph nodes (partitioned by HASH) ---
 DO $$
@@ -118,21 +154,69 @@ BEGIN
 END $$;
 
 CREATE TABLE IF NOT EXISTS kg_nodes (
-    id           UUID DEFAULT gen_random_uuid(),
-    label        TEXT NOT NULL,
-    entity_type  VARCHAR(64) NOT NULL DEFAULT 'UNKNOWN',
-    embedding    VECTOR(768),
+    id            UUID DEFAULT gen_random_uuid(),
+    label         TEXT NOT NULL,
+    entity_type   VARCHAR(64) NOT NULL DEFAULT 'UNKNOWN',
+    embedding     VECTOR(768),
     embedding_model_id UUID,
-    payload_ref  CHAR(24),
-    created_at   TIMESTAMPTZ DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (label)
+    namespace_id  UUID NOT NULL,
+    payload_ref   CHAR(24),
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (label, namespace_id)
 ) PARTITION BY HASH (label);
 
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='kg_nodes' AND column_name='embedding_model_id') THEN
         ALTER TABLE kg_nodes ADD COLUMN embedding_model_id UUID;
+    END IF;
+END $$;
+
+-- Phase 1 hardening: namespace_id + RLS for kg_nodes
+DO $$
+DECLARE
+    global_ns_id UUID;
+BEGIN
+    -- Ensure a fallback global namespace exists for legacy data
+    INSERT INTO namespaces (slug, metadata)
+    VALUES ('_global_legacy', '{"description":"Fallback namespace for pre-RLS KG data"}'::jsonb)
+    ON CONFLICT (slug) DO NOTHING;
+    SELECT id INTO global_ns_id FROM namespaces WHERE slug = '_global_legacy';
+
+    -- Add namespace_id column if missing
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='kg_nodes' AND column_name='namespace_id') THEN
+        ALTER TABLE kg_nodes ADD COLUMN namespace_id UUID;
+    END IF;
+
+    -- Backfill existing NULL rows
+    UPDATE kg_nodes SET namespace_id = global_ns_id WHERE namespace_id IS NULL;
+
+    -- Make NOT NULL now that all rows have a value
+    ALTER TABLE kg_nodes ALTER COLUMN namespace_id SET NOT NULL;
+
+    -- Add FK to namespaces
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'kg_nodes_namespace_id_fkey'
+    ) THEN
+        ALTER TABLE kg_nodes ADD CONSTRAINT kg_nodes_namespace_id_fkey
+            FOREIGN KEY (namespace_id) REFERENCES namespaces(id);
+    END IF;
+
+    -- Migrate UNIQUE constraint: (label) → (label, namespace_id)
+    IF EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'kg_nodes' AND constraint_name = 'kg_nodes_label_key'
+    ) THEN
+        ALTER TABLE kg_nodes DROP CONSTRAINT kg_nodes_label_key;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'kg_nodes' AND constraint_name = 'kg_nodes_label_namespace_id_key'
+    ) THEN
+        ALTER TABLE kg_nodes ADD CONSTRAINT kg_nodes_label_namespace_id_key
+            UNIQUE (label, namespace_id);
     END IF;
 END $$;
 
@@ -153,6 +237,7 @@ BEGIN
 END $$;
 
 CREATE INDEX IF NOT EXISTS idx_kg_nodes_embedding_hnsw ON kg_nodes USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_kg_nodes_updated ON kg_nodes (updated_at);
 
 -- --- Knowledge-graph edges (partitioned by HASH) ---
 DO $$
@@ -168,10 +253,11 @@ CREATE TABLE IF NOT EXISTS kg_edges (
     predicate     TEXT NOT NULL,
     object_label  TEXT NOT NULL,
     confidence    FLOAT NOT NULL DEFAULT 1.0 CHECK (confidence >= 0.0 AND confidence <= 1.0),
-    payload_ref  CHAR(24),
+    namespace_id  UUID NOT NULL,
+    payload_ref   CHAR(24),
     created_at    TIMESTAMPTZ DEFAULT NOW(),
     updated_at    TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (subject_label, predicate, object_label)
+    UNIQUE (subject_label, predicate, object_label, namespace_id)
 ) PARTITION BY HASH (subject_label, predicate, object_label);
 
 CREATE TABLE IF NOT EXISTS kg_edges_0 PARTITION OF kg_edges FOR VALUES WITH (MODULUS 4, REMAINDER 0);
@@ -190,8 +276,52 @@ BEGIN
     END IF;
 END $$;
 
+-- Phase 1 hardening: namespace_id + RLS for kg_edges
+DO $$
+DECLARE
+    global_ns_id UUID;
+BEGIN
+    SELECT id INTO global_ns_id FROM namespaces WHERE slug = '_global_legacy';
+
+    -- Add namespace_id column if missing
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='kg_edges' AND column_name='namespace_id') THEN
+        ALTER TABLE kg_edges ADD COLUMN namespace_id UUID;
+    END IF;
+
+    -- Backfill existing NULL rows
+    UPDATE kg_edges SET namespace_id = global_ns_id WHERE namespace_id IS NULL;
+
+    -- Make NOT NULL
+    ALTER TABLE kg_edges ALTER COLUMN namespace_id SET NOT NULL;
+
+    -- Add FK
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_name = 'kg_edges_namespace_id_fkey'
+    ) THEN
+        ALTER TABLE kg_edges ADD CONSTRAINT kg_edges_namespace_id_fkey
+            FOREIGN KEY (namespace_id) REFERENCES namespaces(id);
+    END IF;
+
+    -- Migrate UNIQUE: (s,p,o) → (s,p,o,namespace_id)
+    IF EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'kg_edges' AND constraint_name = 'kg_edges_subject_label_predicate_objec_key'
+    ) THEN
+        ALTER TABLE kg_edges DROP CONSTRAINT kg_edges_subject_label_predicate_objec_key;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'kg_edges' AND constraint_name = 'kg_edges_subject_label_predicate_object_label_namespace_id_key'
+    ) THEN
+        ALTER TABLE kg_edges ADD CONSTRAINT kg_edges_subject_label_predicate_object_label_namespace_id_key
+            UNIQUE (subject_label, predicate, object_label, namespace_id);
+    END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_kg_edges_subject ON kg_edges (subject_label);
 CREATE INDEX IF NOT EXISTS idx_kg_edges_object  ON kg_edges (object_label);
+CREATE INDEX IF NOT EXISTS idx_kg_edges_updated ON kg_edges (updated_at);
 
 -- --- Phase 0.3: PII Redactions Vault ---
 CREATE TABLE IF NOT EXISTS pii_redactions (
@@ -269,6 +399,9 @@ CREATE TABLE IF NOT EXISTS memory_embeddings_1 PARTITION OF memory_embeddings FO
 CREATE TABLE IF NOT EXISTS memory_embeddings_2 PARTITION OF memory_embeddings FOR VALUES WITH (MODULUS 4, REMAINDER 2);
 CREATE TABLE IF NOT EXISTS memory_embeddings_3 PARTITION OF memory_embeddings FOR VALUES WITH (MODULUS 4, REMAINDER 3);
 
+-- Index for validate_migration emb_count query and model-scoped lookups
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model_id ON memory_embeddings(model_id);
+
 CREATE TABLE IF NOT EXISTS kg_node_embeddings (
     node_id    UUID NOT NULL,
     model_id   UUID NOT NULL REFERENCES embedding_models(id),
@@ -311,18 +444,67 @@ CREATE TABLE IF NOT EXISTS bridge_subscriptions (
 CREATE INDEX IF NOT EXISTS idx_bridge_subs_user_provider ON bridge_subscriptions (user_id, provider);
 CREATE INDEX IF NOT EXISTS idx_bridge_subs_expires_active ON bridge_subscriptions (expires_at) WHERE status = 'ACTIVE';
 
+ALTER TABLE bridge_subscriptions ADD COLUMN IF NOT EXISTS oauth_access_token_enc BYTEA;
+
+-- --- Phase 2.2: Time Travel Snapshots ---
+CREATE TABLE IF NOT EXISTS snapshots (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    namespace_id UUID NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    agent_id     TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    snapshot_at  TIMESTAMPTZ NOT NULL,    -- The point in time being snapshotted
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (namespace_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_ns ON snapshots (namespace_id);
+
+DO $$
+BEGIN
+    REVOKE ALL ON snapshots FROM PUBLIC;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON snapshots TO trimcp_app;
+    ELSE
+        RAISE NOTICE 'trimcp_app role not found — snapshot GRANTs skipped (create role or run migrations)';
+    END IF;
+END $$;
+
 -- --- Phase 2.3: Event Log (WORM) ---
 CREATE TABLE IF NOT EXISTS consolidation_runs (
-    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    namespace_id     UUID NOT NULL REFERENCES namespaces(id),
-    started_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at     TIMESTAMPTZ,
-    status           TEXT NOT NULL DEFAULT 'running',
-    events_processed INTEGER NOT NULL DEFAULT 0,
-    clusters_formed  INTEGER NOT NULL DEFAULT 0,
-    abstractions_created INTEGER NOT NULL DEFAULT 0,
-    error_message    TEXT
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    namespace_id      UUID NOT NULL REFERENCES namespaces(id),
+    agent_id          TEXT NOT NULL DEFAULT 'system',
+    started_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at       TIMESTAMPTZ,
+    status            TEXT NOT NULL DEFAULT 'running',
+    clusters_found    INTEGER DEFAULT 0,
+    clusters_accepted INTEGER DEFAULT 0,
+    clusters_rejected INTEGER DEFAULT 0,
+    memories_synth    INTEGER DEFAULT 0,
+    llm_provider      TEXT,
+    llm_model         TEXT,
+    llm_tokens_used   INTEGER DEFAULT 0,
+    error             TEXT
 );
+
+-- Columns used by trimcp.consolidation (idempotent add for older DBs)
+ALTER TABLE consolidation_runs ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+ALTER TABLE consolidation_runs ADD COLUMN IF NOT EXISTS error_message TEXT;
+ALTER TABLE consolidation_runs ADD COLUMN IF NOT EXISTS events_processed INTEGER;
+ALTER TABLE consolidation_runs ADD COLUMN IF NOT EXISTS clusters_formed INTEGER;
+ALTER TABLE consolidation_runs ADD COLUMN IF NOT EXISTS abstractions_created INTEGER;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.check_constraints
+        WHERE constraint_name = 'ck_consolidation_runs_status'
+    ) THEN
+        ALTER TABLE consolidation_runs ADD CONSTRAINT ck_consolidation_runs_status
+            CHECK (status IN ('running', 'completed', 'failed'));
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS event_log (
     id               UUID DEFAULT gen_random_uuid(),
@@ -338,6 +520,7 @@ CREATE TABLE IF NOT EXISTS event_log (
     llm_payload_hash BYTEA,
     signature        BYTEA NOT NULL,
     signature_key_id TEXT NOT NULL,
+    chain_hash       BYTEA,
     PRIMARY KEY (id, occurred_at),
     UNIQUE (namespace_id, event_seq, occurred_at)
 ) PARTITION BY RANGE (occurred_at);
@@ -351,11 +534,86 @@ CREATE INDEX IF NOT EXISTS idx_event_log_memory_id ON event_log (((params->>'mem
 CREATE INDEX IF NOT EXISTS idx_event_log_event_type ON event_log (event_type);
 CREATE INDEX IF NOT EXISTS idx_event_log_params_gin ON event_log USING GIN (params);
 
+-- Monthly partition windows (UTC); keeps hot data off the DEFAULT catch-all partition
+CREATE OR REPLACE FUNCTION trimcp_ensure_event_log_monthly_partitions(p_months_ahead int DEFAULT 3)
+RETURNS void
+LANGUAGE plpgsql
+AS $fn$
+DECLARE
+    m int;
+    p_start timestamptz;
+    p_end timestamptz;
+    p_name text;
+BEGIN
+    IF p_months_ahead < 0 THEN
+        RAISE EXCEPTION 'p_months_ahead must be >= 0';
+    END IF;
+    FOR m IN 0..p_months_ahead LOOP
+        p_start := date_trunc('month', now() + make_interval(months => m));
+        p_end := p_start + interval '1 month';
+        p_name := 'event_log_' || to_char(p_start, 'YYYY_MM');
+        IF to_regclass(format('public.%I', p_name)) IS NULL THEN
+            EXECUTE format(
+                'CREATE TABLE %I PARTITION OF event_log FOR VALUES FROM (%L) TO (%L)',
+                p_name,
+                p_start,
+                p_end
+            );
+        END IF;
+    END LOOP;
+END;
+$fn$;
+
+SELECT trimcp_ensure_event_log_monthly_partitions(3);
+
 DO $$
 BEGIN
     REVOKE ALL ON event_log FROM PUBLIC;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
         GRANT INSERT, SELECT ON event_log TO trimcp_app;
+    ELSE
+        RAISE NOTICE 'trimcp_app role not found — event_log GRANTs skipped (create role or run migrations)';
+    END IF;
+END $$;
+
+-- Trigger-based FK: parent_event_id → event_log(id, occurred_at)
+-- (cannot use declarative FK because event_log is partitioned with composite PK)
+CREATE OR REPLACE FUNCTION trg_event_log_parent_fk()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.parent_event_id IS NOT NULL THEN
+        PERFORM 1 FROM event_log
+        WHERE id = NEW.parent_event_id
+        LIMIT 1;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'event_log.parent_event_id=%% does not reference an existing event', NEW.parent_event_id;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- On parent delete, nullify child references
+CREATE OR REPLACE FUNCTION trg_event_log_parent_set_null()
+RETURNS TRIGGER AS $$
+BEGIN
+    UPDATE event_log SET parent_event_id = NULL WHERE parent_event_id = OLD.id;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_event_log_parent_fk_insupd') THEN
+        CREATE TRIGGER trg_event_log_parent_fk_insupd
+            BEFORE INSERT OR UPDATE ON event_log
+            FOR EACH ROW EXECUTE FUNCTION trg_event_log_parent_fk();
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_event_log_parent_fk_del') THEN
+        CREATE TRIGGER trg_event_log_parent_fk_del
+            AFTER DELETE ON event_log
+            FOR EACH ROW WHEN (OLD.parent_event_id IS NULL)
+            EXECUTE FUNCTION trg_event_log_parent_set_null();
     END IF;
 END $$;
 
@@ -393,6 +651,31 @@ BEGIN
     REVOKE ALL ON a2a_grants FROM PUBLIC;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
         GRANT INSERT, SELECT, UPDATE ON a2a_grants TO trimcp_app;
+    ELSE
+        RAISE NOTICE 'trimcp_app role not found — a2a_grants GRANTs skipped (create role or run migrations)';
+    END IF;
+END $$;
+
+-- Enforce SHA-256 hash length (32 bytes) on token_hash
+-- Diagnostic: if existing rows have invalid token_hash length, warn and skip
+-- the constraint to prevent a hard crash on dirty legacy data.
+DO $$
+DECLARE
+    invalid_count BIGINT;
+BEGIN
+    SELECT count(*) INTO invalid_count FROM a2a_grants WHERE length(token_hash) != 32;
+
+    IF invalid_count > 0 THEN
+        RAISE WARNING 'ck_a2a_grants_token_hash_len NOT ADDED: % row(s) in a2a_grants have token_hash length != 32. Repair these rows before the constraint can be enforced.', invalid_count;
+    ELSE
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.check_constraints
+            WHERE constraint_name = 'ck_a2a_grants_token_hash_len'
+        ) THEN
+            ALTER TABLE a2a_grants ADD CONSTRAINT ck_a2a_grants_token_hash_len
+                CHECK (length(token_hash) = 32);
+            RAISE NOTICE 'ck_a2a_grants_token_hash_len constraint added successfully.';
+        END IF;
     END IF;
 END $$;
 
@@ -430,5 +713,72 @@ BEGIN
     REVOKE ALL ON resource_quotas FROM PUBLIC;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
         GRANT SELECT, INSERT, UPDATE, DELETE ON resource_quotas TO trimcp_app;
+    ELSE
+        RAISE NOTICE 'trimcp_app role not found — resource_quotas GRANTs skipped (create role or run migrations)';
+    END IF;
+END $$;
+
+-- --- Row Level Security (Phase 0.1 Hardening) ---
+-- Applied after all tenant tables exist (EARLY ALTER TABLE ... RLS would fail on empty DBs).
+-- Enable RLS on all multi-tenant tables.
+ALTER TABLE memories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kg_nodes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kg_edges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pii_redactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memory_salience ENABLE ROW LEVEL SECURITY;
+ALTER TABLE contradictions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE event_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE a2a_grants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE resource_quotas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memory_embeddings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE kg_node_embeddings ENABLE ROW LEVEL SECURITY;
+
+-- Standard Isolation Policy: filter by session variable 'trimcp.namespace_id'
+-- Use DO blocks to create policies idempotently.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'namespace_isolation_policy') THEN
+        EXECUTE 'CREATE POLICY namespace_isolation_policy ON memories FOR ALL USING (memories.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
+        EXECUTE 'CREATE POLICY namespace_isolation_policy ON pii_redactions FOR ALL USING (pii_redactions.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
+        EXECUTE 'CREATE POLICY namespace_isolation_policy ON memory_salience FOR ALL USING (memory_salience.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
+        EXECUTE 'CREATE POLICY namespace_isolation_policy ON contradictions FOR ALL USING (contradictions.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
+        EXECUTE 'CREATE POLICY namespace_isolation_policy ON snapshots FOR ALL USING (snapshots.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
+        EXECUTE 'CREATE POLICY namespace_isolation_policy ON event_log FOR ALL USING (event_log.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
+        EXECUTE 'CREATE POLICY namespace_isolation_policy ON a2a_grants FOR ALL USING (a2a_grants.owner_namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid OR a2a_grants.target_namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
+        EXECUTE 'CREATE POLICY namespace_isolation_policy ON resource_quotas FOR ALL USING (resource_quotas.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
+        EXECUTE 'CREATE POLICY namespace_isolation_policy ON memory_embeddings FOR ALL USING (memory_embeddings.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
+        EXECUTE 'CREATE POLICY namespace_isolation_policy ON kg_nodes FOR ALL USING (kg_nodes.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
+        EXECUTE 'CREATE POLICY namespace_isolation_policy ON kg_edges FOR ALL USING (kg_edges.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
+    END IF;
+END $$;
+
+-- --- Phase 3: Dead Letter Queue (Poison Pill) ---
+-- Captures background-task payloads that exhaust their retry budget so they
+-- are not re-enqueued indefinitely.  Admin UI / API can replay or purge.
+CREATE TABLE IF NOT EXISTS dead_letter_queue (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_name      TEXT NOT NULL,          -- e.g. 'process_code_indexing'
+    job_id         TEXT NOT NULL,          -- RQ job id
+    kwargs         JSONB NOT NULL,         -- frozen kwargs of the failed invocation
+    error_message  TEXT NOT NULL,          -- last exception message (truncated to 1024)
+    attempt_count  INTEGER NOT NULL CHECK (attempt_count > 0),
+    status         TEXT NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'replayed', 'purged')),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    replayed_at    TIMESTAMPTZ,
+    purged_at      TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_dlq_task_status ON dead_letter_queue (task_name, status);
+CREATE INDEX IF NOT EXISTS idx_dlq_created ON dead_letter_queue (created_at DESC);
+
+DO $$
+BEGIN
+    REVOKE ALL ON dead_letter_queue FROM PUBLIC;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
+        GRANT SELECT, INSERT, UPDATE ON dead_letter_queue TO trimcp_app;
+    ELSE
+        RAISE NOTICE 'trimcp_app role not found — dead_letter_queue GRANTs skipped';
     END IF;
 END $$;

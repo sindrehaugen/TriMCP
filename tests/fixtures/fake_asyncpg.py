@@ -11,7 +11,7 @@ PostgreSQL during CI smoke runs).
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -19,7 +19,7 @@ import asyncpg
 
 
 class _FakeTransaction:
-    def __init__(self, conn: "RecordingFakeConnection") -> None:
+    def __init__(self, conn: RecordingFakeConnection) -> None:
         self._conn = conn
 
     async def __aenter__(self) -> None:
@@ -27,6 +27,29 @@ class _FakeTransaction:
 
     async def __aexit__(self, *_exc: object) -> None:
         self._conn._tx_depth -= 1
+
+
+class _FakeAcquireContext:
+    """
+    Mirrors asyncpg ``pool.acquire()`` return value: awaitable and async context manager.
+
+    Always pair ``await pool.acquire()`` with ``await pool.release(conn)``, or use
+    ``async with pool.acquire() as conn`` so checkouts are balanced.
+    """
+
+    __slots__ = ("_pool",)
+
+    def __init__(self, pool: RecordingFakePool) -> None:
+        self._pool = pool
+
+    def __await__(self):
+        return self._pool._acquire_conn().__await__()
+
+    async def __aenter__(self) -> RecordingFakeConnection:
+        return await self._pool._acquire_conn()
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self._pool._release_conn()
 
 
 class RecordingFakeConnection:
@@ -45,8 +68,10 @@ class RecordingFakeConnection:
         db_clock: datetime | None = None,
         simulate_unique_violation_on_insert: bool = False,
     ) -> None:
-        utc = timezone.utc
-        self._db_clock = (db_clock or datetime(2026, 5, 5, 10, 0, 0, 123456, tzinfo=utc)).astimezone(utc)
+        utc = UTC
+        self._db_clock = (
+            db_clock or datetime(2026, 5, 5, 10, 0, 0, 123456, tzinfo=utc)
+        ).astimezone(utc)
         self._seq_max: defaultdict[UUID, int] = defaultdict(int)
         self._tx_depth = 0
         self.event_inserts: list[dict[str, Any]] = []
@@ -66,6 +91,24 @@ class RecordingFakeConnection:
             return "SELECT 1"
         raise AssertionError(f"Unexpected execute query: {query!r}")
 
+    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
+        """
+        Minimal fetch() for Merkle chain verification queries.
+
+        Handles ``SELECT ... FROM event_log WHERE namespace_id = $1
+        ORDER BY event_seq ASC``.
+        """
+        q = "".join(query.split()).lower()
+        if "fromevent_log" in q.replace(" ", "") and "chain_hash" in q.lower():
+            namespace_id = args[0]
+            start_seq = args[1] if len(args) > 1 else None
+            rows = [r for r in self.event_inserts if r["namespace_id"] == namespace_id]
+            rows.sort(key=lambda r: r.get("event_seq", 0))
+            if start_seq is not None:
+                rows = [r for r in rows if r["event_seq"] >= start_seq]
+            return rows
+        raise AssertionError(f"Unexpected fetch query: {query!r}")
+
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         q = "".join(query.split()).lower()
 
@@ -74,6 +117,36 @@ class RecordingFakeConnection:
             assert isinstance(namespace_id, UUID)
             nxt = self._seq_max[namespace_id] + 1
             return {"next_seq": nxt}
+
+        # _fetch_previous_chain_hash: SELECT chain_hash FROM event_log
+        # WHERE namespace_id = $1 ORDER BY event_seq DESC LIMIT 1
+        if (
+            "chain_hash" in q.lower()
+            and "fromevent_log" in q.replace(" ", "")
+            and "orderbyevent_seqdesc" in q.replace(" ", "").lower()
+        ):
+            namespace_id = args[0]
+            rows = [r for r in self.event_inserts if r["namespace_id"] == namespace_id]
+            if not rows:
+                return None
+            rows.sort(key=lambda r: r.get("event_seq", 0), reverse=True)
+            latest = rows[0]
+            return {"chain_hash": latest.get("chain_hash")}
+
+        # chain hash anchor query (seq = N): SELECT chain_hash FROM event_log
+        # WHERE namespace_id = $1 AND event_seq = $2
+        if (
+            "chain_hash" in q.lower()
+            and "fromevent_log" in q.replace(" ", "")
+            and "event_seq" in q.lower()
+            and "orderbyevent_seqdesc" not in q.replace(" ", "").lower()
+        ):
+            namespace_id = args[0]
+            target_seq = args[1]
+            for r in self.event_inserts:
+                if r["namespace_id"] == namespace_id and r.get("event_seq") == target_seq:
+                    return {"chain_hash": r.get("chain_hash")}
+            return None
 
         if "insertintoevent_log" in q.replace(" ", ""):
             (
@@ -90,6 +163,7 @@ class RecordingFakeConnection:
                 llm_payload_hash,
                 signature,
                 signature_key_id,
+                chain_hash,
             ) = args
 
             record = {
@@ -102,6 +176,7 @@ class RecordingFakeConnection:
                 "params": params_json,
                 "signature": signature,
                 "signature_key_id": signature_key_id,
+                "chain_hash": chain_hash,
             }
             if self.unique_violation:
                 raise asyncpg.UniqueViolationError("simulated collision")
@@ -121,14 +196,40 @@ class RecordingFakePool:
     Minimal pool stand-in: ``await pool.acquire()`` returns a fixed connection.
     """
 
+    __slots__ = ("_conn", "_closed", "_outstanding")
+
     def __init__(self, conn: RecordingFakeConnection) -> None:
         self._conn = conn
+        self._closed = False
+        self._outstanding = 0
 
-    async def acquire(self) -> RecordingFakeConnection:
+    def acquire(self) -> _FakeAcquireContext:
+        if self._closed:
+            raise RuntimeError("RecordingFakePool: pool is closed")
+        return _FakeAcquireContext(self)
+
+    async def _acquire_conn(self) -> RecordingFakeConnection:
+        if self._closed:
+            raise RuntimeError("RecordingFakePool: pool is closed")
+        self._outstanding += 1
         return self._conn
 
+    async def _release_conn(self) -> None:
+        if self._outstanding > 0:
+            self._outstanding -= 1
+
+    async def release(self, conn: RecordingFakeConnection, *args: Any, **kwargs: Any) -> None:
+        """asyncpg-compatible explicit release after ``await pool.acquire()``."""
+        if conn is not self._conn:
+            raise ValueError("RecordingFakePool.release: connection does not belong to this pool")
+        await self._release_conn()
+
     async def close(self) -> None:
-        return None
+        if self._closed:
+            return
+        # Drop stray checkouts so teardown never carries state into the next test.
+        self._outstanding = 0
+        self._closed = True
 
 
 def make_fake_pool(**kwargs: Any) -> tuple[RecordingFakePool, RecordingFakeConnection]:

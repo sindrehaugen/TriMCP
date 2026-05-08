@@ -1,4 +1,8 @@
 ; TriMCP Inno Setup — Phase 5 seven-screen flow with branching (Local / Office Shared / Cloud).
+;
+; Shim: compiler cwd is build/windows/. trimcp-launch.exe is produced by
+;       go/cmd/trimcp-launch → ../../../build/windows/trimcp-launch.exe (.github/workflows/release.yml).
+;
 ; Silent install: TriMCP-Setup.exe /VERYSILENT /MODE=cloud /TENANT=contoso.onmicrosoft.com /BACKEND=cuda
 ;               /MODE=multiuser /SERVERADDR=https://trimcp.corp.example
 ;               /BRIDGES=sharepoint,dropbox /BACKEND=auto
@@ -34,10 +38,16 @@ Source: "trimcp-launch.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\python\*"; DestDir: "{app}\python"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "assets\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "assets\wheels\*"; DestDir: "{app}\wheels"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\..\deploy\multiuser\docker-compose.yml"; DestDir: "{app}\deploy\multiuser"; Flags: ignoreversion
-Source: "..\..\deploy\multiuser\Caddyfile"; DestDir: "{app}\deploy\multiuser"; Flags: ignoreversion
-Source: "..\..\deploy\multiuser\env.example"; DestDir: "{app}\deploy\multiuser"; Flags: ignoreversion
+Source: "..\..\docker-compose.yml"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\Caddyfile"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\trimcp\*"; DestDir: "{app}\trimcp"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\admin\*"; DestDir: "{app}\admin"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\deploy\multiuser\Dockerfile"; DestDir: "{app}\deploy\multiuser"; Flags: ignoreversion
+Source: "..\..\deploy\multiuser\docker-compose.yml"; DestDir: "{app}\deploy\multiuser"; Flags: ignoreversion
+Source: "..\..\deploy\compose.stack.env"; DestDir: "{app}\deploy"; Flags: ignoreversion    
+Source: "..\..\*.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "scripts\*.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 
 [Dirs]
 Name: "{userappdata}\TriMCP"
@@ -346,9 +356,14 @@ begin
   if modeStr = 'cloud' then
     WriteCloudBridgesJson(AppDataDir, tenant);
 
+  { Patch IDE config }
+  Exec('powershell.exe',
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\scripts\Patch-IDEConfig.ps1') + '" -AppRoot "' + ExpandConstant('{app}') + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, schExit);
+
   if (not IsSilentInstall) and (modeStr = 'local') and WizardIsTaskSelected('dockerlogontask') then
   begin
-    composePath := ExpandConstant('{app}\deploy\multiuser\docker-compose.yml');
+    composePath := ExpandConstant('{app}\docker-compose.yml');
     if FileExists(composePath) then
       Exec('schtasks.exe',
         '/Create /F /TN "TriMCP Local Stack" /TR "cmd.exe /c docker compose -f \"' + composePath + '\" up -d" /SC ONLOGON /RL LIMITED',

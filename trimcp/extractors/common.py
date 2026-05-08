@@ -1,4 +1,5 @@
 """Shared helpers: encryption sniff, table rendering, garbled text heuristics."""
+
 from __future__ import annotations
 
 import io
@@ -50,7 +51,10 @@ def trim_trailing_empty(rows: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
     # trim empty cols from right
     width = max(len(row) for row in r)
     while width > 0:
-        if all(len(row) < width or row[width - 1] is None or str(row[width - 1]).strip() == "" for row in r):
+        if all(
+            len(row) < width or row[width - 1] is None or str(row[width - 1]).strip() == ""
+            for row in r
+        ):
             width -= 1
         else:
             break

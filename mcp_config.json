@@ -19,7 +19,9 @@
         "GC_INTERVAL_SECONDS":   "3600",
         "GC_ORPHAN_AGE_SECONDS": "300",
 
-        "EMBED_BATCH_CHUNK":     "64"
+        "EMBED_BATCH_CHUNK":     "64",
+
+        "TRIMCP_ADMIN_API_KEY":  "set-a-strong-random-secret-here"
       }
     }
   }

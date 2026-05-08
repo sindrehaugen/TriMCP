@@ -35,6 +35,7 @@ target namespace and returns a ``result_summary`` dict.  Adding a new
 event_type requires adding a matching handler — the registry validates this
 at ``ForkedReplay.__init__`` time.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -43,22 +44,24 @@ import io
 import json
 import logging
 import uuid
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, AsyncGenerator, Callable, Coroutine, Optional
+from datetime import UTC, datetime
+from typing import Any, get_args
 
 import asyncpg
 from minio import Minio
 from minio.error import S3Error
 
 from trimcp.config import cfg
-from typing import get_args
-
 from trimcp.event_log import (
-    EventType,
     AppendResult,
+    DataIntegrityError,
     append_event,
+    verify_event_signature,
 )
+from trimcp.event_types import EventType
+from trimcp.models import FrozenForkConfig
 from trimcp.signing import canonical_json
 
 log = logging.getLogger(__name__)
@@ -102,6 +105,10 @@ class ReplayRunNotFoundError(ReplayError):
     """Queried ``replay_run_id`` does not exist in ``replay_runs``."""
 
 
+class ReplayChecksumError(ReplayError):
+    """Payload checksum mismatch — the replay request was tampered with or corrupted."""
+
+
 # ---------------------------------------------------------------------------
 # Internal dataclass: one row from event_log
 # ---------------------------------------------------------------------------
@@ -124,13 +131,13 @@ class _EventRow:
 def _row_as_dict(row: _EventRow) -> dict[str, Any]:
     """Serialise an ``_EventRow`` to a JSON-safe dict for yielding."""
     return {
-        "event_id":        str(row.event_id),
-        "event_seq":       row.event_seq,
-        "event_type":      row.event_type,
-        "occurred_at":     row.occurred_at.isoformat(),
-        "agent_id":        row.agent_id,
-        "params":          row.params,
-        "result_summary":  row.result_summary,
+        "event_id": str(row.event_id),
+        "event_seq": row.event_seq,
+        "event_type": row.event_type,
+        "occurred_at": row.occurred_at.isoformat(),
+        "agent_id": row.agent_id,
+        "params": row.params,
+        "result_summary": row.result_summary,
         "parent_event_id": str(row.parent_event_id) if row.parent_event_id else None,
         "llm_payload_uri": row.llm_payload_uri,
     }
@@ -142,7 +149,7 @@ def _record_to_event_row(record: asyncpg.Record) -> _EventRow:
         event_id=record["id"],
         event_seq=record["event_seq"],
         event_type=record["event_type"],
-        occurred_at=record["occurred_at"].astimezone(timezone.utc),
+        occurred_at=record["occurred_at"].astimezone(UTC),
         agent_id=record["agent_id"],
         params=dict(record["params"]) if record["params"] else {},
         result_summary=dict(record["result_summary"]) if record["result_summary"] else None,
@@ -194,7 +201,10 @@ async def _create_run(
     )
     log.info(
         "replay_run created: run_id=%s mode=%s replay_mode=%s ns=%s",
-        run_id, mode, replay_mode, source_namespace_id,
+        run_id,
+        mode,
+        replay_mode,
+        source_namespace_id,
     )
     return run_id
 
@@ -232,7 +242,9 @@ async def _finish_run(
     )
     log.info(
         "replay_run finished: run_id=%s status=%s events=%d",
-        run_id, status, events_applied,
+        run_id,
+        status,
+        events_applied,
     )
 
 
@@ -255,20 +267,22 @@ async def get_run_status(
     if row is None:
         raise ReplayRunNotFoundError(f"replay_run {run_id} not found.")
     return {
-        "run_id":               str(row["id"]),
-        "source_namespace_id":  str(row["source_namespace_id"]),
-        "target_namespace_id":  str(row["target_namespace_id"]) if row["target_namespace_id"] else None,
-        "mode":                 row["mode"],
-        "replay_mode":          row["replay_mode"],
-        "start_seq":            row["start_seq"],
-        "end_seq":              row["end_seq"],
-        "divergence_seq":       row["divergence_seq"],
-        "config_overrides":     dict(row["config_overrides"]) if row["config_overrides"] else None,
-        "status":               row["status"],
-        "events_applied":       row["events_applied"],
-        "started_at":           row["started_at"].isoformat() if row["started_at"] else None,
-        "finished_at":          row["finished_at"].isoformat() if row["finished_at"] else None,
-        "error":                row["error"],
+        "run_id": str(row["id"]),
+        "source_namespace_id": str(row["source_namespace_id"]),
+        "target_namespace_id": str(row["target_namespace_id"])
+        if row["target_namespace_id"]
+        else None,
+        "mode": row["mode"],
+        "replay_mode": row["replay_mode"],
+        "start_seq": row["start_seq"],
+        "end_seq": row["end_seq"],
+        "divergence_seq": row["divergence_seq"],
+        "config_overrides": dict(row["config_overrides"]) if row["config_overrides"] else None,
+        "status": row["status"],
+        "events_applied": row["events_applied"],
+        "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+        "finished_at": row["finished_at"].isoformat() if row["finished_at"] else None,
+        "error": row["error"],
     }
 
 
@@ -422,9 +436,11 @@ _HANDLER_REGISTRY: dict[str, HandlerFn] = {}
 
 def _register(event_type: str) -> Callable[[HandlerFn], HandlerFn]:
     """Decorator: register a coroutine as the handler for *event_type*."""
+
     def _dec(fn: HandlerFn) -> HandlerFn:
         _HANDLER_REGISTRY[event_type] = fn
         return fn
+
     return _dec
 
 
@@ -481,6 +497,9 @@ async def _handle_store_memory(
         )
         return {"skipped": True, "reason": "source_memory_not_found"}
 
+    meta = dict(src_row["metadata"]) if src_row["metadata"] else {}
+    meta["source_memory_id"] = str(src_memory_id)
+
     await conn.execute(
         """
         INSERT INTO memories (
@@ -506,12 +525,12 @@ async def _handle_store_memory(
         src_row["assertion_type"],
         src_row["memory_type"],
         src_row["salience"],
-        json.dumps(dict(src_row["metadata"])) if src_row["metadata"] else "{}",
+        json.dumps(meta),
     )
 
     return {
         "source_memory_id": str(src_memory_id),
-        "new_memory_id":    str(new_memory_id),
+        "new_memory_id": str(new_memory_id),
         "target_namespace": str(target_ns),
     }
 
@@ -651,9 +670,8 @@ async def _handle_consolidation_run(
     # Embed the abstraction (reuse the existing embedding infrastructure
     # via a direct import; avoids circular deps since we don't import engine).
     from trimcp import embeddings as _emb  # local import to avoid module-level circular
-    vector = await asyncio.get_running_loop().run_in_executor(
-        None, _emb.embed_text, abstraction
-    )
+
+    vector = await asyncio.get_running_loop().run_in_executor(None, _emb.embed_text, abstraction)
 
     await conn.execute(
         """
@@ -678,17 +696,19 @@ async def _handle_consolidation_run(
         abstraction,
         vector,
         response.get("confidence", 0.0),
-        json.dumps({
-            "source_memory_ids": response.get("supporting_memory_ids", []),
-            "key_entities":      response.get("key_entities", []),
-            "key_relations":     response.get("key_relations", []),
-            "replay_fork":       True,
-        }),
+        json.dumps(
+            {
+                "source_memory_ids": response.get("supporting_memory_ids", []),
+                "key_entities": response.get("key_entities", []),
+                "key_relations": response.get("key_relations", []),
+                "replay_fork": True,
+            }
+        ),
     )
 
     return {
-        "memory_id":   str(new_memory_id),
-        "confidence":  confidence,
+        "memory_id": str(new_memory_id),
+        "confidence": confidence,
         "abstraction": abstraction[:120],
     }
 
@@ -741,8 +761,35 @@ async def _handle_unredact(
     """Record that an unredaction occurred in the fork namespace."""
     return {
         "memory_id": src.params.get("memory_id"),
-        "replayed":  True,
+        "replayed": True,
     }
+
+
+async def _handle_fork_provenance_only(
+    conn: asyncpg.Connection,
+    src: _EventRow,
+    target_ns: uuid.UUID,
+    llm_payload: dict | None,
+    config_overrides: dict | None,
+) -> dict[str, Any]:
+    """Namespace / migration audit events: fork records provenance in event_log only."""
+    return {"replayed": True, "event_type": src.event_type}
+
+
+_FORK_PROVENANCE_ONLY_TYPES: tuple[str, ...] = (
+    "namespace_access_granted",
+    "namespace_access_revoked",
+    "namespace_created",
+    "namespace_metadata_updated",
+    "namespace_impersonated",
+    "namespace_deleted",
+    "migration_started",
+    "migration_committed",
+    "migration_aborted",
+)
+
+for _fork_prov_et in _FORK_PROVENANCE_ONLY_TYPES:
+    _HANDLER_REGISTRY[_fork_prov_et] = _handle_fork_provenance_only
 
 
 # ---------------------------------------------------------------------------
@@ -783,9 +830,7 @@ async def _resolve_llm_payload(
     if replay_mode not in ("deterministic", "re-execute"):
         raise ReplayModeError(f"Invalid replay_mode: {replay_mode!r}")
 
-    fork_uri = _fork_llm_payload_uri(
-        src.llm_payload_uri, target_namespace_id, src.event_id
-    )
+    fork_uri = _fork_llm_payload_uri(src.llm_payload_uri, target_namespace_id, src.event_id)
 
     if replay_mode == "deterministic":
         try:
@@ -814,16 +859,12 @@ async def _resolve_llm_payload(
         )
         return None, None, None
 
-    # Apply optional config_overrides to the prompt / provider selection.
+    # Apply optional config_overrides to provider selection only (prompt text is never
+    # user-mutable here — validated via ReplayConfigOverrides at the API boundary).
     overrides = config_overrides or {}
-    if "prompt_suffix" in overrides:
-        original_prompt += "\n" + overrides["prompt_suffix"]
-
-    # Resolve the namespace metadata to pick the right LLM provider.
-    # config_overrides may carry "llm_provider" / "llm_model" overrides.
-    from trimcp.providers.factory import get_provider  # local import
     from trimcp.consolidation import ConsolidatedAbstraction  # local import
-    from trimcp.providers.base import Message                 # local import
+    from trimcp.providers.base import Message  # local import
+    from trimcp.providers.factory import get_provider  # local import
 
     ns_metadata: dict = {}
     if overrides:
@@ -837,7 +878,8 @@ async def _resolve_llm_payload(
 
     log.info(
         "re-execute replay: calling %s for event %s",
-        provider.model_identifier(), src.event_id,
+        provider.model_identifier(),
+        src.event_id,
     )
 
     result: ConsolidatedAbstraction = await provider.complete(
@@ -854,11 +896,11 @@ async def _resolve_llm_payload(
     )
 
     new_payload = {
-        "prompt":   original_prompt,
+        "prompt": original_prompt,
         "response": result.model_dump(),
         "provider": provider.model_identifier(),
-        "replay":   {
-            "source_event_id":    str(src.event_id),
+        "replay": {
+            "source_event_id": str(src.event_id),
             "source_namespace_id": str(source_namespace_id),
         },
     }
@@ -931,9 +973,20 @@ class ObservationalReplay:
             # The transaction keeps the cursor alive across yield boundaries.
             async with self.pool.acquire() as cursor_conn:
                 async with cursor_conn.transaction(isolation="repeatable_read"):
-                    async for record in cursor_conn.cursor(
-                        sql, *args, prefetch=_CURSOR_PREFETCH
-                    ):
+                    async for record in cursor_conn.cursor(sql, *args, prefetch=_CURSOR_PREFETCH):
+                        try:
+                            await verify_event_signature(cursor_conn, record)
+                        except DataIntegrityError as exc:
+                            yield {"type": "error", "run_id": str(run_id), "message": str(exc)}
+                            await _finish_run(
+                                meta_conn,
+                                run_id,
+                                status="failed",
+                                events_applied=events_streamed,
+                                error=str(exc),
+                            )
+                            raise
+
                         row = _record_to_event_row(record)
                         yield {"type": "event", **_row_as_dict(row)}
                         events_streamed += 1
@@ -942,25 +995,24 @@ class ObservationalReplay:
                             # Progress update uses a *different* connection to avoid
                             # nesting statements on the cursor connection.
                             async with self.pool.acquire() as prog_conn:
-                                await _update_run_progress(
-                                    prog_conn, run_id, events_streamed
-                                )
+                                await _update_run_progress(prog_conn, run_id, events_streamed)
                             yield {
-                                "type":            "progress",
-                                "run_id":          str(run_id),
+                                "type": "progress",
+                                "run_id": str(run_id),
                                 "events_streamed": events_streamed,
                             }
 
             async with self.pool.acquire() as finish_conn:
                 await _finish_run(
-                    finish_conn, run_id,
+                    finish_conn,
+                    run_id,
                     status="success",
                     events_applied=events_streamed,
                 )
 
             yield {
-                "type":            "complete",
-                "run_id":          str(run_id),
+                "type": "complete",
+                "run_id": str(run_id),
                 "events_streamed": events_streamed,
             }
 
@@ -971,14 +1023,15 @@ class ObservationalReplay:
             if run_id is not None:
                 async with self.pool.acquire() as err_conn:
                     await _finish_run(
-                        err_conn, run_id,
+                        err_conn,
+                        run_id,
                         status="failed",
                         events_applied=events_streamed,
                         error=str(exc),
                     )
             yield {
-                "type":    "error",
-                "run_id":  str(run_id) if run_id else None,
+                "type": "error",
+                "run_id": str(run_id) if run_id else None,
                 "message": str(exc),
             }
             raise
@@ -1019,13 +1072,74 @@ class ForkedReplay:
     """
 
     @staticmethod
+    async def _apply_single_event(
+        write_conn,
+        src,
+        target_namespace_id,
+        llm_payload,
+        config_overrides,
+    ) -> dict:
+        """Dispatch a single source event to its registered handler.
+
+        Returns the ``result_summary`` dict from the handler, or a skip marker
+        if no handler is registered.
+        """
+        handler = _HANDLER_REGISTRY.get(src.event_type)
+        if handler is None:
+            log.warning("No handler for event_type=%s; writing provenance only", src.event_type)
+            return {"skipped": True, "reason": "no_handler"}
+        return await handler(write_conn, src, target_namespace_id, llm_payload, config_overrides)
+
+    async def _dispatch_and_apply(
+        self,
+        write_conn,
+        *,
+        src,
+        target_namespace_id,
+        llm_payload,
+        config_overrides,
+        run_id,
+        source_namespace_id,
+        fork_uri=None,
+        fork_hash=None,
+    ) -> tuple[dict, object]:
+        """Apply one event inside a write transaction: dispatch → append_event.
+
+        Returns (result_summary, fork_event).
+        """
+        result_summary = await self._apply_single_event(
+            write_conn, src, target_namespace_id, llm_payload, config_overrides
+        )
+
+        enriched_params: dict = {
+            **src.params,
+            "replay_run_id": str(run_id),
+            "source_event_id": str(src.event_id),
+            "source_namespace_id": str(source_namespace_id),
+        }
+
+        fork_event: AppendResult = await append_event(
+            conn=write_conn,
+            namespace_id=target_namespace_id,
+            agent_id=src.agent_id,
+            event_type=src.event_type,
+            params=enriched_params,
+            result_summary=result_summary,
+            parent_event_id=src.event_id,
+            llm_payload_uri=fork_uri,
+            llm_payload_hash=fork_hash,
+        )
+
+        return result_summary, fork_event
+
+    @staticmethod
     def _validate_handler_coverage() -> None:
         """
         Assert that every allowed EventType has a registered handler.
 
         Called at construction time so misconfiguration is caught immediately,
         not mid-run.  Uses the public ``get_args(EventType)`` API instead of
-        the private ``_VALID_EVENT_TYPES`` set so we stay on the public surface.
+        duplicating the allowed-value frozenset so we stay on the public surface.
         """
         valid_types: frozenset[str] = frozenset(get_args(EventType))
         missing = valid_types - set(_HANDLER_REGISTRY)
@@ -1042,13 +1156,7 @@ class ForkedReplay:
     async def execute(
         self,
         *,
-        source_namespace_id: uuid.UUID,
-        target_namespace_id: uuid.UUID,
-        fork_seq: int,
-        start_seq: int = 1,
-        replay_mode: str = "deterministic",
-        config_overrides: dict | None = None,
-        agent_id_filter: str | None = None,
+        frozen_config: FrozenForkConfig,
         _existing_run_id: uuid.UUID | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
@@ -1057,16 +1165,29 @@ class ForkedReplay:
         Every yielded item is a JSON-safe dict.  The caller collects them and
         decides how to surface them (MCP TextContent, HTTP JSON body, etc.).
 
+        ``frozen_config`` (``FrozenForkConfig``)
+            Immutable replay execution config (``frozen=True`` Pydantic model).
+            Once instantiated, NO code path can mutate its fields — ``setattr``
+            and ``object.__setattr__`` both raise ``ValidationError``.  This
+            guarantees WORM-compliant replay integrity.
+
         ``_existing_run_id``
             If provided, skip creating a new ``replay_runs`` row and use this
             UUID instead.  Callers that need the run_id *before* the generator
             starts (e.g. to return it immediately in an HTTP/MCP response)
             should pre-create the row via ``_create_run()`` and pass it here.
         """
-        if replay_mode not in ("deterministic", "re-execute"):
-            raise ReplayModeError(
-                f"replay_mode must be 'deterministic' or 're-execute', got {replay_mode!r}"
-            )
+        # ── Extract ALL values from the frozen config ONCE ──
+        # These local variables are bound at generator creation time;
+        # the frozen_config object itself cannot be mutated by any code
+        # path (Pydantic frozen=True blocks setattr at the model level).
+        source_namespace_id: uuid.UUID = frozen_config.source_namespace_id
+        target_namespace_id: uuid.UUID = frozen_config.target_namespace_id
+        fork_seq: int = frozen_config.fork_seq
+        start_seq: int = frozen_config.start_seq
+        replay_mode: str = frozen_config.replay_mode
+        config_overrides: dict | None = frozen_config.overrides_dict
+        agent_id_filter: str | None = frozen_config.agent_id_filter
 
         run_id: uuid.UUID | None = None
         events_applied = 0
@@ -1108,7 +1229,8 @@ class ForkedReplay:
         if resume_from_seq > start_seq:
             log.info(
                 "ForkedReplay resuming from seq %d (prior progress detected) run_id=%s",
-                resume_from_seq, run_id,
+                resume_from_seq,
+                run_id,
             )
             start_seq = resume_from_seq
 
@@ -1125,9 +1247,21 @@ class ForkedReplay:
         try:
             async with self.pool.acquire() as cursor_conn:
                 async with cursor_conn.transaction(isolation="repeatable_read"):
-                    async for record in cursor_conn.cursor(
-                        sql, *args, prefetch=_CURSOR_PREFETCH
-                    ):
+                    async for record in cursor_conn.cursor(sql, *args, prefetch=_CURSOR_PREFETCH):
+                        try:
+                            await verify_event_signature(cursor_conn, record)
+                        except DataIntegrityError as exc:
+                            yield {"type": "error", "run_id": str(run_id), "message": str(exc)}
+                            async with self.pool.acquire() as err_conn:
+                                await _finish_run(
+                                    err_conn,
+                                    run_id,
+                                    status="failed",
+                                    events_applied=events_applied,
+                                    error=str(exc),
+                                )
+                            raise
+
                         src = _record_to_event_row(record)
 
                         # -- Resolve LLM payload outside the write transaction --
@@ -1142,58 +1276,16 @@ class ForkedReplay:
                         # -- Apply event in its own Saga transaction on a new conn --
                         async with self.pool.acquire() as write_conn:
                             async with write_conn.transaction():
-                                handler = _HANDLER_REGISTRY.get(src.event_type)
-                                if handler is None:
-                                    # Should not happen after _validate_handler_coverage,
-                                    # but guard defensively.
-                                    log.warning(
-                                        "No handler for event_type=%s; writing provenance only",
-                                        src.event_type,
-                                    )
-                                    result_summary: dict = {
-                                        "skipped": True,
-                                        "reason":  "no_handler",
-                                    }
-                                else:
-                                    result_summary = await handler(
-                                        write_conn,
-                                        src,
-                                        target_namespace_id,
-                                        llm_payload,
-                                        config_overrides,
-                                    )
-
-                                # Stamp replay_run_id into params so idempotency
-                                # check above can detect prior progress.
-                                enriched_params: dict = {
-                                    **src.params,
-                                    "replay_run_id":      str(run_id),
-                                    "source_event_id":    str(src.event_id),
-                                    "source_namespace_id": str(source_namespace_id),
-                                }
-
-                                # Write event_log entry in target namespace.
-                                # append_event() computes fresh HMAC-SHA256 over:
-                                #   - new event_id (fork)
-                                #   - target_namespace_id  (fork's namespace)
-                                #   - target event_seq     (fork's own monotone sequence)
-                                #   - target occurred_at   (fork's DB clock)
-                                #   - enriched_params
-                                #   - parent_event_id = src.event_id  ← causal link
-                                #
-                                # This signature represents "alternate causal provenance":
-                                # the fork's event is cryptographically distinct from the
-                                # source but carries its lineage via parent_event_id.
-                                fork_event: AppendResult = await append_event(
-                                    conn=write_conn,
-                                    namespace_id=target_namespace_id,
-                                    agent_id=src.agent_id,
-                                    event_type=src.event_type,
-                                    params=enriched_params,
-                                    result_summary=result_summary,
-                                    parent_event_id=src.event_id,
-                                    llm_payload_uri=fork_uri,
-                                    llm_payload_hash=fork_hash,
+                                result_summary, fork_event = await self._dispatch_and_apply(
+                                    write_conn,
+                                    src=src,
+                                    target_namespace_id=target_namespace_id,
+                                    llm_payload=llm_payload,
+                                    config_overrides=config_overrides,
+                                    run_id=run_id,
+                                    source_namespace_id=source_namespace_id,
+                                    fork_uri=fork_uri,
+                                    fork_hash=fork_hash,
                                 )
 
                         events_applied += 1
@@ -1201,55 +1293,281 @@ class ForkedReplay:
                         yield_type = "skipped" if skipped else "applied"
 
                         yield {
-                            "type":          yield_type,
-                            "event_seq":     src.event_seq,
-                            "event_type":    src.event_type,
+                            "type": yield_type,
+                            "event_seq": src.event_seq,
+                            "event_type": src.event_type,
                             "fork_event_id": str(fork_event.event_id),
                             "fork_event_seq": fork_event.event_seq,
-                            "result":        result_summary,
+                            "result": result_summary,
                         }
 
                         if events_applied % _PROGRESS_INTERVAL == 0:
                             async with self.pool.acquire() as prog_conn:
-                                await _update_run_progress(
-                                    prog_conn, run_id, events_applied
-                                )
+                                await _update_run_progress(prog_conn, run_id, events_applied)
                             yield {
-                                "type":           "progress",
-                                "run_id":         str(run_id),
+                                "type": "progress",
+                                "run_id": str(run_id),
                                 "events_applied": events_applied,
                             }
 
             async with self.pool.acquire() as finish_conn:
                 await _finish_run(
-                    finish_conn, run_id,
+                    finish_conn,
+                    run_id,
                     status="success",
                     events_applied=events_applied,
                 )
 
             yield {
-                "type":           "complete",
-                "run_id":         str(run_id),
+                "type": "complete",
+                "run_id": str(run_id),
                 "events_applied": events_applied,
                 "fork_namespace": str(target_namespace_id),
                 "divergence_seq": fork_seq,
             }
 
         except Exception as exc:
-            log.exception(
-                "ForkedReplay failed at event %d run_id=%s", events_applied, run_id
-            )
+            log.exception("ForkedReplay failed at event %d run_id=%s", events_applied, run_id)
             if run_id is not None:
                 async with self.pool.acquire() as err_conn:
                     await _finish_run(
-                        err_conn, run_id,
+                        err_conn,
+                        run_id,
                         status="failed",
                         events_applied=events_applied,
                         error=str(exc),
                     )
             yield {
-                "type":    "error",
-                "run_id":  str(run_id) if run_id else None,
+                "type": "error",
+                "run_id": str(run_id) if run_id else None,
+                "message": str(exc),
+            }
+            raise
+
+
+# ---------------------------------------------------------------------------
+# Reconstructive Replay (Phase 2.3)
+# ---------------------------------------------------------------------------
+
+
+class ReconstructiveReplay:
+    """
+    Apply source events to an empty target namespace, reproducing byte-identical
+    state at ``end_seq``.
+
+    Unlike ``ForkedReplay``, no LLM payload resolution is performed — all
+    events are applied deterministically.  UUIDs are remapped (original →
+    new) to avoid constraint violations in the target namespace.
+
+    Yielded items
+    ─────────────
+    * ``{"type": "applied",  "event_seq": N, "event_type": "...", ...}``
+    * ``{"type": "skipped",  "event_seq": N, "event_type": "...", "reason": "..."}``
+    * ``{"type": "progress", "run_id": ..., "events_applied": N}``
+    * ``{"type": "complete", "run_id": ..., "events_applied": N}``
+    * ``{"type": "error",    "run_id": ..., "message": "..."}``
+
+    UUID remapping
+    ──────────────
+    Handlers are expected to map source UUIDs to fresh UUIDs in the target
+    namespace (e.g., ``_handle_store_memory`` already does this).
+    ``ReconstructiveReplay`` does NOT maintain a central UUID mapping table
+    — each handler is responsible for its own deterministic remapping.
+    """
+
+    @staticmethod
+    def _validate_handler_coverage() -> None:
+        """Assert all EventTypes have registered handlers (shared with ForkedReplay)."""
+        valid_types: frozenset[str] = frozenset(get_args(EventType))
+        missing = valid_types - set(_HANDLER_REGISTRY)
+        if missing:
+            raise ReplayHandlerMissingError(
+                f"No replay handler registered for event type(s): {sorted(missing)}.  "
+                "Add a @_register('<type>') handler in trimcp/replay.py."
+            )
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self.pool = pool
+        self._validate_handler_coverage()
+
+    async def execute(
+        self,
+        *,
+        source_namespace_id: uuid.UUID,
+        target_namespace_id: uuid.UUID,
+        end_seq: int,
+        start_seq: int = 1,
+        agent_id_filter: str | None = None,
+        _existing_run_id: uuid.UUID | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Async generator — drive the reconstructive replay loop.
+
+        Args:
+            source_namespace_id: Source namespace to replay from.
+            target_namespace_id: Empty target namespace to populate.
+            end_seq:            Last event sequence to apply (inclusive).
+            start_seq:          First event sequence (default 1).
+            agent_id_filter:    Optional agent_id to filter source events.
+            _existing_run_id:   Pre-created replay_runs row UUID.
+
+        Yields:
+            JSON-safe dict per event + progress/complete/error items.
+        """
+        run_id: uuid.UUID | None = None
+        events_applied = 0
+
+        # 1. Create (or reuse) run row
+        if _existing_run_id is not None:
+            run_id = _existing_run_id
+        else:
+            async with self.pool.acquire() as meta_conn:
+                run_id = await _create_run(
+                    meta_conn,
+                    source_namespace_id=source_namespace_id,
+                    target_namespace_id=target_namespace_id,
+                    mode="reconstructive",
+                    replay_mode="deterministic",
+                    start_seq=start_seq,
+                    end_seq=end_seq,
+                    divergence_seq=None,
+                    config_overrides=None,
+                )
+
+        # 2. Check for prior progress (idempotent resume)
+        async with self.pool.acquire() as chk_conn:
+            prior = await chk_conn.fetchval(
+                """
+                SELECT COALESCE(MAX(event_seq), 0)
+                FROM event_log
+                WHERE namespace_id = $1
+                  AND params->>'replay_run_id' = $2
+                """,
+                target_namespace_id,
+                str(run_id),
+            )
+        resume_from_seq = int(prior) + 1 if prior else start_seq
+        if resume_from_seq > start_seq:
+            log.info(
+                "ReconstructiveReplay resuming from seq %d (prior=%d) run_id=%s",
+                resume_from_seq,
+                prior,
+                run_id,
+            )
+            start_seq = resume_from_seq
+
+        # 3. Stream source events + apply each one
+        sql, args = _build_event_query(
+            source_namespace_id=source_namespace_id,
+            start_seq=start_seq,
+            end_seq=end_seq,
+            agent_id_filter=agent_id_filter,
+        )
+
+        try:
+            async with self.pool.acquire() as cursor_conn:
+                async with cursor_conn.transaction(isolation="repeatable_read"):
+                    async for record in cursor_conn.cursor(sql, *args, prefetch=_CURSOR_PREFETCH):
+                        try:
+                            await verify_event_signature(cursor_conn, record)
+                        except DataIntegrityError as exc:
+                            yield {"type": "error", "run_id": str(run_id), "message": str(exc)}
+                            async with self.pool.acquire() as err_conn:
+                                await _finish_run(
+                                    err_conn,
+                                    run_id,
+                                    status="failed",
+                                    events_applied=events_applied,
+                                    error=str(exc),
+                                )
+                            raise
+
+                        src = _record_to_event_row(record)
+
+                        # Apply event in its own Saga transaction
+                        async with self.pool.acquire() as write_conn:
+                            async with write_conn.transaction():
+                                handler = _HANDLER_REGISTRY.get(src.event_type)
+                                if handler is None:
+                                    result_summary: dict = {"skipped": True, "reason": "no_handler"}
+                                else:
+                                    result_summary = await handler(
+                                        write_conn,
+                                        src,
+                                        target_namespace_id,
+                                        llm_payload=None,
+                                        config_overrides=None,
+                                    )
+
+                                enriched_params: dict = {
+                                    **src.params,
+                                    "replay_run_id": str(run_id),
+                                    "source_event_id": str(src.event_id),
+                                    "source_namespace_id": str(source_namespace_id),
+                                }
+
+                                await append_event(
+                                    conn=write_conn,
+                                    namespace_id=target_namespace_id,
+                                    agent_id=src.agent_id,
+                                    event_type=src.event_type,
+                                    params=enriched_params,
+                                    result_summary=result_summary,
+                                    parent_event_id=src.event_id,
+                                )
+
+                        events_applied += 1
+                        skipped = result_summary.get("skipped", False)
+                        yield_type = "skipped" if skipped else "applied"
+
+                        yield {
+                            "type": yield_type,
+                            "event_seq": src.event_seq,
+                            "event_type": src.event_type,
+                            "result": result_summary,
+                        }
+
+                        if events_applied % _PROGRESS_INTERVAL == 0:
+                            async with self.pool.acquire() as prog_conn:
+                                await _update_run_progress(prog_conn, run_id, events_applied)
+                            yield {
+                                "type": "progress",
+                                "run_id": str(run_id),
+                                "events_applied": events_applied,
+                            }
+
+            async with self.pool.acquire() as finish_conn:
+                await _finish_run(
+                    finish_conn,
+                    run_id,
+                    status="success",
+                    events_applied=events_applied,
+                )
+
+            yield {
+                "type": "complete",
+                "run_id": str(run_id),
+                "events_applied": events_applied,
+                "target_namespace": str(target_namespace_id),
+                "end_seq": end_seq,
+            }
+
+        except Exception as exc:
+            log.exception(
+                "ReconstructiveReplay failed at event %d run_id=%s", events_applied, run_id
+            )
+            if run_id is not None:
+                async with self.pool.acquire() as err_conn:
+                    await _finish_run(
+                        err_conn,
+                        run_id,
+                        status="failed",
+                        events_applied=events_applied,
+                        error=str(exc),
+                    )
+            yield {
+                "type": "error",
+                "run_id": str(run_id) if run_id else None,
                 "message": str(exc),
             }
             raise
@@ -1305,17 +1623,23 @@ async def get_event_provenance(
             )
             if row is None:
                 break
-            chain.append({
-                "event_id":       str(row["id"]),
-                "namespace_id":   str(row["namespace_id"]),
-                "agent_id":       row["agent_id"],
-                "event_type":     row["event_type"],
-                "event_seq":      row["event_seq"],
-                "occurred_at":    row["occurred_at"].isoformat(),
-                "params":         dict(row["params"]) if row["params"] else {},
-                "result_summary": dict(row["result_summary"]) if row["result_summary"] else None,
-                "parent_event_id": str(row["parent_event_id"]) if row["parent_event_id"] else None,
-            })
+            chain.append(
+                {
+                    "event_id": str(row["id"]),
+                    "namespace_id": str(row["namespace_id"]),
+                    "agent_id": row["agent_id"],
+                    "event_type": row["event_type"],
+                    "event_seq": row["event_seq"],
+                    "occurred_at": row["occurred_at"].isoformat(),
+                    "params": dict(row["params"]) if row["params"] else {},
+                    "result_summary": dict(row["result_summary"])
+                    if row["result_summary"]
+                    else None,
+                    "parent_event_id": str(row["parent_event_id"])
+                    if row["parent_event_id"]
+                    else None,
+                }
+            )
             current_id = row["parent_event_id"]
 
     chain.reverse()  # root first

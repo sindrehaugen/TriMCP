@@ -103,7 +103,8 @@ module "fargate_worker" {
   private_subnet_ids    = module.network.private_app_subnet_ids
   app_security_group_id = module.network.app_security_group_id
   cluster_name_suffix   = "worker"
-  service_name          = "trimcp-rq-worker"
+  service_name          = "trimcp"
+  # --- Orchestrator (control plane — full data-plane access) ---
   container_image       = var.worker_container_image
   cpu                   = var.worker_cpu
   memory                = var.worker_memory
@@ -114,6 +115,13 @@ module "fargate_worker" {
     module.elasticache.auth_secret_arn,
   ])
   s3_bucket_arn = module.s3.bucket_arn
+  # --- Worker (restricted — untrusted MCP integration execution) ---
+  worker_container_image = var.worker_container_image
+  worker_cpu             = var.worker_cpu
+  worker_memory          = var.worker_memory
+  worker_desired_count   = 1
+  worker_s3_prefix       = "worker/"
+  worker_secrets_arns    = []  # no Secrets Manager access for untrusted workers
 }
 
 module "webhook_api" {

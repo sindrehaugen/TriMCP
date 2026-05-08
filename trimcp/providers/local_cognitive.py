@@ -12,31 +12,29 @@ Structured output uses ``response_format={"type": "json_object"}`` with the
 Pydantic schema embedded in the system prompt.  The raw content string is
 validated with Pydantic V2 before return.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, List, Optional, Type
 
 import httpx
 from pydantic import ValidationError
 
+from trimcp.providers._http_utils import post_with_error_handling
 from trimcp.providers.base import (
     LLMProvider,
     LLMProviderError,
-    LLMTimeoutError,
     LLMValidationError,
     Message,
     ResponseModelT,
+    validate_base_url,
 )
-
-if TYPE_CHECKING:
-    pass
 
 log = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 60.0
-_DEFAULT_MODEL   = "local-cognitive-model"
+_DEFAULT_MODEL = "local-cognitive-model"
 
 
 class LocalCognitiveProvider(LLMProvider):
@@ -61,9 +59,12 @@ class LocalCognitiveProvider(LLMProvider):
         model: str = _DEFAULT_MODEL,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
+        # SSRF guard — local cognitive container runs on localhost, relax checks.
+        validate_base_url(base_url, allow_http=True, allow_loopback=True)
+
         self._base_url = base_url.rstrip("/")
-        self._model    = model
-        self._timeout  = timeout
+        self._model = model
+        self._timeout = timeout
 
     # ------------------------------------------------------------------
     # Health probe (optional, called by factory)
@@ -84,10 +85,10 @@ class LocalCognitiveProvider(LLMProvider):
 
     async def complete(
         self,
-        messages: List[Message],
-        response_model: Type[ResponseModelT],
+        messages: list[Message],
+        response_model: type[ResponseModelT],
     ) -> ResponseModelT:
-        schema_hint = json.dumps(response_model.model_json_schema(), indent=2)
+        json.dumps(response_model.model_json_schema(), indent=2)
         payload = {
             "model": self._model,
             "messages": [{"role": m.role.value, "content": m.content} for m in messages],
@@ -101,46 +102,41 @@ class LocalCognitiveProvider(LLMProvider):
             },
         }
 
+        data = await self.execute_with_retry(
+            lambda: post_with_error_handling(
+                url=f"{self._base_url}/v1/chat/completions",
+                body=payload,
+                timeout=self._timeout,
+                model_id=self.model_identifier(),
+                error_prefix="HTTP request to local cognitive model failed",
+            ),
+        )
+
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(
-                    f"{self._base_url}/v1/chat/completions",
-                    json=payload,
-                )
-        except httpx.TimeoutException as exc:
-            raise LLMTimeoutError(
-                f"Local cognitive model timed out after {self._timeout}s",
-                provider=self.model_identifier(),
-            ) from exc
-        except httpx.RequestError as exc:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
             raise LLMProviderError(
-                f"HTTP request to local cognitive model failed: {exc}",
+                f"Local cognitive model response missing expected structure: {str(data)[:300]}",
                 provider=self.model_identifier(),
             ) from exc
 
-        if not resp.is_success:
-            raise LLMProviderError(
-                f"Local cognitive model returned HTTP {resp.status_code}",
-                provider=self.model_identifier(),
-                status_code=resp.status_code,
-                upstream_message=resp.text[:500],
-            )
-
-        data    = resp.json()
-        content = data["choices"][0]["message"]["content"]
         return _parse_and_validate(content, response_model, self.model_identifier())
 
     def model_identifier(self) -> str:
         return f"local/{self._model}"
+
+    def __repr__(self) -> str:
+        return f"LocalCognitiveProvider(model={self._model!r}, base_url={self._base_url!r})"
 
 
 # ---------------------------------------------------------------------------
 # Shared validation helper (used by multiple providers)
 # ---------------------------------------------------------------------------
 
+
 def _parse_and_validate(
     raw_content: str,
-    response_model: Type[ResponseModelT],
+    response_model: type[ResponseModelT],
     provider_id: str,
 ) -> ResponseModelT:
     """Parse *raw_content* as JSON and validate against *response_model*.

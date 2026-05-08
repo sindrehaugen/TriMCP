@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -22,12 +22,11 @@ import pytest
 
 from trimcp.graph_query import GraphRAGTraverser
 
-
 # ---------------------------------------------------------------------------
 # Deterministic timeline (UTC)
 # ---------------------------------------------------------------------------
 
-TZ_UTC = timezone.utc
+TZ_UTC = UTC
 T0 = datetime(2026, 1, 1, 10, 0, 0, tzinfo=TZ_UTC)
 T1 = datetime(2026, 1, 1, 10, 15, 0, tzinfo=TZ_UTC)
 T2 = datetime(2026, 1, 1, 10, 30, 0, tzinfo=TZ_UTC)
@@ -117,13 +116,43 @@ class TemporalGraphFakeConn:
         self._last_query = last_query
         self._embed_probe = embed_probe
 
+    async def execute(self, query: str, *args: Any) -> str:
+        """No-op stub for set_namespace_context()."""
+        return "SET 1"
+
     async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
         self._last_query.append(query)
         q = query.lower()
 
-        active = _active_store_rows(self._events, NS_ID, args[-1])
-        as_of = args[-1]
-        assert isinstance(as_of, datetime)
+        # ---- Extract as_of from args based on query shape ----
+        # Anchor search: (vector_json, top_k, ns_id, as_of)
+        # Recursive CTE time-travel BFS: (label, max_depth, ns_id, as_of, max_edges, max_nodes)
+        # Batch edge fetch time-travel: (labels[], ns_id, as_of)
+        # Node hydration time-travel: (labels[], ns_id, as_of)
+        # Current-state BFS CTE: (label, max_depth, max_nodes)
+        # Current-state batch edges: (labels[])
+        if "historical_nodes" in q and "<=>" in q and len(args) >= 4:
+            as_of = args[3]
+        elif "recursive traversal" in q or "WITH RECURSIVE" in q or "with recursive" in q:
+            # Recursive CTE — param order depends on time-travel vs current-state
+            if len(args) >= 4 and isinstance(args[3], datetime):
+                as_of = args[3]    # time-travel: (label, depth, ns_id, as_of, ...)
+            elif self._events:
+                as_of = self._events[-1].occurred_at  # current-state: (label, depth, max_nodes)
+            else:
+                as_of = T2
+        elif "historical_edges" in q and any("$3" in query for _ in [1]):
+            # Time-travel batch edge fetch: (labels[], ns_id, as_of)
+            as_of = args[-1]
+        elif "historical_nodes" in q and "any($1::text[])" in q.lower():
+            # Node hydration in time-travel
+            as_of = args[-1]
+        else:
+            as_of = args[-1] if args else T2
+
+        assert isinstance(as_of, datetime), f"as_of must be datetime, got {type(as_of)}: {as_of}"
+
+        active = _active_store_rows(self._events, NS_ID, as_of)
 
         # Anchor search (entities + vector distance)
         if "historical_nodes" in q and "<=>" in q:
@@ -157,28 +186,70 @@ class TemporalGraphFakeConn:
                 )
             return rows
 
-        # BFS edge scan
-        if "params->'triplets'" in q and "historical_edges" in q:
-            current_label, ns_arg, _cutoff = args
-            assert UUID(str(ns_arg)) == NS_ID
+        # --- Recursive CTE label discovery (new batch BFS) ---
+        # Detected by "recursive traversal" in query + only requesting labels.
+        if "recursive traversal" in q or ("with recursive" in q and "traversal" in q):
+            # Return all unique labels from active events (simulates BFS reachability)
+            start_label = str(args[0])
+            seen: set[str] = set()
             rows = []
             for ev in active.values():
                 for tr in ev.triplets:
-                    subj = tr["subject_label"]
-                    obj = tr["object_label"]
-                    if subj != current_label and obj != current_label:
-                        continue
-                    mid = ev.memory_id
-                    rows.append(
-                        {
-                            "subject_label": subj,
-                            "predicate": tr["predicate"],
-                            "object_label": obj,
-                            "payload_ref": self._payload_ref.get(mid, ""),
-                            "decayed_confidence": float(tr.get("confidence", 1.0)),
-                        }
-                    )
+                    if tr["subject_label"] == start_label or tr["object_label"] == start_label:
+                        for lab in (tr["subject_label"], tr["object_label"]):
+                            if lab not in seen:
+                                seen.add(lab)
+                                rows.append({"label": lab, "depth": 0})
+            if not rows:
+                # At minimum return the start label
+                rows.append({"label": start_label, "depth": 0})
             return rows
+
+        # BFS edge scan (supports both old per-hop and new batch query shapes)
+        if "params->'triplets'" in q and "historical_edges" in q:
+            if "any($1::text[])" in q.lower():
+                # New: batch edge fetch — args[0] is list of visited labels
+                label_list, *_rest = args
+                rows = []
+                for ev in active.values():
+                    for tr in ev.triplets:
+                        subj = tr["subject_label"]
+                        obj = tr["object_label"]
+                        if subj not in label_list and obj not in label_list:
+                            continue
+                        mid = ev.memory_id
+                        rows.append(
+                            {
+                                "subject_label": subj,
+                                "predicate": tr["predicate"],
+                                "object_label": obj,
+                                "payload_ref": self._payload_ref.get(mid, ""),
+                                "decayed_confidence": float(tr.get("confidence", 1.0)),
+                            }
+                        )
+                return rows
+            else:
+                # Legacy: per-hop fetch — one label at a time
+                current_label, ns_arg, _cutoff = args
+                assert UUID(str(ns_arg)) == NS_ID
+                rows = []
+                for ev in active.values():
+                    for tr in ev.triplets:
+                        subj = tr["subject_label"]
+                        obj = tr["object_label"]
+                        if subj != current_label and obj != current_label:
+                            continue
+                        mid = ev.memory_id
+                        rows.append(
+                            {
+                                "subject_label": subj,
+                                "predicate": tr["predicate"],
+                                "object_label": obj,
+                                "payload_ref": self._payload_ref.get(mid, ""),
+                                "decayed_confidence": float(tr.get("confidence", 1.0)),
+                            }
+                        )
+                return rows
 
         # Visited node hydration
         if "params->'entities'" in q and "any($1::text[])" in q.lower():
@@ -262,9 +333,7 @@ def time_travel_traverser(monkeypatch: pytest.MonkeyPatch):
         probe_holder["q"] = text
         return [0.0, 0.0, float(len(text) % 7)]
 
-    t = GraphRAGTraverser(
-        pg_pool=pool, mongo_client=MagicClient(), embedding_fn=fake_embed
-    )
+    t = GraphRAGTraverser(pg_pool=pool, mongo_client=MagicClient(), embedding_fn=fake_embed)
 
     monkeypatch.setattr(t, "_hydrate_sources", _noop_hydrate)
     return t, conn, events
@@ -384,9 +453,7 @@ async def test_as_of_after_forget_yields_no_anchor(
     async def fake_embed(_text: str) -> list[float]:
         return [0.0]
 
-    t = GraphRAGTraverser(
-        pg_pool=pool, mongo_client=MagicClient(), embedding_fn=fake_embed
-    )
+    t = GraphRAGTraverser(pg_pool=pool, mongo_client=MagicClient(), embedding_fn=fake_embed)
     monkeypatch.setattr(t, "_hydrate_sources", _noop_hydrate)
 
     sg = await t.search(
@@ -454,3 +521,113 @@ def test_parse_as_of_rejects_bad_format(_patch_temporal_wall_clock: datetime) ->
 
     with pytest.raises(ValueError, match="ISO 8601"):
         parse_as_of("not-a-timestamp")
+
+
+# --- Temporal lookback boundary tests ---
+
+
+@pytest.fixture
+def _patch_lookback_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Override the default 90-day lookback to a narrow 30-day window."""
+    import trimcp.config as cfg_mod
+
+    monkeypatch.setattr(
+        cfg_mod.cfg,
+        "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS",
+        30,
+    )
+
+
+@pytest.fixture
+def _disable_lookback_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set lookback to 0 (unlimited) to test the boundary-gate bypass."""
+    import trimcp.config as cfg_mod
+
+    monkeypatch.setattr(
+        cfg_mod.cfg,
+        "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS",
+        0,
+    )
+
+
+def test_enforce_lookback_boundary_accepts_recent_timestamp(
+    _patch_temporal_wall_clock: datetime,
+    _patch_lookback_config: None,
+) -> None:
+    """A timestamp within the 30-day window must be accepted."""
+    from trimcp.temporal import parse_as_of
+
+    # Wall clock is pinned to 2026-05-05T12:00:00Z, 30-day window → earliest 2026-04-05T12:00:00Z.
+    # 2026-04-10 is within the window.
+    dt = parse_as_of("2026-04-10T00:00:00Z")
+    assert dt == datetime(2026, 4, 10, 0, 0, 0, tzinfo=TZ_UTC)
+
+
+def test_enforce_lookback_boundary_rejects_old_timestamp(
+    _patch_temporal_wall_clock: datetime,
+    _patch_lookback_config: None,
+) -> None:
+    """A timestamp older than the 30-day window must be rejected."""
+    from trimcp.temporal import parse_as_of
+
+    # 2026-03-01 is 65 days before the pinned wall clock (2026-05-05) → exceeds 30-day limit.
+    with pytest.raises(ValueError, match="exceeds maximum temporal lookback"):
+        parse_as_of("2026-03-01T00:00:00Z")
+
+
+def test_enforce_lookback_boundary_exact_cutoff_allowed(
+    _patch_temporal_wall_clock: datetime,
+    _patch_lookback_config: None,
+) -> None:
+    """A timestamp exactly at the cutoff (now - 30 days) must be accepted."""
+    from trimcp.temporal import parse_as_of
+
+    # 2026-05-05 minus 30 days = 2026-04-05T12:00:00Z
+    dt = parse_as_of("2026-04-05T12:00:00Z")
+    assert dt == datetime(2026, 4, 5, 12, 0, 0, tzinfo=TZ_UTC)
+
+
+def test_enforce_lookback_boundary_one_second_before_cutoff_rejected(
+    _patch_temporal_wall_clock: datetime,
+    _patch_lookback_config: None,
+) -> None:
+    """A timestamp one second before the cutoff must be rejected (boundary precision)."""
+    from trimcp.temporal import parse_as_of
+
+    # 2026-04-05T11:59:59Z is 1 second before cutoff → should be rejected.
+    with pytest.raises(ValueError, match="exceeds maximum temporal lookback"):
+        parse_as_of("2026-04-05T11:59:59Z")
+
+
+def test_enforce_lookback_boundary_disabled_with_zero(
+    _patch_temporal_wall_clock: datetime,
+    _disable_lookback_config: None,
+) -> None:
+    """Setting TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS=0 must disable the boundary."""
+    from trimcp.temporal import parse_as_of
+
+    # 2026-03-01 is well beyond the default 90-day window but with 0 (unlimited) it must pass.
+    dt = parse_as_of("2026-03-01T00:00:00Z")
+    assert dt == datetime(2026, 3, 1, 0, 0, 0, tzinfo=TZ_UTC)
+
+
+def test_enforce_lookback_boundary_default_90_days(
+    _patch_temporal_wall_clock: datetime,
+) -> None:
+    """With default config (90-day lookback), a timestamp 89 days ago must be accepted."""
+    from trimcp.temporal import parse_as_of
+
+    # 2026-05-05 minus 89 days = 2026-02-05.  2026-02-06 is within 90 days.
+    dt = parse_as_of("2026-02-06T00:00:00Z")
+    assert dt == datetime(2026, 2, 6, 0, 0, 0, tzinfo=TZ_UTC)
+
+
+def test_enforce_lookback_boundary_default_rejects_excessive(
+    _patch_temporal_wall_clock: datetime,
+) -> None:
+    """With default config (90-day lookback), a timestamp 100 days ago must be rejected."""
+    from trimcp.temporal import parse_as_of
+
+    # 2026-01-26 is 99 days before pinned clock (2026-05-05) → exceeds 90-day limit.
+    with pytest.raises(ValueError, match="exceeds maximum temporal lookback"):
+        parse_as_of("2026-01-26T00:00:00Z")

@@ -54,3 +54,19 @@ Ensure the User Principal Name (UPN) provided by your Identity Provider matches 
 **Symptom:** Errors related to `tree-sitter` or missing C++ compilers during setup.
 **Resolution:**
 TriMCP now uses the pre-compiled `tree-sitter-language-pack`. Ensure you are using the latest version of the codebase. If you are adding custom grammars via the `add_custom_grammar` script, you must have a valid C++ build environment (e.g., Visual Studio Build Tools on Windows) installed.
+
+## 11. Resource Quota Exceeded (-32013)
+**Symptom:** MCP tool calls fail with "Resource quota exceeded."
+**Resolution:**
+The namespace or agent has reached its usage limit (tokens, storage, or memory count).
+-   **Check Status**: Use the `get_health` tool to view current consumption.
+-   **Increase Limit**: An administrator can update the `resource_quotas` table in PostgreSQL to increase the limit for that namespace.
+-   **Cleanup**: Use `forget_memory` or wait for the garbage collector to reclaim space from temporary sessions.
+
+## 12. Cryptographic Signature Mismatch
+**Symptom:** A memory or event is flagged as "invalid signature" or "tampered."
+**Resolution:**
+This indicates that the record's hash does not match the stored signature, or the signing key has changed.
+-   **Key Mismatch**: Ensure the `TRIMCP_MASTER_KEY` in your `.env` matches the one used when the data was originally written.
+-   **Tampering**: Investigate the database audit logs to see if a manual `UPDATE` was performed on the `memories` or `event_log` table outside of the application layer.
+-   **Rotation**: If a key was recently rotated, verify that the `signature_key_id` in the record correctly maps to a key in the `signing_keys` table.

@@ -8,9 +8,19 @@ allows any retrieval to verify integrity and detect post-write tampering.
 Key storage
 -----------
 Signing keys live in the ``signing_keys`` Postgres table as AES-256-GCM
-encrypted blobs.  The AES encryption key (master key) comes from the
-``TRIMCP_MASTER_KEY`` environment variable in dev, or a KMS-backed secret in
-production.
+encrypted blobs.  The AES wrapping key is derived from ``TRIMCP_MASTER_KEY``
+via **PBKDF2-HMAC-SHA256** (100,000–600,000 iterations, versioned) with a per-blob
+random salt, or **Argon2id** when available.
+
+**Wire format (v4 — PBKDF2 @ 600K, OWASP 2026)**: ``b'TC4\\x01' || salt (16) || nonce (12) || ciphertext+tag``.
+
+**Wire format (v3 — Argon2id, preferred)**: ``b'TC3\\x01' || salt (16) || nonce (12) || ciphertext+tag``.
+
+**Wire format (v2 — PBKDF2 @ 100K, NIST minimum)**: ``b'TC2\\x01' || salt (16) || nonce (12) || ciphertext+tag``.
+
+**Legacy format** (still decrypted for migration): ``nonce (12) || ciphertext+tag``
+using a single SHA-256 digest of the master key as the AES key.  New writes
+always use v3 (Argon2id) or v4 (PBKDF2 @ 600K).
 
 Server bootstrap
 ----------------
@@ -20,9 +30,19 @@ empty — the server must not start without it.
 
 Active-key caching
 ------------------
-``get_active_key()`` maintains a module-level in-process cache (5-minute TTL)
-so the ``signing_keys`` table is not hit on every write.  The cache is
-invalidated automatically on ``rotate_key()``.
+``get_active_key()`` maintains a module-level ``cachetools.TTLCache``
+(5-minute TTL, max 1000 entries) so the ``signing_keys`` table is not hit
+on every write.  The TTLCache automatically evicts expired entries on access.
+An ``__delitem__`` override ensures that the ``MutableKeyBuffer`` backing
+each evicted entry is zeroed (nulled) before removal, reducing the window
+during which decrypted PBKDF2 / Argon2id key material is readable in the
+process heap.
+
+The active key is stored under two cache keys — ``"__active__"`` (for
+``get_active_key`` lookups) and its real ``key_id`` (for ``get_key_by_id``
+cross-references) — each with an independent ``MutableKeyBuffer`` so that
+evicting one slot does not prematurely zero the other.  ``rotate_key()``
+explicitly zeros all cached buffers and clears the cache.
 
 Thread/async safety
 -------------------
@@ -36,6 +56,7 @@ around ``get_active_key`` / ``rotate_key`` pairs.
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import hmac
 import logging
@@ -65,11 +86,12 @@ except ImportError:  # pragma: no cover – jcs is in requirements.txt; handle g
         Full ECMAScript number serialisation divergence is not triggered
         because signing inputs never contain bare floats.
         """
-        return _json.dumps(
-            data, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        ).encode("utf-8")
+        return _json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
 
 
+from cachetools import TTLCache
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 log = logging.getLogger(__name__)
@@ -79,8 +101,49 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MASTER_KEY_ENV: str = "TRIMCP_MASTER_KEY"
-_NONCE_SIZE: int = 12           # 96-bit nonce for AES-256-GCM
+_NONCE_SIZE: int = 12  # 96-bit nonce for AES-256-GCM
 _KEY_CACHE_TTL_S: float = 300.0  # 5 minutes
+_MASTER_KEY_LEN: int = 32  # minimum master key length in bytes
+
+# PBKDF2-HMAC-SHA256 for deriving AES-256 keys from the master secret.
+# Floor: NIST minimum 100,000 for v2 backward compat.
+# OWASP 2026: 600,000 for v4 blobs (new writes).  v2 decryption (100K) retained.
+# Operator may raise via TRIMCP_PBKDF2_ITERATIONS (affects v2 only).
+_PBKDF2_ITERATIONS: int = max(
+    100_000,
+    int(os.environ.get("TRIMCP_PBKDF2_ITERATIONS", "100000")),
+)
+# OWASP 2026 recommended minimum: 600,000 iterations for PBKDF2-HMAC-SHA256.
+_PBKDF2_ITERATIONS_V4: int = max(
+    600_000,
+    int(os.environ.get("TRIMCP_PBKDF2_ITERATIONS_V4", "600000")),
+)
+_PBKDF2_SALT_LEN: int = 16
+# Magic prefix for v2 blobs (PBKDF2 @ 100K + random salt). Legacy blobs have no prefix.
+_ENCRYPTED_KEY_BLOB_V2: bytes = b"TC2\x01"
+# Magic prefix for v3 blobs (Argon2id).  v2 and legacy blobs still decrypt.
+_ENCRYPTED_KEY_BLOB_V3: bytes = b"TC3\x01"
+# Magic prefix for v4 blobs (PBKDF2 @ 600K, OWASP 2026).  v2/v3/legacy still decrypt.
+_ENCRYPTED_KEY_BLOB_V4: bytes = b"TC4\x01"
+# Fixed salt for ``MasterKey.derive_aes_key()`` only (self-tests / diagnostics; not stored).
+_DERIVE_AES_SELFTEST_SALT: bytes = hashlib.sha256(
+    b"TriMCP MasterKey.derive_aes_key selftest v2"
+).digest()[:_PBKDF2_SALT_LEN]
+
+# Attempt to import argon2-cffi for Argon2id wrapping-key derivation.
+# If unavailable, encrypt_signing_key falls back to PBKDF2-HMAC-SHA256.
+try:
+    from argon2.low_level import Type, hash_secret_raw
+
+    _HAS_ARGON2 = True
+except ImportError:  # pragma: no cover — argon2-cffi is in requirements.txt
+    _HAS_ARGON2 = False
+
+# Argon2id parameters (OWASP 2025 recommended minimums).
+_ARGON2_TIME_COST: int = 3
+_ARGON2_MEMORY_COST: int = 65536  # 64 MiB
+_ARGON2_PARALLELISM: int = 4
+_ARGON2_HASH_LEN: int = 32  # AES-256 key length
 
 
 # ---------------------------------------------------------------------------
@@ -105,18 +168,345 @@ class SigningKeyDecryptionError(SigningError):
 
 
 # ---------------------------------------------------------------------------
-# In-memory key cache
+# MasterKey — mutable buffer with secure zeroing
 # ---------------------------------------------------------------------------
+
+
+class MasterKey:
+    """
+    Mutable-buffer wrapper for the master signing key.
+
+    Holds key material in a ``bytearray`` that can be securely zeroed after
+    use.  This prevents the key from persisting in process memory as an
+    immutable Python string that cannot be overwritten.
+
+    **Usage**::
+
+        with MasterKey.from_env() as mk:
+            raw_key = decrypt_signing_key(blob, mk)
+
+    When the context manager exits the buffer is overwritten with null bytes.
+    ``__del__`` provides a second line of defence for GC-collected instances.
+
+    After ``zero()`` has been called any attempt to access ``key_bytes`` or
+    ``derive_aes_key()`` raises ``ValueError``.
+    """
+
+    __slots__ = ("_buf", "_zeroed")
+
+    def __init__(self, key_bytes: bytes) -> None:
+        if len(key_bytes) < _MASTER_KEY_LEN:
+            raise MasterKeyMissingError(
+                f"Master key must be at least {_MASTER_KEY_LEN} bytes; got {len(key_bytes)}."
+            )
+        self._buf = bytearray(key_bytes)
+        self._zeroed = False
+
+    # -- factory ----------------------------------------------------------
+
+    @classmethod
+    def from_env(cls) -> MasterKey:
+        """
+        Load the master key from ``TRIMCP_MASTER_KEY``.
+
+        Raises ``MasterKeyMissingError`` if the env var is absent or empty.
+
+        Uses a ``ctypes`` C-allocated buffer for the UTF-8 encoding so the
+        intermediate buffer can be explicitly zeroed after the key material
+        is copied into the ``bytearray``-backed ``MasterKey``.  The Python
+        ``str`` from ``os.environ.get()`` is unavoidable, but the C encoding
+        buffer is memset to zero before this function returns.
+        """
+        mk_str = os.environ.get(_MASTER_KEY_ENV, "").strip()
+        if not mk_str:
+            raise MasterKeyMissingError(
+                f"Environment variable {_MASTER_KEY_ENV!r} is missing or empty.  "
+                "The TriMCP server cannot start without a signing master key.  "
+                "Set TRIMCP_MASTER_KEY to a secret string of ≥32 random characters."
+            )
+
+        # Encode to UTF-8 bytes (one unavoidable intermediate bytes object).
+        encoded = mk_str.encode("utf-8")
+        buf_len = len(encoded)
+
+        if buf_len < _MASTER_KEY_LEN:
+            raise MasterKeyMissingError(
+                f"Master key must be at least {_MASTER_KEY_LEN} bytes; got {buf_len}."
+            )
+
+        # Allocate a C-level char buffer and copy the encoded bytes into it.
+        c_buf = ctypes.create_string_buffer(encoded, buf_len + 1)
+
+        # Build the MasterKey directly from the C buffer via memoryview,
+        # bypassing the creation of a second intermediate Python bytes object.
+        instance = cls.__new__(cls)
+        instance._buf = bytearray(memoryview(c_buf).cast("B")[:buf_len])
+        instance._zeroed = False
+
+        # Explicitly zero the C buffer now that we have our own bytearray copy.
+        ctypes.memset(c_buf, 0, buf_len + 1)
+
+        return instance
+
+    # -- read-only accessors -----------------------------------------------
+
+    @property
+    def key_bytes(self) -> memoryview:
+        """
+        Return a read-only view of the raw key bytes.
+
+        The returned ``memoryview`` references the internal buffer; it is
+        NOT a copy and will be invalidated by ``zero()``.
+        """
+        if self._zeroed:
+            raise ValueError("MasterKey has been zeroed and is no longer usable.")
+        return memoryview(self._buf)
+
+    def derive_aes_key(self) -> bytes:
+        """
+        Derive a 32-byte AES key via PBKDF2-HMAC-SHA256 using a fixed self-test salt.
+
+        Used by unit tests and diagnostics only.  Stored signing-key blobs use
+        ``encrypt_signing_key`` / ``decrypt_signing_key``, which pick a random
+        salt per ciphertext.
+        """
+        if self._zeroed:
+            raise ValueError("MasterKey has been zeroed.")
+        return _pbkdf2_derive_aes_key(self, _DERIVE_AES_SELFTEST_SALT)
+
+    # -- secure zeroing ----------------------------------------------------
+
+    def zero(self) -> None:
+        """
+        Overwrite the internal buffer with null bytes.
+
+        Idempotent — safe to call multiple times.
+        """
+        if not self._zeroed:
+            for i in range(len(self._buf)):
+                self._buf[i] = 0
+            self._zeroed = True
+
+    # -- context manager ---------------------------------------------------
+
+    def __enter__(self) -> MasterKey:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.zero()
+
+    # -- destructor --------------------------------------------------------
+
+    def __del__(self) -> None:
+        """Best-effort zeroing at GC time (not guaranteed on process exit)."""
+        try:
+            self.zero()
+        except Exception:
+            pass  # __del__ must not raise
+
+
+# ---------------------------------------------------------------------------
+# MutableKeyBuffer — zeroable buffer for cached signing keys
+# ---------------------------------------------------------------------------
+
+
+class MutableKeyBuffer:
+    """
+    Mutable buffer for signing key material that can be securely zeroed.
+
+    Unlike raw ``bytes`` (immutable, unzeroable), this wraps a ``bytearray``
+    and provides explicit ``zero()`` to overwrite the buffer with null bytes.
+    Used by ``_CachedKey`` so that signing keys are wiped from process memory
+    when the cache TTL expires or the key is rotated.
+
+    The ``raw`` property returns a read-only ``memoryview`` suitable for
+    passing to ``hmac.new()`` and other bytes-like APIs.
+    """
+
+    __slots__ = ("_buf", "_zeroed")
+
+    def __init__(self, key_bytes: bytes) -> None:
+        self._buf = bytearray(key_bytes)
+        self._zeroed = False
+
+    @property
+    def raw(self) -> memoryview:
+        """Read-only view of the key material.  Raises ``ValueError`` if zeroed."""
+        if self._zeroed:
+            raise ValueError("MutableKeyBuffer has been zeroed and is no longer usable.")
+        return memoryview(self._buf)
+
+    def zero(self) -> None:
+        """
+        Overwrite the internal buffer with null bytes.
+
+        Idempotent — safe to call multiple times.  After this call ``raw``
+        and ``bytes()`` will raise ``ValueError``.
+        """
+        if not self._zeroed:
+            for i in range(len(self._buf)):
+                self._buf[i] = 0
+            self._zeroed = True
+
+    def __bytes__(self) -> bytes:
+        """Return a copy of the raw key bytes.  Raises ``ValueError`` if zeroed."""
+        if self._zeroed:
+            raise ValueError("MutableKeyBuffer has been zeroed and is no longer usable.")
+        return bytes(self._buf)
+
+    def __del__(self) -> None:
+        """Best-effort zeroing at GC time."""
+        try:
+            self.zero()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# SecureKeyBuffer — ephemeral zeroable buffer for transient crypto operations
+# ---------------------------------------------------------------------------
+
+
+class SecureKeyBuffer:
+    """
+    Short-lived, zero-on-exit buffer for **ephemeral** key material.
+
+    Use this as a context manager any time a derived or decrypted key byte
+    string must exist for only the duration of a single cryptographic
+    operation (AES-GCM encryption/decryption, HMAC computation, KDF output).
+    On ``__exit__`` — and as a fallback on ``__del__`` — the internal
+    ``bytearray`` is overwritten with null bytes, preventing the material
+    from lingering in process memory until the GC reclaims the object.
+
+    Unlike ``MutableKeyBuffer`` (which is designed for *cached* keys that
+    persist across multiple operations), ``SecureKeyBuffer`` is explicitly
+    scoped to a single ``with`` block::
+
+        with SecureKeyBuffer(derived_aes_key_bytes) as skb:
+            ciphertext = AESGCM(bytes(skb)).encrypt(nonce, plaintext, None)
+        # derived_aes_key_bytes is now zeroed in the underlying bytearray
+
+    **Note on Python immutability:** The *input* ``bytes`` object passed to
+    ``__init__`` is immutable and cannot be zeroed — Python may intern or
+    share it.  ``SecureKeyBuffer`` copies the material into a ``bytearray``
+    at construction time so that the mutable copy can be zeroed.  Callers
+    that obtain key bytes from KDF functions (which return fresh ``bytes``
+    objects) benefit most: the short-lived copy is zeroed as soon as the
+    context manager exits, reducing the window during which raw key material
+    is readable in the process heap.
+    """
+
+    __slots__ = ("_buf", "_zeroed")
+
+    def __init__(self, key_bytes: bytes) -> None:
+        self._buf = bytearray(key_bytes)
+        self._zeroed = False
+
+    # -- context manager interface -----------------------------------------
+
+    def __enter__(self) -> SecureKeyBuffer:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.zero()
+
+    # -- bytes-like interface ----------------------------------------------
+
+    def __bytes__(self) -> bytes:
+        """Return a copy of the key bytes.  Raises ``ValueError`` if zeroed."""
+        if self._zeroed:
+            raise ValueError("SecureKeyBuffer has been zeroed and is no longer usable.")
+        return bytes(self._buf)
+
+    def __len__(self) -> int:
+        return len(self._buf)
+
+    @property
+    def raw(self) -> memoryview:
+        """Read-only ``memoryview`` of the key material.  Raises ``ValueError`` if zeroed."""
+        if self._zeroed:
+            raise ValueError("SecureKeyBuffer has been zeroed and is no longer usable.")
+        return memoryview(self._buf)
+
+    # -- secure zeroing ----------------------------------------------------
+
+    def zero(self) -> None:
+        """
+        Overwrite the internal buffer with null bytes.
+
+        Idempotent — safe to call multiple times.  After ``zero()`` any
+        access via ``raw`` or ``__bytes__`` raises ``ValueError``.
+        """
+        if not self._zeroed:
+            for i in range(len(self._buf)):
+                self._buf[i] = 0
+            self._zeroed = True
+
+    # -- destructor --------------------------------------------------------
+
+    def __del__(self) -> None:
+        """Best-effort zeroing at GC time — guards against forgotten ``with`` blocks."""
+        try:
+            self.zero()
+        except Exception:
+            pass  # __del__ must not raise
+
+
+# ---------------------------------------------------------------------------
+# In-memory key cache (TTL-aware with automatic eviction + secure zeroing)
+# ---------------------------------------------------------------------------
+
+# Sentinel key under which the currently-active signing key is stored.
+_ACTIVE_KEY_CACHE_KEY: str = "__active__"
 
 
 @dataclass
 class _CachedKey:
     key_id: str
-    raw_key: bytes
-    expires_at: float  # time.monotonic() deadline
+    raw_key: MutableKeyBuffer
+    expires_at: float  # time.monotonic() deadline (retained for diagnostics)
 
 
-_key_cache: _CachedKey | None = None
+class _SigningKeyCache(TTLCache):
+    """
+    TTLCache subclass that securely zeros ``MutableKeyBuffer`` entries on eviction.
+
+    Every entry stored in this cache wraps key material in a ``MutableKeyBuffer``.
+    When an entry is evicted — whether by exceeding *maxsize* (which goes through
+    ``popitem`` → ``__delitem__``) or by explicit ``del`` / ``clear()`` — the
+    buffer is overwritten with null bytes before the entry is removed.
+
+    **TTL expiry** is handled by ``cachetools``'s internal ``_Timer`` thread
+    which removes expired entries directly without invoking ``__delitem__`` at
+    the dict level.  In that path the ``MutableKeyBuffer.__del__`` destructor
+    provides GC-time zeroing.  While this is not instantaneous (GC is
+    non-deterministic in CPython), the key material is removed from the active
+    cache immediately and will be zeroed when the ``_CachedKey`` dataclass is
+    collected — typically within one GC generation on Python 3.12+.
+
+    Every ``store_memory`` / ``verify_event_signature`` calls
+    ``get_active_key()``, guaranteeing frequent cache access and rapid
+    re-population after TTL expiry.  An explicit background eviction thread
+    beyond ``cachetools``'s own timer is not required at current throughput —
+    see the Phase 3 Kaizen note for evaluation criteria.
+    """
+
+    def __init__(self, maxsize: int, ttl: float) -> None:
+        super().__init__(maxsize=maxsize, ttl=ttl)
+
+    def __delitem__(self, key: object) -> None:  # type: ignore[override]
+        """Zero the key buffer before removing the entry from the cache."""
+        entry: _CachedKey | None = self.get(key)  # type: ignore[arg-type]
+        if entry is not None:
+            try:
+                entry.raw_key.zero()
+                log.debug("Signing key buffer zeroed on eviction (key_id=%s).", entry.key_id)
+            except Exception:
+                pass  # Best-effort zeroing — must not prevent eviction
+        super().__delitem__(key)
+
+
+_key_cache: _SigningKeyCache = _SigningKeyCache(maxsize=1000, ttl=_KEY_CACHE_TTL_S)
 
 
 # ---------------------------------------------------------------------------
@@ -124,49 +514,172 @@ _key_cache: _CachedKey | None = None
 # ---------------------------------------------------------------------------
 
 
-def _derive_aes_key(master_key_text: str) -> bytes:
+def _pbkdf2_derive_aes_key(master_key: MasterKey, salt: bytes) -> bytes:
+    """Derive a 32-byte AES-256 key from the master secret using PBKDF2-HMAC-SHA256
+    at the v2 iteration count (100K floor, NIST minimum)."""
+    if len(salt) < _PBKDF2_SALT_LEN:
+        raise SigningError(
+            f"PBKDF2 salt must be at least {_PBKDF2_SALT_LEN} bytes; got {len(salt)}."
+        )
+    if master_key._zeroed:
+        raise ValueError("MasterKey has been zeroed and is no longer usable.")
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        bytes(master_key.key_bytes),
+        salt[:_PBKDF2_SALT_LEN],
+        _PBKDF2_ITERATIONS,
+        dklen=32,
+    )
+
+
+def _pbkdf2_derive_aes_key_v4(master_key: MasterKey, salt: bytes) -> bytes:
+    """Derive a 32-byte AES-256 key using PBKDF2-HMAC-SHA256 at 600,000 iterations.
+
+    OWASP 2026 compliance.  Used for v4 (``TC4\\x01``) blob encryption/decryption.
+    v2 blobs (100K) are still decrypted by ``_pbkdf2_derive_aes_key``.
     """
-    Derive a 32-byte AES key from *master_key_text* via SHA-256.
+    if len(salt) < _PBKDF2_SALT_LEN:
+        raise SigningError(
+            f"PBKDF2 salt must be at least {_PBKDF2_SALT_LEN} bytes; got {len(salt)}."
+        )
+    if master_key._zeroed:
+        raise ValueError("MasterKey has been zeroed and is no longer usable.")
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        bytes(master_key.key_bytes),
+        salt[:_PBKDF2_SALT_LEN],
+        _PBKDF2_ITERATIONS_V4,
+        dklen=32,
+    )
 
-    In production the master key itself should already be 32 cryptographically
-    random bytes (hex-encoded or base64).  This derivation step ensures that
-    an arbitrary-length env var is safely reduced to a fixed-size key.
+
+def _legacy_sha256_derive_aes_key(master_key: MasterKey) -> bytes:
+    """Pre-v2 behaviour: single SHA-256 digest of the master secret as the AES key."""
+    if master_key._zeroed:
+        raise ValueError("MasterKey has been zeroed and is no longer usable.")
+    return hashlib.sha256(master_key.key_bytes).digest()
+
+
+def _argon2id_derive_aes_key(master_key: MasterKey, salt: bytes) -> bytes:
     """
-    return hashlib.sha256(master_key_text.encode("utf-8")).digest()
+    Derive a 32-byte AES-256 key via Argon2id (memory-hard KDF).
+
+    Uses OWASP-recommended parameters (time_cost=3, memory_cost=64 MiB,
+    parallelism=4).  Falls back to PBKDF2 @ 600K (v4, OWASP 2026) if
+    ``argon2-cffi`` is not installed.
+    """
+    if not _HAS_ARGON2:
+        return _pbkdf2_derive_aes_key_v4(master_key, salt)
+    if master_key._zeroed:
+        raise ValueError("MasterKey has been zeroed and is no longer usable.")
+    return hash_secret_raw(
+        secret=bytes(master_key.key_bytes),
+        salt=salt[:_PBKDF2_SALT_LEN],
+        time_cost=_ARGON2_TIME_COST,
+        memory_cost=_ARGON2_MEMORY_COST,
+        parallelism=_ARGON2_PARALLELISM,
+        hash_len=_ARGON2_HASH_LEN,
+        type=Type.ID,
+    )
 
 
-def encrypt_signing_key(raw_key: bytes, master_key_text: str) -> bytes:
+def encrypt_signing_key(raw_key: bytes, master_key: MasterKey) -> bytes:
     """
     AES-256-GCM encrypt *raw_key* with the master key.
 
-    Wire format: ``nonce (12 bytes) || ciphertext+tag``.
+    Wire format (v3, Argon2id — preferred)::
+        ``TC3\\x01 || salt (16) || nonce (12) || ciphertext+tag``
+
+    Wire format (v4, PBKDF2 @ 600K — OWASP 2026 fallback when argon2-cffi unavailable)::
+        ``TC4\\x01 || salt (16) || nonce (12) || ciphertext+tag``
+
+    Legacy formats still decryptable but no longer produced:
+        v2: ``TC2\\x01 || salt (16) || nonce (12) || ciphertext+tag``  (PBKDF2 @ 100K)
+        v1: ``nonce (12) || ciphertext+tag``                           (SHA-256, no prefix)
 
     This function is exposed for the key-rotation CLI; callers should not
     store the returned bytes anywhere other than ``signing_keys.encrypted_key``.
     """
-    aes_key = _derive_aes_key(master_key_text)
+    salt = os.urandom(_PBKDF2_SALT_LEN)
+    if _HAS_ARGON2:
+        derived = _argon2id_derive_aes_key(master_key, salt)
+        prefix = _ENCRYPTED_KEY_BLOB_V3
+    else:
+        derived = _pbkdf2_derive_aes_key_v4(master_key, salt)
+        prefix = _ENCRYPTED_KEY_BLOB_V4
     nonce = os.urandom(_NONCE_SIZE)
-    ciphertext_and_tag = AESGCM(aes_key).encrypt(nonce, raw_key, None)
-    return nonce + ciphertext_and_tag
+    # Wrap the ephemeral AES key in SecureKeyBuffer so it is zeroed when the
+    # encryption completes — the derived key must not outlive this scope.
+    with SecureKeyBuffer(derived) as aes_buf:
+        ciphertext_and_tag = AESGCM(bytes(aes_buf)).encrypt(nonce, raw_key, None)
+    return prefix + salt + nonce + ciphertext_and_tag
 
 
-def decrypt_signing_key(encrypted_key: bytes, master_key_text: str) -> bytes:
+def decrypt_signing_key(encrypted_key: bytes, master_key: MasterKey) -> bytes:
     """
     Decrypt a blob produced by ``encrypt_signing_key``.
+
+    Accepts **v4** blobs (PBKDF2 @ 600K, OWASP 2026), **v3** blobs (Argon2id),
+    **v2** blobs (PBKDF2 @ 100K), and **legacy** blobs (SHA-256, no prefix).
+    Format is auto-detected from the prefix.
 
     Raises ``SigningKeyDecryptionError`` on authentication failure (wrong
     master key, truncated blob, or data corruption).
     """
-    if len(encrypted_key) < _NONCE_SIZE + 16:  # GCM tag is 16 bytes
-        raise SigningKeyDecryptionError(
-            "encrypted_key blob is too short to be valid "
-            f"(got {len(encrypted_key)} bytes, expected ≥{_NONCE_SIZE + 16})."
-        )
-    aes_key = _derive_aes_key(master_key_text)
-    nonce = encrypted_key[:_NONCE_SIZE]
-    ct_and_tag = encrypted_key[_NONCE_SIZE:]
+    if master_key._zeroed:
+        raise ValueError("MasterKey has been zeroed and is no longer usable.")
+    if encrypted_key.startswith(_ENCRYPTED_KEY_BLOB_V4):
+        tail = encrypted_key[len(_ENCRYPTED_KEY_BLOB_V4) :]
+        need = _PBKDF2_SALT_LEN + _NONCE_SIZE + 16
+        if len(tail) < need:
+            raise SigningKeyDecryptionError(
+                "encrypted_key v4 blob is too short to be valid "
+                f"(got {len(encrypted_key)} bytes, need ≥{len(_ENCRYPTED_KEY_BLOB_V4) + need})."
+            )
+        salt = tail[:_PBKDF2_SALT_LEN]
+        nonce = tail[_PBKDF2_SALT_LEN : _PBKDF2_SALT_LEN + _NONCE_SIZE]
+        ct_and_tag = tail[_PBKDF2_SALT_LEN + _NONCE_SIZE :]
+        derived = _pbkdf2_derive_aes_key_v4(master_key, salt)
+    elif encrypted_key.startswith(_ENCRYPTED_KEY_BLOB_V3):
+        tail = encrypted_key[len(_ENCRYPTED_KEY_BLOB_V3) :]
+        need = _PBKDF2_SALT_LEN + _NONCE_SIZE + 16
+        if len(tail) < need:
+            raise SigningKeyDecryptionError(
+                "encrypted_key v3 blob is too short to be valid "
+                f"(got {len(encrypted_key)} bytes, need ≥{len(_ENCRYPTED_KEY_BLOB_V3) + need})."
+            )
+        salt = tail[:_PBKDF2_SALT_LEN]
+        nonce = tail[_PBKDF2_SALT_LEN : _PBKDF2_SALT_LEN + _NONCE_SIZE]
+        ct_and_tag = tail[_PBKDF2_SALT_LEN + _NONCE_SIZE :]
+        derived = _argon2id_derive_aes_key(master_key, salt)
+    elif encrypted_key.startswith(_ENCRYPTED_KEY_BLOB_V2):
+        tail = encrypted_key[len(_ENCRYPTED_KEY_BLOB_V2) :]
+        need = _PBKDF2_SALT_LEN + _NONCE_SIZE + 16
+        if len(tail) < need:
+            raise SigningKeyDecryptionError(
+                "encrypted_key v2 blob is too short to be valid "
+                f"(got {len(encrypted_key)} bytes, need ≥{len(_ENCRYPTED_KEY_BLOB_V2) + need})."
+            )
+        salt = tail[:_PBKDF2_SALT_LEN]
+        nonce = tail[_PBKDF2_SALT_LEN : _PBKDF2_SALT_LEN + _NONCE_SIZE]
+        ct_and_tag = tail[_PBKDF2_SALT_LEN + _NONCE_SIZE :]
+        derived = _pbkdf2_derive_aes_key(master_key, salt)
+    else:
+        if len(encrypted_key) < _NONCE_SIZE + 16:
+            raise SigningKeyDecryptionError(
+                "encrypted_key blob is too short to be valid "
+                f"(got {len(encrypted_key)} bytes, expected ≥{_NONCE_SIZE + 16})."
+            )
+        derived = _legacy_sha256_derive_aes_key(master_key)
+        nonce = encrypted_key[:_NONCE_SIZE]
+        ct_and_tag = encrypted_key[_NONCE_SIZE:]
+    # Wrap the ephemeral AES key in SecureKeyBuffer.  The buffer is zeroed
+    # the moment decryption completes — success or failure.
     try:
-        return AESGCM(aes_key).decrypt(nonce, ct_and_tag, None)
+        with SecureKeyBuffer(derived) as aes_buf:
+            return AESGCM(bytes(aes_buf)).decrypt(nonce, ct_and_tag, None)
+    except SigningKeyDecryptionError:
+        raise
     except Exception as exc:
         raise SigningKeyDecryptionError(
             "AES-GCM authentication failed.  This means either the master key "
@@ -179,22 +692,20 @@ def decrypt_signing_key(encrypted_key: bytes, master_key_text: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def require_master_key() -> str:
+def require_master_key() -> MasterKey:
     """
-    Return ``TRIMCP_MASTER_KEY`` or raise ``MasterKeyMissingError``.
+    Return a ``MasterKey`` wrapping ``TRIMCP_MASTER_KEY``.
 
     Call once at server startup before any signing operation is attempted.
-    The returned value is the raw env-var string; callers should not persist it
-    beyond the immediate need.
+    The returned ``MasterKey`` should be used as a context manager to ensure
+    the underlying buffer is zeroed after use::
+
+        with require_master_key() as mk:
+            raw_key = decrypt_signing_key(blob, mk)
+
+    Raises ``MasterKeyMissingError`` if the env var is absent or empty.
     """
-    mk = os.environ.get(_MASTER_KEY_ENV, "").strip()
-    if not mk:
-        raise MasterKeyMissingError(
-            f"Environment variable {_MASTER_KEY_ENV!r} is missing or empty.  "
-            "The TriMCP server cannot start without a signing master key.  "
-            "Set TRIMCP_MASTER_KEY to a secret string of ≥32 random characters."
-        )
-    return mk
+    return MasterKey.from_env()
 
 
 async def get_active_key(
@@ -203,8 +714,11 @@ async def get_active_key(
     """
     Return ``(key_id, raw_signing_key)`` for the current active key.
 
-    Checks the module-level TTL cache first.  On a cache miss the active key
-    is fetched from ``signing_keys``, decrypted, and cached.
+    Checks the module-level TTLCache first.  On a cache miss the active key
+    is fetched from ``signing_keys``, decrypted, and cached under two keys:
+    ``"__active__"`` (for ``get_active_key`` lookups) and the real ``key_id``
+    (for ``get_key_by_id`` cross-references).  Each entry holds an independent
+    ``MutableKeyBuffer`` copy so evicting one does not zero the other.
 
     Parameters
     ----------
@@ -220,37 +734,109 @@ async def get_active_key(
     SigningKeyDecryptionError
         If the stored key blob cannot be decrypted with the master key.
     """
-    global _key_cache
-
     now = time.monotonic()
-    if _key_cache is not None and _key_cache.expires_at > now:
-        return _key_cache.key_id, _key_cache.raw_key
+    try:
+        entry: _CachedKey = _key_cache[_ACTIVE_KEY_CACHE_KEY]  # type: ignore[index]
+        return entry.key_id, bytes(entry.raw_key.raw)
+    except KeyError:
+        pass  # Cache miss — fetch from DB
 
-    master_key = require_master_key()
-
-    row = await conn.fetchrow(
-        """
-        SELECT key_id, encrypted_key
-        FROM   signing_keys
-        WHERE  status = 'active'
-        ORDER  BY created_at DESC
-        LIMIT  1
-        """
-    )
-    if row is None:
-        raise NoActiveSigningKeyError(
-            "No active signing key exists in signing_keys.  "
-            "Run the key-rotation initialisation to create the first key."
+    with require_master_key() as master_key:
+        row = await conn.fetchrow(
+            """
+            SELECT key_id, encrypted_key
+            FROM   signing_keys
+            WHERE  status = 'active'
+            ORDER  BY created_at DESC
+            LIMIT  1
+            """
         )
+        if row is None:
+            raise NoActiveSigningKeyError(
+                "No active signing key exists in signing_keys.  "
+                "Run the key-rotation initialisation to create the first key."
+            )
 
-    raw_key = decrypt_signing_key(bytes(row["encrypted_key"]), master_key)
-    _key_cache = _CachedKey(
-        key_id=row["key_id"],
-        raw_key=raw_key,
+        raw_key = decrypt_signing_key(bytes(row["encrypted_key"]), master_key)
+
+    key_id: str = row["key_id"]
+
+    # Store under "__active__" with its own MutableKeyBuffer.
+    active_entry = _CachedKey(
+        key_id=key_id,
+        raw_key=MutableKeyBuffer(raw_key),
         expires_at=now + _KEY_CACHE_TTL_S,
     )
-    log.debug("Signing key cache refreshed (key_id=%s).", row["key_id"])
-    return _key_cache.key_id, _key_cache.raw_key
+    # Also store under the real key_id with an independent MutableKeyBuffer copy
+    # so get_key_by_id() finds it and evicting one slot does not zero the other.
+    by_id_entry = _CachedKey(
+        key_id=key_id,
+        raw_key=MutableKeyBuffer(raw_key),
+        expires_at=now + _KEY_CACHE_TTL_S,
+    )
+    _key_cache[_ACTIVE_KEY_CACHE_KEY] = active_entry
+    _key_cache[key_id] = by_id_entry
+    log.debug("Signing key cache refreshed (key_id=%s).", key_id)
+    return active_entry.key_id, bytes(active_entry.raw_key.raw)
+
+
+async def get_key_by_id(
+    conn: asyncpg.Connection,
+    key_id: str,
+) -> bytes:
+    """
+    Return the raw signing key for a specific ``key_id``.
+
+    Checks the module-level TTLCache first.  On a cache miss the key is
+    fetched from ``signing_keys`` and decrypted.
+
+    Parameters
+    ----------
+    conn:
+        An ``asyncpg.Connection``.
+    key_id:
+        The ``key_id`` string to retrieve.
+
+    Raises
+    ------
+    MasterKeyMissingError
+        If ``TRIMCP_MASTER_KEY`` is absent.
+    NoActiveSigningKeyError
+        If the ``key_id`` does not exist in ``signing_keys``.
+    SigningKeyDecryptionError
+        If the stored key blob cannot be decrypted with the master key.
+    """
+    now = time.monotonic()
+    try:
+        entry: _CachedKey = _key_cache[key_id]  # type: ignore[index]
+        return bytes(entry.raw_key.raw)
+    except KeyError:
+        pass  # Cache miss — fetch from DB
+
+    with require_master_key() as master_key:
+        row = await conn.fetchrow(
+            """
+            SELECT encrypted_key
+            FROM   signing_keys
+            WHERE  key_id = $1
+            """,
+            key_id,
+        )
+        if row is None:
+            raise NoActiveSigningKeyError(
+                f"Signing key '{key_id}' not found in signing_keys table."
+            )
+
+        raw_key = decrypt_signing_key(bytes(row["encrypted_key"]), master_key)
+
+    new_entry = _CachedKey(
+        key_id=key_id,
+        raw_key=MutableKeyBuffer(raw_key),
+        expires_at=now + _KEY_CACHE_TTL_S,
+    )
+    _key_cache[key_id] = new_entry
+    log.debug("Signing key cached by id (key_id=%s).", key_id)
+    return bytes(new_entry.raw_key.raw)
 
 
 def sign_fields(fields: dict[str, Any], raw_signing_key: bytes) -> bytes:
@@ -300,30 +886,42 @@ async def rotate_key(conn: asyncpg.Connection) -> str:
     """
     global _key_cache
 
-    master_key = require_master_key()
-    new_raw_key = os.urandom(32)                         # 256-bit HMAC key
-    new_key_id = f"sk-{uuid.uuid4().hex[:16]}"
-    encrypted_blob = encrypt_signing_key(new_raw_key, master_key)
+    with require_master_key() as master_key:
+        new_key_id = f"sk-{uuid.uuid4().hex[:16]}"
+        # Wrap the freshly generated signing key material in SecureKeyBuffer
+        # so the raw bytes are zeroed once the encrypted blob is produced.
+        # os.urandom() returns a fresh bytes object — we immediately hand it
+        # to SecureKeyBuffer which copies into a mutable bytearray.
+        with SecureKeyBuffer(os.urandom(32)) as raw_buf:
+            encrypted_blob = encrypt_signing_key(bytes(raw_buf), master_key)
 
-    async with conn.transaction():
-        await conn.execute(
-            """
-            UPDATE signing_keys
-            SET    status = 'retired',
-                   retired_at = now()
-            WHERE  status = 'active'
-            """
-        )
-        await conn.execute(
-            """
-            INSERT INTO signing_keys (key_id, encrypted_key, status)
-            VALUES ($1, $2, 'active')
-            """,
-            new_key_id,
-            encrypted_blob,
-        )
+        async with conn.transaction():
+            await conn.execute(
+                """
+                UPDATE signing_keys
+                SET    status = 'retired',
+                       retired_at = now()
+                WHERE  status = 'active'
+                """
+            )
+            await conn.execute(
+                """
+                INSERT INTO signing_keys (key_id, encrypted_key, status)
+                VALUES ($1, $2, 'active')
+                """,
+                new_key_id,
+                encrypted_blob,
+            )
 
-    # Invalidate cache — next call to get_active_key will reload from DB.
-    _key_cache = None
+    # Zero all cached key buffers, then clear the cache.
+    # Iterate over a snapshot of keys to avoid mutation-during-iteration.
+    for cache_key in list(_key_cache.keys()):
+        entry: _CachedKey | None = _key_cache.get(cache_key)
+        if entry is not None:
+            try:
+                entry.raw_key.zero()
+            except Exception:
+                pass
+    _key_cache.clear()
     log.info("Signing key rotated.  New key_id=%s.", new_key_id)
     return new_key_id

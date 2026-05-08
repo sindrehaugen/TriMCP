@@ -15,22 +15,21 @@ Supported models
 ----------------
   gemini-2.0-pro | gemini-2.0-flash
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
 
-import httpx
-from pydantic import ValidationError
-
+from trimcp.providers._http_utils import post_with_error_handling
 from trimcp.providers.base import (
     LLMProvider,
     LLMProviderError,
-    LLMTimeoutError,
-    LLMValidationError,
     Message,
     ResponseModelT,
+    _redact_api_key,
+    validate_base_url,
 )
 from trimcp.providers.local_cognitive import _parse_and_validate
 
@@ -63,9 +62,12 @@ class GoogleGeminiProvider(LLMProvider):
         timeout: float = _DEFAULT_TIMEOUT,
         base_url: str = _GEMINI_API_BASE,
     ) -> None:
-        self._api_key  = api_key
-        self._model    = model
-        self._timeout  = timeout
+        # SSRF guard — reject private / loopback IPs and enforce HTTPS.
+        validate_base_url(base_url)
+
+        self._api_key = api_key
+        self._model = model
+        self._timeout = timeout
         self._base_url = base_url.rstrip("/")
 
     # ------------------------------------------------------------------
@@ -74,60 +76,50 @@ class GoogleGeminiProvider(LLMProvider):
 
     async def complete(
         self,
-        messages: List[Message],
-        response_model: Type[ResponseModelT],
+        messages: list[Message],
+        response_model: type[ResponseModelT],
     ) -> ResponseModelT:
-        schema     = response_model.model_json_schema()
+        schema = response_model.model_json_schema()
         schema_str = json.dumps(schema, indent=2)
 
         contents, system_instruction = self._build_contents(messages, schema_str)
-        body: Dict[str, Any] = {
-            "contents":             contents,
+        body: dict[str, Any] = {
+            "contents": contents,
             "generationConfig": {
                 "responseMimeType": "application/json",
-                "responseSchema":   schema,
+                "responseSchema": schema,
             },
         }
         if system_instruction:
             body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
 
-        url = (
-            f"{self._base_url}/models/{self._model}:generateContent"
-            f"?key={self._api_key}"
+        url = f"{self._base_url}/models/{self._model}:generateContent"
+
+        data = await self.execute_with_retry(
+            lambda: post_with_error_handling(
+                url=url,
+                body=body,
+                timeout=self._timeout,
+                model_id=self.model_identifier(),
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": self._api_key,
+                },
+                error_prefix="HTTP request to Gemini failed",
+            ),
         )
 
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(
-                    url,
-                    json=body,
-                    headers={"Content-Type": "application/json"},
-                )
-        except httpx.TimeoutException as exc:
-            raise LLMTimeoutError(
-                f"{self.model_identifier()} timed out after {self._timeout}s",
-                provider=self.model_identifier(),
-            ) from exc
-        except httpx.RequestError as exc:
-            raise LLMProviderError(
-                f"HTTP request to Gemini failed: {exc}",
-                provider=self.model_identifier(),
-            ) from exc
-
-        if not resp.is_success:
-            raise LLMProviderError(
-                f"Gemini API returned HTTP {resp.status_code}",
-                provider=self.model_identifier(),
-                status_code=resp.status_code,
-                upstream_message=resp.text[:500],
-            )
-
-        data        = resp.json()
         raw_content = self._extract_text(data)
         return _parse_and_validate(raw_content, response_model, self.model_identifier())
 
     def model_identifier(self) -> str:
         return f"google_gemini/{self._model}"
+
+    def __repr__(self) -> str:
+        return (
+            f"GoogleGeminiProvider(model={self._model!r}, "
+            f"api_key={_redact_api_key(self._api_key)!r})"
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -135,7 +127,7 @@ class GoogleGeminiProvider(LLMProvider):
 
     def _build_contents(
         self,
-        messages: List[Message],
+        messages: list[Message],
         schema_str: str,
     ):
         """Convert Message list to Gemini ``contents`` format.
@@ -145,8 +137,8 @@ class GoogleGeminiProvider(LLMProvider):
         The schema is appended to the first user turn so the model always
         sees it even when ``responseSchema`` is ignored by older models.
         """
-        system_parts: List[str] = []
-        contents: List[dict]    = []
+        system_parts: list[str] = []
+        contents: list[dict] = []
 
         for msg in messages:
             role = msg.role.value
@@ -158,16 +150,16 @@ class GoogleGeminiProvider(LLMProvider):
                 contents.append({"role": "user", "parts": [{"text": msg.content}]})
 
         # Append schema reminder to the last user turn (or add a new one).
-        schema_reminder = (
-            f"\n\nReturn ONLY valid JSON that matches this schema:\n{schema_str}"
-        )
+        schema_reminder = f"\n\nReturn ONLY valid JSON that matches this schema:\n{schema_str}"
         if contents and contents[-1]["role"] == "user":
             contents[-1]["parts"][-1]["text"] += schema_reminder
         else:
-            contents.append({
-                "role":  "user",
-                "parts": [{"text": schema_reminder}],
-            })
+            contents.append(
+                {
+                    "role": "user",
+                    "parts": [{"text": schema_reminder}],
+                }
+            )
 
         system_instruction = "\n\n".join(system_parts) if system_parts else None
         return contents, system_instruction

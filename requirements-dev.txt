@@ -1,0 +1,2 @@
+# Development / CI — pinned for reproducible PR checks
+ruff==0.14.10

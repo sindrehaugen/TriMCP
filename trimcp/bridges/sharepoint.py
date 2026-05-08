@@ -1,22 +1,26 @@
 """
 SharePoint / OneDrive via Microsoft Graph — delta + subscriptions (§10.3, Appendix H.3).
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterator, Optional
+from collections.abc import Iterator
+from typing import Any
 
 import httpx
 
 from trimcp.bridges.base import BridgeAuthError, BridgeProvider, redis_client
 from trimcp.config import cfg
+from trimcp.net_safety import assert_url_allowed_prefix
 
 log = logging.getLogger("trimcp.bridges.sharepoint")
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
+GRAPH_DELTA_URL_PREFIXES = ("https://graph.microsoft.com/",)
 
 
-def parse_sites_drives_resource(resource: str) -> Optional[tuple[str, str]]:
+def parse_sites_drives_resource(resource: str) -> tuple[str, str] | None:
     """Parse `sites/{site-id}/drives/{drive-id}/root` → (site_id, drive_id)."""
     parts = resource.strip("/").split("/")
     if len(parts) >= 4 and parts[0] == "sites" and parts[2] == "drives":
@@ -32,6 +36,9 @@ class SharePointBridge(BridgeProvider):
         return "sharepoint"
 
     def bearer_token(self) -> str:
+        override = getattr(self, "_oauth_token_override", None)
+        if override:
+            return override
         token = (cfg.GRAPH_BRIDGE_TOKEN or "").strip()
         if not token:
             try:
@@ -42,19 +49,42 @@ class SharePointBridge(BridgeProvider):
 
     def walk_delta(self, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
         notifications = context.get("notifications") or []
+        self._oauth_token_override = None
+        env_tok = (cfg.GRAPH_BRIDGE_TOKEN or "").strip()
+        if env_tok:
+            self._oauth_token_override = env_tok
+        else:
+            cs = next(
+                (
+                    str(n.get("clientState") or n.get("client_state") or "").strip()
+                    for n in notifications
+                    if (n.get("clientState") or n.get("client_state"))
+                ),
+                None,
+            )
+            if cs:
+                from trimcp.bridge_runtime import resolve_stored_oauth_access_token
+
+                t = resolve_stored_oauth_access_token("sharepoint", client_state=cs)
+                if t:
+                    self._oauth_token_override = t
+
         seen: set[tuple[str, str]] = set()
-        for n in notifications:
-            resource = n.get("resource") or ""
-            parsed = parse_sites_drives_resource(resource)
-            if not parsed:
-                log.warning("SharePoint: cannot parse resource=%r", resource)
-                continue
-            site_id, drive_id = parsed
-            key = (site_id, drive_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            yield from self._delta_pages(site_id, drive_id)
+        try:
+            for n in notifications:
+                resource = n.get("resource") or ""
+                parsed = parse_sites_drives_resource(resource)
+                if not parsed:
+                    log.warning("SharePoint: cannot parse resource=%r", resource)
+                    continue
+                site_id, drive_id = parsed
+                key = (site_id, drive_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield from self._delta_pages(site_id, drive_id)
+        finally:
+            self._oauth_token_override = None
 
     def _cursor_key(self, site_id: str, drive_id: str) -> str:
         return f"bridge:cursor:sharepoint:{site_id}:{drive_id}"
@@ -70,13 +100,17 @@ class SharePointBridge(BridgeProvider):
             url = f"{GRAPH_ROOT}/sites/{site_id}/drives/{drive_id}/root/delta"
         with httpx.Client(timeout=60.0, headers=headers, follow_redirects=True) as client:
             while url:
+                assert_url_allowed_prefix(
+                    url, GRAPH_DELTA_URL_PREFIXES, what="SharePoint Graph delta URL"
+                )
                 resp = client.get(url)
                 if resp.status_code == 401:
-                    raise BridgeAuthError("Microsoft Graph returned 401 — refresh or set GRAPH_BRIDGE_TOKEN")
+                    raise BridgeAuthError(
+                        "Microsoft Graph returned 401 — refresh or set GRAPH_BRIDGE_TOKEN"
+                    )
                 resp.raise_for_status()
                 payload = resp.json()
-                for item in payload.get("value", []):
-                    yield item
+                yield from payload.get("value", [])
                 next_link = payload.get("@odata.nextLink")
                 delta_link = payload.get("@odata.deltaLink")
                 if delta_link:
