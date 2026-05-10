@@ -50,7 +50,9 @@ class DropboxBridge(BridgeProvider):
         elif accounts:
             from trimcp.bridge_runtime import resolve_stored_oauth_access_token
 
-            t = resolve_stored_oauth_access_token("dropbox", resource_id=str(accounts[0]))
+            t = resolve_stored_oauth_access_token(
+                "dropbox", resource_id=str(accounts[0])
+            )
             if t:
                 self._oauth_token_override = t
 

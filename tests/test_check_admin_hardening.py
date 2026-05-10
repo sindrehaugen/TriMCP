@@ -1,5 +1,5 @@
 """
-/test-harden — Verify Client-Side Privilege Escalation fix for _check_admin()
+/test-harden — Verify Client-Side Privilege Escalation fix for admin scope validation.
 
 This test suite proves that:
   1. Client-supplied ``is_admin: true`` is IGNORED (no longer grants access).
@@ -23,13 +23,13 @@ if _PROJECT_ROOT not in sys.path:
 
 
 class TestCheckAdminHardening(unittest.TestCase):
-    """Direct unit tests for _check_admin() function."""
+    """Direct unit tests for _validate_scope('admin', ...) function."""
 
     def setUp(self):
         # Import the function under test
-        from server import _check_admin
+        from trimcp.auth import _validate_scope
 
-        self._check_admin = _check_admin
+        self._validate_scope = _validate_scope
 
         # Save original env
         self._orig_admin_override = os.environ.pop("TRIMCP_ADMIN_OVERRIDE", None)
@@ -49,49 +49,44 @@ class TestCheckAdminHardening(unittest.TestCase):
     def test_client_is_admin_true_rejected_when_no_key_set(self):
         """Sending is_admin=true should NOT grant access."""
         os.environ["TRIMCP_ADMIN_API_KEY"] = "secret-key-123"
-        with self.assertRaises(ValueError) as ctx:
-            self._check_admin({"is_admin": True})
-        self.assertIn("-32001", str(ctx.exception))
+        with self.assertRaises(Exception) as ctx:
+            self._validate_scope("admin", {"is_admin": True})
         self.assertIn("missing admin_api_key", str(ctx.exception).lower())
 
     def test_client_is_admin_true_rejected_when_wrong_key(self):
         """Sending is_admin=true with wrong key should NOT grant access."""
         os.environ["TRIMCP_ADMIN_API_KEY"] = "secret-key-123"
-        with self.assertRaises(ValueError) as ctx:
-            self._check_admin({"is_admin": True, "admin_api_key": "wrong"})
-        self.assertIn("-32001", str(ctx.exception))
+        with self.assertRaises(Exception) as ctx:
+            self._validate_scope("admin", {"is_admin": True, "admin_api_key": "wrong"})
         self.assertIn("invalid admin_api_key", str(ctx.exception).lower())
 
     def test_client_is_admin_false_with_correct_key_still_works(self):
         """is_admin=false is also ignored — only admin_api_key matters."""
         os.environ["TRIMCP_ADMIN_API_KEY"] = "secret-key-123"
         # Should NOT raise
-        self._check_admin({"is_admin": False, "admin_api_key": "secret-key-123"})
+        self._validate_scope("admin", {"is_admin": False, "admin_api_key": "secret-key-123"})
 
     # ── 2. Missing admin_api_key ────────────────────────────────────────
 
     def test_missing_admin_api_key_rejected(self):
         """No admin_api_key in arguments -> rejected."""
         os.environ["TRIMCP_ADMIN_API_KEY"] = "secret-key-123"
-        with self.assertRaises(ValueError) as ctx:
-            self._check_admin({})
-        self.assertIn("-32001", str(ctx.exception))
+        with self.assertRaises(Exception) as ctx:
+            self._validate_scope("admin", {})
         self.assertIn("missing admin_api_key", str(ctx.exception).lower())
 
     def test_empty_admin_api_key_rejected(self):
         """Empty string admin_api_key -> rejected."""
         os.environ["TRIMCP_ADMIN_API_KEY"] = "secret-key-123"
-        with self.assertRaises(ValueError) as ctx:
-            self._check_admin({"admin_api_key": ""})
-        self.assertIn("-32001", str(ctx.exception))
+        with self.assertRaises(Exception) as ctx:
+            self._validate_scope("admin", {"admin_api_key": ""})
         self.assertIn("missing admin_api_key", str(ctx.exception).lower())
 
     def test_whitespace_only_admin_api_key_rejected(self):
         """Whitespace-only admin_api_key -> rejected."""
         os.environ["TRIMCP_ADMIN_API_KEY"] = "secret-key-123"
-        with self.assertRaises(ValueError) as ctx:
-            self._check_admin({"admin_api_key": "   "})
-        self.assertIn("-32001", str(ctx.exception))
+        with self.assertRaises(Exception) as ctx:
+            self._validate_scope("admin", {"admin_api_key": "   "})
         self.assertIn("missing admin_api_key", str(ctx.exception).lower())
 
     # ── 3. Wrong admin_api_key ──────────────────────────────────────────
@@ -99,17 +94,16 @@ class TestCheckAdminHardening(unittest.TestCase):
     def test_wrong_admin_api_key_rejected(self):
         """Incorrect admin_api_key -> rejected with constant-time compare."""
         os.environ["TRIMCP_ADMIN_API_KEY"] = "correct-horse-battery-staple"
-        with self.assertRaises(ValueError) as ctx:
-            self._check_admin({"admin_api_key": "wrong-key"})
-        self.assertIn("-32001", str(ctx.exception))
+        with self.assertRaises(Exception) as ctx:
+            self._validate_scope("admin", {"admin_api_key": "wrong-key"})
         self.assertIn("invalid admin_api_key", str(ctx.exception).lower())
 
     def test_case_sensitive_key_comparison(self):
         """admin_api_key comparison must be case-sensitive."""
         os.environ["TRIMCP_ADMIN_API_KEY"] = "SecretKey"
-        with self.assertRaises(ValueError) as ctx:
-            self._check_admin({"admin_api_key": "secretkey"})
-        self.assertIn("-32001", str(ctx.exception))
+        with self.assertRaises(Exception) as ctx:
+            self._validate_scope("admin", {"admin_api_key": "secretkey"})
+        self.assertIn("invalid admin_api_key", str(ctx.exception).lower())
 
     def test_timing_side_channel_uses_constant_time_compare(self):
         """Verify secrets.compare_digest is used (indirect: wrong key fails).
@@ -118,8 +112,8 @@ class TestCheckAdminHardening(unittest.TestCase):
         which is a basic property of constant-time comparison.
         """
         os.environ["TRIMCP_ADMIN_API_KEY"] = "aaaaaaaa"
-        with self.assertRaises(ValueError):
-            self._check_admin({"admin_api_key": "bbbbbbbb"})
+        with self.assertRaises(Exception):
+            self._validate_scope("admin", {"admin_api_key": "bbbbbbbb"})
 
     # ── 4. Correct admin_api_key ────────────────────────────────────────
 
@@ -127,12 +121,12 @@ class TestCheckAdminHardening(unittest.TestCase):
         """Correct admin_api_key -> function returns without error."""
         os.environ["TRIMCP_ADMIN_API_KEY"] = "my-secret-admin-key"
         # Should NOT raise
-        self._check_admin({"admin_api_key": "my-secret-admin-key"})
+        self._validate_scope("admin", {"admin_api_key": "my-secret-admin-key"})
 
     def test_correct_key_with_whitespace_stripping(self):
         """Whitespace around admin_api_key is stripped."""
         os.environ["TRIMCP_ADMIN_API_KEY"] = "key123"
-        self._check_admin({"admin_api_key": "  key123  "})
+        self._validate_scope("admin", {"admin_api_key": "  key123  "})
 
     # ── 5. TRIMCP_ADMIN_OVERRIDE ────────────────────────────────────────
 
@@ -140,16 +134,16 @@ class TestCheckAdminHardening(unittest.TestCase):
         """TRIMCP_ADMIN_OVERRIDE=true bypasses all checks."""
         os.environ["TRIMCP_ADMIN_OVERRIDE"] = "true"
         # No admin_api_key at all — should pass
-        self._check_admin({})
-        self._check_admin({"is_admin": False})
-        self._check_admin({"admin_api_key": "garbage"})
+        self._validate_scope("admin", {})
+        self._validate_scope("admin", {"is_admin": False})
+        self._validate_scope("admin", {"admin_api_key": "garbage"})
 
     def test_override_works_when_api_key_not_set(self):
         """Override works even when TRIMCP_ADMIN_API_KEY is absent."""
         os.environ["TRIMCP_ADMIN_OVERRIDE"] = "true"
         # Ensure API key env var is NOT set
         os.environ.pop("TRIMCP_ADMIN_API_KEY", None)
-        self._check_admin({})
+        self._validate_scope("admin", {})
 
     # ── 6. Missing TRIMCP_ADMIN_API_KEY fails safe ───────────────────────
 
@@ -158,17 +152,15 @@ class TestCheckAdminHardening(unittest.TestCase):
         # Both env vars absent
         os.environ.pop("TRIMCP_ADMIN_API_KEY", None)
         os.environ.pop("TRIMCP_ADMIN_OVERRIDE", None)
-        with self.assertRaises(ValueError) as ctx:
-            self._check_admin({"admin_api_key": "anything"})
-        self.assertIn("-32001", str(ctx.exception))
+        with self.assertRaises(Exception) as ctx:
+            self._validate_scope("admin", {"admin_api_key": "anything"})
         self.assertIn("misconfigured", str(ctx.exception).lower())
 
     def test_empty_api_key_env_var_fails_safe(self):
         """Empty TRIMCP_ADMIN_API_KEY env var -> fail closed."""
         os.environ["TRIMCP_ADMIN_API_KEY"] = ""
-        with self.assertRaises(ValueError) as ctx:
-            self._check_admin({"admin_api_key": "anything"})
-        self.assertIn("-32001", str(ctx.exception))
+        with self.assertRaises(Exception) as ctx:
+            self._validate_scope("admin", {"admin_api_key": "anything"})
         self.assertIn("misconfigured", str(ctx.exception).lower())
 
 
@@ -217,7 +209,9 @@ class TestAdminToolSchemas(unittest.TestCase):
             tool = self._get_tool(tool_name)
             required = self._required_fields(tool)
             self.assertIn(
-                "admin_api_key", required, f"Tool '{tool_name}' must require admin_api_key"
+                "admin_api_key",
+                required,
+                f"Tool '{tool_name}' must require admin_api_key",
             )
 
     def test_admin_tools_have_admin_api_key_property(self):
@@ -226,7 +220,9 @@ class TestAdminToolSchemas(unittest.TestCase):
             tool = self._get_tool(tool_name)
             props = tool.inputSchema.get("properties", {})
             self.assertIn(
-                "admin_api_key", props, f"Tool '{tool_name}' must have admin_api_key property"
+                "admin_api_key",
+                props,
+                f"Tool '{tool_name}' must have admin_api_key property",
             )
             self.assertEqual(
                 props["admin_api_key"].get("type"),
@@ -333,7 +329,9 @@ class TestAdminToolHandlerArgumentFiltering(unittest.TestCase):
 if __name__ == "__main__":
     # Run with verbose output
     runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(unittest.TestLoader().loadTestsFromModule(sys.modules[__name__]))
+    result = runner.run(
+        unittest.TestLoader().loadTestsFromModule(sys.modules[__name__])
+    )
 
     # Print summary
     print(f"\n{'=' * 60}")
@@ -343,7 +341,9 @@ if __name__ == "__main__":
     print(f"Skipped:   {len(result.skipped)}")
 
     if result.wasSuccessful():
-        print("\n✅ ALL TESTS PASSED — Client-side privilege escalation vector is CLOSED.")
+        print(
+            "\n✅ ALL TESTS PASSED — Client-side privilege escalation vector is CLOSED."
+        )
         sys.exit(0)
     else:
         print("\n❌ SOME TESTS FAILED — See output above for details.")

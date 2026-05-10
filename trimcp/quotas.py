@@ -227,4 +227,6 @@ async def consume_for_tool(
     if plan is None:
         return null_reservation()
     ns, agent, amounts = plan
-    return await consume_resources(pool, namespace_id=ns, agent_id=agent, amounts=amounts)
+    return await consume_resources(
+        pool, namespace_id=ns, agent_id=agent, amounts=amounts
+    )

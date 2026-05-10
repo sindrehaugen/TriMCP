@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -32,13 +32,15 @@ async def test_semantic_search_temporal_parameters_prevent_sql_injection():
     engine.scoped_session = MagicMock(return_value=ScopedSessionMock())
 
     # Mock fetchrow for namespace metadata
-    mock_conn.fetchrow = AsyncMock(return_value={"metadata": {"temporal_retention_days": 90}})
+    mock_conn.fetchrow = AsyncMock(
+        return_value={"metadata": {"temporal_retention_days": 90}}
+    )
     # Mock fetchval for embedding model
     mock_conn.fetchval = AsyncMock(return_value=None)
     # Mock fetch for the main query
     mock_conn.fetch = AsyncMock(return_value=[])
 
-    as_of_dt = datetime.now(UTC)
+    as_of_dt = datetime.now(timezone.utc)
 
     # Invoke semantic search
     await engine.semantic_search(

@@ -30,7 +30,9 @@ _KEY = "fixture-hmac-shared-secret-32b+"
 def _app() -> Starlette:
     async def echo(request: Request) -> JSONResponse:
         body = await request.body()
-        return JSONResponse({"len": len(body), "raw": body.decode("utf-8", errors="replace")})
+        return JSONResponse(
+            {"len": len(body), "raw": body.decode("utf-8", errors="replace")}
+        )
 
     async def health(_: Request) -> PlainTextResponse:
         return PlainTextResponse("ok")
@@ -52,7 +54,11 @@ class TestHMACPayloadEdges:
         good = b'{"trusted": true}'
         ts = int(time.time())
         hdr = admin_hmac_headers(
-            hex_key_material=_KEY, method="POST", path="/api/echo", body=good, timestamp=ts
+            hex_key_material=_KEY,
+            method="POST",
+            path="/api/echo",
+            body=good,
+            timestamp=ts,
         )
 
         with TestClient(app, raise_server_exceptions=False) as client:
@@ -62,7 +68,11 @@ class TestHMACPayloadEdges:
         assert r.json()["error"]["data"]["reason"] == "invalid_signature"
 
         hdr_ok = admin_hmac_headers(
-            hex_key_material=_KEY, method="POST", path="/api/echo", body=good, timestamp=ts
+            hex_key_material=_KEY,
+            method="POST",
+            path="/api/echo",
+            body=good,
+            timestamp=ts,
         )
         with TestClient(app, raise_server_exceptions=False) as client:
             r2 = client.post("/api/echo", content=good, headers=hdr_ok)
@@ -73,7 +83,11 @@ class TestHMACPayloadEdges:
         body = "北極 ✨".encode()
         ts = int(time.time())
         hdr = admin_hmac_headers(
-            hex_key_material=_KEY, method="POST", path="/api/echo", body=body, timestamp=ts
+            hex_key_material=_KEY,
+            method="POST",
+            path="/api/echo",
+            body=body,
+            timestamp=ts,
         )
         with TestClient(app, raise_server_exceptions=False) as client:
             r = client.post("/api/echo", content=body, headers=hdr)

@@ -8,11 +8,10 @@ import json
 import logging
 import secrets
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode
 
-import asyncpg
 import httpx
 from redis import Redis
 
@@ -23,7 +22,8 @@ from trimcp.mcp_errors import mcp_handler
 from trimcp.net_safety import BridgeURLValidationError, validate_bridge_webhook_base_url
 from trimcp.observability import inject_trace_headers
 from trimcp.orchestrator import TriStackEngine
-from trimcp.signing import decrypt_signing_key, encrypt_signing_key, require_master_key
+
+# Token encryption/decryption now handled by bridge_repo (canonical hooks)
 from trimcp.tasks import process_bridge_event
 
 log = logging.getLogger("trimcp.bridge_mcp_handlers")
@@ -44,7 +44,9 @@ async def _exchange_oauth_code(provider: str, code: str) -> dict[str, Any]:
     """Trade the authorization code for an access token payload (provider-specific OAuth2)."""
     if provider == "sharepoint":
         if not cfg.AZURE_CLIENT_ID or not cfg.AZURE_CLIENT_SECRET:
-            raise ValueError("AZURE_CLIENT_ID and AZURE_CLIENT_SECRET required for token exchange")
+            raise ValueError(
+                "AZURE_CLIENT_ID and AZURE_CLIENT_SECRET required for token exchange"
+            )
         tenant = cfg.AZURE_TENANT_ID or "common"
         async with httpx.AsyncClient(timeout=60.0) as client:
             tr = await client.post(
@@ -65,7 +67,9 @@ async def _exchange_oauth_code(provider: str, code: str) -> dict[str, Any]:
                 raise ValueError("token response missing access_token")
             refresh_token = tok.get("refresh_token")
             expires_in = tok.get("expires_in") or 3600
-            expires_at = (datetime.now(UTC) + timedelta(seconds=int(expires_in))).timestamp()
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+            ).timestamp()
             return {
                 "access_token": str(access_token),
                 "refresh_token": str(refresh_token) if refresh_token else None,
@@ -94,7 +98,9 @@ async def _exchange_oauth_code(provider: str, code: str) -> dict[str, Any]:
                 raise ValueError("token response missing access_token")
             refresh_token = tok.get("refresh_token")
             expires_in = tok.get("expires_in") or 3600
-            expires_at = (datetime.now(UTC) + timedelta(seconds=int(expires_in))).timestamp()
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+            ).timestamp()
             return {
                 "access_token": str(access_token),
                 "refresh_token": str(refresh_token) if refresh_token else None,
@@ -122,7 +128,9 @@ async def _exchange_oauth_code(provider: str, code: str) -> dict[str, Any]:
                 raise ValueError("token response missing access_token")
             refresh_token = tok.get("refresh_token")
             expires_in = tok.get("expires_in") or 3600
-            expires_at = (datetime.now(UTC) + timedelta(seconds=int(expires_in))).timestamp()
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+            ).timestamp()
             return {
                 "access_token": str(access_token),
                 "refresh_token": str(refresh_token) if refresh_token else None,
@@ -141,7 +149,9 @@ async def _setup_sharepoint_webhook(
     bridge_client_state: str,
 ) -> tuple[str | None, datetime | None]:
     """Create a Microsoft Graph subscription; returns (subscription_id, expires_at)."""
-    exp_iso = (datetime.now(UTC) + timedelta(minutes=4200)).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+    exp_iso = (datetime.now(timezone.utc) + timedelta(minutes=4200)).strftime(
+        "%Y-%m-%dT%H:%M:%S.0000000Z"
+    )
     body = {
         "changeType": "updated",
         "notificationUrl": f"{base}/webhooks/graph",
@@ -161,7 +171,9 @@ async def _setup_sharepoint_webhook(
             json=body,
         )
         if cr.status_code >= 400:
-            raise ValueError(f"Graph subscription failed: {cr.status_code} {cr.text[:500]}")
+            raise ValueError(
+                f"Graph subscription failed: {cr.status_code} {cr.text[:500]}"
+            )
         sub = cr.json()
         sub_id = sub.get("id")
         exp_s = sub.get("expirationDateTime")
@@ -183,7 +195,7 @@ async def _setup_gdrive_webhook(
     Returns (subscription_id / channel id, resource_id from Google, expires_at).
     """
     chan = str(uuid.uuid4())
-    exp_ms = int((datetime.now(UTC) + timedelta(days=6, hours=23)).timestamp() * 1000)
+    exp_ms = int((datetime.now(timezone.utc) + timedelta(days=6, hours=23)).timestamp() * 1000)
     watch_body = {
         "id": chan,
         "type": "web_hook",
@@ -210,36 +222,11 @@ async def _setup_gdrive_webhook(
         exp_ms2 = sub.get("expiration")
         expires_at: datetime | None = None
         if exp_ms2:
-            expires_at = datetime.fromtimestamp(int(exp_ms2) / 1000.0, tz=UTC)
+            expires_at = datetime.fromtimestamp(int(exp_ms2) / 1000.0, tz=timezone.utc)
         return sub_id, str(rid), expires_at
 
 
-def _bridge_oauth_ciphertext(plaintext_token: str) -> bytes:
-    """Encrypt a plaintext OAuth token payload for storage.
 
-    .. deprecated::
-        Prefer ``bridge_repo.save_token()`` for new code — it is the
-        canonical storage-layer hook and handles JSON serialisation
-        automatically.  This helper is retained for backward
-        compatibility with existing MCP handler call sites.
-    """
-    mk = require_master_key()
-    return encrypt_signing_key(plaintext_token.encode("utf-8"), mk)
-
-
-def _decrypt_bridge_oauth_if_present(row: asyncpg.Record) -> str:
-    """Decrypt the OAuth token payload from a bridge_subscriptions row.
-
-    .. deprecated::
-        Prefer ``bridge_repo.get_token()`` for new code — it is the
-        canonical retrieval hook and returns a parsed dict rather than
-        a raw JSON string.  This helper is retained for backward
-        compatibility with existing MCP handler call sites.
-    """
-    raw = row.get("oauth_access_token_enc")
-    if not raw:
-        return ""
-    return decrypt_signing_key(bytes(raw), require_master_key()).decode("utf-8")
 
 
 @mcp_handler
@@ -286,7 +273,9 @@ async def connect_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -> s
                 "state": f"{row_id}:{client_state}",
             }
         )
-        auth_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize?{q}"
+        auth_url = (
+            f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize?{q}"
+        )
     elif provider == "gdrive":
         cid = (cfg.GDRIVE_OAUTH_CLIENT_ID or "").strip()
         if not cid:
@@ -345,7 +334,9 @@ async def connect_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -> s
 
 
 @mcp_handler
-async def complete_bridge_auth(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def complete_bridge_auth(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     user_id = arguments["user_id"]
     bridge_id = uuid.UUID(arguments["bridge_id"])
     provider = arguments["provider"].strip().lower()
@@ -372,7 +363,6 @@ async def complete_bridge_auth(engine: TriStackEngine, arguments: dict[str, Any]
 
     token_data = await _exchange_oauth_code(provider, code)
     access_token = token_data["access_token"]
-    token_enc = _bridge_oauth_ciphertext(json.dumps(token_data))
 
     sub_id: str | None = None
     expires_at: datetime | None = None
@@ -414,7 +404,6 @@ async def complete_bridge_auth(engine: TriStackEngine, arguments: dict[str, Any]
                 subscription_id = COALESCE($3, subscription_id),
                 expires_at = COALESCE($4, expires_at),
                 status = 'ACTIVE',
-                oauth_access_token_enc = $5,
                 updated_at = NOW()
             WHERE id = $1
             """,
@@ -422,8 +411,8 @@ async def complete_bridge_auth(engine: TriStackEngine, arguments: dict[str, Any]
             final_resource_id,
             sub_id,
             expires_at,
-            token_enc,
         )
+        await bridge_repo.save_token(conn, bridge_id, token_data)
 
     return json.dumps(
         {
@@ -450,7 +439,9 @@ async def list_bridges(engine: TriStackEngine, arguments: dict[str, Any]) -> str
         rows = await bridge_repo.list_for_user(
             conn, user_id, include_disconnected=include_disconnected
         )
-    return json.dumps({"bridges": [bridge_repo.subscription_to_public_dict(r) for r in rows]})
+    return json.dumps(
+        {"bridges": [bridge_repo.subscription_to_public_dict(r) for r in rows]}
+    )
 
 
 async def disconnect_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
@@ -469,8 +460,13 @@ async def disconnect_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -
         token = (cfg.GDRIVE_BRIDGE_TOKEN or "").strip()
     elif prov == "dropbox":
         token = (cfg.DROPBOX_BRIDGE_TOKEN or "").strip()
+
+    token_payload: dict[str, Any] | None = None
     if not token:
-        token = _decrypt_bridge_oauth_if_present(row)
+        async with engine.pg_pool.acquire() as conn:
+            token_payload = await bridge_repo.get_token(conn, bridge_id)
+        if token_payload:
+            token = token_payload.get("access_token", "")
 
     if prov == "sharepoint" and row["subscription_id"] and token:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -479,13 +475,18 @@ async def disconnect_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -
                 headers=inject_trace_headers({"Authorization": f"Bearer {token}"}),
             )
             if r.status_code not in (200, 204, 404):
-                log.warning("Graph subscription delete: %s %s", r.status_code, r.text[:200])
+                log.warning(
+                    "Graph subscription delete: %s %s", r.status_code, r.text[:200]
+                )
     elif prov == "gdrive" and row["subscription_id"] and row["resource_id"] and token:
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(
                 "https://www.googleapis.com/drive/v3/channels/stop",
                 headers=inject_trace_headers(
-                    {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                    {
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    }
                 ),
                 json={"id": row["subscription_id"], "resourceId": row["resource_id"]},
             )
@@ -497,14 +498,16 @@ async def disconnect_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -
             """
             UPDATE bridge_subscriptions
             SET status = 'DISCONNECTED',
-                oauth_access_token_enc = NULL,
                 updated_at = NOW()
             WHERE id = $1
             """,
             bridge_id,
         )
+        await bridge_repo.save_token(conn, bridge_id, {})
 
-    return json.dumps({"status": "ok", "bridge_id": str(bridge_id), "state": "DISCONNECTED"})
+    return json.dumps(
+        {"status": "ok", "bridge_id": str(bridge_id), "state": "DISCONNECTED"}
+    )
 
 
 @mcp_handler
@@ -532,9 +535,11 @@ async def force_resync_bridge(engine: TriStackEngine, arguments: dict[str, Any])
     job_id: str | None = None
     if prov == "sharepoint":
         if "|" not in rid or rid == "pending":
-            raise ValueError("sharepoint force_resync requires resource_id 'site_id|drive_id'")
+            raise ValueError(
+                "sharepoint force_resync requires resource_id 'site_id|drive_id'"
+            )
         site, drive = _parse_sharepoint_resource(rid)
-        payload = {
+        payload: dict[str, Any] = {
             "notifications": [
                 {
                     "clientState": row["client_state"],
@@ -564,7 +569,7 @@ async def force_resync_bridge(engine: TriStackEngine, arguments: dict[str, Any])
         )
         job_id = job.id
     elif prov == "dropbox":
-        payload = {"list_folder": {"accounts": [rid]}}
+        payload = {"list_folder": {"accounts": [rid]}}  # type: ignore[dict-item]
         job = q.enqueue(
             process_bridge_event,
             kwargs={"provider": "dropbox", "payload": payload},
@@ -573,7 +578,12 @@ async def force_resync_bridge(engine: TriStackEngine, arguments: dict[str, Any])
         job_id = job.id
 
     return json.dumps(
-        {"status": "enqueued", "bridge_id": str(bridge_id), "provider": prov, "job_id": job_id}
+        {
+            "status": "enqueued",
+            "bridge_id": str(bridge_id),
+            "provider": prov,
+            "job_id": job_id,
+        }
     )
 
 
@@ -590,7 +600,9 @@ async def bridge_status(engine: TriStackEngine, arguments: dict[str, Any]) -> st
         if not row or str(row["user_id"]) != user_id:
             raise ValueError("bridge not found for user")
     out = bridge_repo.subscription_to_public_dict(row)
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     if row["expires_at"]:
-        out["expires_in_seconds"] = max(0, int((row["expires_at"] - now).total_seconds()))
+        out["expires_in_seconds"] = max(
+            0, int((row["expires_at"] - now).total_seconds())
+        )
     return json.dumps(out)

@@ -91,7 +91,9 @@ class LocalCognitiveProvider(LLMProvider):
         json.dumps(response_model.model_json_schema(), indent=2)
         payload = {
             "model": self._model,
-            "messages": [{"role": m.role.value, "content": m.content} for m in messages],
+            "messages": [
+                {"role": m.role.value, "content": m.content} for m in messages
+            ],
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -113,7 +115,7 @@ class LocalCognitiveProvider(LLMProvider):
         )
 
         try:
-            content = data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]  # type: ignore[index]
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMProviderError(
                 f"Local cognitive model response missing expected structure: {str(data)[:300]}",

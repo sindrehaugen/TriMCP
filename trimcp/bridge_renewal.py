@@ -4,18 +4,58 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
 import httpx
 import jwt
 
-from trimcp.config import cfg
 from trimcp import bridge_repo
+from trimcp.config import cfg
 from trimcp.net_safety import BridgeURLValidationError, validate_bridge_webhook_base_url
 from trimcp.observability import inject_trace_headers
-from trimcp.signing import decrypt_signing_key, encrypt_signing_key, require_master_key
+from trimcp.signing import decrypt_signing_key, require_master_key
+
+# Lazy import redis.asyncio to avoid hard dependency at module load time.
+try:
+    from redis.asyncio import Redis as AsyncRedis
+except ImportError:  # pragma: no cover
+    AsyncRedis = None  # type: ignore[misc,assignment]
+
+_REFRESH_LOCK_PREFIX: str = "bridge_refresh"
+_REFRESH_LOCK_TTL_SECONDS: int = 60
+
+
+def _refresh_lock_key(provider: str, bridge_id: Any) -> str:
+    return f"{_REFRESH_LOCK_PREFIX}:{provider}:{bridge_id}"
+
+
+async def _acquire_refresh_lock(provider: str, bridge_id: Any) -> Any:
+    """Try to acquire a Redis SET-NX-EX lock for *bridge_id*.
+
+    Returns the Redis client instance on success so the caller can close it,
+    or ``None`` if the lock is already held.
+    """
+    if AsyncRedis is None:
+        return None
+    redis_client = AsyncRedis.from_url(cfg.REDIS_URL)
+    key = _refresh_lock_key(provider, bridge_id)
+    acquired = await redis_client.set(key, "1", nx=True, ex=_REFRESH_LOCK_TTL_SECONDS)
+    if acquired is not None:
+        return redis_client
+    await redis_client.close()
+    return None
+
+
+async def _release_refresh_lock(redis_client: Any, provider: str, bridge_id: Any) -> None:
+    if redis_client is None:
+        return
+    try:
+        key = _refresh_lock_key(provider, bridge_id)
+        await redis_client.delete(key)
+    finally:
+        await redis_client.close()
 
 log = logging.getLogger("trimcp.bridge_renewal")
 
@@ -30,7 +70,7 @@ def parse_graph_datetime(value: str) -> datetime:
 
 def _graph_expiration_iso(minutes: int = 4200) -> str:
     """~Graph max ~4230 minutes for drive resource subscriptions."""
-    exp = datetime.now(UTC) + timedelta(minutes=min(4200, minutes))
+    exp = datetime.now(timezone.utc) + timedelta(minutes=min(4200, minutes))
     return exp.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
@@ -40,7 +80,7 @@ def get_token_expiry(token: str) -> datetime | None:
             decoded = jwt.decode(token, options={"verify_signature": False})
             exp = decoded.get("exp")
             if exp:
-                return datetime.fromtimestamp(exp, tz=UTC)
+                return datetime.fromtimestamp(exp, tz=timezone.utc)
     except Exception:
         pass
     return None
@@ -50,7 +90,9 @@ async def _perform_oauth_refresh(provider: str, refresh_token: str) -> dict[str,
     """Call provider token endpoint to refresh the access token."""
     if provider == "sharepoint":
         if not cfg.AZURE_CLIENT_ID or not cfg.AZURE_CLIENT_SECRET:
-            raise ValueError("AZURE_CLIENT_ID and AZURE_CLIENT_SECRET required for token refresh")
+            raise ValueError(
+                "AZURE_CLIENT_ID and AZURE_CLIENT_SECRET required for token refresh"
+            )
         tenant = cfg.AZURE_TENANT_ID or "common"
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
@@ -73,7 +115,9 @@ async def _perform_oauth_refresh(provider: str, refresh_token: str) -> dict[str,
             return {
                 "access_token": str(access_token),
                 "refresh_token": str(new_refresh) if new_refresh else None,
-                "expires_at": (datetime.now(UTC) + timedelta(seconds=int(expires_in))).timestamp(),
+                "expires_at": (
+                    datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+                ).timestamp(),
             }
 
     if provider == "gdrive":
@@ -102,7 +146,9 @@ async def _perform_oauth_refresh(provider: str, refresh_token: str) -> dict[str,
             return {
                 "access_token": str(access_token),
                 "refresh_token": str(new_refresh) if new_refresh else None,
-                "expires_at": (datetime.now(UTC) + timedelta(seconds=int(expires_in))).timestamp(),
+                "expires_at": (
+                    datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+                ).timestamp(),
             }
 
     if provider == "dropbox":
@@ -128,7 +174,9 @@ async def _perform_oauth_refresh(provider: str, refresh_token: str) -> dict[str,
             return {
                 "access_token": str(access_token),
                 "refresh_token": str(new_refresh) if new_refresh else None,
-                "expires_at": (datetime.now(UTC) + timedelta(seconds=int(expires_in))).timestamp(),
+                "expires_at": (
+                    datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+                ).timestamp(),
             }
 
     raise ValueError(f"Unsupported refresh provider: {provider}")
@@ -138,6 +186,10 @@ async def _bg_refresh_token(
     pool: asyncpg.Pool, row: asyncpg.Record, provider: str, refresh_token: str
 ) -> None:
     bridge_id = row["id"]
+    redis_client = await _acquire_refresh_lock(provider, bridge_id)
+    if redis_client is None:
+        log.debug("Refresh lock already held for bridge_id=%s — skipping bg refresh", bridge_id)
+        return
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -156,13 +208,13 @@ async def _bg_refresh_token(
                         latest_data = json.loads(latest_decrypted)
                         latest_expires_at_ts = latest_data.get("expires_at")
                         latest_expires_at = (
-                            datetime.fromtimestamp(latest_expires_at_ts, tz=UTC)
+                            datetime.fromtimestamp(latest_expires_at_ts, tz=timezone.utc)
                             if latest_expires_at_ts
                             else None
                         )
-                        if latest_expires_at and latest_expires_at >= datetime.now(UTC) + timedelta(
-                            minutes=5
-                        ):
+                        if latest_expires_at and latest_expires_at >= datetime.now(
+                            timezone.utc
+                        ) + timedelta(minutes=5):
                             return
                     except Exception:
                         pass
@@ -175,15 +227,22 @@ async def _bg_refresh_token(
                 refreshed_data = await _perform_oauth_refresh(provider, refresh_token)
                 new_payload = {
                     "access_token": refreshed_data["access_token"],
-                    "refresh_token": refreshed_data.get("refresh_token") or refresh_token,
+                    "refresh_token": refreshed_data.get("refresh_token")
+                    or refresh_token,
                     "expires_at": refreshed_data["expires_at"],
                 }
                 await bridge_repo.save_token(conn, bridge_id, new_payload)
     except Exception as exc:
-        log.error("Background OAuth token refresh failed for bridge_id=%s: %s", bridge_id, exc)
+        log.error(
+            "Background OAuth token refresh failed for bridge_id=%s: %s", bridge_id, exc
+        )
+    finally:
+        await _release_refresh_lock(redis_client, provider, bridge_id)
 
 
-async def ensure_fresh_oauth_token(pool: asyncpg.Pool, row: asyncpg.Record, env_token: str) -> str:
+async def ensure_fresh_oauth_token(
+    pool: asyncpg.Pool, row: asyncpg.Record, env_token: str
+) -> str:
     """Return a valid, fresh access token for the given bridge subscription.
 
     If the env_token is provided, use that immediately.
@@ -203,9 +262,13 @@ async def ensure_fresh_oauth_token(pool: asyncpg.Pool, row: asyncpg.Record, env_
         return ""
 
     try:
-        decrypted = decrypt_signing_key(bytes(raw), require_master_key()).decode("utf-8")
+        decrypted = decrypt_signing_key(bytes(raw), require_master_key()).decode(
+            "utf-8"
+        )
     except Exception as e:
-        log.warning("Stored bridge OAuth decrypt failed for bridge_id=%s: %s", bridge_id, e)
+        log.warning(
+            "Stored bridge OAuth decrypt failed for bridge_id=%s: %s", bridge_id, e
+        )
         return ""
 
     try:
@@ -213,7 +276,7 @@ async def ensure_fresh_oauth_token(pool: asyncpg.Pool, row: asyncpg.Record, env_
     except Exception:
         # Backward compatibility fallback
         expiry = get_token_expiry(decrypted)
-        if expiry and expiry < datetime.now(UTC) + timedelta(minutes=5):
+        if expiry and expiry < datetime.now(timezone.utc) + timedelta(minutes=5):
             log.warning(
                 "Stored OAuth token for bridge_id=%s looks expired, but has no refresh token.",
                 bridge_id,
@@ -230,8 +293,10 @@ async def ensure_fresh_oauth_token(pool: asyncpg.Pool, row: asyncpg.Record, env_
     if not refresh_token:
         return access_token
 
-    now = datetime.now(UTC)
-    expires_at = datetime.fromtimestamp(expires_at_ts, tz=UTC) if expires_at_ts else None
+    now = datetime.now(timezone.utc)
+    expires_at = (
+        datetime.fromtimestamp(expires_at_ts, tz=timezone.utc) if expires_at_ts else None
+    )
 
     if expires_at is None or expires_at < now + timedelta(minutes=5):
         if expires_at and now < expires_at < now + timedelta(minutes=5):
@@ -266,14 +331,14 @@ async def ensure_fresh_oauth_token(pool: asyncpg.Pool, row: asyncpg.Record, env_
 
                 latest_expires_at_ts = latest_data.get("expires_at")
                 latest_expires_at = (
-                    datetime.fromtimestamp(latest_expires_at_ts, tz=UTC)
+                    datetime.fromtimestamp(latest_expires_at_ts, tz=timezone.utc)
                     if latest_expires_at_ts
                     else None
                 )
 
-                if latest_expires_at and latest_expires_at >= datetime.now(UTC) + timedelta(
-                    minutes=5
-                ):
+                if latest_expires_at and latest_expires_at >= datetime.now(
+                    timezone.utc
+                ) + timedelta(minutes=5):
                     return latest_data.get("access_token", "")
 
                 log.info(
@@ -282,10 +347,13 @@ async def ensure_fresh_oauth_token(pool: asyncpg.Pool, row: asyncpg.Record, env_
                     provider,
                 )
                 try:
-                    refreshed_data = await _perform_oauth_refresh(provider, refresh_token)
+                    refreshed_data = await _perform_oauth_refresh(
+                        provider, refresh_token
+                    )
                     new_payload = {
                         "access_token": refreshed_data["access_token"],
-                        "refresh_token": refreshed_data.get("refresh_token") or refresh_token,
+                        "refresh_token": refreshed_data.get("refresh_token")
+                        or refresh_token,
                         "expires_at": refreshed_data["expires_at"],
                     }
                     await bridge_repo.save_token(conn, bridge_id, new_payload)
@@ -309,7 +377,9 @@ def _oauth_bearer_for_row(row: asyncpg.Record, env_token: str) -> str:
     if not raw:
         return ""
     try:
-        decrypted = decrypt_signing_key(bytes(raw), require_master_key()).decode("utf-8")
+        decrypted = decrypt_signing_key(bytes(raw), require_master_key()).decode(
+            "utf-8"
+        )
         try:
             data = json.loads(decrypted)
             if isinstance(data, dict) and "access_token" in data:
@@ -318,14 +388,18 @@ def _oauth_bearer_for_row(row: asyncpg.Record, env_token: str) -> str:
             pass
         return decrypted
     except Exception as e:
-        log.warning("Stored bridge OAuth decrypt failed for bridge_id=%s: %s", row.get("id"), e)
+        log.warning(
+            "Stored bridge OAuth decrypt failed for bridge_id=%s: %s", row.get("id"), e
+        )
         return ""
 
 
 async def renew_sharepoint(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
     sub_ext = row["subscription_id"]
     if not sub_ext:
-        raise RuntimeError("sharepoint renewal requires subscription_id (Graph subscription id)")
+        raise RuntimeError(
+            "sharepoint renewal requires subscription_id (Graph subscription id)"
+        )
     token = await ensure_fresh_oauth_token(pool, row, cfg.GRAPH_BRIDGE_TOKEN or "")
     if not token:
         raise RuntimeError(
@@ -363,7 +437,9 @@ async def renew_sharepoint(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
             row["id"],
             expires_at,
         )
-    log.info("Renewed SharePoint subscription bridge_id=%s until %s", row["id"], new_exp)
+    log.info(
+        "Renewed SharePoint subscription bridge_id=%s until %s", row["id"], new_exp
+    )
 
 
 async def renew_gdrive(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
@@ -394,7 +470,9 @@ async def renew_gdrive(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
 
     state = row["client_state"] or ""
     new_chan = str(uuid.uuid4())
-    expiration_ms = int((datetime.now(UTC) + timedelta(days=6, hours=23)).timestamp() * 1000)
+    expiration_ms = int(
+        (datetime.now(timezone.utc) + timedelta(days=6, hours=23)).timestamp() * 1000
+    )
     watch_payload = {
         "id": new_chan,
         "type": "web_hook",
@@ -428,7 +506,9 @@ async def renew_gdrive(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
             json=watch_payload,
         )
         if r.status_code >= 400:
-            raise RuntimeError(f"Drive changes/watch failed: {r.status_code} {r.text[:300]}")
+            raise RuntimeError(
+                f"Drive changes/watch failed: {r.status_code} {r.text[:300]}"
+            )
 
         data = r.json()
         new_resource = data.get("resourceId")
@@ -436,7 +516,7 @@ async def renew_gdrive(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
         if not new_resource or not exp_ms:
             raise RuntimeError("Drive watch response missing resourceId or expiration")
 
-    expires_at = datetime.fromtimestamp(int(exp_ms) / 1000.0, tz=UTC)
+    expires_at = datetime.fromtimestamp(int(exp_ms) / 1000.0, tz=timezone.utc)
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -516,4 +596,9 @@ async def renew_expiring_subscriptions(pool: asyncpg.Pool) -> dict[str, int]:
             await mark_degraded(pool, row["id"], str(e))
             failed += 1
 
-    return {"renewed": renewed, "failed": failed, "skipped": skipped, "candidates": len(rows)}
+    return {
+        "renewed": renewed,
+        "failed": failed,
+        "skipped": skipped,
+        "candidates": len(rows),
+    }

@@ -20,10 +20,15 @@ Do NOT add raw DB connection or pool logic here. This module is import-only.
 from __future__ import annotations
 
 import re
+import sys
 import uuid
-from datetime import UTC, datetime
-from enum import StrEnum
-from typing import Any, Literal
+from datetime import datetime, timezone
+
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    from strenum import StrEnum  # type: ignore[import-untyped]
+from typing import Any, Literal, TypedDict
 
 from pydantic import (
     UUID4,
@@ -66,7 +71,9 @@ def _validate_agent_id(v: str) -> str:
     if len(v) > 128:
         raise ValueError("agent_id must be ≤ 128 characters")
     if not _SAFE_ID_RE.match(v):
-        raise ValueError("agent_id may only contain alphanumerics, hyphens, and underscores")
+        raise ValueError(
+            "agent_id may only contain alphanumerics, hyphens, and underscores"
+        )
     return v
 
 
@@ -143,10 +150,14 @@ class ManageQuotasRequest(BaseModel):
         cmd = self.command
         if cmd == ManageQuotasCommand.set:
             if self.resource_type is None or self.limit is None:
-                raise ValueError("resource_type and limit are required for command='set'")
+                raise ValueError(
+                    "resource_type and limit are required for command='set'"
+                )
         if cmd == ManageQuotasCommand.delete or cmd == ManageQuotasCommand.reset:
             if self.resource_type is None:
-                raise ValueError("resource_type is required for command='delete'/'reset'")
+                raise ValueError(
+                    "resource_type is required for command='delete'/'reset'"
+                )
         return self
 
 
@@ -294,7 +305,7 @@ class NamespaceForkConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     forked_from_as_of: datetime = Field(
-        description="The exact UTC timestamp at which the parent namespace was forked"
+        description="The exact timezone.utc timestamp at which the parent namespace was forked"
     )
 
 
@@ -327,7 +338,9 @@ class NamespaceMetadata(BaseModel):
         default_factory=NamespaceConsolidationConfig
     )
     pii: NamespacePIIConfig = Field(default_factory=NamespacePIIConfig)
-    cognitive: NamespaceCognitiveConfig = Field(default_factory=NamespaceCognitiveConfig)
+    cognitive: NamespaceCognitiveConfig = Field(
+        default_factory=NamespaceCognitiveConfig
+    )
     fork_config: NamespaceForkConfig | None = Field(
         default=None,
         description="[Phase 2.3] Configuration if this namespace is a fork of another.",
@@ -487,7 +500,9 @@ class StoreMemoryRequest(BaseModel):
     @classmethod
     def _payload_size(cls, v: str) -> str:
         if len(v.encode("utf-8")) > _MAX_PAYLOAD_LEN:
-            raise ValueError(f"heavy_payload exceeds {_MAX_PAYLOAD_LEN // 1_048_576} MB limit")
+            raise ValueError(
+                f"heavy_payload exceeds {_MAX_PAYLOAD_LEN // 1_048_576} MB limit"
+            )
         return v
 
     @model_validator(mode="after")
@@ -529,7 +544,9 @@ class MemoryRecord(BaseModel):
     payload_ref: str = Field(description="MongoDB document _id (string form)")
     embedding_model_id: UUID4 | None = None
     derived_from: list[UUID4] | None = None
-    valid_from: datetime = Field(description="[D8] Server-assigned; never user-supplied")
+    valid_from: datetime = Field(
+        description="[D8] Server-assigned; never user-supplied"
+    )
     valid_to: datetime | None = Field(
         default=None,
         description="NULL = current row (latest version)",
@@ -889,7 +906,9 @@ def normalize_replay_config_overrides(
     """Validate replay override dict; return JSON-compatible dict or ``None``."""
     if raw is None:
         return None
-    return ReplayConfigOverrides.model_validate(raw).model_dump(mode="json", exclude_none=True)
+    return ReplayConfigOverrides.model_validate(raw).model_dump(
+        mode="json", exclude_none=True
+    )
 
 
 class FrozenForkConfig(BaseModel):
@@ -1077,7 +1096,7 @@ class A2AScope(BaseModel):
     model_config = ConfigDict(extra="forbid")
     resource_type: Literal["namespace", "memory", "kg_node", "subgraph"]
     resource_id: str
-    permissions: list[Literal["read"]] = Field(default_factory=lambda: ["read"])  # type: ignore[return-value]
+    permissions: list[Literal["read"]] = Field(default_factory=lambda: ["read"])  # type: ignore[arg-type]
 
 
 class A2AGrantRequest(BaseModel):
@@ -1168,7 +1187,9 @@ class ManageNamespaceRequest(BaseModel):
             if self.namespace_id is None:
                 raise ValueError("namespace_id required for command='update_metadata'")
             if self.metadata_patch is None:
-                raise ValueError("metadata_patch required for command='update_metadata'")
+                raise ValueError(
+                    "metadata_patch required for command='update_metadata'"
+                )
         if cmd in (ManageNamespaceCommand.grant, ManageNamespaceCommand.revoke):
             if self.namespace_id is None or self.grantee_namespace_id is None:
                 raise ValueError(
@@ -1181,7 +1202,6 @@ class ManageNamespaceRequest(BaseModel):
 
 
 ManageNamespaceRequest.model_rebuild()
-
 
 
 # ── Signing key (schema in Phase 0.1, signing logic in Phase 0.2) ────────────
@@ -1261,6 +1281,42 @@ class CompareStatesRequest(BaseModel):
     top_k: int = Field(default=10, ge=1, le=_MAX_TOP_K)
 
 
+class DeleteSnapshotResult(BaseModel):
+    """Result of a successful snapshot deletion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ok"] = "ok"
+    message: str
+
+
+class SagaState(StrEnum):
+    """Canonical states for the Saga Execution Log."""
+
+    STARTED = "started"
+    PG_COMMITTED = "pg_committed"
+    COMPLETED = "completed"
+    ROLLED_BACK = "rolled_back"
+    DEFERRED = "deferred"
+
+
+class SagaFailureContext(TypedDict, total=False):
+    """Typed parameters passed to saga rollback / failure callbacks.
+
+    Using ``total=False`` makes every field optional so callers can
+    supply only the keys they have at the point of failure.
+    """
+
+    e: BaseException
+    payload: StoreMemoryRequest
+    collection: Any
+    inserted_mongo_id: str | None
+    inserted_result: Any
+    memory_id: str | None
+    pg_committed: bool
+    saga_id: str | None
+
+
 class StateDiffResult(BaseModel):
     """The result of diffing two temporal states."""
 
@@ -1284,7 +1340,7 @@ if __name__ == "__main__":
 
     _ns_id = uuid.uuid4()
     _mem_id = uuid.uuid4()
-    _now = datetime.now(tz=UTC)
+    _now = datetime.now(tz=timezone.utc)
 
     passed: list[str] = []
     failed: list[tuple[str, Exception]] = []
@@ -1317,7 +1373,7 @@ if __name__ == "__main__":
 
     _expect_error(
         "NamespaceMetadata: extra field rejected",
-        lambda: NamespaceMetadata(unknown_field="x"),
+        lambda: NamespaceMetadata(unknown_field="x"),  # type: ignore[call-arg]
     )
 
     # ── NamespaceCreate ──
@@ -1330,7 +1386,9 @@ if __name__ == "__main__":
 
     try:
         nc_upper = NamespaceCreate(slug="ACME-Corp")
-        assert nc_upper.slug == "acme-corp", f"Expected 'acme-corp', got {nc_upper.slug!r}"
+        assert (
+            nc_upper.slug == "acme-corp"
+        ), f"Expected 'acme-corp', got {nc_upper.slug!r}"
         _ok("NamespaceCreate: uppercase slug normalised to lowercase")
     except Exception as e:
         _fail("NamespaceCreate: uppercase slug normalised to lowercase", e)
@@ -1376,7 +1434,7 @@ if __name__ == "__main__":
         lambda: StoreMemoryRequest(
             namespace_id=_ns_id,
             content="test",
-            valid_from=_now,  # must be rejected
+            valid_from=_now,  # type: ignore[call-arg]  # must be rejected
         ),
     )
 
@@ -1477,7 +1535,7 @@ if __name__ == "__main__":
         "ManageNamespaceRequest: update_metadata without namespace_id rejected",
         lambda: ManageNamespaceRequest(
             command=ManageNamespaceCommand.update_metadata,
-            metadata_patch={"temporal_retention_days": 30},
+            metadata_patch={"temporal_retention_days": 30},  # type: ignore[arg-type]
         ),
     )
 
@@ -1485,7 +1543,7 @@ if __name__ == "__main__":
         mr2 = ManageNamespaceRequest(
             command=ManageNamespaceCommand.update_metadata,
             namespace_id=_ns_id,
-            metadata_patch={"temporal_retention_days": 60},
+            metadata_patch={"temporal_retention_days": 60},  # type: ignore[arg-type]
         )
         _ok("ManageNamespaceRequest: update_metadata accepted")
     except Exception as e:

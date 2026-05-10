@@ -50,7 +50,7 @@ async def probe():
     # 4. MongoDB Probe
     try:
         client = AsyncIOMotorClient(cfg.MONGO_URI, serverSelectionTimeoutMS=2000)
-        await client.admin.command('ping')
+        await client.admin.command("ping")
     except Exception as e:
         print(f"MongoDB Connection Failed: {e}")
         return False

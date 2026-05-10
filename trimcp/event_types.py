@@ -14,6 +14,7 @@ from typing import Final, Literal, get_args
 
 EventType = Literal[
     "store_memory",
+    "store_memory_rolled_back",
     "forget_memory",
     "boost_memory",
     "resolve_contradiction",

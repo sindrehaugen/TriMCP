@@ -5,7 +5,7 @@ and produce parameterised temporal SQL clauses.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from trimcp.config import cfg
 
@@ -14,7 +14,7 @@ def parse_as_of(raw: str | None) -> datetime | None:
     """
     Parse and validate an ISO 8601 timestamp from an MCP tool or REST body.
 
-    Returns a timezone-aware ``datetime`` (UTC-normalised) or ``None`` when
+    Returns a timezone-aware ``datetime`` (timezone.utc-normalised) or ``None`` when
     ``raw`` is absent, which signals "query the current state".
 
     Raises ``ValueError`` for:
@@ -32,10 +32,12 @@ def parse_as_of(raw: str | None) -> datetime | None:
             f"as_of must be a valid ISO 8601 timestamp (e.g. '2026-01-15T10:00:00Z'), got: {raw!r}"
         )
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    now = datetime.now(UTC)
+        dt = dt.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
     if dt > now:
-        raise ValueError("as_of must not be in the future — temporal queries read past state only")
+        raise ValueError(
+            "as_of must not be in the future — temporal queries read past state only"
+        )
     _enforce_lookback_boundary(dt, now)
     return dt
 
@@ -85,11 +87,13 @@ def as_of_query(base_query: str, as_of: datetime | None) -> tuple[str, list]:
     """
     if as_of is None:
         return "AND valid_to IS NULL", []
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     if as_of.tzinfo is None:
-        as_of = as_of.replace(tzinfo=UTC)
+        as_of = as_of.replace(tzinfo=timezone.utc)
     if as_of > now:
-        raise ValueError("as_of must not be in the future — temporal queries read past state only")
+        raise ValueError(
+            "as_of must not be in the future — temporal queries read past state only"
+        )
     return (
         "AND valid_from <= $1 AND (valid_to IS NULL OR valid_to > $1)",
         [as_of],
@@ -105,8 +109,8 @@ def validate_write_timestamp(ts: datetime | None) -> None:
     """
     if ts is None:
         return
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=UTC)
+        ts = ts.replace(tzinfo=timezone.utc)
     if ts > now:
         raise ValueError(f"Write timestamp must not be in the future: {ts.isoformat()}")

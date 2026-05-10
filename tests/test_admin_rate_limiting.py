@@ -103,14 +103,9 @@ async def test_admin_rate_limit_key_resolution():
 
 @pytest.mark.asyncio
 async def test_admin_rate_limit_redis_success():
-    """Verify sliding-window rate limiting uses Redis pipeline when available."""
+    """Verify sliding-window rate limiting uses Redis Lua script when available."""
     mock_redis = MagicMock()
-    mock_pipeline = MagicMock()
-
-    # Pipeline execute returns: [ZREMRANGEBYSCORE_count, ZCARD_count, ZADD_result, EXPIRE_result]
-    # We will simulate cardinality = 2 (which is less than limit of 3)
-    mock_pipeline.execute = AsyncMock(return_value=[1, 2, True, True])
-    mock_redis.pipeline = MagicMock(return_value=mock_pipeline)
+    mock_redis.eval = AsyncMock(return_value=1)
 
     engine = MockEngine(redis_client=mock_redis)
 
@@ -121,22 +116,14 @@ async def test_admin_rate_limit_redis_success():
     res = await sample_tool(engine, {})
     assert res == "redis_ok"
 
-    mock_pipeline.zremrangebyscore.assert_called_once()
-    mock_pipeline.zcard.assert_called_once()
-    mock_pipeline.zadd.assert_called_once()
-    mock_pipeline.expire.assert_called_once()
+    mock_redis.eval.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_admin_rate_limit_redis_exceeded():
-    """Verify Redis triggers RateLimitError and cleans up the added timestamp when exceeded."""
+    """Verify Redis Lua script triggers RateLimitError when limit exceeded."""
     mock_redis = MagicMock()
-    mock_pipeline = MagicMock()
-
-    # Simulate cardinality = 3 (matches/exceeds limit of 3)
-    mock_pipeline.execute = AsyncMock(return_value=[1, 3, True, True])
-    mock_redis.pipeline = MagicMock(return_value=mock_pipeline)
-    mock_redis.zrem = AsyncMock()
+    mock_redis.eval = AsyncMock(return_value=0)
 
     engine = MockEngine(redis_client=mock_redis)
 
@@ -147,17 +134,14 @@ async def test_admin_rate_limit_redis_exceeded():
     with pytest.raises(RateLimitError):
         await sample_tool(engine, {})
 
-    # Verify cleanup zrem was called on the redis client
-    mock_redis.zrem.assert_called_once()
+    mock_redis.eval.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_admin_rate_limit_redis_failure_falls_back_to_ram():
-    """Verify that if Redis operations fail, we fall back to local in-memory limit enforcement."""
+    """Verify that if Redis Lua eval fails, we fall back to local in-memory limit enforcement."""
     mock_redis = MagicMock()
-    mock_pipeline = MagicMock()
-    mock_pipeline.execute = AsyncMock(side_effect=Exception("Redis connection refused"))
-    mock_redis.pipeline = MagicMock(return_value=mock_pipeline)
+    mock_redis.eval = AsyncMock(side_effect=Exception("Redis connection refused"))
 
     engine = MockEngine(redis_client=mock_redis)
     _IN_MEMORY_LIMITS.clear()
@@ -187,7 +171,9 @@ async def test_server_call_tool_translates_rate_limit_error():
     mock_reservation.rollback = AsyncMock()
 
     with patch("server.engine", engine):
-        with patch("trimcp.quotas.consume_for_tool", AsyncMock(return_value=mock_reservation)):
+        with patch(
+            "trimcp.quotas.consume_for_tool", AsyncMock(return_value=mock_reservation)
+        ):
             with patch(
                 "trimcp.admin_mcp_handlers.handle_get_health",
                 side_effect=RateLimitError("test", 1, 60),

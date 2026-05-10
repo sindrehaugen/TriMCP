@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -37,7 +37,7 @@ from trimcp.auth import NamespaceContext
 
 
 def _future_expiry() -> datetime:
-    return datetime.now(UTC) + timedelta(hours=1)
+    return datetime.now(timezone.utc) + timedelta(hours=1)
 
 
 def _grant_row(
@@ -66,27 +66,35 @@ class TestEnforceScopeMultiAgent:
     def test_memory_not_covered_when_grant_is_different_memory(self) -> None:
         mem_a = str(uuid.uuid4())
         mem_b = str(uuid.uuid4())
-        scopes = [A2AScope(resource_type="memory", resource_id=mem_a, permissions=["read"])]
+        scopes = [
+            A2AScope(resource_type="memory", resource_id=mem_a, permissions=["read"])
+        ]
         with pytest.raises(A2AScopeViolationError):
             enforce_scope(scopes, "memory", mem_b)
 
     def test_memory_not_covered_when_grant_is_only_kg_node(self) -> None:
         node = str(uuid.uuid4())
         mem = str(uuid.uuid4())
-        scopes = [A2AScope(resource_type="kg_node", resource_id=node, permissions=["read"])]
+        scopes = [
+            A2AScope(resource_type="kg_node", resource_id=node, permissions=["read"])
+        ]
         with pytest.raises(A2AScopeViolationError):
             enforce_scope(scopes, "memory", mem)
 
     def test_namespace_grant_allows_typed_memory_reads(self) -> None:
         """Namespace-shaped grant authorises memory / kg_node / subgraph resource_type checks."""
         ns = str(uuid.uuid4())
-        scopes = [A2AScope(resource_type="namespace", resource_id=ns, permissions=["read"])]
+        scopes = [
+            A2AScope(resource_type="namespace", resource_id=ns, permissions=["read"])
+        ]
         enforce_scope(scopes, "memory", str(uuid.uuid4()))
         enforce_scope(scopes, "kg_node", str(uuid.uuid4()))
 
     def test_exact_memory_grant_allows_that_memory(self) -> None:
         mem = str(uuid.uuid4())
-        scopes = [A2AScope(resource_type="memory", resource_id=mem, permissions=["read"])]
+        scopes = [
+            A2AScope(resource_type="memory", resource_id=mem, permissions=["read"])
+        ]
         enforce_scope(scopes, "memory", mem)
 
 
@@ -184,7 +192,7 @@ class TestVerifyTokenExpiry:
     async def test_expired_token_raises_and_marks_expired(self) -> None:
         owner_ns = uuid.uuid4()
         consumer_ns = uuid.uuid4()
-        past = datetime.now(UTC) - timedelta(minutes=5)
+        past = datetime.now(timezone.utc) - timedelta(minutes=5)
         conn = AsyncMock()
         conn.fetchrow = AsyncMock(
             return_value={
@@ -355,6 +363,71 @@ class TestParseClientCertFromHeaders:
         assert cert is not None
         assert "agent.internal" in cert.get("san", [])
 
+    def test_traefik_x_forwarded_tls_client_cert_pem(self) -> None:
+        """Traefik sends full PEM cert in X-Forwarded-Tls-Client-Cert."""
+        from datetime import datetime, timedelta, timezone
+
+        from cryptography import x509 as cx
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = cx.Name([cx.NameAttribute(cx.NameOID.COMMON_NAME, "agent.traefik.test")])
+        san = cx.SubjectAlternativeName([cx.DNSName("agent.traefik.test")])
+        now = datetime.now(timezone.utc)
+        cert = (
+            cx.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(key.public_key())
+            .serial_number(cx.random_serial_number())
+            .not_valid_before(now)
+            .not_valid_after(now + timedelta(days=1))
+            .add_extension(san, critical=False)
+            .sign(key, hashes.SHA256())
+        )
+        pem = cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
+
+        result = parse_client_cert_from_headers({"x-forwarded-tls-client-cert": pem})
+        assert result is not None
+        assert "fingerprint" in result
+        assert "agent.traefik.test" in result.get("san", [])
+        assert result.get("commonName") == "agent.traefik.test"
+        assert result.get("pem", "").strip() == pem.strip()
+
+    def test_traefik_base64_encoded_pem(self) -> None:
+        """Traefik may base64-encode the PEM cert."""
+        import base64
+        from datetime import datetime, timedelta, timezone
+
+        from cryptography import x509 as cx
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = cx.Name([cx.NameAttribute(cx.NameOID.COMMON_NAME, "b64.agent.test")])
+        now = datetime.now(timezone.utc)
+        cert = (
+            cx.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(key.public_key())
+            .serial_number(cx.random_serial_number())
+            .not_valid_before(now)
+            .not_valid_after(now + timedelta(days=1))
+            .sign(key, hashes.SHA256())
+        )
+        pem = cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
+        b64_pem = base64.b64encode(pem.encode("ascii")).decode("ascii")
+
+        result = parse_client_cert_from_headers({"x-forwarded-tls-client-cert": b64_pem})
+        assert result is not None
+        assert result.get("commonName") == "b64.agent.test"
+
+    def test_traefik_invalid_pem_returns_none(self) -> None:
+        result = parse_client_cert_from_headers({"x-forwarded-tls-client-cert": "not-a-cert"})
+        assert result is None
+
 
 class TestParseClientCertFromScope:
     def test_no_ssl_object_returns_none(self) -> None:
@@ -401,7 +474,9 @@ class TestValidateMTLSCert:
         with pytest.raises(A2AMTLSError, match="not in allowlist"):
             validate_mtls_cert(
                 cert,
-                allowed_fingerprints=["aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"],
+                allowed_fingerprints=[
+                    "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+                ],
             )
 
     def test_no_allowlists_configured_raises(self) -> None:
@@ -434,7 +509,9 @@ class TestValidateMTLSCert:
         with pytest.raises(A2AMTLSError, match="not in allowlist"):
             validate_mtls_cert(
                 cert,
-                allowed_fingerprints=["aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"],
+                allowed_fingerprints=[
+                    "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+                ],
                 allowed_sans=["agent-a.internal"],
             )
 

@@ -82,16 +82,21 @@ def _spacy_extract(text: str) -> tuple[list[KGNode], list[KGEdge]]:
         label = chunk.root.lemma_.strip()
         label_key = label.lower()
         if label and label_key not in seen_lower and len(label) > 2:
-            nodes.append(KGNode(label=label, entity_type="CONCEPT", source_text=chunk.text))
+            nodes.append(
+                KGNode(label=label, entity_type="CONCEPT", source_text=chunk.text)
+            )
             seen_lower.add(label_key)
 
     # --- Triplets from dependency parse (SVO extraction) ---
     edges: list[KGEdge] = []
     for token in doc:
         if token.pos_ == "VERB" and token.dep_ in ("ROOT", "relcl", "advcl"):
-            subj = next((c for c in token.lefts if c.dep_ in ("nsubj", "nsubjpass")), None)
+            subj = next(
+                (c for c in token.lefts if c.dep_ in ("nsubj", "nsubjpass")), None
+            )
             obj = next(
-                (c for c in token.rights if c.dep_ in ("dobj", "attr", "prep", "pobj")), None
+                (c for c in token.rights if c.dep_ in ("dobj", "attr", "prep", "pobj")),
+                None,
             )
             if subj and obj:
                 edges.append(
@@ -143,11 +148,19 @@ def _regex_extract(text: str) -> tuple[list[KGNode], list[KGEdge]]:
 
     # Extract simple SVO triplets
     for m in _IS_RELATION.finditer(text):
-        subj, pred, obj = m.group(1).strip(), m.group(2).strip().lower(), m.group(3).strip()
-        edges.append(KGEdge(subject_label=subj, predicate=pred, object_label=obj, confidence=0.6))
+        subj, pred, obj = (
+            m.group(1).strip(),
+            m.group(2).strip().lower(),
+            m.group(3).strip(),
+        )
+        edges.append(
+            KGEdge(subject_label=subj, predicate=pred, object_label=obj, confidence=0.6)
+        )
         for label in (subj, obj):
             if label.lower() not in seen:
-                nodes.append(KGNode(label=label, entity_type="CONCEPT", source_text=label))
+                nodes.append(
+                    KGNode(label=label, entity_type="CONCEPT", source_text=label)
+                )
                 seen.add(label.lower())
 
     return nodes, edges
@@ -160,7 +173,9 @@ def deduplicate_graph(
     nodes: list[KGNode],
     edges: list[KGEdge],
     *,
-    confidence_accumulator: Callable[[float, float], float] = lambda a, b: min(a + b, 1.0),
+    confidence_accumulator: Callable[[float, float], float] = lambda a, b: min(
+        a + b, 1.0
+    ),
 ) -> tuple[list[KGNode], list[KGEdge]]:
     """
     Merge duplicate nodes and accumulate edge weights from overlapping extractions.
@@ -212,12 +227,12 @@ def deduplicate_graph(
     edge_index: dict[tuple[str, str, str], KGEdge] = {}
 
     for edge in edges:
-        key = (
+        ekey: tuple[str, str, str] = (
             edge.subject_label.lower().strip(),
             edge.predicate.lower().strip(),
             edge.object_label.lower().strip(),
         )
-        if key not in edge_index:
+        if ekey not in edge_index:
             # First occurrence — copy into index with occurrences=1.
             merged = KGEdge(
                 subject_label=edge.subject_label,
@@ -227,12 +242,12 @@ def deduplicate_graph(
                 payload_ref=edge.payload_ref,
                 metadata={**edge.metadata, "occurrences": 1},
             )
-            edge_index[key] = merged
+            edge_index[ekey] = merged
         else:
-            existing = edge_index[key]
+            existing = edge_index[ekey]
             new_conf = confidence_accumulator(existing.confidence, edge.confidence)
             new_occ = existing.metadata.get("occurrences", 1) + 1
-            edge_index[key] = KGEdge(
+            edge_index[ekey] = KGEdge(
                 subject_label=existing.subject_label,
                 predicate=existing.predicate,
                 object_label=existing.object_label,

@@ -98,7 +98,9 @@ def _valid_headers(
 class TestComputeSignature:
     def test_no_body_excludes_hash(self) -> None:
         sig = _compute_signature(_KEY, "GET", "/api/health", 1000, b"")
-        expected = _hmac.new(_KEY.encode(), b"GET\n/api/health\n1000", hashlib.sha256).hexdigest()
+        expected = _hmac.new(
+            _KEY.encode(), b"GET\n/api/health\n1000", hashlib.sha256
+        ).hexdigest()
         assert sig == expected
 
     def test_with_body_includes_sha256(self) -> None:
@@ -106,7 +108,9 @@ class TestComputeSignature:
         body_hash = hashlib.sha256(body).hexdigest()
         sig = _compute_signature(_KEY, "POST", "/api/gc/trigger", 2000, body)
         canonical = f"POST\n/api/gc/trigger\n2000\n{body_hash}"
-        expected = _hmac.new(_KEY.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+        expected = _hmac.new(
+            _KEY.encode(), canonical.encode(), hashlib.sha256
+        ).hexdigest()
         assert sig == expected
 
     def test_method_uppercased(self) -> None:
@@ -286,7 +290,9 @@ def _build_test_app(api_key: str) -> Starlette:
             Route("/api/gc/trigger", endpoint=protected_route, methods=["POST"]),
             Route("/public", endpoint=public_route, methods=["GET"]),
         ],
-        middleware=[Middleware(HMACAuthMiddleware, protected_prefix="/api/", api_key=api_key)],
+        middleware=[
+            Middleware(HMACAuthMiddleware, protected_prefix="/api/", api_key=api_key)
+        ],
     )
 
 
@@ -328,14 +334,18 @@ class TestHMACAuthMiddleware:
         ts = int(time.time())
         sig = _make_signature(_KEY, "GET", "/api/health", ts)
         with TestClient(app, raise_server_exceptions=False) as client:
-            r = client.get("/api/health", headers={"Authorization": f"HMAC-SHA256 {sig}"})
+            r = client.get(
+                "/api/health", headers={"Authorization": f"HMAC-SHA256 {sig}"}
+            )
         assert r.status_code == 401
         assert r.json()["error"]["data"]["reason"] == "missing_auth_headers"
 
     def test_missing_authorization_header_returns_401(self) -> None:
         app = _build_test_app(_KEY)
         with TestClient(app, raise_server_exceptions=False) as client:
-            r = client.get("/api/health", headers={"X-TriMCP-Timestamp": str(int(time.time()))})
+            r = client.get(
+                "/api/health", headers={"X-TriMCP-Timestamp": str(int(time.time()))}
+            )
         assert r.status_code == 401
         assert r.json()["error"]["data"]["reason"] == "missing_auth_headers"
 
@@ -535,7 +545,9 @@ class TestNonceStoreUnit:
 # ============================================================================
 
 
-def _build_test_app_with_nonce(api_key: str, nonce_store: NonceStore | None) -> Starlette:
+def _build_test_app_with_nonce(
+    api_key: str, nonce_store: NonceStore | None
+) -> Starlette:
     """Build a test Starlette app with HMAC auth middleware and optional NonceStore."""
 
     async def protected_route(request: Request) -> PlainTextResponse:
@@ -767,7 +779,9 @@ class TestAssumeNamespace:
         """The audit event uses pool.acquire() — a different connection from the caller's."""
         ns_id = uuid4()
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
+        with patch(
+            "trimcp.event_log.append_event", new_callable=AsyncMock
+        ) as mock_append:
             await assume_namespace(
                 conn=caller_conn,
                 namespace_id=ns_id,
@@ -796,7 +810,9 @@ class TestAssumeNamespace:
 
         with (
             patch(
-                "trimcp.event_log.append_event", new_callable=AsyncMock, side_effect=_tracked_append
+                "trimcp.event_log.append_event",
+                new_callable=AsyncMock,
+                side_effect=_tracked_append,
             ),
             patch(
                 "trimcp.auth.set_namespace_context",
@@ -811,9 +827,10 @@ class TestAssumeNamespace:
                 pg_pool=mock_pool,
             )
 
-        assert call_order == ["append_event", "set_namespace_context"], (
-            f"Expected audit-first ordering, got: {call_order}"
-        )
+        assert call_order == [
+            "append_event",
+            "set_namespace_context",
+        ], f"Expected audit-first ordering, got: {call_order}"
 
     @pytest.mark.asyncio
     async def test_fail_closed_audit_write_failure_prevents_impersonation(
@@ -866,7 +883,9 @@ class TestAssumeNamespace:
         """The audit event records who impersonated whom and why."""
         ns_id = uuid4()
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
+        with patch(
+            "trimcp.event_log.append_event", new_callable=AsyncMock
+        ) as mock_append:
             await assume_namespace(
                 conn=caller_conn,
                 namespace_id=ns_id,
@@ -892,7 +911,9 @@ class TestAssumeNamespace:
         ns_id = uuid4()
         long_reason = "x" * 500
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
+        with patch(
+            "trimcp.event_log.append_event", new_callable=AsyncMock
+        ) as mock_append:
             await assume_namespace(
                 conn=caller_conn,
                 namespace_id=ns_id,
@@ -1043,7 +1064,9 @@ class TestAuditedSession:
 
         with (
             patch(
-                "trimcp.auth._write_audit_event", new_callable=AsyncMock, side_effect=_tracked_write
+                "trimcp.auth._write_audit_event",
+                new_callable=AsyncMock,
+                side_effect=_tracked_write,
             ),
             patch(
                 "trimcp.auth.set_namespace_context",
@@ -1059,9 +1082,11 @@ class TestAuditedSession:
             ):
                 call_order.append("yielded")
 
-        assert call_order == ["audit_write", "set_namespace_context", "yielded"], (
-            f"Expected audit-first ordering, got: {call_order}"
-        )
+        assert call_order == [
+            "audit_write",
+            "set_namespace_context",
+            "yielded",
+        ], f"Expected audit-first ordering, got: {call_order}"
 
     @pytest.mark.asyncio
     async def test_fail_closed_audit_write_failure_prevents_yield(
@@ -1090,7 +1115,9 @@ class TestAuditedSession:
     # ------------------------------------------------------------------
 
     @pytest.mark.asyncio
-    async def test_audit_survives_exception_in_with_block(self, mock_pool: MagicMock) -> None:
+    async def test_audit_survives_exception_in_with_block(
+        self, mock_pool: MagicMock
+    ) -> None:
         """When the with-block raises, the audit event is already committed
         on the separate connection — it survives the rollback."""
         ns_id = uuid4()
@@ -1167,7 +1194,9 @@ class TestAuditedSession:
 
         with (
             patch("trimcp.auth._write_audit_event", new_callable=AsyncMock),
-            patch("trimcp.auth.set_namespace_context", new_callable=AsyncMock) as mock_set,
+            patch(
+                "trimcp.auth.set_namespace_context", new_callable=AsyncMock
+            ) as mock_set,
         ):
             async with audited_session(
                 simple_pool,
@@ -1184,12 +1213,16 @@ class TestAuditedSession:
     # ------------------------------------------------------------------
 
     @pytest.mark.asyncio
-    async def test_audit_event_contains_operation_metadata(self, mock_pool: MagicMock) -> None:
+    async def test_audit_event_contains_operation_metadata(
+        self, mock_pool: MagicMock
+    ) -> None:
         """The audit event records the agent, namespace, event_type, params,
         and reason."""
         ns_id = uuid4()
 
-        with patch("trimcp.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
+        with patch(
+            "trimcp.auth._write_audit_event", new_callable=AsyncMock
+        ) as mock_write:
             async with audited_session(
                 mock_pool,
                 ns_id,
@@ -1214,7 +1247,9 @@ class TestAuditedSession:
         ns_id = uuid4()
         long_reason = "y" * 500
 
-        with patch("trimcp.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
+        with patch(
+            "trimcp.auth._write_audit_event", new_callable=AsyncMock
+        ) as mock_write:
             async with audited_session(
                 mock_pool,
                 ns_id,
@@ -1234,7 +1269,9 @@ class TestAuditedSession:
         params under the 'reason' key."""
         ns_id = uuid4()
 
-        with patch("trimcp.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
+        with patch(
+            "trimcp.auth._write_audit_event", new_callable=AsyncMock
+        ) as mock_write:
             async with audited_session(
                 mock_pool,
                 ns_id,
@@ -1250,12 +1287,16 @@ class TestAuditedSession:
         assert kwargs["params"]["reason"] == "security audit"
 
     @pytest.mark.asyncio
-    async def test_default_params_when_none_provided(self, mock_pool: MagicMock) -> None:
+    async def test_default_params_when_none_provided(
+        self, mock_pool: MagicMock
+    ) -> None:
         """When no params are provided, an empty dict is passed to the audit
         write (reason is merged in if provided)."""
         ns_id = uuid4()
 
-        with patch("trimcp.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
+        with patch(
+            "trimcp.auth._write_audit_event", new_callable=AsyncMock
+        ) as mock_write:
             async with audited_session(
                 mock_pool,
                 ns_id,
@@ -1412,7 +1453,9 @@ class TestRequireScopeDecorator:
         assert result["ns"] == "x"
 
     @pytest.mark.asyncio
-    async def test_handler_without_admin_identity_param_works(self, monkeypatch) -> None:
+    async def test_handler_without_admin_identity_param_works(
+        self, monkeypatch
+    ) -> None:
         monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "key123")
 
         @require_scope("admin")
@@ -1564,7 +1607,9 @@ class TestVerifyAdminPassword:
     def test_plaintext_auto_upgrades(self) -> None:
         from trimcp.auth import verify_admin_password
 
-        valid, upgraded = verify_admin_password("secret123", "secret123", auto_upgrade=True)
+        valid, upgraded = verify_admin_password(
+            "secret123", "secret123", auto_upgrade=True
+        )
         assert valid is True
         assert upgraded is not None
         assert upgraded.startswith("$pbkdf2$")

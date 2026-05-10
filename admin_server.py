@@ -7,7 +7,8 @@ import os
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+UTC = timezone.utc
 from typing import Any
 
 from starlette.applications import Starlette
@@ -20,10 +21,16 @@ from starlette.responses import (
 )
 from starlette.routing import Route
 
-from trimcp.auth import BasicAuthMiddleware, HMACAuthMiddleware, optional_hmac_nonce_store
+from trimcp.auth import (
+    BasicAuthMiddleware,
+    HMACAuthMiddleware,
+    optional_hmac_nonce_store,
+)
 from trimcp.config import cfg
+from trimcp.event_log import verify_merkle_chain
+from trimcp.mtls import MTLSAuthMiddleware
 from trimcp.notifications import dispatcher
-from trimcp.observability import OpenTelemetryTraceMiddleware
+from trimcp.observability import MERKLE_CHAIN_VALID, OpenTelemetryTraceMiddleware
 from trimcp.orchestrator import TriStackEngine
 from trimcp.temporal import parse_as_of
 
@@ -42,6 +49,35 @@ async def lifespan(app):
     await engine.connect()
     await dispatcher.start_worker()
     logger.info("TriMCP Admin: engine connected, dispatcher started.")
+
+    # Startup safety: ensure event_log partitions exist for the current month
+    try:
+        from trimcp.observability import EVENT_LOG_PARTITION_MONTHS_AHEAD
+
+        async with engine.pg_pool.acquire() as conn:
+            await conn.execute("SELECT trimcp_ensure_event_log_monthly_partitions(3)")
+            row = await conn.fetchrow(
+                """
+                SELECT count(*) AS cnt
+                FROM pg_inherits i
+                JOIN pg_class c ON c.oid = i.inhrelid
+                WHERE i.inhparent = 'event_log'::regclass
+                  AND c.relname LIKE 'event_log_%'
+                  AND c.relname >= 'event_log_' || to_char(now(), 'YYYY_MM')
+                """
+            )
+            months_ahead = row["cnt"] if row else 0
+            EVENT_LOG_PARTITION_MONTHS_AHEAD.set(months_ahead)
+            if months_ahead < 2:
+                logger.warning(
+                    "event_log partition runway low: %s months ahead (need >= 2)",
+                    months_ahead,
+                )
+            else:
+                logger.info("event_log partition runway: %s months ahead", months_ahead)
+    except Exception:
+        logger.exception("event_log partition startup check failed")
+
     yield
     await dispatcher.stop_worker()
     await engine.disconnect()
@@ -54,7 +90,9 @@ async def get_health(request):
 
     health = await engine.check_health()
 
-    if any(status == "down" for status in health.values()):
+    # Check nested database statuses for any "down" components
+    db_health = health.get("databases", {})
+    if any(status == "down" for status in db_health.values()):
         await dispatcher.dispatch_alert(
             "Database Health Alert", f"Current health: {json.dumps(health)}"
         )
@@ -63,11 +101,8 @@ async def get_health(request):
 
 
 async def get_health_v1(request):
-    """GET /api/health/v1 — structured health for Admin UI (``check_health_v1``)."""
-    if not engine:
-        return JSONResponse({"error": "Engine not connected"}, status_code=503)
-    health = await engine.check_health_v1()
-    return JSONResponse(health)
+    """GET /api/health/v1 — deprecated alias, returns same data as /api/health."""
+    return await get_health(request)
 
 
 async def trigger_gc(request):
@@ -98,7 +133,9 @@ async def api_search(request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+        return JSONResponse(
+            {"error": "Request body must be valid JSON"}, status_code=400
+        )
 
     missing = [f for f in ("namespace_id", "agent_id", "query") if not body.get(f)]
     if missing:
@@ -115,7 +152,9 @@ async def api_search(request):
     from trimcp import quotas as _quotas
 
     try:
-        q_res = await _quotas.consume_for_tool(engine.pg_pool, "api_semantic_search", body)
+        q_res = await _quotas.consume_for_tool(
+            engine.pg_pool, "api_semantic_search", body
+        )
     except _quotas.QuotaExceededError as exc:
         return JSONResponse({"error": str(exc)}, status_code=429)
 
@@ -132,7 +171,9 @@ async def api_search(request):
     except Exception as exc:
         await q_res.rollback()
         logger.error("api_search failed: %s", exc)
-        return JSONResponse({"error": "Search failed", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "Search failed", "detail": str(exc)}, status_code=500
+        )
 
 
 async def serve_index(request):
@@ -166,15 +207,21 @@ async def api_replay_observe(request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+        return JSONResponse(
+            {"error": "Request body must be valid JSON"}, status_code=400
+        )
 
     if not body.get("namespace_id"):
-        return JSONResponse({"error": "Missing required field: namespace_id"}, status_code=422)
+        return JSONResponse(
+            {"error": "Missing required field: namespace_id"}, status_code=422
+        )
 
     try:
         ns_id = uuid.UUID(body["namespace_id"])
     except ValueError:
-        return JSONResponse({"error": "namespace_id is not a valid UUID"}, status_code=422)
+        return JSONResponse(
+            {"error": "namespace_id is not a valid UUID"}, status_code=422
+        )
 
     start_seq = int(body.get("start_seq", 1))
     end_seq = int(body["end_seq"]) if "end_seq" in body else None
@@ -261,23 +308,31 @@ async def api_snapshot_export(request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+        return JSONResponse(
+            {"error": "Request body must be valid JSON"}, status_code=400
+        )
 
     ns_id = body.get("namespace_id")
     if not ns_id:
-        return JSONResponse({"error": "Missing required field: namespace_id"}, status_code=422)
+        return JSONResponse(
+            {"error": "Missing required field: namespace_id"}, status_code=422
+        )
 
     try:
         uuid.UUID(ns_id)
     except ValueError:
-        return JSONResponse({"error": "namespace_id is not a valid UUID"}, status_code=422)
+        return JSONResponse(
+            {"error": "namespace_id is not a valid UUID"}, status_code=422
+        )
 
     snapshot_id = body.get("snapshot_id")
     if snapshot_id:
         try:
             uuid.UUID(snapshot_id)
         except ValueError:
-            return JSONResponse({"error": "snapshot_id is not a valid UUID"}, status_code=422)
+            return JSONResponse(
+                {"error": "snapshot_id is not a valid UUID"}, status_code=422
+            )
 
     as_of_raw = body.get("as_of")
     from trimcp.temporal import parse_as_of
@@ -317,7 +372,9 @@ async def api_replay_fork(request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+        return JSONResponse(
+            {"error": "Request body must be valid JSON"}, status_code=400
+        )
 
     required = ("source_namespace_id", "target_namespace_id", "fork_seq")
     missing = [f for f in required if not body.get(f) and body.get(f) != 0]
@@ -381,7 +438,9 @@ async def api_replay_fork(request):
                 ):
                     pass
             except Exception:
-                logger.exception("Background ForkedReplay failed run_id=%s", fork_run_id)
+                logger.exception(
+                    "Background ForkedReplay failed run_id=%s", fork_run_id
+                )
 
         asyncio.create_task(_run_fork(), name=f"fork-{fork_run_id}")
         return JSONResponse(
@@ -403,7 +462,8 @@ async def api_replay_fork(request):
             frozen_config.target_namespace_id,
         )
         return JSONResponse(
-            {"error": "Fork replay failed to start", "detail": str(exc)}, status_code=500
+            {"error": "Fork replay failed to start", "detail": str(exc)},
+            status_code=500,
         )
 
 
@@ -430,7 +490,9 @@ async def api_replay_status(request):
         return JSONResponse({"error": str(exc)}, status_code=404)
     except Exception as exc:
         logger.exception("api_replay_status failed run_id=%s", run_id)
-        return JSONResponse({"error": "Status check failed", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "Status check failed", "detail": str(exc)}, status_code=500
+        )
 
 
 async def api_event_provenance(request):
@@ -450,7 +512,9 @@ async def api_event_provenance(request):
     try:
         from trimcp.replay import get_event_provenance
 
-        provenance = await get_event_provenance(pool=engine.pg_pool, memory_id=memory_id)
+        provenance = await get_event_provenance(
+            pool=engine.pg_pool, memory_id=memory_id
+        )
         return JSONResponse(provenance)
     except Exception as exc:
         logger.exception("api_event_provenance failed memory_id=%s", memory_id)
@@ -565,11 +629,16 @@ async def api_a2a_revoke_grant(request):
             revoked = await revoke_grant(conn, grant_id, caller_ctx)
     except Exception as exc:
         logger.exception("api_a2a_revoke_grant failed grant=%s", grant_id)
-        return JSONResponse({"error": "Revoke failed", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "Revoke failed", "detail": str(exc)}, status_code=500
+        )
 
     if not revoked:
         return JSONResponse(
-            {"error": "Grant not found or not owned by this namespace", "grant_id": str(grant_id)},
+            {
+                "error": "Grant not found or not owned by this namespace",
+                "grant_id": str(grant_id),
+            },
             status_code=404,
         )
 
@@ -586,13 +655,16 @@ async def api_a2a_list_grants(request):
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
 
     ns_id_str = request.query_params.get("namespace_id", "")
-    include_inactive = request.query_params.get("include_inactive", "false").lower() == "true"
+    include_inactive = (
+        request.query_params.get("include_inactive", "false").lower() == "true"
+    )
 
     try:
         ns_id = uuid.UUID(ns_id_str)
     except ValueError:
         return JSONResponse(
-            {"error": "namespace_id is required and must be a valid UUID"}, status_code=422
+            {"error": "namespace_id is required and must be a valid UUID"},
+            status_code=422,
         )
 
     from trimcp.a2a import list_grants
@@ -603,10 +675,14 @@ async def api_a2a_list_grants(request):
 
     try:
         async with engine.pg_pool.acquire() as conn:
-            grants = await list_grants(conn, caller_ctx, include_inactive=include_inactive)
+            grants = await list_grants(
+                conn, caller_ctx, include_inactive=include_inactive
+            )
     except Exception as exc:
         logger.exception("api_a2a_list_grants failed ns=%s", ns_id)
-        return JSONResponse({"error": "List grants failed", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "List grants failed", "detail": str(exc)}, status_code=500
+        )
 
     return JSONResponse({"grants": grants, "total": len(grants)})
 
@@ -719,7 +795,9 @@ async def api_admin_events(request):
             "event_type": r["event_type"],
             "event_seq": r["event_seq"],
             "occurred_at": r["occurred_at"].astimezone(UTC).isoformat(),
-            "parent_event_id": str(r["parent_event_id"]) if r["parent_event_id"] else None,
+            "parent_event_id": (
+                str(r["parent_event_id"]) if r["parent_event_id"] else None
+            ),
         }
         for r in rows
     ]
@@ -804,6 +882,48 @@ async def api_admin_events_summary(request):
     )
 
 
+async def api_admin_verify_chain(request):
+    """GET /api/admin/verify-chain/{namespace_id}
+
+    Verify the Merkle hash chain for the given namespace.
+    Recomputes chain_hash for every event in sequence order and
+    reports the first break (if any).
+    """
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    raw_ns = request.path_params.get("namespace_id")
+    try:
+        namespace_id = uuid.UUID(raw_ns) if raw_ns else None
+    except ValueError:
+        return JSONResponse({"error": "Invalid namespace_id"}, status_code=422)
+
+    if namespace_id is None:
+        return JSONResponse({"error": "namespace_id required"}, status_code=422)
+
+    try:
+        async with engine.pg_pool.acquire() as conn:
+            result = await verify_merkle_chain(conn, namespace_id=namespace_id)
+    except Exception as exc:
+        logger.exception("api_admin_verify_chain failed")
+        return JSONResponse(
+            {"error": "Failed to verify chain", "detail": str(exc)},
+            status_code=500,
+        )
+
+    valid = bool(result.get("valid"))
+    MERKLE_CHAIN_VALID.labels(namespace_id=str(namespace_id)).set(1 if valid else 0)
+
+    return JSONResponse(
+        {
+            "valid": valid,
+            "checked": result.get("checked", 0),
+            "first_break": result.get("first_break"),
+            "last_verified_seq": result.get("last_verified_seq", 0),
+        }
+    )
+
+
 async def api_admin_a2a_grants(request):
     """GET /api/admin/a2a/grants
 
@@ -814,11 +934,17 @@ async def api_admin_a2a_grants(request):
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
 
     try:
-        owner_namespace_id = _parse_uuid_opt(request.query_params.get("owner_namespace_id"))
-        target_namespace_id = _parse_uuid_opt(request.query_params.get("target_namespace_id"))
+        owner_namespace_id = _parse_uuid_opt(
+            request.query_params.get("owner_namespace_id")
+        )
+        target_namespace_id = _parse_uuid_opt(
+            request.query_params.get("target_namespace_id")
+        )
         status = request.query_params.get("status")
         if status and status not in ("active", "revoked", "expired"):
-            return JSONResponse({"error": "status must be active|revoked|expired"}, status_code=422)
+            return JSONResponse(
+                {"error": "status must be active|revoked|expired"}, status_code=422
+            )
         page = _parse_int(
             request.query_params.get("page"), default=1, min_value=1, max_value=10_000
         )
@@ -871,11 +997,13 @@ async def api_admin_a2a_grants(request):
             "grant_id": str(r["id"]),
             "owner_namespace_id": str(r["owner_namespace_id"]),
             "owner_agent_id": r["owner_agent_id"],
-            "target_namespace_id": str(r["target_namespace_id"])
-            if r["target_namespace_id"]
-            else None,
+            "target_namespace_id": (
+                str(r["target_namespace_id"]) if r["target_namespace_id"] else None
+            ),
             "target_agent_id": r["target_agent_id"],
-            "scopes": json.loads(r["scopes"]) if isinstance(r["scopes"], str) else r["scopes"],
+            "scopes": (
+                json.loads(r["scopes"]) if isinstance(r["scopes"], str) else r["scopes"]
+            ),
             "status": r["status"],
             "expires_at": r["expires_at"].astimezone(UTC).isoformat(),
             "created_at": r["created_at"].astimezone(UTC).isoformat(),
@@ -902,7 +1030,9 @@ async def api_admin_a2a_grants_summary(request):
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
 
     try:
-        owner_namespace_id = _parse_uuid_opt(request.query_params.get("owner_namespace_id"))
+        owner_namespace_id = _parse_uuid_opt(
+            request.query_params.get("owner_namespace_id")
+        )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=422)
 
@@ -927,7 +1057,8 @@ async def api_admin_a2a_grants_summary(request):
     except Exception as exc:
         logger.exception("api_admin_a2a_grants_summary failed")
         return JSONResponse(
-            {"error": "Failed to summarize A2A grants", "detail": str(exc)}, status_code=500
+            {"error": "Failed to summarize A2A grants", "detail": str(exc)},
+            status_code=500,
         )
 
     status_counts = {r["status"]: int(r["c"]) for r in rows}
@@ -1011,10 +1142,14 @@ async def api_admin_quotas(request):
                 "used": used,
                 "limit": limit_amount,
                 "remaining": remaining,
-                "reset_at": r["reset_at"].astimezone(UTC).isoformat() if r["reset_at"] else None,
-                "updated_at": r["updated_at"].astimezone(UTC).isoformat()
-                if r["updated_at"]
-                else None,
+                "reset_at": (
+                    r["reset_at"].astimezone(UTC).isoformat() if r["reset_at"] else None
+                ),
+                "updated_at": (
+                    r["updated_at"].astimezone(UTC).isoformat()
+                    if r["updated_at"]
+                    else None
+                ),
                 "window_start": cutoff.isoformat(),
             }
         )
@@ -1025,9 +1160,11 @@ async def api_admin_quotas(request):
             "totals": {
                 "used": total_used,
                 "limit": total_limit,
-                "utilization_pct": round((total_used / total_limit * 100.0), 2)
-                if total_limit > 0
-                else 0.0,
+                "utilization_pct": (
+                    round((total_used / total_limit * 100.0), 2)
+                    if total_limit > 0
+                    else 0.0
+                ),
             },
         }
     )
@@ -1099,7 +1236,9 @@ async def api_admin_graph_explore(request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+        return JSONResponse(
+            {"error": "Request body must be valid JSON"}, status_code=400
+        )
 
     missing = [f for f in ("namespace_id", "query") if not body.get(f)]
     if missing:
@@ -1138,16 +1277,16 @@ async def api_admin_embedding_models(request):
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
     try:
         async with engine.pg_pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
+            rows = await conn.fetch("""
                 SELECT id, name, dimension, status, created_at, retired_at
                 FROM embedding_models
                 ORDER BY created_at DESC
-                """
-            )
+                """)
     except Exception as exc:
         logger.exception("api_admin_embedding_models failed")
-        return JSONResponse({"error": "Failed to list models", "detail": str(exc)}, status_code=500)
+        return JSONResponse(
+            {"error": "Failed to list models", "detail": str(exc)}, status_code=500
+        )
     return JSONResponse({"models": [_serialize_pg_row(r) for r in rows]})
 
 
@@ -1158,7 +1297,9 @@ async def api_admin_embedding_migration_start(request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+        return JSONResponse(
+            {"error": "Request body must be valid JSON"}, status_code=400
+        )
     tid = body.get("target_model_id")
     if not tid:
         return JSONResponse({"error": "target_model_id is required"}, status_code=422)
@@ -1234,6 +1375,110 @@ async def api_admin_embedding_migration_abort(request):
     return JSONResponse(out)
 
 
+async def api_admin_schema(request):
+    """GET /api/admin/schema — JSON Schema for all public TriMCP Pydantic models."""
+    from pydantic.json_schema import models_json_schema
+
+    from trimcp.models import (
+        ForgetMemoryRequest,
+        GetRecentContextRequest,
+        GraphSearchRequest,
+        IndexCodeFileRequest,
+        KGEdge,
+        KGNode,
+        ManageQuotasRequest,
+        MediaPayload,
+        MemoryRecord,
+        NamespaceCognitiveConfig,
+        NamespaceCreate,
+        NamespaceMetadata,
+        NamespaceMetadataPatch,
+        NamespacePIIConfig,
+        NamespaceRecord,
+        SemanticSearchRequest,
+        SemanticSearchResult,
+        StoreMemoryRequest,
+        UnredactMemoryRequest,
+    )
+
+    _models = [
+        NamespaceCreate, NamespaceRecord, NamespaceMetadata, NamespaceMetadataPatch,
+        NamespaceCognitiveConfig, NamespacePIIConfig, ManageQuotasRequest,
+        StoreMemoryRequest, MemoryRecord, ForgetMemoryRequest, UnredactMemoryRequest,
+        GetRecentContextRequest, SemanticSearchRequest, SemanticSearchResult,
+        GraphSearchRequest, IndexCodeFileRequest, KGNode, KGEdge, MediaPayload,
+    ]
+    _, schema = models_json_schema(
+        [(m, "validation") for m in _models],
+        title="TriMCP API Schema",
+    )
+    return JSONResponse(schema)
+
+
+async def api_admin_dlq_list(request):
+    """GET /api/admin/dlq
+
+    Query params: task_name?, status?, limit=50, offset=0
+    """
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    from trimcp.dead_letter_queue import list_dead_letters
+
+    task_name = request.query_params.get("task_name") or None
+    status = request.query_params.get("status") or None
+    try:
+        limit = int(request.query_params.get("limit", "50"))
+        offset = int(request.query_params.get("offset", "0"))
+    except ValueError:
+        return JSONResponse({"error": "limit and offset must be integers"}, status_code=422)
+
+    try:
+        entries = await list_dead_letters(
+            engine.pg_pool, task_name=task_name, status=status, limit=limit, offset=offset
+        )
+    except Exception as exc:
+        logger.exception("api_admin_dlq_list failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse({"entries": entries, "count": len(entries)})
+
+
+async def api_admin_dlq_replay(request):
+    """POST /api/admin/dlq/{dlq_id}/replay"""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    from trimcp.dead_letter_queue import replay_dead_letter
+
+    dlq_id = request.path_params["dlq_id"]
+    try:
+        result = await replay_dead_letter(engine.pg_pool, dlq_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except Exception as exc:
+        logger.exception("api_admin_dlq_replay failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse(result)
+
+
+async def api_admin_dlq_purge(request):
+    """POST /api/admin/dlq/{dlq_id}/purge"""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    from trimcp.dead_letter_queue import purge_dead_letter
+
+    dlq_id = request.path_params["dlq_id"]
+    try:
+        await purge_dead_letter(engine.pg_pool, dlq_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except Exception as exc:
+        logger.exception("api_admin_dlq_purge failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse({"status": "ok", "id": dlq_id})
+
+
 app = Starlette(
     debug=False,
     lifespan=lifespan,
@@ -1241,6 +1486,15 @@ app = Starlette(
         # OTel middleware must come first so trace context is established
         # before any auth or handler logic runs.
         Middleware(OpenTelemetryTraceMiddleware),
+        Middleware(
+            MTLSAuthMiddleware,
+            protected_prefix="/api/",
+            enabled=cfg.TRIMCP_ADMIN_MTLS_ENABLED,
+            strict=cfg.TRIMCP_ADMIN_MTLS_STRICT,
+            trusted_proxy_hops=cfg.TRIMCP_ADMIN_MTLS_TRUSTED_PROXY_HOP,
+            allowed_sans=cfg.TRIMCP_ADMIN_MTLS_ALLOWED_SANS,
+            allowed_fingerprints=cfg.TRIMCP_ADMIN_MTLS_ALLOWED_FINGERPRINTS,
+        ),
         Middleware(
             BasicAuthMiddleware,
             protected_prefix="/",
@@ -1265,20 +1519,38 @@ app = Starlette(
         # Phase 2.3 — Replay
         Route("/api/replay/observe", endpoint=api_replay_observe, methods=["POST"]),
         Route("/api/replay/fork", endpoint=api_replay_fork, methods=["POST"]),
-        Route("/api/replay/status/{run_id}", endpoint=api_replay_status, methods=["GET"]),
-        Route("/api/replay/provenance/{memory_id}", endpoint=api_event_provenance, methods=["GET"]),
+        Route(
+            "/api/replay/status/{run_id}", endpoint=api_replay_status, methods=["GET"]
+        ),
+        Route(
+            "/api/replay/provenance/{memory_id}",
+            endpoint=api_event_provenance,
+            methods=["GET"],
+        ),
         # Phase 3 — Snapshot export (streaming NDJSON)
         Route("/api/snapshot/export", endpoint=api_snapshot_export, methods=["POST"]),
         # Phase 3.1 — A2A Grant Management
-        Route("/api/a2a/grants/create", endpoint=api_a2a_create_grant, methods=["POST"]),
-        Route("/api/a2a/grants/{grant_id}/revoke", endpoint=api_a2a_revoke_grant, methods=["POST"]),
+        Route(
+            "/api/a2a/grants/create", endpoint=api_a2a_create_grant, methods=["POST"]
+        ),
+        Route(
+            "/api/a2a/grants/{grant_id}/revoke",
+            endpoint=api_a2a_revoke_grant,
+            methods=["POST"],
+        ),
         Route("/api/a2a/grants", endpoint=api_a2a_list_grants, methods=["GET"]),
         # Admin UI feed endpoints
         Route("/api/admin/events", endpoint=api_admin_events, methods=["GET"]),
-        Route("/api/admin/events/summary", endpoint=api_admin_events_summary, methods=["GET"]),
+        Route(
+            "/api/admin/events/summary",
+            endpoint=api_admin_events_summary,
+            methods=["GET"],
+        ),
         Route("/api/admin/a2a/grants", endpoint=api_admin_a2a_grants, methods=["GET"]),
         Route(
-            "/api/admin/a2a/grants/summary", endpoint=api_admin_a2a_grants_summary, methods=["GET"]
+            "/api/admin/a2a/grants/summary",
+            endpoint=api_admin_a2a_grants_summary,
+            methods=["GET"],
         ),
         Route(
             "/api/admin/a2a/grants/{grant_id}/revoke",
@@ -1286,14 +1558,31 @@ app = Starlette(
             methods=["POST"],
         ),
         Route("/api/admin/quotas", endpoint=api_admin_quotas, methods=["GET"]),
-        Route("/api/admin/quotas/summary", endpoint=api_admin_quotas_summary, methods=["GET"]),
-        Route("/api/admin/graph/explore", endpoint=api_admin_graph_explore, methods=["POST"]),
+        Route(
+            "/api/admin/quotas/summary",
+            endpoint=api_admin_quotas_summary,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/graph/explore",
+            endpoint=api_admin_graph_explore,
+            methods=["POST"],
+        ),
         Route(
             "/api/admin/graph/provenance/{memory_id}",
             endpoint=api_event_provenance,
             methods=["GET"],
         ),
-        Route("/api/admin/embedding-models", endpoint=api_admin_embedding_models, methods=["GET"]),
+        Route(
+            "/api/admin/verify-chain/{namespace_id}",
+            endpoint=api_admin_verify_chain,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/embedding-models",
+            endpoint=api_admin_embedding_models,
+            methods=["GET"],
+        ),
         Route(
             "/api/admin/embedding-migrations/start",
             endpoint=api_admin_embedding_migration_start,
@@ -1317,6 +1606,20 @@ app = Starlette(
         Route(
             "/api/admin/embedding-migrations/{migration_id}/abort",
             endpoint=api_admin_embedding_migration_abort,
+            methods=["POST"],
+        ),
+        # Schema endpoint
+        Route("/api/admin/schema", endpoint=api_admin_schema, methods=["GET"]),
+        # DLQ management
+        Route("/api/admin/dlq", endpoint=api_admin_dlq_list, methods=["GET"]),
+        Route(
+            "/api/admin/dlq/{dlq_id}/replay",
+            endpoint=api_admin_dlq_replay,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/dlq/{dlq_id}/purge",
+            endpoint=api_admin_dlq_purge,
             methods=["POST"],
         ),
     ],

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from trimcp.config import cfg
 from trimcp.providers import LLMProvider, Message
+from trimcp.sanitize import sanitize_llm_payload
 from trimcp.signing import get_active_key, sign_fields
 
 log = logging.getLogger(__name__)
@@ -68,22 +69,15 @@ _CONSOLIDATION_SYSTEM = (
 
 def _build_consolidation_messages(memory_cluster_json: str) -> list[Message]:
     """Build the message list for the consolidation prompt (per spec §1.2)."""
-    # Sanitize inputs by stripping any injected delimiter tags
-    # Log when injected tags are detected for security audit trail
-    if "<memory_content>" in memory_cluster_json or "</memory_content>" in memory_cluster_json:
+    sanitized_json = sanitize_llm_payload(memory_cluster_json)
+    if sanitized_json != memory_cluster_json:
         log.warning(
-            "[prompt-injection] Consolidation input contained injected <memory_content> "
-            "tags — stripped before LLM call. "
-            "First occurrence near: ...%s...",
-            memory_cluster_json[
-                max(
-                    0, memory_cluster_json.index("<memory_content>") - 40
-                ) : memory_cluster_json.index("<memory_content>") + 60
-            ],
+            "[prompt-injection] Consolidation input contained injected tags or "
+            "zero-width characters — sanitized before LLM call. "
+            "Original length %d → sanitized length %d.",
+            len(memory_cluster_json),
+            len(sanitized_json),
         )
-    sanitized_json = memory_cluster_json.replace("<memory_content>", "").replace(
-        "</memory_content>", ""
-    )
     return [
         Message.system(_CONSOLIDATION_SYSTEM),
         Message.user(f"<memory_content>\n{sanitized_json}\n</memory_content>"),
@@ -108,8 +102,8 @@ class ConsolidationWorker:
         valid_memories = []
         embeddings = []
         for m in memories:
-            if m['embedding']:
-                emb_list = json.loads(m['embedding'])
+            if m["embedding"]:
+                emb_list = json.loads(m["embedding"])
                 embeddings.append(emb_list)
                 valid_memories.append(m)
 
@@ -118,11 +112,13 @@ class ConsolidationWorker:
 
         X = np.array(embeddings)
         clusterer = HDBSCAN(min_cluster_size=2)
-        asyncio.run(clusterer.fit_predict(X)) if not callable(
-            getattr(asyncio, 'to_thread', None)
-        ) else None
+        (
+            asyncio.run(clusterer.fit_predict(X))
+            if not callable(getattr(asyncio, "to_thread", None))
+            else None
+        )
         # We'll use to_thread in the caller — keep this sync-safe
-        return valid_memories, None  # caller handles threading
+        return valid_memories, {}  # caller handles threading
 
     async def _cluster_memories_async(self, memories: list) -> tuple[list, dict]:
         """Async wrapper: parse embeddings + HDBSCAN clustering (offloaded to thread)."""
@@ -132,8 +128,8 @@ class ConsolidationWorker:
         valid_memories = []
         embeddings = []
         for m in memories:
-            if m['embedding']:
-                emb_list = json.loads(m['embedding'])
+            if m["embedding"]:
+                emb_list = json.loads(m["embedding"])
                 embeddings.append(emb_list)
                 valid_memories.append(m)
 
@@ -161,7 +157,7 @@ class ConsolidationWorker:
         label: int,
     ) -> ConsolidatedAbstraction | None:
         """Call LLM, validate abstraction, return None on any failure."""
-        payloads = [m['payload_ref'] for m in cluster_mems]
+        payloads = [m["payload_ref"] for m in cluster_mems]
         messages = _build_consolidation_messages(json.dumps(payloads))
 
         try:
@@ -174,14 +170,22 @@ class ConsolidationWorker:
             return None
 
         if abstraction.confidence < 0.3:
-            log.info("Cluster %s discarded: confidence %.2f < 0.3", label, abstraction.confidence)
+            log.info(
+                "Cluster %s discarded: confidence %.2f < 0.3",
+                label,
+                abstraction.confidence,
+            )
             return None
 
         input_ids = set(mem_ids)
-        bad_ids = [mid for mid in abstraction.supporting_memory_ids if mid not in input_ids]
+        bad_ids = [
+            mid for mid in abstraction.supporting_memory_ids if mid not in input_ids
+        ]
         if bad_ids:
             log.warning(
-                "Cluster %s rejected: hallucinated supporting_memory_ids %s", label, bad_ids
+                "Cluster %s rejected: hallucinated supporting_memory_ids %s",
+                label,
+                bad_ids,
             )
             return None
 
@@ -228,7 +232,7 @@ class ConsolidationWorker:
         fields_to_sign = {
             "namespace_id": str(namespace_id),
             "agent_id": "system",
-            "event_type": "consolidation",
+            "event_type": "consolidation_run",
             "event_seq": seq,
             "params": event_params,
         }
@@ -281,42 +285,59 @@ class ConsolidationWorker:
         if cfg.CONSOLIDATION_DECAY_SOURCES:
             from trimcp.salience import compute_decayed_score
 
+            # Batch-fetch existing salience (Item H — O(1) vs O(N))
+            existing_rows = await conn.fetch(
+                "SELECT memory_id, salience_score, updated_at FROM memory_salience "
+                "WHERE memory_id = ANY($1::uuid[]) AND agent_id = 'system'",
+                mem_ids,
+            )
+            existing = {
+                str(row["memory_id"]): (row["salience_score"], row["updated_at"])
+                for row in existing_rows
+            }
+
+            decayed_ids: list[str] = []
+            decayed_scores: list[float] = []
             for mem_id in mem_ids:
-                # Fetch current salience first
-                current_row = await conn.fetchrow(
-                    "SELECT salience_score, updated_at FROM memory_salience "
-                    "WHERE memory_id = $1 AND agent_id = 'system'",
-                    UUID(mem_id),
-                )
-                if current_row:
-                    decayed = compute_decayed_score(
-                        s_last=current_row["salience_score"],
-                        updated_at=current_row["updated_at"],
+                if mem_id in existing:
+                    s_last, updated_at = existing[mem_id]
+                    score = compute_decayed_score(
+                        s_last=s_last,
+                        updated_at=updated_at,
                         half_life_days=cfg.CONSOLIDATION_HALF_LIFE_DAYS,
-                        memory_id=str(mem_id),
-                    )
-                    await conn.execute(
-                        "UPDATE memory_salience SET salience_score = $1, updated_at = NOW() "
-                        "WHERE memory_id = $2 AND agent_id = 'system'",
-                        decayed,
-                        UUID(mem_id),
+                        memory_id=mem_id,
                     )
                 else:
-                    await conn.execute(
-                        """
-                        INSERT INTO memory_salience (memory_id, agent_id, namespace_id, salience_score, updated_at)
-                        VALUES ($1, 'system', $2, 0.5, NOW())
-                        """,
-                        UUID(mem_id),
-                        namespace_id,
-                    )
+                    score = 0.5
+                decayed_ids.append(mem_id)
+                decayed_scores.append(score)
+
+            if decayed_ids:
+                await conn.execute(
+                    """
+                    INSERT INTO memory_salience (memory_id, agent_id, namespace_id, salience_score, updated_at)
+                    SELECT unnest($1::uuid[]), 'system', $2::uuid, unnest($3::float[]), NOW()
+                    ON CONFLICT (memory_id, agent_id) DO UPDATE
+                        SET salience_score = EXCLUDED.salience_score,
+                            updated_at = EXCLUDED.updated_at
+                    """,
+                    decayed_ids,
+                    namespace_id,
+                    decayed_scores,
+                )
 
     # ------------------------------------------------------------------
     # run_consolidation
     # ------------------------------------------------------------------
 
-    async def run_consolidation(self, namespace_id: UUID, since_timestamp: datetime | None = None):
-        log.info("Running consolidation for namespace %s (since=%s)", namespace_id, since_timestamp)
+    async def run_consolidation(
+        self, namespace_id: UUID, since_timestamp: datetime | None = None
+    ):
+        log.info(
+            "Running consolidation for namespace %s (since=%s)",
+            namespace_id,
+            since_timestamp,
+        )
 
         # 1. Create run record + fetch memories
         async with self.pool.acquire() as conn:
@@ -367,9 +388,11 @@ class ConsolidationWorker:
 
             # 3. Per-cluster: LLM → validate → store
             for label, cluster_mems in clusters.items():
-                mem_ids = [str(m['id']) for m in cluster_mems]
+                mem_ids = [str(m["id"]) for m in cluster_mems]
 
-                abstraction = await self._call_consolidation_llm(cluster_mems, mem_ids, label)
+                abstraction = await self._call_consolidation_llm(
+                    cluster_mems, mem_ids, label
+                )
                 if abstraction is None:
                     continue
 

@@ -14,7 +14,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from redis import Redis
@@ -23,7 +23,7 @@ from rq import get_current_job
 from trimcp import embeddings as _embeddings
 from trimcp.ast_parser import parse_file
 from trimcp.config import cfg
-from trimcp.dead_letter_queue import _track_attempt, store_dead_letter
+from trimcp.dead_letter_queue import _clear_attempt, _track_attempt, store_dead_letter
 from trimcp.orchestrator import TriStackEngine
 
 log = logging.getLogger("tri-stack-tasks")
@@ -144,7 +144,12 @@ def process_code_indexing(
     """
     job_id = _get_job_id()
     redis_client = _get_redis()
-    log.info("[Worker] Starting indexing for %s (namespace=%s, job=%s)", filepath, namespace_id, job_id)
+    log.info(
+        "[Worker] Starting indexing for %s (namespace=%s, job=%s)",
+        filepath,
+        namespace_id,
+        job_id,
+    )
 
     engine = TriStackEngine()
 
@@ -162,7 +167,7 @@ def process_code_indexing(
                 "language": language,
                 "file_hash": file_hash,
                 "raw_code": raw_code,
-                "ingested_at": datetime.now(UTC),
+                "ingested_at": datetime.now(timezone.utc),
             }
             if user_id:
                 doc["user_id"] = user_id
@@ -178,11 +183,14 @@ def process_code_indexing(
 
             # Use scoped session for RLS if namespace_id is provided
             async with (
-                engine.scoped_session(namespace_id) if namespace_id else engine.pg_pool.acquire()
+                engine.scoped_session(namespace_id)
+                if namespace_id
+                else engine.pg_pool.acquire()
             ) as conn:
                 async with conn.transaction():
                     await conn.execute(
-                        "DELETE FROM memories WHERE filepath = $1 AND (user_id IS NOT DISTINCT FROM $2)",
+                        "UPDATE memories SET valid_to = now() "
+                        "WHERE filepath = $1 AND (user_id IS NOT DISTINCT FROM $2) AND valid_to IS NULL",
                         filepath,
                         user_id,
                     )
@@ -236,7 +244,9 @@ def process_code_indexing(
         except Exception as exc:
             log.exception("[Worker] Indexing failed for %s", filepath)
             if inserted_mongo_id:
-                log.warning("[ROLLBACK] Removing orphaned Mongo doc %s", inserted_mongo_id)
+                log.warning(
+                    "[ROLLBACK] Removing orphaned Mongo doc %s", inserted_mongo_id
+                )
                 try:
                     await collection.delete_one({"_id": inserted_result.inserted_id})
                 except Exception as mongo_exc:
@@ -308,7 +318,12 @@ def process_bridge_event(provider: str, payload: dict) -> dict:
 
     job_id = _get_job_id()
     redis_client = _get_redis()
-    log.info("[Bridge worker] provider=%s keys=%s job=%s", provider, list(payload.keys()), job_id)
+    log.info(
+        "[Bridge worker] provider=%s keys=%s job=%s",
+        provider,
+        list(payload.keys()),
+        job_id,
+    )
 
     try:
         result = dispatch_bridge_event(provider, payload)
@@ -346,4 +361,3 @@ def process_bridge_event(provider: str, payload: dict) -> dict:
                 )
             return {"status": "dead_lettered", "job_id": job_id}
         raise  # retry — let RQ re-enqueue
-        return {"status": "error", "error": str(e)}

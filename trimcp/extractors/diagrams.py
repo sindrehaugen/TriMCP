@@ -8,7 +8,8 @@ import logging
 import re
 import tempfile
 from pathlib import Path
-from xml.etree import ElementTree as ET
+
+from defusedxml import ElementTree as ET
 
 from trimcp.extractors.core import ExtractionResult, Section, empty_skipped
 
@@ -24,7 +25,7 @@ _DRAWIO_DECODE = re.compile(
 def _safe_et_parse(xml_bytes: bytes) -> ET.Element | None:
     try:
         return ET.fromstring(xml_bytes)
-    except ET.ParseError:
+    except (ET.ParseError, ET.EntitiesForbidden):
         return None
 
 
@@ -46,7 +47,9 @@ async def extract_vsdx(blob: bytes) -> ExtractionResult:
         try:
             from vsdx import VisioFile
         except ImportError as e:
-            return empty_skipped("vsdx", "dependency_missing", warnings=[f"vsdx_unavailable:{e}"])
+            return empty_skipped(
+                "vsdx", "dependency_missing", warnings=[f"vsdx_unavailable:{e}"]
+            )
 
         path: Path | None = None
         try:
@@ -96,8 +99,12 @@ async def extract_vsdx(blob: bytes) -> ExtractionResult:
                     try:
                         for c in connects:
                             try:
-                                frm = getattr(c, "from_id", None) or getattr(c, "from_shape", None)
-                                to = getattr(c, "to_id", None) or getattr(c, "to_shape", None)
+                                frm = getattr(c, "from_id", None) or getattr(
+                                    c, "from_shape", None
+                                )
+                                to = getattr(c, "to_id", None) or getattr(
+                                    c, "to_shape", None
+                                )
                                 if frm is not None or to is not None:
                                     rel_lines.append(f"connect: {frm} -> {to}")
                             except Exception as e:
@@ -106,7 +113,9 @@ async def extract_vsdx(blob: bytes) -> ExtractionResult:
                         warnings.append(f"vsdx_connects_iterate:{e}")
                     body = "\n".join(text_parts).strip()
                     if rel_lines:
-                        body = (body + "\n\n### Connections\n" + "\n".join(rel_lines)).strip()
+                        body = (
+                            body + "\n\n### Connections\n" + "\n".join(rel_lines)
+                        ).strip()
                     sections.append(
                         Section(
                             text=body or "(no text shapes)",
@@ -215,7 +224,10 @@ def _mermaid_sections_sync(blob: bytes) -> ExtractionResult:
     if len(parts) <= 1:
         sections.append(
             Section(
-                text=text.strip(), structure_path="Mermaid", section_type="diagram", order=order
+                text=text.strip(),
+                structure_path="Mermaid",
+                section_type="diagram",
+                order=order,
             )
         )
     else:

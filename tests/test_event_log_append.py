@@ -14,7 +14,7 @@ Exercises:
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
@@ -146,7 +146,7 @@ async def test_invalid_agent_id_raises(namespace_id: UUID, bad_agent: str) -> No
 @pytest.mark.asyncio
 async def test_d8_backdated_valid_from_in_params_raises(namespace_id: UUID) -> None:
     conn = RecordingFakeConnection()
-    past = (datetime.now(UTC) - timedelta(days=365)).isoformat()
+    past = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
     async with conn.transaction():
         with pytest.raises(EventLogTimestampError):
             await append_event(

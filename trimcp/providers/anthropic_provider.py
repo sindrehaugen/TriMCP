@@ -137,7 +137,7 @@ class AnthropicProvider(LLMProvider):
 
         # Locate the tool_use block in the response content list.
         try:
-            tool_input = self._extract_tool_input(data, tool_name)
+            tool_input = self._extract_tool_input(data, tool_name)  # type: ignore[arg-type]
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMProviderError(
                 f"Anthropic response missing expected structure: {str(data)[:300]}",
@@ -157,9 +157,7 @@ class AnthropicProvider(LLMProvider):
         return f"anthropic/{self._model}"
 
     def __repr__(self) -> str:
-        return (
-            f"AnthropicProvider(model={self._model!r}, api_key={_redact_api_key(self._api_key)!r})"
-        )
+        return f"AnthropicProvider(model={self._model!r}, api_key={_redact_api_key(self._api_key)!r})"
 
     # ------------------------------------------------------------------
     # Internal helpers

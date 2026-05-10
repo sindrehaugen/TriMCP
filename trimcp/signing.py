@@ -56,6 +56,7 @@ around ``get_active_key`` / ``rotate_key`` pairs.
 
 from __future__ import annotations
 
+import asyncio
 import ctypes
 import hashlib
 import hmac
@@ -86,9 +87,9 @@ except ImportError:  # pragma: no cover – jcs is in requirements.txt; handle g
         Full ECMAScript number serialisation divergence is not triggered
         because signing inputs never contain bare floats.
         """
-        return _json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
-            "utf-8"
-        )
+        return _json.dumps(
+            data, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
 
 
 from cachetools import TTLCache
@@ -333,7 +334,9 @@ class MutableKeyBuffer:
     def raw(self) -> memoryview:
         """Read-only view of the key material.  Raises ``ValueError`` if zeroed."""
         if self._zeroed:
-            raise ValueError("MutableKeyBuffer has been zeroed and is no longer usable.")
+            raise ValueError(
+                "MutableKeyBuffer has been zeroed and is no longer usable."
+            )
         return memoryview(self._buf)
 
     def zero(self) -> None:
@@ -351,7 +354,9 @@ class MutableKeyBuffer:
     def __bytes__(self) -> bytes:
         """Return a copy of the raw key bytes.  Raises ``ValueError`` if zeroed."""
         if self._zeroed:
-            raise ValueError("MutableKeyBuffer has been zeroed and is no longer usable.")
+            raise ValueError(
+                "MutableKeyBuffer has been zeroed and is no longer usable."
+            )
         return bytes(self._buf)
 
     def __del__(self) -> None:
@@ -500,13 +505,26 @@ class _SigningKeyCache(TTLCache):
         if entry is not None:
             try:
                 entry.raw_key.zero()
-                log.debug("Signing key buffer zeroed on eviction (key_id=%s).", entry.key_id)
+                log.debug(
+                    "Signing key buffer zeroed on eviction (key_id=%s).", entry.key_id
+                )
             except Exception:
                 pass  # Best-effort zeroing — must not prevent eviction
         super().__delitem__(key)
 
 
 _key_cache: _SigningKeyCache = _SigningKeyCache(maxsize=1000, ttl=_KEY_CACHE_TTL_S)
+
+# Lazy-initialized asyncio.Lock to prevent thundering-herd cache refreshes
+# (Item 31 — elevated priority after PBKDF2 @ 600K upgrade).
+_key_cache_lock: asyncio.Lock | None = None
+
+
+def _get_key_cache_lock() -> asyncio.Lock:
+    global _key_cache_lock
+    if _key_cache_lock is None:
+        _key_cache_lock = asyncio.Lock()
+    return _key_cache_lock
 
 
 # ---------------------------------------------------------------------------
@@ -734,50 +752,61 @@ async def get_active_key(
     SigningKeyDecryptionError
         If the stored key blob cannot be decrypted with the master key.
     """
+    from trimcp.observability import SIGNING_KEY_CACHE_HIT_TOTAL, SIGNING_KEY_CACHE_MISS_TOTAL
+
     now = time.monotonic()
     try:
         entry: _CachedKey = _key_cache[_ACTIVE_KEY_CACHE_KEY]  # type: ignore[index]
+        SIGNING_KEY_CACHE_HIT_TOTAL.inc()
         return entry.key_id, bytes(entry.raw_key.raw)
     except KeyError:
         pass  # Cache miss — fetch from DB
 
-    with require_master_key() as master_key:
-        row = await conn.fetchrow(
-            """
-            SELECT key_id, encrypted_key
-            FROM   signing_keys
-            WHERE  status = 'active'
-            ORDER  BY created_at DESC
-            LIMIT  1
-            """
+    async with _get_key_cache_lock():
+        # Double-checked locking: another coroutine may have populated the cache
+        # while we were waiting for the lock.
+        try:
+            entry = _key_cache[_ACTIVE_KEY_CACHE_KEY]  # type: ignore[index]
+            SIGNING_KEY_CACHE_HIT_TOTAL.inc()
+            return entry.key_id, bytes(entry.raw_key.raw)
+        except KeyError:
+            SIGNING_KEY_CACHE_MISS_TOTAL.inc()
+
+        with require_master_key() as master_key:
+            row = await conn.fetchrow("""
+                SELECT key_id, encrypted_key
+                FROM   signing_keys
+                WHERE  status = 'active'
+                ORDER  BY created_at DESC
+                LIMIT  1
+                """)
+            if row is None:
+                raise NoActiveSigningKeyError(
+                    "No active signing key exists in signing_keys.  "
+                    "Run the key-rotation initialisation to create the first key."
+                )
+
+            raw_key = decrypt_signing_key(bytes(row["encrypted_key"]), master_key)
+
+        key_id: str = row["key_id"]
+
+        # Store under "__active__" with its own MutableKeyBuffer.
+        active_entry = _CachedKey(
+            key_id=key_id,
+            raw_key=MutableKeyBuffer(raw_key),
+            expires_at=now + _KEY_CACHE_TTL_S,
         )
-        if row is None:
-            raise NoActiveSigningKeyError(
-                "No active signing key exists in signing_keys.  "
-                "Run the key-rotation initialisation to create the first key."
-            )
-
-        raw_key = decrypt_signing_key(bytes(row["encrypted_key"]), master_key)
-
-    key_id: str = row["key_id"]
-
-    # Store under "__active__" with its own MutableKeyBuffer.
-    active_entry = _CachedKey(
-        key_id=key_id,
-        raw_key=MutableKeyBuffer(raw_key),
-        expires_at=now + _KEY_CACHE_TTL_S,
-    )
-    # Also store under the real key_id with an independent MutableKeyBuffer copy
-    # so get_key_by_id() finds it and evicting one slot does not zero the other.
-    by_id_entry = _CachedKey(
-        key_id=key_id,
-        raw_key=MutableKeyBuffer(raw_key),
-        expires_at=now + _KEY_CACHE_TTL_S,
-    )
-    _key_cache[_ACTIVE_KEY_CACHE_KEY] = active_entry
-    _key_cache[key_id] = by_id_entry
-    log.debug("Signing key cache refreshed (key_id=%s).", key_id)
-    return active_entry.key_id, bytes(active_entry.raw_key.raw)
+        # Also store under the real key_id with an independent MutableKeyBuffer copy
+        # so get_key_by_id() finds it and evicting one slot does not zero the other.
+        by_id_entry = _CachedKey(
+            key_id=key_id,
+            raw_key=MutableKeyBuffer(raw_key),
+            expires_at=now + _KEY_CACHE_TTL_S,
+        )
+        _key_cache[_ACTIVE_KEY_CACHE_KEY] = active_entry
+        _key_cache[key_id] = by_id_entry
+        log.debug("Signing key cache refreshed (key_id=%s).", key_id)
+        return active_entry.key_id, bytes(active_entry.raw_key.raw)
 
 
 async def get_key_by_id(
@@ -806,37 +835,49 @@ async def get_key_by_id(
     SigningKeyDecryptionError
         If the stored key blob cannot be decrypted with the master key.
     """
+    from trimcp.observability import SIGNING_KEY_CACHE_HIT_TOTAL, SIGNING_KEY_CACHE_MISS_TOTAL
+
     now = time.monotonic()
     try:
         entry: _CachedKey = _key_cache[key_id]  # type: ignore[index]
+        SIGNING_KEY_CACHE_HIT_TOTAL.inc()
         return bytes(entry.raw_key.raw)
     except KeyError:
         pass  # Cache miss — fetch from DB
 
-    with require_master_key() as master_key:
-        row = await conn.fetchrow(
-            """
-            SELECT encrypted_key
-            FROM   signing_keys
-            WHERE  key_id = $1
-            """,
-            key_id,
-        )
-        if row is None:
-            raise NoActiveSigningKeyError(
-                f"Signing key '{key_id}' not found in signing_keys table."
+    async with _get_key_cache_lock():
+        # Double-checked locking
+        try:
+            entry = _key_cache[key_id]  # type: ignore[index]
+            SIGNING_KEY_CACHE_HIT_TOTAL.inc()
+            return bytes(entry.raw_key.raw)
+        except KeyError:
+            SIGNING_KEY_CACHE_MISS_TOTAL.inc()
+
+        with require_master_key() as master_key:
+            row = await conn.fetchrow(
+                """
+                SELECT encrypted_key
+                FROM   signing_keys
+                WHERE  key_id = $1
+                """,
+                key_id,
             )
+            if row is None:
+                raise NoActiveSigningKeyError(
+                    f"Signing key '{key_id}' not found in signing_keys table."
+                )
 
-        raw_key = decrypt_signing_key(bytes(row["encrypted_key"]), master_key)
+            raw_key = decrypt_signing_key(bytes(row["encrypted_key"]), master_key)
 
-    new_entry = _CachedKey(
-        key_id=key_id,
-        raw_key=MutableKeyBuffer(raw_key),
-        expires_at=now + _KEY_CACHE_TTL_S,
-    )
-    _key_cache[key_id] = new_entry
-    log.debug("Signing key cached by id (key_id=%s).", key_id)
-    return bytes(new_entry.raw_key.raw)
+        new_entry = _CachedKey(
+            key_id=key_id,
+            raw_key=MutableKeyBuffer(raw_key),
+            expires_at=now + _KEY_CACHE_TTL_S,
+        )
+        _key_cache[key_id] = new_entry
+        log.debug("Signing key cached by id (key_id=%s).", key_id)
+        return bytes(new_entry.raw_key.raw)
 
 
 def sign_fields(fields: dict[str, Any], raw_signing_key: bytes) -> bytes:
@@ -896,14 +937,12 @@ async def rotate_key(conn: asyncpg.Connection) -> str:
             encrypted_blob = encrypt_signing_key(bytes(raw_buf), master_key)
 
         async with conn.transaction():
-            await conn.execute(
-                """
+            await conn.execute("""
                 UPDATE signing_keys
                 SET    status = 'retired',
                        retired_at = now()
                 WHERE  status = 'active'
-                """
-            )
+                """)
             await conn.execute(
                 """
                 INSERT INTO signing_keys (key_id, encrypted_key, status)

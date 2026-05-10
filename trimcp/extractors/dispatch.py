@@ -67,6 +67,60 @@ _MIME_MAP: dict[str, str] = {
     "message/rfc822": "eml",
 }
 
+# Lightweight pure-Python magic-byte → MIME mapping (no external deps).
+# Covers the formats most likely to be used in spoofing attacks.
+_MAGIC_BYTES: list[tuple[bytes, str]] = [
+    (b"%PDF", "application/pdf"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"PK\x03\x04", "application/zip"),
+    (b"PK\x05\x06", "application/zip"),
+    (b"<!DOCTYPE html", "text/html"),
+    (b"<!doctype html", "text/html"),
+    (b"<html", "text/html"),
+    (b"<HTML", "text/html"),
+    (b"<?xml", "text/xml"),
+    (b"{\"", "application/json"),
+    (b"[\n", "application/json"),
+]
+
+
+def _magic_mime_from_bytes(blob: bytes) -> str | None:
+    """Return a MIME type guessed from the first bytes of *blob*, or None."""
+    if not blob:
+        return None
+    head = blob[:512]
+    for magic, mime in _MAGIC_BYTES:
+        if head.startswith(magic):
+            return mime
+    return None
+
+
+def _is_security_relevant_mismatch(ext_mime: str | None, magic_mime: str | None) -> bool:
+    """Return True if the extension-derived MIME and magic-byte MIME disagree
+    on a security-relevant boundary (e.g. image vs archive vs executable)."""
+    if ext_mime is None or magic_mime is None:
+        return False
+    ext_family = ext_mime.split("/")[0]
+    magic_family = magic_mime.split("/")[0]
+    # Zip-based office docs are expected to look like zip
+    if ext_mime in ("application/pdf",) and magic_mime == "application/pdf":
+        return False
+    # Office formats are zip-based; allow zip magic for them
+    office_zips = ("application/vnd.openxmlformats", "application/vnd.ms-office")
+    if ext_mime.startswith(office_zips) and magic_mime == "application/zip":
+        return False
+    # Reject: image pretends to be archive/script, or archive pretends to be image
+    dangerous = {
+        ("image", "application"),
+        ("image", "text"),
+        ("application", "image"),
+        ("text", "image"),
+    }
+    return (ext_family, magic_family) in dangerous
+
 
 def register_extension(ext: str, handler: Handler) -> None:
     key = ext.lower().lstrip(".")
@@ -170,7 +224,8 @@ async def extract_bytes(
     filename: str | None = None,
     mime_type: str | None = None,
 ) -> ExtractionResult:
-    from trimcp.observability import get_tracer
+    from trimcp.config import cfg
+    from trimcp.observability import EXTRACTION_REJECTED_TOO_LARGE_TOTAL, get_tracer
 
     tracer = get_tracer()
 
@@ -178,13 +233,46 @@ async def extract_bytes(
         span.set_attribute("trimcp.filename", filename or "unknown")
         span.set_attribute("trimcp.mime_type", mime_type or "unknown")
 
+        if len(blob) > cfg.TRIMCP_MAX_ATTACHMENT_BYTES:
+            EXTRACTION_REJECTED_TOO_LARGE_TOTAL.inc()
+            return empty_skipped(
+                "dispatch",
+                "payload_too_large",
+                warnings=[
+                    f"blob {len(blob)} B exceeds limit {cfg.TRIMCP_MAX_ATTACHMENT_BYTES} B"
+                ],
+            )
+
         ensure_registered()
         ext = _resolve_ext(filename, mime_type)
         if not ext or ext not in _REGISTRY:
             return empty_skipped(
                 "dispatch",
                 "unsupported_format",
-                warnings=[f"unknown or unregistered extension: {ext!r} (file={filename!r})"],
+                warnings=[
+                    f"unknown or unregistered extension: {ext!r} (file={filename!r})"
+                ],
+            )
+
+        # Magic-byte cross-check (Item E)
+        magic_mime = _magic_mime_from_bytes(blob)
+        ext_mime = mimetypes.guess_type(filename or f".{ext}")[0] if ext else None
+        if _is_security_relevant_mismatch(ext_mime, magic_mime):
+            from trimcp.observability import EXTRACTION_MIME_MISMATCH_TOTAL
+
+            EXTRACTION_MIME_MISMATCH_TOTAL.inc()
+            log.warning(
+                "MIME mismatch: extension claims %s but magic bytes say %s (file=%s)",
+                ext_mime,
+                magic_mime,
+                filename,
+            )
+            return empty_skipped(
+                "dispatch",
+                "mime_mismatch",
+                warnings=[
+                    f"extension claims {ext_mime} but magic bytes indicate {magic_mime}"
+                ],
             )
 
         span.set_attribute("trimcp.extension", ext)

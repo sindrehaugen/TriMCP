@@ -30,6 +30,10 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Windows: force UTF-8 stdout so box-drawing characters don't crash
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 # ── Constants ──────────────────────────────────────────────────────────────
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -41,7 +45,7 @@ _ITEM_HEADER_RE = re.compile(r"^###\s+(?P<num>\d+)\.\s+(?P<title>.+)")
 # File reference: `[trimcp/orchestrator.py:949–956]`
 _FILE_REF_RE = re.compile(r"\[`?(?P<file>[^`:]+\.py)`?(?::(?P<line_range>[^\]]+))?\]")
 # Status keywords
-_STATUS_FIXED_RE = re.compile(r"(✓\s*(?:fixed|resolved)|✅)")
+_STATUS_FIXED_RE = re.compile(r"(OK\s*(?:fixed|resolved)|OK)")
 _STATUS_NOT_FIXED_RE = re.compile(r"(not fixed|NOT FIXED)")
 _STATUS_NEW_RE = re.compile(r"NEW finding")
 # Priority tag P0–P5
@@ -208,7 +212,7 @@ _KNOWN_PATTERNS: dict[str, str] = {
     "log.info(f": 'log.info(f"',
     "log.warning(f": 'log.warning(f"',
     "log.error(f": 'log.error(f"',
-    "f-string logging": 'log.',
+    "f-string logging": "log.",
     "boost_memory": "boost_memory",
     "forget_memory": "forget_memory",
     "resolve_contradiction": "resolve_contradiction",
@@ -317,7 +321,9 @@ def _infer_search_pattern(item: TodoItem) -> str | None:
         return max(set(inline_refs), key=len)
 
     # ── Strategy 3: Title-derived ──
-    title_identifiers = re.findall(r"`?([a-zA-Z_][a-zA-Z0-9_.]*(?:\(\))?)`?", item.title)
+    title_identifiers = re.findall(
+        r"`?([a-zA-Z_][a-zA-Z0-9_.]*(?:\(\))?)`?", item.title
+    )
     if title_identifiers:
         stop = {"with", "from", "that", "this", "the", "not", "for", "and", "are", "in"}
         candidates = [w for w in title_identifiers if w.lower() not in stop]
@@ -476,7 +482,9 @@ def _check_git_log(item: TodoItem, max_commits: int = 5) -> list[str]:
 # ── Reporter ───────────────────────────────────────────────────────────────
 
 
-def generate_report(results: list[VerificationResult], json_output: bool = False) -> str:
+def generate_report(
+    results: list[VerificationResult], json_output: bool = False
+) -> str:
     """Generate a human-readable or JSON report."""
     if json_output:
         return json.dumps(
@@ -514,7 +522,7 @@ def generate_report(results: list[VerificationResult], json_output: bool = False
 
     for r in sorted(results, key=lambda x: x.item_number):
         status_tag = {
-            "fixed": "✓",
+            "fixed": "OK",
             "not fixed": "○",
             "new finding": "★",
             "unknown": "?",
@@ -522,7 +530,9 @@ def generate_report(results: list[VerificationResult], json_output: bool = False
 
         priority_tag = f"[{r.priority}]" if r.priority else ""
         stale_mark = " ⚠ STALE" if r.stale else ""
-        lines.append(f"{status_tag} {priority_tag} #{r.item_number}: {r.title}{stale_mark}")
+        lines.append(
+            f"{status_tag} {priority_tag} #{r.item_number}: {r.title}{stale_mark}"
+        )
 
         if r.file_exists is False:
             file_issues += 1
@@ -556,7 +566,7 @@ def generate_report(results: list[VerificationResult], json_output: bool = False
     new_findings = sum(1 for r in results if r.declared_status == "new finding")
     unknown = sum(1 for r in results if r.declared_status == "unknown")
     lines.append(f"  Total items:          {total}")
-    lines.append(f"  ✓ Fixed (verified):   {fixed_ok}")
+    lines.append(f"  [OK] Fixed (verified):   {fixed_ok}")
     lines.append(f"  ○ Open (verified):    {open_ok}")
     lines.append(f"  ★ New findings:       {new_findings}")
     lines.append(f"  ? Unknown status:     {unknown}")
@@ -564,9 +574,11 @@ def generate_report(results: list[VerificationResult], json_output: bool = False
     lines.append(f"  ⚠ Stale items:       {stale_count}")
     lines.append("")
     if stale_count > 0:
-        lines.append("  ⚠  WARNING: Stale items found — tracker and codebase out of sync!")
+        lines.append(
+            "  ⚠  WARNING: Stale items found — tracker and codebase out of sync!"
+        )
     else:
-        lines.append("  ✓  Tracker and codebase are in sync.")
+        lines.append("  [OK] Tracker and codebase are in sync.")
     lines.append("-" * 72)
 
     return "\n".join(lines)
@@ -616,7 +628,9 @@ def main() -> int:
     if args.ci:
         stale_count = sum(1 for r in results if r.stale)
         if stale_count > 0:
-            print(f"\nCI FAILURE: {stale_count} stale item(s) detected.", file=sys.stderr)
+            print(
+                f"\nCI FAILURE: {stale_count} stale item(s) detected.", file=sys.stderr
+            )
             return 1
 
     return 0

@@ -29,7 +29,9 @@ KEY_SPECS: list[tuple[str, Callable[[str], bool]]] = [
     ),
     (
         "TRIMCP_API_KEY",
-        lambda v: _weak(v, min_len=16) or "change" in v.lower() or v.lower().startswith("dev-"),
+        lambda v: _weak(v, min_len=16)
+        or "change" in v.lower()
+        or v.lower().startswith("dev-"),
     ),
     ("TRIMCP_JWT_SECRET", lambda v: _weak(v, min_len=32) or "dev-jwt" in v.lower()),
     (
@@ -85,7 +87,9 @@ def main() -> None:
         existing_gen = _parse_env_text(GENERATED.read_text(encoding="utf-8"))
 
     # Preserve previously generated strong values unless base file was fixed
-    merged: dict[str, str] = {k: v for k, v in existing_gen.items() if not k.startswith("#")}
+    merged: dict[str, str] = {
+        k: v for k, v in existing_gen.items() if not k.startswith("#")
+    }
     for k, v in overrides.items():
         merged[k] = v
 

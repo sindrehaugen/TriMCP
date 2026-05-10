@@ -11,7 +11,7 @@ PostgreSQL during CI smoke runs).
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -68,7 +68,7 @@ class RecordingFakeConnection:
         db_clock: datetime | None = None,
         simulate_unique_violation_on_insert: bool = False,
     ) -> None:
-        utc = UTC
+        utc = timezone.utc
         self._db_clock = (
             db_clock or datetime(2026, 5, 5, 10, 0, 0, 123456, tzinfo=utc)
         ).astimezone(utc)
@@ -144,7 +144,10 @@ class RecordingFakeConnection:
             namespace_id = args[0]
             target_seq = args[1]
             for r in self.event_inserts:
-                if r["namespace_id"] == namespace_id and r.get("event_seq") == target_seq:
+                if (
+                    r["namespace_id"] == namespace_id
+                    and r.get("event_seq") == target_seq
+                ):
                     return {"chain_hash": r.get("chain_hash")}
             return None
 
@@ -181,7 +184,11 @@ class RecordingFakeConnection:
             if self.unique_violation:
                 raise asyncpg.UniqueViolationError("simulated collision")
 
-            ns = namespace_id if isinstance(namespace_id, UUID) else UUID(str(namespace_id))
+            ns = (
+                namespace_id
+                if isinstance(namespace_id, UUID)
+                else UUID(str(namespace_id))
+            )
             self._seq_max[ns] = max(self._seq_max[ns], int(event_seq))
             self.event_inserts.append(record)
 
@@ -218,10 +225,14 @@ class RecordingFakePool:
         if self._outstanding > 0:
             self._outstanding -= 1
 
-    async def release(self, conn: RecordingFakeConnection, *args: Any, **kwargs: Any) -> None:
+    async def release(
+        self, conn: RecordingFakeConnection, *args: Any, **kwargs: Any
+    ) -> None:
         """asyncpg-compatible explicit release after ``await pool.acquire()``."""
         if conn is not self._conn:
-            raise ValueError("RecordingFakePool.release: connection does not belong to this pool")
+            raise ValueError(
+                "RecordingFakePool.release: connection does not belong to this pool"
+            )
         await self._release_conn()
 
     async def close(self) -> None:

@@ -22,7 +22,9 @@ class Section:
 
     text: str
     structure_path: str
-    section_type: str  # heading, body, table, slide, sheet, note, comment, footer, metadata, ...
+    section_type: (
+        str  # heading, body, table, slide, sheet, note, comment, footer, metadata, ...
+    )
     order: int
 
 

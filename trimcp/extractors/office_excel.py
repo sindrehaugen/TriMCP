@@ -90,8 +90,12 @@ def _summarize_large_sheet(ws: Any, sheet_name: str) -> tuple[str, list[str]]:
             if _numeric_type(v):
                 types_n[j]["numeric"] += 1
                 fv = float(v)
-                numeric_min[j] = fv if numeric_min[j] is None else min(numeric_min[j], fv)
-                numeric_max[j] = fv if numeric_max[j] is None else max(numeric_max[j], fv)
+                numeric_min[j] = (
+                    fv if numeric_min[j] is None else min(numeric_min[j], fv)  # type: ignore[type-var]
+                )
+                numeric_max[j] = (
+                    fv if numeric_max[j] is None else max(numeric_max[j], fv)  # type: ignore[type-var]
+                )
             else:
                 types_n[j]["text"] += 1
                 s = _format_val(v)[:200]
@@ -135,7 +139,9 @@ def _emit_sheet_sections(
         path = f"Sheet: {sheet_name}"
         if len(subtables) > 1:
             path = f"{path} > Table {ti + 1}"
-        sections.append(Section(text=md, structure_path=path, section_type="sheet", order=order))
+        sections.append(
+            Section(text=md, structure_path=path, section_type="sheet", order=order)
+        )
         order += 1
     return sections, order
 
@@ -156,10 +162,16 @@ def extract_xlsx_sync(blob: bytes) -> ExtractionResult:
         metadata.update(
             {
                 "creator": getattr(props, "creator", None),
-                "created": props.created.isoformat() if getattr(props, "created", None) else None,
-                "modified": props.modified.isoformat()
-                if getattr(props, "modified", None)
-                else None,
+                "created": (
+                    props.created.isoformat()
+                    if getattr(props, "created", None)
+                    else None
+                ),
+                "modified": (
+                    props.modified.isoformat()
+                    if getattr(props, "modified", None)
+                    else None
+                ),
             }
         )
     except Exception:
@@ -274,7 +286,9 @@ async def extract_xlsx(blob: bytes) -> ExtractionResult:
 async def extract_xls(blob: bytes) -> ExtractionResult:
     converted = await asyncio.to_thread(libreoffice_convert, blob, ".xls", ".xlsx")
     if not converted:
-        return empty_skipped("libreoffice", "conversion_failed", warnings=["xls conversion failed"])
+        return empty_skipped(
+            "libreoffice", "conversion_failed", warnings=["xls conversion failed"]
+        )
     res = await extract_xlsx(converted)
     res.method = "libreoffice→openpyxl"
     res.warnings.insert(0, "Converted from legacy .xls via LibreOffice")

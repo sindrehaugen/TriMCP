@@ -25,10 +25,14 @@ def test_dropbox_challenge():
     assert response.text == "test_challenge_string"
 
 
-@patch("trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-db-1")
+@patch(
+    "trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-db-1"
+)
 def test_dropbox_webhook_valid_signature(mock_enqueue):
     body = b'{"list_folder": {"accounts": ["dbid:123"]}}'
-    signature = hmac.new(DROPBOX_APP_SECRET.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    signature = hmac.new(
+        DROPBOX_APP_SECRET.encode("utf-8"), body, hashlib.sha256
+    ).hexdigest()
 
     response = client.post(
         "/webhooks/dropbox",
@@ -72,7 +76,9 @@ def test_graph_webhook_challenge():
     assert response.text == "test_token"
 
 
-@patch("trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-sp-1")
+@patch(
+    "trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-sp-1"
+)
 def test_graph_webhook_valid_client_state(mock_enqueue):
     payload = {
         "value": [
@@ -107,7 +113,9 @@ def test_graph_webhook_invalid_client_state():
     assert "Invalid clientState" in response.json()["detail"]
 
 
-@patch("trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-gd-1")
+@patch(
+    "trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-gd-1"
+)
 def test_drive_webhook_valid(mock_enqueue):
     response = client.post(
         "/webhooks/drive",
@@ -166,7 +174,9 @@ def test_drive_webhook_missing_state():
 # --- SSRF guard: Graph webhook resource URL validation ---
 
 
-@patch("trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-sp-2")
+@patch(
+    "trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-sp-2"
+)
 def test_graph_webhook_valid_sites_resource(mock_enqueue):
     """Valid Graph /sites/ resource path must be accepted."""
     payload = {
@@ -183,7 +193,9 @@ def test_graph_webhook_valid_sites_resource(mock_enqueue):
     assert response.json()["status"] == "queued"
 
 
-@patch("trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-sp-3")
+@patch(
+    "trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-sp-3"
+)
 def test_graph_webhook_valid_drives_resource(mock_enqueue):
     """Valid Graph /drives/ resource path must be accepted."""
     payload = {

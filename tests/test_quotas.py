@@ -225,7 +225,9 @@ def _build_multi_conn_pool(
         conn = AsyncMock()
         conn.fetch.return_value = [{"id": qid, "agent_id": agent_id}]
 
-        async def _fetchrow_update(sql: str, delta: int, row_id: uuid.UUID) -> dict | None:
+        async def _fetchrow_update(
+            sql: str, delta: int, row_id: uuid.UUID
+        ) -> dict | None:
             """Simulate the atomicity of ``UPDATE ... WHERE used + delta <= limit``."""
             # This is called under the "FOR UPDATE lock" (which we simulate by
             # having this function be the single point of mutation).
@@ -453,7 +455,9 @@ async def test_concurrent_multi_conn_namespace_and_agent_quotas(
 
     # Agent limit (80) is tighter than namespace limit (200).
     # 80 / 30 = 2 full consumptions, 3rd is rejected at the agent level.
-    assert len(successes) == 2, f"expected 2 successes (agent limit), got {len(successes)}"
+    assert (
+        len(successes) == 2
+    ), f"expected 2 successes (agent limit), got {len(successes)}"
     assert len(failures) == 6, f"expected 6 failures, got {len(failures)}"
     assert ag_used == 2 * DELTA
 
@@ -491,7 +495,9 @@ async def test_concurrent_multi_conn_partial_near_limit(
 
     assert len(successes) == 0, f"expected 0 successes, got {len(successes)}"
     assert len(failures) == 3, f"expected 3 failures, got {len(failures)}"
-    assert state["used"] == INITIAL, "quota was partially consumed — should be rejected entirely"
+    assert (
+        state["used"] == INITIAL
+    ), "quota was partially consumed — should be rejected entirely"
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +574,9 @@ async def test_concurrent_quota_consumption_no_overallocation(
     # Total consumed should be 90, not exceeding 100
     total_consumed = sum(s.steps[0][1] for s in successes if s.steps)
     assert total_consumed == 3 * DELTA
-    assert total_consumed <= LIMIT, f"overallocated! consumed={total_consumed} limit={LIMIT}"
+    assert (
+        total_consumed <= LIMIT
+    ), f"overallocated! consumed={total_consumed} limit={LIMIT}"
 
 
 @pytest.mark.asyncio
@@ -695,9 +703,9 @@ async def test_concurrent_quota_sql_contains_for_update(
 
     assert len(captured_sql) >= 1, "No SQL captured"
     # The fetch SQL should contain FOR UPDATE
-    assert any("FOR UPDATE" in sql for sql in captured_sql), (
-        f"FOR UPDATE not found in captured SQL: {captured_sql!r}"
-    )
+    assert any(
+        "FOR UPDATE" in sql for sql in captured_sql
+    ), f"FOR UPDATE not found in captured SQL: {captured_sql!r}"
 
 
 @pytest.mark.asyncio
@@ -809,7 +817,9 @@ def test_tool_quota_plan_a2a_query_shared() -> None:
     assert quotas.RESOURCE_LLM_TOKENS in amounts
 
 
-def test_admin_api_search_returns_429_when_quota_exceeded(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_admin_api_search_returns_429_when_quota_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import admin_server as adm
 
     async def _boom(*_a, **_k):
@@ -844,7 +854,9 @@ def test_admin_api_search_returns_429_when_quota_exceeded(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_mcp_call_tool_surfaces_quota_as_32013(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_mcp_call_tool_surfaces_quota_as_32013(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """MCP stdio path: quota exhaustion maps to ValueError with -32013 (rate limit / quota)."""
 
     monkeypatch.delitem(sys.modules, "server", raising=False)

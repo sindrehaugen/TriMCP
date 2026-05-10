@@ -20,14 +20,13 @@ GB-scale tenant exports without crashing the orchestrator.
 from __future__ import annotations
 
 import json
-
-from trimcp.mcp_errors import mcp_handler
 import logging
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
+from trimcp.mcp_errors import mcp_handler
 from trimcp.orchestrator import TriStackEngine
 from trimcp.snapshot_serializer import (
     SNAPSHOT_ARG_KEYS,
@@ -47,7 +46,9 @@ _STREAM_PROGRESS_INTERVAL: int = 1000  # emit a progress line every N rows
 
 
 @mcp_handler
-async def handle_create_snapshot(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_create_snapshot(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """Create a named point-in-time reference for a namespace."""
     req = build_create_snapshot_request(arguments)
     res = await engine.create_snapshot(req)
@@ -55,14 +56,18 @@ async def handle_create_snapshot(engine: TriStackEngine, arguments: dict[str, An
 
 
 @mcp_handler
-async def handle_list_snapshots(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_list_snapshots(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """List all snapshots for a namespace."""
     res = await engine.list_snapshots(arguments[SNAPSHOT_ARG_KEYS.NAMESPACE_ID])
     return serialize_snapshot_list(res)
 
 
 @mcp_handler
-async def handle_delete_snapshot(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_delete_snapshot(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """Delete a point-in-time reference."""
     res = await engine.delete_snapshot(
         snapshot_id=arguments[SNAPSHOT_ARG_KEYS.SNAPSHOT_ID],
@@ -72,7 +77,9 @@ async def handle_delete_snapshot(engine: TriStackEngine, arguments: dict[str, An
 
 
 @mcp_handler
-async def handle_compare_states(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_compare_states(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """Diff two temporal views of a namespace."""
     req = build_compare_states_request(arguments)
     res = await engine.compare_states(req)
@@ -110,7 +117,7 @@ async def stream_snapshot_export(
         return
 
     ns_uuid = uuid.UUID(namespace_id)
-    export_as_of = as_of or datetime.now(UTC)
+    export_as_of = as_of or datetime.now(timezone.utc)
 
     # ── Resolve snapshot_id to as_of ─────────────────────────────────────
     if snapshot_id:
@@ -159,7 +166,7 @@ async def stream_snapshot_export(
                 "type": "metadata",
                 "namespace_id": namespace_id,
                 "as_of": export_as_of.isoformat(),
-                "exported_at": datetime.now(UTC).isoformat(),
+                "exported_at": datetime.now(timezone.utc).isoformat(),
                 "format": "trimcp-snapshot-export-v1",
             }
         )
@@ -290,7 +297,7 @@ def _serialize_memory_row(row: Any) -> dict[str, Any]:
         if isinstance(v, uuid.UUID):
             out[k] = str(v)
         elif isinstance(v, datetime):
-            out[k] = v.astimezone(UTC).isoformat() if v else None
+            out[k] = v.astimezone(timezone.utc).isoformat() if v else None
         elif k == "metadata" and isinstance(v, str):
             out[k] = json.loads(v)
         else:

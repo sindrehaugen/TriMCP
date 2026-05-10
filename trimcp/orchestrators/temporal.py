@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -39,7 +39,11 @@ def _lineage_source_id(row: Any) -> str | None:
     sid = meta.get("source_memory_id")
     if sid:
         return str(sid)
-    df = row.get("derived_from") if hasattr(row, "get") else getattr(row, "derived_from", None)
+    df = (
+        row.get("derived_from")
+        if hasattr(row, "get")
+        else getattr(row, "derived_from", None)
+    )
     if df is None:
         return None
     if isinstance(df, str):
@@ -97,7 +101,7 @@ class TemporalOrchestrator:
             return val
         return UUID(str(val))
 
-    async def scoped_session(self, namespace_id: str | UUID):
+    def scoped_session(self, namespace_id: str | UUID):
         from contextlib import asynccontextmanager
 
         @asynccontextmanager
@@ -109,7 +113,12 @@ class TemporalOrchestrator:
                 from trimcp.auth import set_namespace_context
 
                 await set_namespace_context(conn, ns_uuid)
-                yield conn
+                try:
+                    yield conn
+                finally:
+                    from trimcp.auth import _reset_rls_context
+
+                    await _reset_rls_context(conn)
 
         return _session(namespace_id)
 
@@ -171,7 +180,9 @@ class TemporalOrchestrator:
         import asyncio
 
         asyncio.create_task(
-            worker.run_consolidation(UUID(namespace_id), since_timestamp=since_timestamp)
+            worker.run_consolidation(
+                UUID(namespace_id), since_timestamp=since_timestamp
+            )
         )
         return {
             "status": "triggered",
@@ -204,7 +215,7 @@ class TemporalOrchestrator:
         """[Phase 2.2] Create a named PIT reference."""
         from trimcp.event_log import append_event
 
-        snapshot_at = payload.snapshot_at or datetime.now(UTC)
+        snapshot_at = payload.snapshot_at or datetime.now(timezone.utc)
 
         async with self.scoped_session(payload.namespace_id) as conn:
             async with conn.transaction():
@@ -223,7 +234,7 @@ class TemporalOrchestrator:
 
                 await append_event(
                     conn=conn,
-                    namespace_id=self._ensure_uuid(payload.namespace_id),
+                    namespace_id=self._ensure_uuid(payload.namespace_id),  # type: ignore[arg-type]
                     agent_id=payload.agent_id,
                     event_type="snapshot_created",
                     params={
@@ -248,8 +259,10 @@ class TemporalOrchestrator:
             )
             return [SnapshotRecord(**r) for r in rows]
 
-    async def delete_snapshot(self, snapshot_id: str, namespace_id: str) -> dict:
+    async def delete_snapshot(self, snapshot_id: str, namespace_id: str) -> DeleteSnapshotResult:  # type: ignore[name-defined]  # noqa: F821
         """[Phase 2.2] Delete a point-in-time reference."""
+        from trimcp.models import DeleteSnapshotResult
+
         async with self.scoped_session(namespace_id) as conn:
             res = await conn.execute(
                 "DELETE FROM snapshots WHERE id = $1 AND namespace_id = $2",
@@ -257,9 +270,11 @@ class TemporalOrchestrator:
                 UUID(namespace_id),
             )
             if res == "DELETE 0":
-                raise ValueError(f"Snapshot {snapshot_id} not found in namespace {namespace_id}")
+                raise ValueError(
+                    f"Snapshot {snapshot_id} not found in namespace {namespace_id}"
+                )
 
-        return {"status": "ok", "message": f"Snapshot {snapshot_id} deleted"}
+        return DeleteSnapshotResult(status="ok", message=f"Snapshot {snapshot_id} deleted")
 
     # ------------------------------------------------------------------
     # State diffing (compare_states)
@@ -291,9 +306,9 @@ class TemporalOrchestrator:
                 try:
                     doc = await db.episodes.find_one({"_id": ObjectId(res.payload_ref)})
                     if doc:
-                        res.content_preview = (doc.get("summary") or str(doc.get("raw_data", "")))[
-                            :200
-                        ]
+                        res.content_preview = (
+                            doc.get("summary") or str(doc.get("raw_data", ""))
+                        )[:200]
                 except Exception:
                     pass
 

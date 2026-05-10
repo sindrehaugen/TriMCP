@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import math
-import re
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Any
@@ -12,8 +11,10 @@ from pydantic import BaseModel
 
 from trimcp.config import cfg
 from trimcp.models import KGEdge
+from trimcp.observability import SAGA_FAILURES
 from trimcp.providers.base import LLMTimeoutError, LLMValidationError, Message
 from trimcp.providers.factory import get_provider
+from trimcp.sanitize import sanitize_llm_payload
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +28,9 @@ def _load_nli_model():
         import torch
         from sentence_transformers import CrossEncoder
     except ImportError:
-        log.warning("sentence_transformers or torch not installed. NLI check will be disabled.")
+        log.warning(
+            "sentence_transformers or torch not installed. NLI check will be disabled."
+        )
         return None
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -40,6 +43,10 @@ def _load_nli_model():
         return None
 
 
+class NLIUnavailableError(Exception):
+    """NLI model not loaded or prediction failed unrecoverably."""
+
+
 def _sync_nli_predict(premise: str, hypothesis: str) -> float:
     """
     Blocking NLI prediction.
@@ -48,7 +55,7 @@ def _sync_nli_predict(premise: str, hypothesis: str) -> float:
     """
     model = _load_nli_model()
     if model is None:
-        return 0.0
+        raise NLIUnavailableError("NLI model not loaded")
 
     try:
         # CrossEncoder.predict returns raw scores (logits) or probabilities depending on model.
@@ -63,17 +70,17 @@ def _sync_nli_predict(premise: str, hypothesis: str) -> float:
         # Label 2 is contradiction
         score = float(probs[2])
         if math.isnan(score) or not (0.0 <= score <= 1.0):
-            log.error("NLI contradiction score out of bounds: %s (probs=%s)", score, probs)
-            return 0.0
+            raise NLIUnavailableError(f"NLI score out of bounds: {score} (probs={probs})")
         return score
+    except NLIUnavailableError:
+        raise
     except Exception as e:
-        log.error("NLI prediction failed: %s", e)
-        return 0.0
+        raise NLIUnavailableError(f"NLI prediction failed: {e}") from e
 
 
 async def check_nli_contradiction(premise: str, hypothesis: str) -> float:
     """Async wrapper for NLI prediction."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_executor, _sync_nli_predict, premise, hypothesis)
 
 
@@ -99,29 +106,9 @@ _CONTRADICTION_SYSTEM = (
 )
 
 
-def _sanitize_payload_text(text: str) -> str:
-    """Strictly strip all zero-width unicode spaces and drop/neutralize XML/HTML tag markers
-
-    to defend against prompt injection and XML boundary escaping (Item 7).
-    """
-    if not text:
-        return ""
-
-    # Purge zero-width unicode spaces and bidirectional text markings (commonly used in tag obfuscation)
-    for bad_char in ["\u200b", "\u200c", "\u200d", "\u200e", "\u200f", "\ufeff"]:
-        text = text.replace(bad_char, "")
-
-    # Drop any XML/HTML-like structures (<tag>, </tag>, <tag attr="val">) case-insensitively
-    sanitized = re.sub(r"<\/?[a-zA-Z][^>]*>", "", text)
-
-    # Neutralize any remaining/lone angle brackets by converting them to square brackets
-    sanitized = sanitized.replace("<", "[").replace(">", "]")
-    return sanitized
-
-
 def _build_contradiction_messages(existing_text: str, new_text: str) -> list[Message]:
-    sanitized_existing = _sanitize_payload_text(existing_text)
-    sanitized_new = _sanitize_payload_text(new_text)
+    sanitized_existing = sanitize_llm_payload(existing_text)
+    sanitized_new = sanitize_llm_payload(new_text)
     return [
         Message.system(_CONTRADICTION_SYSTEM),
         Message.user(
@@ -208,7 +195,13 @@ async def _check_nli_contradiction(
     if not cand_text:
         return 0.0, "", False, []
 
-    nli_score = await check_nli_contradiction(cand_text, memory_text)
+    try:
+        nli_score = await check_nli_contradiction(cand_text, memory_text)
+    except NLIUnavailableError as exc:
+        log.warning("NLI unavailable during contradiction check: %s", exc)
+        SAGA_FAILURES.labels(stage="nli_unavailable").inc()
+        return 0.0, cand_text, False, []
+
     nli_hit = nli_score >= 0.8
     signals = [{"source": "nli", "confidence": nli_score}] if nli_hit else []
     return nli_score, cand_text, nli_hit, signals
@@ -242,13 +235,17 @@ async def _resolve_with_llm(
         return final_confidence, final_explanation, True
 
     # LLM tiebreaker path
-    ns_row = await conn.fetchrow("SELECT metadata FROM namespaces WHERE id = $1", namespace_id)
+    ns_row = await conn.fetchrow(
+        "SELECT metadata FROM namespaces WHERE id = $1", namespace_id
+    )
     provider_name = "google/gemini-1.5-pro"
     if ns_row and "consolidation" in ns_row["metadata"]:
-        provider_name = ns_row["metadata"]["consolidation"].get("llm_provider", provider_name)
+        provider_name = ns_row["metadata"]["consolidation"].get(
+            "llm_provider", provider_name
+        )
 
     try:
-        provider = get_provider(provider_name)
+        provider = get_provider(provider_name)  # type: ignore[arg-type]
         messages = _build_contradiction_messages(cand_text, memory_text)
         llm_result = await provider.complete(messages, ContradictionResult)
 
@@ -263,7 +260,11 @@ async def _resolve_with_llm(
                 # statistically unlikely to be caught by surface-level
                 # NLI or LLM text analysis — discarding them would
                 # permanently silence the KG pipeline.
-                return 0.6, "KG structural conflict detected (LLM tiebreaker disagreed).", True
+                return (
+                    0.6,
+                    "KG structural conflict detected (LLM tiebreaker disagreed).",
+                    True,
+                )
             # LLM and KG agree: no contradiction
             return 0.0, "", False
     except LLMTimeoutError:
@@ -275,7 +276,11 @@ async def _resolve_with_llm(
         )
         if not signals:
             return 0.0, "", False
-        return final_confidence, "Detected via KG/NLI signals (LLM tiebreaker timed out).", True
+        return (
+            final_confidence,
+            "Detected via KG/NLI signals (LLM tiebreaker timed out).",
+            True,
+        )
     except LLMValidationError as e:
         log.warning(
             "Contradiction LLM tiebreaker returned unparseable response (provider=%s): %s. "
@@ -285,7 +290,11 @@ async def _resolve_with_llm(
         )
         if not signals:
             return 0.0, "", False
-        return final_confidence, "Detected via KG/NLI signals (LLM response unparseable).", True
+        return (
+            final_confidence,
+            "Detected via KG/NLI signals (LLM response unparseable).",
+            True,
+        )
     except Exception as e:
         log.warning(
             "Contradiction LLM tiebreaker failed (provider=%s, namespace=%s): %s. "
@@ -296,7 +305,45 @@ async def _resolve_with_llm(
         )
         if not signals:
             return 0.0, "", False
-        return final_confidence, "Detected via KG/NLI signals (LLM tiebreaker failed).", True
+        return (
+            final_confidence,
+            "Detected via KG/NLI signals (LLM tiebreaker failed).",
+            True,
+        )
+
+
+async def enqueue_contradiction_check(
+    conn: asyncpg.Connection,
+    namespace_id: str,
+    memory_id: str,
+    memory_text: str,
+    assertion_type: str,
+    embedding: list[float],
+    agent_id: str,
+    triplets: list[KGEdge],
+) -> None:
+    """Insert a deferred contradiction check into the transactional outbox."""
+    import uuid
+
+    await conn.execute(
+        """
+        INSERT INTO outbox_events (
+            id, namespace_id, aggregate_type, aggregate_id, event_type, payload, headers
+        ) VALUES ($1, $2, 'contradiction_check', $3, 'contradiction_check', $4, $5)
+        """,
+        uuid.uuid4(),
+        namespace_id,
+        memory_id,
+        json.dumps({
+            "memory_id": memory_id,
+            "memory_text": memory_text,
+            "assertion_type": assertion_type,
+            "embedding": embedding,
+            "agent_id": agent_id,
+            "triplets": [t.model_dump() for t in triplets],
+        }),
+        json.dumps({"agent_id": agent_id}),
+    )
 
 
 async def detect_contradictions(
@@ -315,11 +362,21 @@ async def detect_contradictions(
     Phase 1.3: Contradiction Detection Hook.
     Runs after a memory is inserted.  Does not fail the insertion.
 
+    * ``detection_path="sync"``  — runs contradiction checks inline (default).
+    * ``detection_path="deferred"`` — enqueues to the transactional outbox for
+      background processing; returns ``{"deferred": True}``.
+
     All exceptions are caught and logged — contradiction detection is a
     best-effort cognitive layer.  System availability trumps cognitive
     verification.
     """
     try:
+        if detection_path == "deferred":
+            await enqueue_contradiction_check(
+                conn, namespace_id, memory_id, memory_text,
+                assertion_type, embedding, agent_id, triplets,
+            )
+            return {"deferred": True}
         return await _detect_contradictions_impl(
             conn,
             mongo_client,
@@ -356,7 +413,7 @@ async def _detect_contradictions_impl(
     detection_path: str,
 ) -> dict | None:
     """Internal implementation — exceptions propagate to detect_contradictions."""
-    if assertion_type != 'fact':
+    if assertion_type != "fact":
         return None
 
     # Step 1: Candidate Selection

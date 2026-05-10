@@ -139,6 +139,55 @@ TASK_DLQ_BACKLOG = Gauge(
     ["task_name"],
 )
 
+# Partition maintenance runway (Item C)
+EVENT_LOG_PARTITION_MONTHS_AHEAD = Gauge(
+    "trimcp_event_log_partition_months_ahead",
+    "Number of future monthly partitions ahead of current month for event_log",
+)
+
+# Merkle chain verification gauge (B2) — 1=valid, 0=corrupted
+MERKLE_CHAIN_VALID = Gauge(
+    "trimcp_merkle_chain_valid",
+    "Merkle chain validity: 1=valid, 0=corrupted",
+    ["namespace_id"],
+)
+
+# Signing key cache (Item 31)
+SIGNING_KEY_CACHE_HIT_TOTAL = Counter(
+    "trimcp_signing_key_cache_hit_total",
+    "Total count of signing key cache hits",
+)
+SIGNING_KEY_CACHE_MISS_TOTAL = Counter(
+    "trimcp_signing_key_cache_miss_total",
+    "Total count of signing key cache misses",
+)
+
+# Extraction security (Items E, K)
+EXTRACTION_MIME_MISMATCH_TOTAL = Counter(
+    "trimcp_extraction_mime_mismatch_total",
+    "Total count of attachments rejected due to extension/magic-byte MIME mismatch",
+)
+EXTRACTION_REJECTED_TOO_LARGE_TOTAL = Counter(
+    "trimcp_extraction_rejected_too_large_total",
+    "Total count of attachments rejected due to size limit",
+)
+
+# Circuit breaker state (Item 44)
+CIRCUIT_BREAKER_STATE = Gauge(
+    "trimcp_circuit_breaker_state",
+    "Current circuit breaker state: 0=closed, 1=half_open, 2=open",
+    ["provider"],
+)
+CIRCUIT_BREAKER_FAILURES = Gauge(
+    "trimcp_circuit_breaker_failures",
+    "Current consecutive failure count inside the circuit breaker",
+    ["provider"],
+)
+MINIO_ORPHAN_CLEANUP_FAILURES_TOTAL = Counter(
+    "trimcp_minio_orphan_cleanup_failures_total",
+    "Number of MinIO object deletions that failed during orphan cleanup",
+)
+
 # --- Initialization ---
 
 _tracer_initialized = False
@@ -164,7 +213,9 @@ def init_observability() -> None:
         resource = Resource(attributes={"service.name": cfg.TRIMCP_OTEL_SERVICE_NAME})
         provider = TracerProvider(resource=resource)
         processor = BatchSpanProcessor(
-            OTLPSpanExporter(endpoint=f"{cfg.TRIMCP_OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces")
+            OTLPSpanExporter(
+                endpoint=f"{cfg.TRIMCP_OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces"
+            )
         )
         provider.add_span_processor(processor)
         trace.set_tracer_provider(provider)
@@ -444,7 +495,9 @@ class OpenTelemetryTraceMiddleware:
         if scope["type"] == "http" and HAS_OTEL and cfg.TRIMCP_OBSERVABILITY_ENABLED:
             # Build a plain dict from the ASGI scope headers (list of (bytes, bytes))
             headers = {
-                k.decode("ascii", errors="replace").lower(): v.decode("ascii", errors="replace")
+                k.decode("ascii", errors="replace").lower(): v.decode(
+                    "ascii", errors="replace"
+                )
                 for k, v in scope.get("headers", [])
             }
             if "traceparent" in headers:

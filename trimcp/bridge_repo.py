@@ -20,13 +20,12 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import asyncpg
 
 from trimcp.signing import (
-    SecureKeyBuffer,
     decrypt_signing_key,
     encrypt_signing_key,
     require_master_key,
@@ -103,7 +102,9 @@ async def fetch_expiring(
     )
 
 
-async def get_by_id(conn: asyncpg.Connection, bridge_id: uuid.UUID) -> asyncpg.Record | None:
+async def get_by_id(
+    conn: asyncpg.Connection, bridge_id: uuid.UUID
+) -> asyncpg.Record | None:
     return await conn.fetchrow(
         "SELECT * FROM bridge_subscriptions WHERE id = $1",
         bridge_id,
@@ -201,7 +202,11 @@ async def fetch_oauth_token_enc(
         """,
         *args,
     )
-    return bytes(row["oauth_access_token_enc"]) if row and row["oauth_access_token_enc"] else None
+    return (
+        bytes(row["oauth_access_token_enc"])
+        if row and row["oauth_access_token_enc"]
+        else None
+    )
 
 
 async def fetch_active_subscription(
@@ -246,7 +251,9 @@ async def fetch_active_subscription(
     )
 
 
-async def mark_status(conn: asyncpg.Connection, bridge_id: uuid.UUID, status: str) -> None:
+async def mark_status(
+    conn: asyncpg.Connection, bridge_id: uuid.UUID, status: str
+) -> None:
     await conn.execute(
         """
         UPDATE bridge_subscriptions
@@ -276,7 +283,7 @@ def subscription_to_public_dict(rec: asyncpg.Record) -> dict[str, Any]:
 
 
 def utcnow() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -344,5 +351,7 @@ async def get_token(
     if not row or not row["oauth_access_token_enc"]:
         return None
     mk = require_master_key()
-    plaintext = decrypt_signing_key(bytes(row["oauth_access_token_enc"]), mk).decode("utf-8")
+    plaintext = decrypt_signing_key(bytes(row["oauth_access_token_enc"]), mk).decode(
+        "utf-8"
+    )
     return json.loads(plaintext)

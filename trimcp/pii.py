@@ -5,6 +5,7 @@ Intercepts payloads before they hit the LLM provider interface and masks sensiti
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -13,7 +14,6 @@ import os
 import re
 from typing import TYPE_CHECKING, cast
 
-from trimcp.assertion import infer_assertion_type  # noqa: F401 — re-export for trimcp.pii API
 from trimcp.models import NamespacePIIConfig, PIIEntity, PIIPolicy, PIIProcessResult
 from trimcp.signing import encrypt_signing_key, require_master_key
 
@@ -36,10 +36,10 @@ _FALLBACK_REGEXES = {
 }
 
 
-def scan(text: str, config: NamespacePIIConfig) -> list[PIIEntity]:
+def _scan_sync(text: str, config: NamespacePIIConfig) -> list[PIIEntity]:
     """
-    Scans the text for PII entities defined in the namespace config.
-    Uses Presidio if available, otherwise falls back to basic regex.
+    Synchronous PII scan — executed in a thread pool so the regex/Presidio
+    work does not block the async event loop.
     """
     if not config.entity_types:
         return []
@@ -51,7 +51,9 @@ def scan(text: str, config: NamespacePIIConfig) -> list[PIIEntity]:
             from presidio_analyzer import AnalyzerEngine
 
             analyzer = AnalyzerEngine()
-            results = analyzer.analyze(text=text, entities=config.entity_types, language='en')
+            results = analyzer.analyze(
+                text=text, entities=config.entity_types, language="en"
+            )
             for r in results:
                 value = text[r.start : r.end]
                 if value not in config.allowlist:
@@ -122,6 +124,15 @@ def scan(text: str, config: NamespacePIIConfig) -> list[PIIEntity]:
         raise
 
 
+async def scan(text: str, config: NamespacePIIConfig) -> list[PIIEntity]:
+    """
+    Scans the text for PII entities defined in the namespace config.
+    Uses Presidio if available, otherwise falls back to basic regex.
+    Offloaded to a thread pool so CPU-bound regex work never blocks the loop.
+    """
+    return await asyncio.to_thread(_scan_sync, text, config)
+
+
 def _pseudonym_hmac_key_material(config: NamespacePIIConfig) -> bytes:
     """Return HMAC key bytes for pseudonym generation."""
     if config.pseudonym_hmac_key is not None:
@@ -158,11 +169,11 @@ def _pseudonym_token_suffix(entity_type: str, value: str, hmac_key: bytes) -> st
     return base64.urlsafe_b64encode(raw[:16]).rstrip(b"=").decode("ascii")
 
 
-def process(text: str, config: NamespacePIIConfig) -> PIIProcessResult:
+async def process(text: str, config: NamespacePIIConfig) -> PIIProcessResult:
     """
     Processes the text according to the namespace PII policy.
     """
-    entities = scan(text, config)
+    entities = await scan(text, config)
 
     if not entities:
         return PIIProcessResult(
@@ -210,7 +221,9 @@ def process(text: str, config: NamespacePIIConfig) -> PIIProcessResult:
 
                 if config.reversible:
                     # We reuse encrypt_signing_key as it provides AES-256-GCM encryption
-                    encrypted_val = encrypt_signing_key(entity.value.encode('utf-8'), mk)
+                    encrypted_val = encrypt_signing_key(
+                        entity.value.encode("utf-8"), mk  # type: ignore[arg-type]
+                    )
                     vault_entries.append(
                         {
                             "token": token,
@@ -226,7 +239,9 @@ def process(text: str, config: NamespacePIIConfig) -> PIIProcessResult:
             entity.token = token
 
             # Replace in text (safe because we iterate in reverse order of start index)
-            sanitized_text = sanitized_text[: entity.start] + token + sanitized_text[entity.end :]
+            sanitized_text = (
+                sanitized_text[: entity.start] + token + sanitized_text[entity.end :]
+            )
 
             # Clear the raw PII value now that it has been consumed
             entity.clear_raw_value()

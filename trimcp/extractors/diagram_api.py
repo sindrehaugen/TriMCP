@@ -56,7 +56,9 @@ async def miro_extract_board(
         return empty_skipped(
             "miro_api",
             "no_token",
-            warnings=["Set TRIMCP_MIRO_ACCESS_TOKEN (or pass access_token=) for Miro extraction"],
+            warnings=[
+                "Set TRIMCP_MIRO_ACCESS_TOKEN (or pass access_token=) for Miro extraction"
+            ],
         )
     # SSRF guard: validate base_url before any outbound request
     try:
@@ -78,7 +80,10 @@ async def miro_extract_board(
                         url,
                         params=params,
                         headers=inject_trace_headers(
-                            {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+                            {
+                                "Authorization": f"Bearer {token}",
+                                "Accept": "application/json",
+                            }
                         ),
                     )
                     r.raise_for_status()
@@ -94,7 +99,9 @@ async def miro_extract_board(
                     )
                 except (httpx.RequestError, json.JSONDecodeError, ValueError) as e:
                     log.warning("miro_request_failed: %s", e)
-                    return empty_skipped("miro_api", "request_failed", warnings=[str(e)])
+                    return empty_skipped(
+                        "miro_api", "request_failed", warnings=[str(e)]
+                    )
 
                 items = payload.get("data") or []
                 if not isinstance(items, list):
@@ -176,7 +183,9 @@ async def lucidchart_extract_document(
         return empty_skipped(
             "lucid_api",
             "no_token",
-            warnings=["Set TRIMCP_LUCID_ACCESS_TOKEN (or pass access_token=) for Lucid extraction"],
+            warnings=[
+                "Set TRIMCP_LUCID_ACCESS_TOKEN (or pass access_token=) for Lucid extraction"
+            ],
         )
     # SSRF guard: validate base_url before any outbound request
     try:
@@ -198,7 +207,9 @@ async def lucidchart_extract_document(
         return empty_skipped(
             "lucid_api",
             "http_error",
-            warnings=[f"Lucid API HTTP {e.response.status_code}: {e.response.text[:300]}"],
+            warnings=[
+                f"Lucid API HTTP {e.response.status_code}: {e.response.text[:300]}"
+            ],
         )
     except (httpx.RequestError, json.JSONDecodeError, ValueError) as e:
         return empty_skipped("lucid_api", "request_failed", warnings=[str(e)])

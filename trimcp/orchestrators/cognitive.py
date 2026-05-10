@@ -7,9 +7,12 @@ Extracted from TriStackEngine (Prompt 54, Step 4).
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from uuid import UUID
 
 import asyncpg
+
+from trimcp.db_utils import scoped_pg_session
 
 log = logging.getLogger("tri-stack-orchestrator.cognitive")
 
@@ -31,21 +34,11 @@ class CognitiveOrchestrator:
             return val
         return UUID(str(val))
 
+    @asynccontextmanager
     async def scoped_session(self, namespace_id: str | UUID):
-        from contextlib import asynccontextmanager
-
-        @asynccontextmanager
-        async def _session(ns_id: str | UUID):
-            if not ns_id:
-                raise ValueError("namespace_id is required")
-            ns_uuid = UUID(str(ns_id))
-            async with self.pg_pool.acquire() as conn:
-                from trimcp.auth import set_namespace_context
-
-                await set_namespace_context(conn, ns_uuid)
-                yield conn
-
-        return _session(namespace_id)
+        """Tenant-isolated PostgreSQL session with RLS context."""
+        async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
+            yield conn
 
     # ------------------------------------------------------------------
     # Salience — boost_memory
@@ -76,7 +69,7 @@ class CognitiveOrchestrator:
 
                 await append_event(
                     conn=conn,
-                    namespace_id=namespace_id,
+                    namespace_id=UUID(namespace_id),
                     agent_id=agent_id,
                     event_type="boost_memory",
                     params={"memory_id": memory_id, "factor": factor},
@@ -118,11 +111,23 @@ class CognitiveOrchestrator:
                     namespace_id,
                 )
 
+                await conn.execute(
+                    """
+                    UPDATE memories
+                    SET valid_to = NOW()
+                    WHERE id = $1::uuid
+                      AND namespace_id = $2::uuid
+                      AND valid_to IS NULL
+                    """,
+                    memory_id,
+                    namespace_id,
+                )
+
                 from trimcp.event_log import append_event
 
                 await append_event(
                     conn=conn,
-                    namespace_id=namespace_id,
+                    namespace_id=UUID(namespace_id),
                     agent_id=agent_id,
                     event_type="forget_memory",
                     params={"memory_id": memory_id},
@@ -139,8 +144,17 @@ class CognitiveOrchestrator:
         namespace_id: str,
         resolution: str | None = None,
         agent_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> list[dict]:
-        """[Phase 1.3] List contradictions."""
+        """[Phase 1.3] List contradictions with pagination.
+
+        Args:
+            limit:  Max rows to return (capped at 200).
+            offset: Rows to skip for pagination.
+        """
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
         async with self.scoped_session(namespace_id) as conn:
             query = "SELECT * FROM contradictions WHERE namespace_id = $1"
             params: list = [UUID(namespace_id)]
@@ -154,7 +168,8 @@ class CognitiveOrchestrator:
                 params.append(agent_id)
                 idx += 1
 
-            query += " ORDER BY detected_at DESC LIMIT 50"
+            query += f" ORDER BY detected_at DESC LIMIT ${idx} OFFSET ${idx + 1}"
+            params.extend([limit, offset])
             rows = await conn.fetch(query, *params)
             return [dict(r) for r in rows]
 
@@ -177,7 +192,7 @@ class CognitiveOrchestrator:
         The resolution event is cryptographically signed à la WORM contract via
         ``append_event``.
         """
-        ns_uuid = self._ensure_uuid(namespace_id)
+        ns_uuid = UUID(str(namespace_id))
 
         async with self.scoped_session(ns_uuid) as conn:
             async with conn.transaction():

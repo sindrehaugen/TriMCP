@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 
+from trimcp._http_utils import SafeAsyncClient
 from trimcp.observability import inject_trace_headers
 from trimcp.providers.base import (
     LLMProviderError,
@@ -40,7 +41,7 @@ async def post_with_error_handling(
     # (LLM gateways, cognitive sidecars) can continue the distributed trace.
     outbound_headers = inject_trace_headers(dict(headers or {}))
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with SafeAsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 url,
                 headers=outbound_headers,

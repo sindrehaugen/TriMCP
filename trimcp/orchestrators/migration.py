@@ -77,11 +77,17 @@ class MigrationOrchestrator:
         file_hash = hashlib.md5(payload.raw_code.encode()).hexdigest()
 
         scope_user = payload.user_id if payload.private else None
-        cache_key = self._redis_cache_key(payload.namespace_id, scope_user, payload.filepath)
+        cache_key = self._redis_cache_key(
+            payload.namespace_id, scope_user, payload.filepath
+        )
 
         cached_hash = await self.redis_client.get(cache_key)
         if cached_hash and cached_hash.decode() == file_hash:
-            return {"status": "skipped", "reason": "unchanged", "filepath": payload.filepath}
+            return {
+                "status": "skipped",
+                "reason": "unchanged",
+                "filepath": payload.filepath,
+            }
 
         from trimcp.extractors.dispatch import get_priority_queue
         from trimcp.tasks import process_code_indexing
@@ -96,7 +102,7 @@ class MigrationOrchestrator:
                 scope_user,
                 str(payload.namespace_id) if payload.namespace_id else None,
             ),
-            job_timeout='10m',
+            job_timeout="10m",
         )
 
         queue_name = q.name
@@ -113,7 +119,9 @@ class MigrationOrchestrator:
         from rq.job import Job
 
         try:
-            job = await asyncio.to_thread(Job.fetch, job_id, connection=self.redis_sync_client)
+            job = await asyncio.to_thread(
+                Job.fetch, job_id, connection=self.redis_sync_client
+            )
             return {
                 "job_id": job_id,
                 "status": job.get_status(),
@@ -206,7 +214,10 @@ class MigrationOrchestrator:
                     "reason": f"Missing memory embeddings: {mem_count} memories, {emb_count} embeddings",
                 }
 
-            return {"status": "success", "message": "All memories and nodes have been embedded"}
+            return {
+                "status": "success",
+                "message": "All memories and nodes have been embedded",
+            }
 
     async def commit_migration(self, migration_id: str) -> dict:
         async with self.pg_pool.acquire() as conn:

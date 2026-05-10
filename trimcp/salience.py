@@ -1,6 +1,6 @@
 import hashlib
 import math
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import asyncpg
 
@@ -73,9 +73,9 @@ def compute_decayed_score(
         if effective_half_life <= 0:
             effective_half_life = half_life_days * 0.01
 
-    ref = now if now is not None else datetime.now(UTC)
+    ref = now if now is not None else datetime.now(timezone.utc)
     if updated_at.tzinfo is None:
-        updated_at = updated_at.replace(tzinfo=UTC)
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
 
     delta_t_raw = (ref - updated_at).total_seconds() / 86400.0
     # Clamp to zero: negative values mean updated_at is in the future (clock
@@ -104,7 +104,11 @@ def ranking_score(cosine_sim: float, salience: float, alpha: float) -> float:
 
 
 async def reinforce(
-    conn: asyncpg.Connection, memory_id: str, agent_id: str, namespace_id: str, delta: float = 0.05
+    conn: asyncpg.Connection,
+    memory_id: str,
+    agent_id: str,
+    namespace_id: str,
+    delta: float = 0.05,
 ) -> None:
     """
     Reinforces a memory's salience score on retrieval.

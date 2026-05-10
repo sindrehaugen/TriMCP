@@ -33,7 +33,8 @@ _MCP_AUTH_KEYS = frozenset({"admin_api_key", "is_admin", "admin_identity"})
 _MCP_CACHE_PREFIX = "mcp_cache"
 
 # Cache TTL for cacheable tool responses (seconds).
-_MCP_CACHE_TTL_S: int = 300
+# Reduced from 300s to 60s for tools covered by the generation counter.
+_MCP_CACHE_TTL_S: int = 60
 
 # Redis key for the global cache-generation counter.
 _MCP_CACHE_GENERATION_KEY: str = "mcp_cache_generation"
@@ -143,9 +144,7 @@ def validate_nested_models(
             validated = model_cls(**nested)
             arguments[field_name] = validated
         except Exception as exc:
-            raise ValueError(
-                f"Invalid nested field '{field_name}': {exc}"
-            ) from exc
+            raise ValueError(f"Invalid nested field '{field_name}': {exc}") from exc
 
 
 def model_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:

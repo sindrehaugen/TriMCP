@@ -120,7 +120,9 @@ class OpenAICompatProvider(LLMProvider):
             strict = True  # attempt strict first
 
         for attempt in range(2):
-            body = self._build_request_body(msg_dicts, schema, response_model.__name__, strict)
+            body = self._build_request_body(
+                msg_dicts, schema, response_model.__name__, strict
+            )
             try:
                 raw = await self.execute_with_retry(
                     lambda b=body: self._post(b),
@@ -143,7 +145,7 @@ class OpenAICompatProvider(LLMProvider):
                 raise
             break  # success on this attempt
 
-        return _parse_and_validate(raw, response_model, self.model_identifier())
+        return _parse_and_validate(raw, response_model, self.model_identifier())  # type: ignore[arg-type]
 
     def model_identifier(self) -> str:
         return f"{self._provider_name}/{self._model}"

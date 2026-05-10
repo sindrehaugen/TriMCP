@@ -162,9 +162,9 @@ class TestRetryPolicy:
             max_delay_ms=60_000,
         )
         delays = {rp.delay_for_attempt(2) for _ in range(50)}
-        assert len(delays) > 10, (
-            f"Expected jitter to produce varied delays, got only {len(delays)} unique"
-        )
+        assert (
+            len(delays) > 10
+        ), f"Expected jitter to produce varied delays, got only {len(delays)} unique"
 
     def test_delay_never_exceeds_cap(self):
         rp = trimcp.providers.base.RetryPolicy(
@@ -470,7 +470,9 @@ class TestExecuteWithRetry:
 
         result = await provider.execute_with_retry(
             ok_op,
-            retry_policy=trimcp.providers.base.RetryPolicy(max_retries=0, base_delay_ms=1),
+            retry_policy=trimcp.providers.base.RetryPolicy(
+                max_retries=0, base_delay_ms=1
+            ),
             circuit_breaker=cb,
         )
         assert result == "recovered"

@@ -54,7 +54,9 @@ async def test_hybrid_search(engine):
 async def test_async_queue(engine):
     print("\n--- Testing Async Job Queue ---")
     try:
-        res = await engine.index_code_file("verify_test.py", "def verify(): pass", "python")
+        res = await engine.index_code_file(
+            "verify_test.py", "def verify(): pass", "python"
+        )
         print(f"Index response: {res}")
         if res.get("status") == "enqueued":
             print(f"PASS: Job enqueued with ID: {res.get('job_id')}")

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 import pytest
@@ -131,9 +131,9 @@ def test_chain_hash_is_content_concat_previous() -> None:
 
     # Verify ordering: SHA-256(prev || content) should be DIFFERENT.
     swapped = hashlib.sha256(prev + content).digest()
-    assert actual != swapped, (
-        "chain_hash order must be content || previous, not previous || content"
-    )
+    assert (
+        actual != swapped
+    ), "chain_hash order must be content || previous, not previous || content"
 
 
 # ---------------------------------------------------------------------------
@@ -172,9 +172,9 @@ async def test_genesis_event_has_nonzero_chain_hash(namespace_id: UUID) -> None:
     chain_hash = record["chain_hash"]
     assert isinstance(chain_hash, bytes)
     assert len(chain_hash) == 32
-    assert chain_hash != _GENESIS_SENTINEL, (
-        "Genesis event must not store the sentinel as its chain_hash"
-    )
+    assert (
+        chain_hash != _GENESIS_SENTINEL
+    ), "Genesis event must not store the sentinel as its chain_hash"
 
 
 @pytest.mark.asyncio
@@ -218,9 +218,9 @@ async def test_two_events_have_linked_chain_hashes(namespace_id: UUID) -> None:
         previous_chain_hash=record1["chain_hash"],
     )
 
-    assert record2["chain_hash"] == expected_chain2, (
-        "Event 2 chain_hash must be SHA-256(content_hash(event2) || chain_hash(event1))"
-    )
+    assert (
+        record2["chain_hash"] == expected_chain2
+    ), "Event 2 chain_hash must be SHA-256(content_hash(event2) || chain_hash(event1))"
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +229,9 @@ async def test_two_events_have_linked_chain_hashes(namespace_id: UUID) -> None:
 
 
 @pytest.mark.asyncio
-async def test_verify_merkle_chain_passes_for_pristine_chain(namespace_id: UUID) -> None:
+async def test_verify_merkle_chain_passes_for_pristine_chain(
+    namespace_id: UUID,
+) -> None:
     """A chain of 5 events that were correctly appended passes verification."""
     conn = RecordingFakeConnection()
 
@@ -251,7 +253,9 @@ async def test_verify_merkle_chain_passes_for_pristine_chain(namespace_id: UUID)
 
 
 @pytest.mark.asyncio
-async def test_verify_merkle_chain_empty_namespace_returns_valid(namespace_id: UUID) -> None:
+async def test_verify_merkle_chain_empty_namespace_returns_valid(
+    namespace_id: UUID,
+) -> None:
     """An empty namespace returns valid=True with checked=0."""
     conn = RecordingFakeConnection()
     result = await verify_merkle_chain(conn, namespace_id=namespace_id)
@@ -289,9 +293,9 @@ async def test_verify_merkle_chain_detects_tampered_middle_record(
 
     result = await verify_merkle_chain(conn, namespace_id=namespace_id)
     assert result["valid"] is False
-    assert result["first_break"] == 3, (
-        f"Expected first break at seq 3 (tampered record), got {result['first_break']}"
-    )
+    assert (
+        result["first_break"] == 3
+    ), f"Expected first break at seq 3 (tampered record), got {result['first_break']}"
 
 
 @pytest.mark.asyncio
@@ -319,11 +323,15 @@ async def test_verify_merkle_chain_middle_tampering_breaks_all_subsequent(
     result = await verify_merkle_chain(conn, namespace_id=namespace_id)
     assert result["valid"] is False
     assert result["first_break"] == 3
-    assert result["checked"] == 5, "All events must be checked even after a break is found"
+    assert (
+        result["checked"] == 5
+    ), "All events must be checked even after a break is found"
 
     # Verify that events 1 and 2 are still valid (chain unbroken to that point)
     # by doing a partial verify from start_seq=1 to end_seq=2
-    partial = await verify_merkle_chain(conn, namespace_id=namespace_id, start_seq=1, end_seq=2)
+    partial = await verify_merkle_chain(
+        conn, namespace_id=namespace_id, start_seq=1, end_seq=2
+    )
     assert partial["valid"] is True
     assert partial["checked"] == 2
 
@@ -357,7 +365,7 @@ async def test_verify_merkle_chain_detects_inserted_record(namespace_id: UUID) -
         "agent_id": "attacker",
         "event_type": "store_memory",
         "event_seq": 2,
-        "occurred_at": datetime(2026, 5, 8, 11, 0, 0, tzinfo=UTC),
+        "occurred_at": datetime(2026, 5, 8, 11, 0, 0, tzinfo=timezone.utc),
         "params": json.dumps({"malicious": True}, sort_keys=True),
         "chain_hash": b"\xde\xad" * 16,  # fake hash
     }
@@ -417,7 +425,9 @@ async def test_partial_range_verification_from_mid_chain(namespace_id: UUID) -> 
             )
 
     # Verify only events 3-5 — should pass since chain is pristine
-    result = await verify_merkle_chain(conn, namespace_id=namespace_id, start_seq=3, end_seq=5)
+    result = await verify_merkle_chain(
+        conn, namespace_id=namespace_id, start_seq=3, end_seq=5
+    )
     assert result["valid"] is True
     assert result["checked"] == 3
     assert result["last_verified_seq"] == 5
@@ -443,7 +453,9 @@ async def test_partial_range_anchored_on_tampered_predecessor_still_breaks(
     # Tamper with seq 5
     conn.event_inserts[4]["params"] = json.dumps({"idx": 999}, sort_keys=True)
 
-    result = await verify_merkle_chain(conn, namespace_id=namespace_id, start_seq=3, end_seq=6)
+    result = await verify_merkle_chain(
+        conn, namespace_id=namespace_id, start_seq=3, end_seq=6
+    )
     assert result["valid"] is False
     assert result["first_break"] == 5
 
@@ -478,7 +490,9 @@ async def test_genesis_sentinel_used_for_seq1_in_chain_verification(
         parent_event_id=None,
     )
     content_h = _compute_content_hash(signing_fields=fields)
-    expected = _compute_chain_hash(content_hash=content_h, previous_chain_hash=_GENESIS_SENTINEL)
+    expected = _compute_chain_hash(
+        content_hash=content_h, previous_chain_hash=_GENESIS_SENTINEL
+    )
     assert record["chain_hash"] == expected
 
     # verify_merkle_chain should also pass

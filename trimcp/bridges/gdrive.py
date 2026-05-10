@@ -51,7 +51,9 @@ class GoogleDriveBridge(BridgeProvider):
         elif channel_id:
             from trimcp.bridge_runtime import resolve_stored_oauth_access_token
 
-            t = resolve_stored_oauth_access_token("gdrive", subscription_id=str(channel_id))
+            t = resolve_stored_oauth_access_token(
+                "gdrive", subscription_id=str(channel_id)
+            )
             if t:
                 self._oauth_token_override = t
 

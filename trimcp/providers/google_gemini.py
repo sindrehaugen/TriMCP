@@ -109,7 +109,7 @@ class GoogleGeminiProvider(LLMProvider):
             ),
         )
 
-        raw_content = self._extract_text(data)
+        raw_content = self._extract_text(data)  # type: ignore[arg-type]
         return _parse_and_validate(raw_content, response_model, self.model_identifier())
 
     def model_identifier(self) -> str:
@@ -150,7 +150,9 @@ class GoogleGeminiProvider(LLMProvider):
                 contents.append({"role": "user", "parts": [{"text": msg.content}]})
 
         # Append schema reminder to the last user turn (or add a new one).
-        schema_reminder = f"\n\nReturn ONLY valid JSON that matches this schema:\n{schema_str}"
+        schema_reminder = (
+            f"\n\nReturn ONLY valid JSON that matches this schema:\n{schema_str}"
+        )
         if contents and contents[-1]["role"] == "user":
             contents[-1]["parts"][-1]["text"] += schema_reminder
         else:

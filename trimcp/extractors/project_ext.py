@@ -42,7 +42,9 @@ def _extract_mpp_sync(blob: bytes) -> ExtractionResult:
             return empty_skipped("mpp", "mpp_bad_command", warnings=[str(e)])
         if not argv:
             return empty_skipped(
-                "mpp", "mpp_bad_command", warnings=["TRIMCP_MPXJ_EXTRACTOR expanded to empty argv"]
+                "mpp",
+                "mpp_bad_command",
+                warnings=["TRIMCP_MPXJ_EXTRACTOR expanded to empty argv"],
             )
         proc = subprocess.run(
             argv,
@@ -55,13 +57,17 @@ def _extract_mpp_sync(blob: bytes) -> ExtractionResult:
             return empty_skipped(
                 "mpp",
                 "mpp_sidecar_failed",
-                warnings=[(proc.stderr or proc.stdout or f"exit {proc.returncode}")[:500]],
+                warnings=[
+                    (proc.stderr or proc.stdout or f"exit {proc.returncode}")[:500]
+                ],
             )
         raw = (proc.stdout or "").strip()
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as e:
-            return empty_skipped("mpp", "mpp_json_invalid", warnings=[str(e), raw[:200]])
+            return empty_skipped(
+                "mpp", "mpp_json_invalid", warnings=[str(e), raw[:200]]
+            )
 
         sections: list[Section] = []
         order = 0
@@ -105,12 +111,21 @@ def _extract_mpp_sync(blob: bytes) -> ExtractionResult:
             method="mpp",
             text=full,
             sections=sections
-            or [Section(text="(no tasks)", structure_path="MPP", section_type="project", order=0)],
+            or [
+                Section(
+                    text="(no tasks)",
+                    structure_path="MPP",
+                    section_type="project",
+                    order=0,
+                )
+            ],
             metadata={"task_sections": len(sections)},
             warnings=warnings,
         )
     except subprocess.TimeoutExpired:
-        return empty_skipped("mpp", "mpp_sidecar_timeout", warnings=["MPXJ extractor timed out"])
+        return empty_skipped(
+            "mpp", "mpp_sidecar_timeout", warnings=["MPXJ extractor timed out"]
+        )
     except FileNotFoundError as e:
         return empty_skipped("mpp", "mpp_executable_missing", warnings=[str(e)])
     except Exception as e:
@@ -138,7 +153,9 @@ async def extract_pub(blob: bytes) -> ExtractionResult:
     if not docx_bytes:
         # Publisher sometimes converts better to PDF for text
         try:
-            pdf_bytes = await asyncio.to_thread(libreoffice_convert, blob, ".pub", "pdf")
+            pdf_bytes = await asyncio.to_thread(
+                libreoffice_convert, blob, ".pub", "pdf"
+            )
         except Exception as e:
             warnings.append(f"pub_pdf_fallback:{e}")
             pdf_bytes = None

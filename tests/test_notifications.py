@@ -66,10 +66,10 @@ async def test_snmp_dispatch(dispatcher):
 async def test_worker_dispatches_to_all_channels(dispatcher):
     """Verify the worker pulls from the queue and calls all dispatch methods."""
     with (
-        patch.object(dispatcher, '_send_slack', new_callable=AsyncMock) as mock_slack,
-        patch.object(dispatcher, '_send_teams', new_callable=AsyncMock) as mock_teams,
-        patch.object(dispatcher, '_send_email', new_callable=AsyncMock) as mock_email,
-        patch.object(dispatcher, '_send_snmp', new_callable=AsyncMock) as mock_snmp,
+        patch.object(dispatcher, "_send_slack", new_callable=AsyncMock) as mock_slack,
+        patch.object(dispatcher, "_send_teams", new_callable=AsyncMock) as mock_teams,
+        patch.object(dispatcher, "_send_email", new_callable=AsyncMock) as mock_email,
+        patch.object(dispatcher, "_send_snmp", new_callable=AsyncMock) as mock_snmp,
     ):
         await dispatcher.start_worker()
         await dispatcher.dispatch_alert("Test Alert", "System is down")

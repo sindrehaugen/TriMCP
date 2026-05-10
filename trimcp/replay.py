@@ -46,7 +46,7 @@ import logging
 import uuid
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, get_args
 
 import asyncpg
@@ -149,13 +149,17 @@ def _record_to_event_row(record: asyncpg.Record) -> _EventRow:
         event_id=record["id"],
         event_seq=record["event_seq"],
         event_type=record["event_type"],
-        occurred_at=record["occurred_at"].astimezone(UTC),
+        occurred_at=record["occurred_at"].astimezone(timezone.utc),
         agent_id=record["agent_id"],
         params=dict(record["params"]) if record["params"] else {},
-        result_summary=dict(record["result_summary"]) if record["result_summary"] else None,
+        result_summary=(
+            dict(record["result_summary"]) if record["result_summary"] else None
+        ),
         parent_event_id=record["parent_event_id"],
         llm_payload_uri=record["llm_payload_uri"],
-        llm_payload_hash=bytes(record["llm_payload_hash"]) if record["llm_payload_hash"] else None,
+        llm_payload_hash=(
+            bytes(record["llm_payload_hash"]) if record["llm_payload_hash"] else None
+        ),
     )
 
 
@@ -269,15 +273,17 @@ async def get_run_status(
     return {
         "run_id": str(row["id"]),
         "source_namespace_id": str(row["source_namespace_id"]),
-        "target_namespace_id": str(row["target_namespace_id"])
-        if row["target_namespace_id"]
-        else None,
+        "target_namespace_id": (
+            str(row["target_namespace_id"]) if row["target_namespace_id"] else None
+        ),
         "mode": row["mode"],
         "replay_mode": row["replay_mode"],
         "start_seq": row["start_seq"],
         "end_seq": row["end_seq"],
         "divergence_seq": row["divergence_seq"],
-        "config_overrides": dict(row["config_overrides"]) if row["config_overrides"] else None,
+        "config_overrides": (
+            dict(row["config_overrides"]) if row["config_overrides"] else None
+        ),
         "status": row["status"],
         "events_applied": row["events_applied"],
         "started_at": row["started_at"].isoformat() if row["started_at"] else None,
@@ -671,7 +677,7 @@ async def _handle_consolidation_run(
     # via a direct import; avoids circular deps since we don't import engine).
     from trimcp import embeddings as _emb  # local import to avoid module-level circular
 
-    vector = await asyncio.get_running_loop().run_in_executor(None, _emb.embed_text, abstraction)
+    vector = await _emb.embed(abstraction)
 
     await conn.execute(
         """
@@ -830,7 +836,9 @@ async def _resolve_llm_payload(
     if replay_mode not in ("deterministic", "re-execute"):
         raise ReplayModeError(f"Invalid replay_mode: {replay_mode!r}")
 
-    fork_uri = _fork_llm_payload_uri(src.llm_payload_uri, target_namespace_id, src.event_id)
+    fork_uri = _fork_llm_payload_uri(
+        src.llm_payload_uri, target_namespace_id, src.event_id
+    )
 
     if replay_mode == "deterministic":
         try:
@@ -973,18 +981,25 @@ class ObservationalReplay:
             # The transaction keeps the cursor alive across yield boundaries.
             async with self.pool.acquire() as cursor_conn:
                 async with cursor_conn.transaction(isolation="repeatable_read"):
-                    async for record in cursor_conn.cursor(sql, *args, prefetch=_CURSOR_PREFETCH):
+                    async for record in cursor_conn.cursor(
+                        sql, *args, prefetch=_CURSOR_PREFETCH
+                    ):
                         try:
                             await verify_event_signature(cursor_conn, record)
                         except DataIntegrityError as exc:
-                            yield {"type": "error", "run_id": str(run_id), "message": str(exc)}
-                            await _finish_run(
-                                meta_conn,
-                                run_id,
-                                status="failed",
-                                events_applied=events_streamed,
-                                error=str(exc),
-                            )
+                            yield {
+                                "type": "error",
+                                "run_id": str(run_id),
+                                "message": str(exc),
+                            }
+                            async with self.pool.acquire() as finish_conn:
+                                await _finish_run(
+                                    finish_conn,
+                                    run_id,
+                                    status="failed",
+                                    events_applied=events_streamed,
+                                    error=str(exc),
+                                )
                             raise
 
                         row = _record_to_event_row(record)
@@ -995,7 +1010,9 @@ class ObservationalReplay:
                             # Progress update uses a *different* connection to avoid
                             # nesting statements on the cursor connection.
                             async with self.pool.acquire() as prog_conn:
-                                await _update_run_progress(prog_conn, run_id, events_streamed)
+                                await _update_run_progress(
+                                    prog_conn, run_id, events_streamed
+                                )
                             yield {
                                 "type": "progress",
                                 "run_id": str(run_id),
@@ -1018,7 +1035,9 @@ class ObservationalReplay:
 
         except Exception as exc:
             log.exception(
-                "ObservationalReplay failed at event %d run_id=%s", events_streamed, run_id
+                "ObservationalReplay failed at event %d run_id=%s",
+                events_streamed,
+                run_id,
             )
             if run_id is not None:
                 async with self.pool.acquire() as err_conn:
@@ -1086,9 +1105,13 @@ class ForkedReplay:
         """
         handler = _HANDLER_REGISTRY.get(src.event_type)
         if handler is None:
-            log.warning("No handler for event_type=%s; writing provenance only", src.event_type)
+            log.warning(
+                "No handler for event_type=%s; writing provenance only", src.event_type
+            )
             return {"skipped": True, "reason": "no_handler"}
-        return await handler(write_conn, src, target_namespace_id, llm_payload, config_overrides)
+        return await handler(
+            write_conn, src, target_namespace_id, llm_payload, config_overrides
+        )
 
     async def _dispatch_and_apply(
         self,
@@ -1247,11 +1270,17 @@ class ForkedReplay:
         try:
             async with self.pool.acquire() as cursor_conn:
                 async with cursor_conn.transaction(isolation="repeatable_read"):
-                    async for record in cursor_conn.cursor(sql, *args, prefetch=_CURSOR_PREFETCH):
+                    async for record in cursor_conn.cursor(
+                        sql, *args, prefetch=_CURSOR_PREFETCH
+                    ):
                         try:
                             await verify_event_signature(cursor_conn, record)
                         except DataIntegrityError as exc:
-                            yield {"type": "error", "run_id": str(run_id), "message": str(exc)}
+                            yield {
+                                "type": "error",
+                                "run_id": str(run_id),
+                                "message": str(exc),
+                            }
                             async with self.pool.acquire() as err_conn:
                                 await _finish_run(
                                     err_conn,
@@ -1276,16 +1305,18 @@ class ForkedReplay:
                         # -- Apply event in its own Saga transaction on a new conn --
                         async with self.pool.acquire() as write_conn:
                             async with write_conn.transaction():
-                                result_summary, fork_event = await self._dispatch_and_apply(
-                                    write_conn,
-                                    src=src,
-                                    target_namespace_id=target_namespace_id,
-                                    llm_payload=llm_payload,
-                                    config_overrides=config_overrides,
-                                    run_id=run_id,
-                                    source_namespace_id=source_namespace_id,
-                                    fork_uri=fork_uri,
-                                    fork_hash=fork_hash,
+                                result_summary, fork_event = (
+                                    await self._dispatch_and_apply(
+                                        write_conn,
+                                        src=src,
+                                        target_namespace_id=target_namespace_id,
+                                        llm_payload=llm_payload,
+                                        config_overrides=config_overrides,
+                                        run_id=run_id,
+                                        source_namespace_id=source_namespace_id,
+                                        fork_uri=fork_uri,
+                                        fork_hash=fork_hash,
+                                    )
                                 )
 
                         events_applied += 1
@@ -1296,14 +1327,16 @@ class ForkedReplay:
                             "type": yield_type,
                             "event_seq": src.event_seq,
                             "event_type": src.event_type,
-                            "fork_event_id": str(fork_event.event_id),
-                            "fork_event_seq": fork_event.event_seq,
+                            "fork_event_id": str(fork_event.event_id),  # type: ignore[attr-defined]
+                            "fork_event_seq": fork_event.event_seq,  # type: ignore[attr-defined]
                             "result": result_summary,
                         }
 
                         if events_applied % _PROGRESS_INTERVAL == 0:
                             async with self.pool.acquire() as prog_conn:
-                                await _update_run_progress(prog_conn, run_id, events_applied)
+                                await _update_run_progress(
+                                    prog_conn, run_id, events_applied
+                                )
                             yield {
                                 "type": "progress",
                                 "run_id": str(run_id),
@@ -1327,7 +1360,9 @@ class ForkedReplay:
             }
 
         except Exception as exc:
-            log.exception("ForkedReplay failed at event %d run_id=%s", events_applied, run_id)
+            log.exception(
+                "ForkedReplay failed at event %d run_id=%s", events_applied, run_id
+            )
             if run_id is not None:
                 async with self.pool.acquire() as err_conn:
                     await _finish_run(
@@ -1467,11 +1502,17 @@ class ReconstructiveReplay:
         try:
             async with self.pool.acquire() as cursor_conn:
                 async with cursor_conn.transaction(isolation="repeatable_read"):
-                    async for record in cursor_conn.cursor(sql, *args, prefetch=_CURSOR_PREFETCH):
+                    async for record in cursor_conn.cursor(
+                        sql, *args, prefetch=_CURSOR_PREFETCH
+                    ):
                         try:
                             await verify_event_signature(cursor_conn, record)
                         except DataIntegrityError as exc:
-                            yield {"type": "error", "run_id": str(run_id), "message": str(exc)}
+                            yield {
+                                "type": "error",
+                                "run_id": str(run_id),
+                                "message": str(exc),
+                            }
                             async with self.pool.acquire() as err_conn:
                                 await _finish_run(
                                     err_conn,
@@ -1489,9 +1530,12 @@ class ReconstructiveReplay:
                             async with write_conn.transaction():
                                 handler = _HANDLER_REGISTRY.get(src.event_type)
                                 if handler is None:
-                                    result_summary: dict = {"skipped": True, "reason": "no_handler"}
+                                    result_summary: dict = {
+                                        "skipped": True,
+                                        "reason": "no_handler",
+                                    }
                                 else:
-                                    result_summary = await handler(
+                                    result_summary = await handler(  # type: ignore[call-arg]
                                         write_conn,
                                         src,
                                         target_namespace_id,
@@ -1529,7 +1573,9 @@ class ReconstructiveReplay:
 
                         if events_applied % _PROGRESS_INTERVAL == 0:
                             async with self.pool.acquire() as prog_conn:
-                                await _update_run_progress(prog_conn, run_id, events_applied)
+                                await _update_run_progress(
+                                    prog_conn, run_id, events_applied
+                                )
                             yield {
                                 "type": "progress",
                                 "run_id": str(run_id),
@@ -1554,7 +1600,9 @@ class ReconstructiveReplay:
 
         except Exception as exc:
             log.exception(
-                "ReconstructiveReplay failed at event %d run_id=%s", events_applied, run_id
+                "ReconstructiveReplay failed at event %d run_id=%s",
+                events_applied,
+                run_id,
             )
             if run_id is not None:
                 async with self.pool.acquire() as err_conn:
@@ -1632,12 +1680,12 @@ async def get_event_provenance(
                     "event_seq": row["event_seq"],
                     "occurred_at": row["occurred_at"].isoformat(),
                     "params": dict(row["params"]) if row["params"] else {},
-                    "result_summary": dict(row["result_summary"])
-                    if row["result_summary"]
-                    else None,
-                    "parent_event_id": str(row["parent_event_id"])
-                    if row["parent_event_id"]
-                    else None,
+                    "result_summary": (
+                        dict(row["result_summary"]) if row["result_summary"] else None
+                    ),
+                    "parent_event_id": (
+                        str(row["parent_event_id"]) if row["parent_event_id"] else None
+                    ),
                 }
             )
             current_id = row["parent_event_id"]

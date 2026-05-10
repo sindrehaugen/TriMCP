@@ -52,7 +52,9 @@ def _record_vram_metrics(worker_id: str = "default") -> None:
             peak,
         )
     except Exception:
-        log.debug("VRAM metric recording skipped (metrics not available)", exc_info=True)
+        log.debug(
+            "VRAM metric recording skipped (metrics not available)", exc_info=True
+        )
 
 
 def _release_embedding_batch_memory(worker_id: str = "default") -> None:
@@ -80,16 +82,14 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
         try:
             async with pg_pool.acquire() as conn:
                 # Find a running migration
-                migration = await conn.fetchrow(
-                    """
+                migration = await conn.fetchrow("""
                     SELECT m.id, m.target_model_id, m.last_memory_id, m.last_node_id, e.name as model_name
                     FROM embedding_migrations m
                     JOIN embedding_models e ON m.target_model_id = e.id
                     WHERE m.status = 'running'
                     ORDER BY m.started_at ASC
                     LIMIT 1
-                    """
-                )
+                    """)
 
                 if not migration:
                     await asyncio.sleep(10)
@@ -139,12 +139,15 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
                                 ref_to_row[oid] = row
                             except Exception:
                                 log.warning(
-                                    "Skipping invalid ObjectId payload_ref in re-embedder: %s", ref
+                                    "Skipping invalid ObjectId payload_ref in re-embedder: %s",
+                                    ref,
                                 )
 
                     if oids:
                         docs = {}
-                        cursor = db.episodes.find({"_id": {"$in": oids}}, {"raw_data": 1})
+                        cursor = db.episodes.find(
+                            {"_id": {"$in": oids}}, {"raw_data": 1}
+                        )
                         async for doc in cursor:
                             docs[doc["_id"]] = doc
 
@@ -248,7 +251,8 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
                     migration_id,
                 )
                 log.info(
-                    "Migration %s finished processing. Status set to validating.", migration_id
+                    "Migration %s finished processing. Status set to validating.",
+                    migration_id,
                 )
 
         except Exception as e:

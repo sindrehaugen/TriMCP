@@ -49,7 +49,7 @@ class GraphOrchestrator:
             return raw
         return UUID(str(raw))
 
-    async def scoped_session(self, namespace_id: str | UUID):
+    def scoped_session(self, namespace_id: str | UUID):
         """Tenant-isolated PostgreSQL session with RLS context."""
         from contextlib import asynccontextmanager
 
@@ -62,7 +62,12 @@ class GraphOrchestrator:
                 from trimcp.auth import set_namespace_context
 
                 await set_namespace_context(conn, ns_uuid)
-                yield conn
+                try:
+                    yield conn
+                finally:
+                    from trimcp.auth import _reset_rls_context
+
+                    await _reset_rls_context(conn)
 
         return _session(namespace_id)
 
@@ -124,7 +129,13 @@ class GraphOrchestrator:
         async with self.scoped_session(namespace_id or "default") as conn:
             if private:
                 scope_clause = "AND user_id = $5"
-                query_params: list = [json.dumps(vector), candidate_k, query, top_k, user_id]
+                query_params: list = [
+                    json.dumps(vector),
+                    candidate_k,
+                    query,
+                    top_k,
+                    user_id,
+                ]
                 next_i = 6
             else:
                 scope_clause = "AND user_id IS NULL"

@@ -98,7 +98,9 @@ class SharePointBridge(BridgeProvider):
             url: str | None = stored.decode("utf-8")
         else:
             url = f"{GRAPH_ROOT}/sites/{site_id}/drives/{drive_id}/root/delta"
-        with httpx.Client(timeout=60.0, headers=headers, follow_redirects=True) as client:
+        with httpx.Client(
+            timeout=60.0, headers=headers, follow_redirects=True
+        ) as client:
             while url:
                 assert_url_allowed_prefix(
                     url, GRAPH_DELTA_URL_PREFIXES, what="SharePoint Graph delta URL"
@@ -126,7 +128,9 @@ class SharePointBridge(BridgeProvider):
         item_id = file_ref["item_id"]
         u = f"{GRAPH_ROOT}/sites/{site_id}/drives/{drive_id}/items/{item_id}/content"
         headers = {"Authorization": f"Bearer {self.bearer_token()}"}
-        with httpx.Client(timeout=120.0, headers=headers, follow_redirects=True) as client:
+        with httpx.Client(
+            timeout=120.0, headers=headers, follow_redirects=True
+        ) as client:
             resp = client.get(u)
             resp.raise_for_status()
             return resp.content
@@ -137,7 +141,9 @@ def process_sharepoint_event(payload: dict[str, Any]) -> dict[str, Any]:
     bridge = SharePointBridge()
     count = 0
     try:
-        for item in bridge.walk_delta({"notifications": payload.get("notifications", [])}):
+        for item in bridge.walk_delta(
+            {"notifications": payload.get("notifications", [])}
+        ):
             count += 1
             if item.get("deleted"):
                 log.info("SharePoint delta: deleted id=%s", item.get("id"))

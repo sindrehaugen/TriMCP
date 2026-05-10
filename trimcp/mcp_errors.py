@@ -37,8 +37,8 @@ Everything else       -32603   Internal error
 from __future__ import annotations
 
 import functools
-import json
 import logging
+from collections.abc import Callable
 from typing import Any, TypeVar
 
 from pydantic import ValidationError
@@ -138,7 +138,9 @@ def mcp_handler(handler_fn: F) -> F:
             msg = str(e)
             # Preserve quota-exceeded prefix for the call_tool check
             if msg.startswith("Resource quota exceeded"):
-                raise McpError(MCP_QUOTA_EXCEEDED, "Resource quota exceeded", data={"detail": msg})
+                raise McpError(
+                    MCP_QUOTA_EXCEEDED, "Resource quota exceeded", data={"detail": msg}
+                )
             raise McpError(
                 MCP_INVALID_PARAMS,
                 "Invalid parameters",

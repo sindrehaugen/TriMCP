@@ -21,6 +21,7 @@ from typing import Any
 from trimcp.models import (
     CompareStatesRequest,
     CreateSnapshotRequest,
+    DeleteSnapshotResult,
     SnapshotRecord,
     StateDiffResult,
 )
@@ -76,13 +77,9 @@ def serialize_snapshot_list(records: list[SnapshotRecord]) -> str:
     return json.dumps([s.model_dump(mode="json") for s in records])
 
 
-def serialize_delete_result(result: dict[str, Any]) -> str:
-    """Serialize the dict returned by ``delete_snapshot`` to a JSON string.
-
-    The orchestrator returns a plain ``dict`` (not a Pydantic model) for
-    delete results, so we serialise directly.
-    """
-    return json.dumps(result)
+def serialize_delete_result(result: DeleteSnapshotResult) -> str:
+    """Serialize the ``DeleteSnapshotResult`` to a JSON string."""
+    return json.dumps(result.model_dump(mode="json"))
 
 
 def serialize_state_diff(diff: StateDiffResult) -> str:

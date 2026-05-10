@@ -104,25 +104,25 @@ class TestValidateMigrationCrossTenant:
 
         # Verify the mem_count SQL uses EXISTS on memory_embeddings
         mem_sql: str = conn.fetchval.call_args_list[0].args[0]
-        assert "EXISTS" in mem_sql, (
-            f"mem_count query must use EXISTS on memory_embeddings, got: {mem_sql}"
-        )
-        assert "memory_embeddings" in mem_sql, (
-            f"mem_count query must reference memory_embeddings, got: {mem_sql}"
-        )
-        assert "memories m" in mem_sql or "memories" in mem_sql, (
-            f"mem_count query must reference memories table, got: {mem_sql}"
-        )
+        assert (
+            "EXISTS" in mem_sql
+        ), f"mem_count query must use EXISTS on memory_embeddings, got: {mem_sql}"
+        assert (
+            "memory_embeddings" in mem_sql
+        ), f"mem_count query must reference memory_embeddings, got: {mem_sql}"
+        assert (
+            "memories m" in mem_sql or "memories" in mem_sql
+        ), f"mem_count query must reference memories table, got: {mem_sql}"
 
         # Verify the target_model_id is passed to both queries
         mem_args = conn.fetchval.call_args_list[0].args
         emb_args = conn.fetchval.call_args_list[1].args
-        assert target_model_id_in_args(target_model, mem_args), (
-            f"mem_count query args must contain target_model_id={target_model}, got: {mem_args}"
-        )
-        assert target_model_id_in_args(target_model, emb_args), (
-            f"emb_count query args must contain target_model_id={target_model}, got: {emb_args}"
-        )
+        assert target_model_id_in_args(
+            target_model, mem_args
+        ), f"mem_count query args must contain target_model_id={target_model}, got: {mem_args}"
+        assert target_model_id_in_args(
+            target_model, emb_args
+        ), f"emb_count query args must contain target_model_id={target_model}, got: {emb_args}"
 
     @pytest.mark.asyncio
     async def test_emb_count_equals_mem_count_passes_validation(

@@ -88,7 +88,9 @@ def check_file(filepath: Path) -> list[Violation]:
             for item in node.items:
                 src = ast.get_source_segment(source, item.context_expr) or "<expr>"
                 if item.optional_vars:
-                    target = ast.get_source_segment(source, item.optional_vars) or "<name>"
+                    target = (
+                        ast.get_source_segment(source, item.optional_vars) or "<name>"
+                    )
                     items.append(f"{src} as {target}")
                 else:
                     items.append(src)

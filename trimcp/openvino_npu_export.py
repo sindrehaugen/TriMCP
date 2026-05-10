@@ -100,7 +100,9 @@ def export_jina_to_openvino_npu(
         )
         tok.save_pretrained(output_dir)
     except Exception as e:
-        log.warning("Tokenizer save_pretrained failed (export may still be usable): %s", e)
+        log.warning(
+            "Tokenizer save_pretrained failed (export may still be usable): %s", e
+        )
 
     manifest = output_dir / "trimcp_openvino_export_manifest.txt"
     manifest.write_text(

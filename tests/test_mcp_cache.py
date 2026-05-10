@@ -124,7 +124,13 @@ class TestPurgeNamespaceCache:
         redis = MagicMock()
         redis.scan = AsyncMock(
             side_effect=[
-                (0, [b"mcp_cache:v1:ns-abc:tool:hash1", b"mcp_cache:v1:ns-abc:tool:hash2"]),
+                (
+                    0,
+                    [
+                        b"mcp_cache:v1:ns-abc:tool:hash1",
+                        b"mcp_cache:v1:ns-abc:tool:hash2",
+                    ],
+                ),
             ]
         )
         redis.delete = AsyncMock(return_value=2)
@@ -210,7 +216,9 @@ def mock_engine():
     engine.search_codebase = AsyncMock(return_value=[{"code": "def"}])
     engine.graph_search = AsyncMock(return_value={"nodes": []})
     engine.store_media = AsyncMock(return_value="mongo_456")
-    engine.forget_memory = AsyncMock(return_value={"status": "success", "forgotten": True})
+    engine.forget_memory = AsyncMock(
+        return_value={"status": "success", "forgotten": True}
+    )
     return engine
 
 
@@ -239,7 +247,12 @@ async def test_cache_miss_writes_namespace_scoped_key(mock_engine):
 
     mock_engine.redis_client.get.return_value = None
 
-    args = {"namespace_id": TEST_NS, "agent_id": "u1", "query": "test query", "limit": 5}
+    args = {
+        "namespace_id": TEST_NS,
+        "agent_id": "u1",
+        "query": "test query",
+        "limit": 5,
+    }
     await call_tool("semantic_search", args)
 
     mock_engine.semantic_search.assert_called_once()
@@ -247,7 +260,9 @@ async def test_cache_miss_writes_namespace_scoped_key(mock_engine):
 
     call_args = mock_engine.redis_client.setex.call_args[0]
     redis_key = call_args[0]
-    assert TEST_NS in redis_key, f"Expected namespace {TEST_NS} in cache key, got {redis_key}"
+    assert (
+        TEST_NS in redis_key
+    ), f"Expected namespace {TEST_NS} in cache key, got {redis_key}"
     assert redis_key.startswith("mcp_cache:v")
     assert call_args[1] == 300  # TTL
 
@@ -260,13 +275,20 @@ async def test_cache_hit_returns_cached_value(mock_engine):
     async def mock_get(key):
         if key == "mcp_cache_generation":
             return b"2"
-        if TEST_NS in key and b"semantic_search" in (key.encode() if isinstance(key, str) else key):
+        if TEST_NS in key and b"semantic_search" in (
+            key.encode() if isinstance(key, str) else key
+        ):
             return b'[{"cached": "result"}]'
         return None
 
     mock_engine.redis_client.get.side_effect = mock_get
 
-    args = {"namespace_id": TEST_NS, "agent_id": "u1", "query": "cached query", "limit": 5}
+    args = {
+        "namespace_id": TEST_NS,
+        "agent_id": "u1",
+        "query": "cached query",
+        "limit": 5,
+    }
     res = await call_tool("semantic_search", args)
 
     mock_engine.semantic_search.assert_not_called()

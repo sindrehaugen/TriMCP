@@ -40,8 +40,11 @@ import os
 import signal
 import uuid
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from trimcp.orchestrator import TriStackEngine
 from uuid import uuid4
 
 from starlette.applications import Starlette
@@ -55,15 +58,14 @@ from trimcp.a2a import (
     A2A_CODE_SCOPE_VIOLATION,
     A2A_CODE_UNAUTHORIZED,
     A2AAuthorizationError,
-    A2AMTLSError,
     A2AScopeViolationError,
     enforce_scope,
-    mtls_enforce,
     verify_token,
 )
 from trimcp.auth import NamespaceContext
 from trimcp.config import cfg
 from trimcp.jwt_auth import JWTAuthMiddleware
+from trimcp.models import GraphSearchRequest
 
 log = logging.getLogger("trimcp.a2a_server")
 
@@ -72,70 +74,10 @@ A2A_CODE_MTLS = -32013  # mTLS client certificate validation failed
 
 
 # ---------------------------------------------------------------------------
-# mTLS Client Certificate Middleware
+# mTLS Client Certificate Middleware (imported from shared module)
 # ---------------------------------------------------------------------------
 
-
-class MTLSAuthMiddleware:
-    """
-    Starlette ASGI middleware that enforces mTLS client certificate validation.
-
-    Runs *before* JWTAuthMiddleware — validation failures drop the connection
-    at the network edge with an HTTP 401 + JSON-RPC -32013 error.
-
-    When mTLS is disabled (cfg.TRIMCP_A2A_MTLS_ENABLED is false), this
-    middleware is a no-op pass-through.
-    """
-
-    def __init__(self, app, protected_prefix: str = "/tasks"):
-        self.app = app
-        self.protected_prefix = protected_prefix
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        # Only enforce on protected routes
-        path = scope.get("path", "")
-        if not path.startswith(self.protected_prefix):
-            await self.app(scope, receive, send)
-            return
-
-        # Extract headers from ASGI scope
-        headers: dict[str, str] = {}
-        for key, value in scope.get("headers", []):
-            headers[key.decode("latin-1").lower()] = value.decode("latin-1")
-
-        try:
-            mtls_enforce(
-                scope=scope,
-                headers=headers,
-                enabled=cfg.TRIMCP_A2A_MTLS_ENABLED,
-                strict=cfg.TRIMCP_A2A_MTLS_STRICT,
-                trusted_proxy_hops=cfg.TRIMCP_A2A_MTLS_TRUSTED_PROXY_HOP,
-                allowed_sans=cfg.TRIMCP_A2A_MTLS_ALLOWED_SANS,
-                allowed_fingerprints=cfg.TRIMCP_A2A_MTLS_ALLOWED_FINGERPRINTS,
-            )
-        except A2AMTLSError as exc:
-            log.warning("mTLS rejection: path=%s reason=%s", path, exc)
-            response = JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "error": {
-                        "code": A2A_CODE_MTLS,
-                        "message": "mTLS client certificate validation failed",
-                        "data": {"reason": str(exc)},
-                    },
-                    "id": None,
-                },
-                status_code=401,
-            )
-            await response(scope, receive, send)
-            return
-
-        await self.app(scope, receive, send)
-
+from trimcp.mtls import MTLSAuthMiddleware  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Graceful shutdown machinery
@@ -209,7 +151,7 @@ _tasks: dict[str, dict[str, Any]] = {}
 # ---------------------------------------------------------------------------
 # Engine reference (injected via lifespan)
 # ---------------------------------------------------------------------------
-_engine = None
+_engine: TriStackEngine | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +289,7 @@ def _make_task(
         "id": task_id,
         "status": {
             "state": state,
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         },
         "artifacts": artifacts or [],
     }
@@ -393,7 +335,9 @@ async def tasks_send(request: Request) -> JSONResponse:
     if caller_ctx is None:
         return JSONResponse(
             _jsonrpc_err(
-                A2A_CODE_UNAUTHORIZED, "Authentication failed", "missing_namespace_context"
+                A2A_CODE_UNAUTHORIZED,
+                "Authentication failed",
+                "missing_namespace_context",
             ),
             status_code=401,
         )
@@ -428,7 +372,9 @@ async def tasks_send(request: Request) -> JSONResponse:
 
                 # Enforce the namespace scope covers the requested namespace_id
                 params.get("namespace_id") or ""
-                enforce_scope(verified.scopes, "namespace", str(verified.owner_namespace_id))
+                enforce_scope(
+                    verified.scopes, "namespace", str(verified.owner_namespace_id)
+                )
 
                 # Override the params to operate in the owner's namespace
                 params = dict(params)
@@ -456,7 +402,9 @@ async def tasks_send(request: Request) -> JSONResponse:
             task = _make_task(task_id, "failed", message=str(exc))
             _tasks[task_id] = task
             return JSONResponse(
-                _jsonrpc_err(A2A_CODE_UNAUTHORIZED, "A2A authorization failure", str(exc)),
+                _jsonrpc_err(
+                    A2A_CODE_UNAUTHORIZED, "A2A authorization failure", str(exc)
+                ),
                 status_code=403,
             )
         except A2AScopeViolationError as exc:
@@ -470,12 +418,16 @@ async def tasks_send(request: Request) -> JSONResponse:
             task = _make_task(task_id, "failed", message=str(exc))
             _tasks[task_id] = task
             return JSONResponse(
-                _jsonrpc_err(A2A_CODE_BAD_REQUEST, "Invalid skill parameters", str(exc)),
+                _jsonrpc_err(
+                    A2A_CODE_BAD_REQUEST, "Invalid skill parameters", str(exc)
+                ),
                 status_code=400,
             )
         except Exception as exc:
             log.exception("tasks_send failed task_id=%s skill=%s", task_id, skill)
-            task = _make_task(task_id, "failed", message=f"Internal error: {type(exc).__name__}")
+            task = _make_task(
+                task_id, "failed", message=f"Internal error: {type(exc).__name__}"
+            )
             _tasks[task_id] = task
             return JSONResponse({"error": "Internal error"}, status_code=500)
 
@@ -489,7 +441,9 @@ async def tasks_get(request: Request) -> JSONResponse:
         task_id = request.path_params.get("task_id", "")
         task = _tasks.get(task_id)
         if task is None:
-            return JSONResponse({"error": "Task not found", "task_id": task_id}, status_code=404)
+            return JSONResponse(
+                {"error": "Task not found", "task_id": task_id}, status_code=404
+            )
         return JSONResponse(task)
 
 
@@ -502,12 +456,17 @@ async def tasks_cancel(request: Request) -> JSONResponse:
         task_id = request.path_params.get("task_id", "")
         task = _tasks.get(task_id)
         if task is None:
-            return JSONResponse({"error": "Task not found", "task_id": task_id}, status_code=404)
+            return JSONResponse(
+                {"error": "Task not found", "task_id": task_id}, status_code=404
+            )
 
         current_state = task["status"]["state"]
         if current_state in ("completed", "failed", "canceled"):
             return JSONResponse(
-                {"error": f"Task already in terminal state: {current_state!r}", "task_id": task_id},
+                {
+                    "error": f"Task already in terminal state: {current_state!r}",
+                    "task_id": task_id,
+                },
                 status_code=409,
             )
 
@@ -526,6 +485,7 @@ async def _dispatch_skill(
     caller_ctx: NamespaceContext,
 ) -> Any:
     """Route an A2A skill ID to the appropriate TriStackEngine method."""
+    assert _engine is not None, "engine not initialized"
 
     if skill == "recall_relevant_context":
         query = _require_param(params, "query")
@@ -542,9 +502,11 @@ async def _dispatch_skill(
             offset=offset,
         )
         try:
-            graph = await _engine.graph_search(query=query, namespace_id=ns_id, max_depth=1)
+            graph: dict = await _engine.graph_search(
+                GraphSearchRequest(query=query, namespace_id=uuid.UUID(ns_id), max_depth=1)
+            )
         except Exception:
-            graph = []
+            graph = {}
 
         return {"semantic": semantic, "graph": graph}
 
@@ -580,10 +542,12 @@ async def _dispatch_skill(
         agent_id = params.get("agent_id")
 
         result = await _engine.graph_search(
-            query=query,
-            namespace_id=ns_id,
-            max_depth=max_depth,
-            restrict_user_id=agent_id,
+            GraphSearchRequest(
+                query=query,
+                namespace_id=uuid.UUID(ns_id),
+                max_depth=max_depth,
+                agent_id=agent_id,
+            )
         )
         return result
 
@@ -619,7 +583,7 @@ async def get_health(request: Request) -> JSONResponse:
     if _engine is None:
         return JSONResponse({"status": "down"}, status_code=503)
     async with _track_active_request():
-        res = await _engine.check_health_v1()
+        res = await _engine.check_health()
         return JSONResponse(res)
 
 
@@ -671,6 +635,12 @@ app = Starlette(
         Middleware(
             MTLSAuthMiddleware,
             protected_prefix="/tasks",
+            enabled=cfg.TRIMCP_A2A_MTLS_ENABLED,
+            strict=cfg.TRIMCP_A2A_MTLS_STRICT,
+            trusted_proxy_hops=cfg.TRIMCP_A2A_MTLS_TRUSTED_PROXY_HOP,
+            allowed_sans=cfg.TRIMCP_A2A_MTLS_ALLOWED_SANS,
+            allowed_fingerprints=cfg.TRIMCP_A2A_MTLS_ALLOWED_FINGERPRINTS,
+            error_code=A2A_CODE_MTLS,
         ),
         Middleware(
             JWTAuthMiddleware,
@@ -704,7 +674,8 @@ if __name__ == "__main__":
 
     signal.signal(signal.SIGTERM, _handle_sigterm)
     log.info(
-        "SIGTERM handler registered for graceful shutdown (grace period: %ds).", _GRACE_PERIOD_S
+        "SIGTERM handler registered for graceful shutdown (grace period: %ds).",
+        _GRACE_PERIOD_S,
     )
 
     uvicorn.run(app, host="0.0.0.0", port=8004)

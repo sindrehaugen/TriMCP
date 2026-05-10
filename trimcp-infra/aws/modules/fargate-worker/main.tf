@@ -171,10 +171,11 @@ resource "aws_ecs_task_definition" "orchestrator" {
 
   container_definitions = jsonencode([
     {
-      name      = "orchestrator"
-      image     = var.container_image
-      essential = true
-      command   = ["tail", "-f", "/dev/null"]
+      name         = "orchestrator"
+      image        = var.container_image
+      essential    = true
+      command      = ["tail", "-f", "/dev/null"]
+      stopTimeout  = 35
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -198,10 +199,11 @@ resource "aws_ecs_task_definition" "worker" {
 
   container_definitions = jsonencode([
     {
-      name      = "worker"
-      image     = var.worker_container_image
-      essential = true
-      command   = ["tail", "-f", "/dev/null"]
+      name        = "worker"
+      image       = var.worker_container_image
+      essential   = true
+      command     = ["tail", "-f", "/dev/null"]
+      stopTimeout = 35
       logConfiguration = {
         logDriver = "awslogs"
         options = {

@@ -46,9 +46,9 @@ class TestFindSemanticSplit:
         split = _find_semantic_split(text, 25)
         chunk = text[:split]
         assert "```" in chunk, "Fence boundary not included in first chunk"
-        assert chunk.count("```") % 2 == 0 or chunk.endswith("```"), (
-            "Split should land on or after the closing fence"
-        )
+        assert chunk.count("```") % 2 == 0 or chunk.endswith(
+            "```"
+        ), "Split should land on or after the closing fence"
 
     def test_finds_newline_when_no_fence(self):
         """No fence in text → falls back to last newline within budget."""
@@ -114,9 +114,9 @@ class TestCodeBlockPreservation:
                 # or the chunk contains both the language tag and content but split
                 # occurred naturally. We check that no chunk ends with an orphaned
                 # opening fence marker.
-                assert not chunk.strip().endswith("```python"), (
-                    f"Chunk {i} ends with orphaned opening fence:\n{chunk[:200]}"
-                )
+                assert not chunk.strip().endswith(
+                    "```python"
+                ), f"Chunk {i} ends with orphaned opening fence:\n{chunk[:200]}"
 
     def test_chunk_size_respects_budget(self):
         """All chunks must be ≤ max_chars characters."""
@@ -124,9 +124,9 @@ class TestCodeBlockPreservation:
         max_chars = 400
         chunks = _split_section_text(text, max_chars=max_chars, _overlap=0)
         for i, chunk in enumerate(chunks):
-            assert len(chunk) <= max_chars, (
-                f"Chunk {i} exceeds max_chars={max_chars}: got {len(chunk)} chars"
-            )
+            assert (
+                len(chunk) <= max_chars
+            ), f"Chunk {i} exceeds max_chars={max_chars}: got {len(chunk)} chars"
 
     def test_no_content_lost(self):
         """All characters from the original text appear in the chunks."""
@@ -164,18 +164,18 @@ class TestMarkdownTablePreservation:
                 stripped = line.strip()
                 if stripped.startswith("|"):
                     # A table row line must end with | (complete row)
-                    assert stripped.endswith("|"), (
-                        f"Chunk {i} contains a split table row: {stripped!r}"
-                    )
+                    assert stripped.endswith(
+                        "|"
+                    ), f"Chunk {i} contains a split table row: {stripped!r}"
 
     def test_chunk_size_budget_respected_with_table(self):
         text = self._build_table_text(rows=50)
         max_chars = 400
         chunks = _split_section_text(text, max_chars=max_chars, _overlap=0)
         for i, chunk in enumerate(chunks):
-            assert len(chunk) <= max_chars, (
-                f"Chunk {i} is {len(chunk)} chars, exceeds max_chars={max_chars}"
-            )
+            assert (
+                len(chunk) <= max_chars
+            ), f"Chunk {i} is {len(chunk)} chars, exceeds max_chars={max_chars}"
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +207,9 @@ class TestNormalChunking:
         """Text from different sections must never appear in the same chunk."""
         sec_a = _section("Section A content.", order=0)
         sec_b = _section("Section B content.", order=1)
-        chunks = chunk_structured([sec_a, sec_b], max_chars=4000, prepend_header_context=False)
+        chunks = chunk_structured(
+            [sec_a, sec_b], max_chars=4000, prepend_header_context=False
+        )
         assert len(chunks) == 2
         assert chunks[0].source_order != chunks[1].source_order
 
@@ -416,7 +418,9 @@ class TestHeaderPrepending:
         assert len(chunks) > 1
         prefix = "Context: Overview > Security > Auth\n\n"
         for chunk in chunks:
-            assert chunk.text.startswith(prefix), f"Chunk {chunk.part_index} missing header prefix"
+            assert chunk.text.startswith(
+                prefix
+            ), f"Chunk {chunk.part_index} missing header prefix"
 
     def test_context_applied_across_sections(self):
         """Each section gets its own structure_path as context."""

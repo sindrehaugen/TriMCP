@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import uuid
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,6 +26,7 @@ from trimcp import (
     snapshot_mcp_handlers,
 )
 from trimcp.a2a import A2AGrantResponse, A2AScope, VerifiedGrant
+from trimcp.mcp_errors import McpError
 from trimcp.models import SnapshotRecord, StateDiffResult
 
 NS = "00000000-0000-4000-8000-000000000001"
@@ -100,7 +101,9 @@ def admin_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_a2a_helpers_and_handlers() -> None:
-    ctx = a2a_mcp_handlers._build_caller_context({"namespace_id": NS, "agent_id": "agent-1"})
+    ctx = a2a_mcp_handlers._build_caller_context(
+        {"namespace_id": NS, "agent_id": "agent-1"}
+    )
     assert str(ctx.namespace_id) == NS
     assert ctx.agent_id == "agent-1"
 
@@ -120,7 +123,7 @@ async def test_a2a_helpers_and_handlers() -> None:
     )
     assert req.expires_in_seconds == 120
 
-    exp = datetime.now(UTC)
+    exp = datetime.now(timezone.utc)
     grant = A2AGrantResponse(
         grant_id=uuid.uuid4(),
         sharing_token="tok",
@@ -176,7 +179,7 @@ async def test_a2a_helpers_and_handlers() -> None:
                 "top_k": "3",
             },
         )
-        assert json.loads(out)["results"] == [{"hit": 1}]
+    assert json.loads(out)["results"] == [{"hit": 1}]
 
 
 @pytest.mark.asyncio
@@ -228,7 +231,7 @@ async def test_admin_handlers_delegate(admin_key_env: None) -> None:
         )
         assert json.loads(raw)["new_key_id"] == "kid-9"
 
-    engine.check_health_v1 = AsyncMock(return_value={"postgres": "up"})
+    engine.check_health = AsyncMock(return_value={"postgres": "up"})
     raw = await admin_mcp_handlers.handle_get_health(engine, _admin_arguments({}))
     assert json.loads(raw)["postgres"] == "up"
 
@@ -281,7 +284,9 @@ async def test_code_and_contradiction_handlers() -> None:
 @pytest.mark.asyncio
 async def test_memory_handlers_ok_response_and_search() -> None:
     engine = MagicMock()
-    engine.store_memory = AsyncMock(return_value={"payload_ref": "0" * 24, "contradiction": None})
+    engine.store_memory = AsyncMock(
+        return_value={"payload_ref": "0" * 24, "contradiction": None}
+    )
     engine.store_media = AsyncMock(return_value="1" * 24)
     engine.semantic_search = AsyncMock(return_value=[])
     engine.recall_recent = AsyncMock(return_value=[])
@@ -561,7 +566,7 @@ async def test_replay_handlers_smoke() -> None:
 @pytest.mark.asyncio
 async def test_snapshot_handlers_delegate() -> None:
     engine = MagicMock()
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     rec = SnapshotRecord(
         id=uuid.uuid4(),
         namespace_id=uuid.UUID(NS),
@@ -573,7 +578,11 @@ async def test_snapshot_handlers_delegate() -> None:
     )
     engine.create_snapshot = AsyncMock(return_value=rec)
     engine.list_snapshots = AsyncMock(return_value=[rec])
-    engine.delete_snapshot = AsyncMock(return_value={"status": "ok", "message": "deleted"})
+    from trimcp.models import DeleteSnapshotResult
+
+    engine.delete_snapshot = AsyncMock(
+        return_value=DeleteSnapshotResult(status="ok", message="deleted")
+    )
     engine.compare_states = AsyncMock(
         return_value=StateDiffResult(
             as_of_a=now,
@@ -625,7 +634,9 @@ async def test_bridge_parse_sharepoint_and_oauth_unknown() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connect_bridge_dropbox_pending_config(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_connect_bridge_dropbox_pending_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("DROPBOX_OAUTH_CLIENT_ID", "")
     engine = _engine_pool_context(AsyncMock())
     with patch.object(
@@ -669,8 +680,11 @@ async def test_connect_bridge_sharepoint_and_gdrive_pending_config(
 @pytest.mark.asyncio
 async def test_connect_bridge_invalid_provider() -> None:
     engine = _engine_pool_context(AsyncMock())
-    with pytest.raises(ValueError, match="provider must be one of"):
-        await bridge_mcp_handlers.connect_bridge(engine, {"user_id": "u1", "provider": "ftp"})
+    with pytest.raises(McpError) as exc_info:
+        await bridge_mcp_handlers.connect_bridge(
+            engine, {"user_id": "u1", "provider": "ftp"}
+        )
+    assert "provider must be one of" in exc_info.value.data["detail"]
 
 
 @pytest.mark.asyncio
@@ -685,13 +699,16 @@ async def test_list_bridges_and_status() -> None:
         "subscription_id": None,
         "cursor": None,
         "status": "ACTIVE",
-        "expires_at": datetime.now(UTC),
+        "expires_at": datetime.now(timezone.utc),
         "client_state": "cs",
-        "created_at": datetime.now(UTC),
-        "updated_at": datetime.now(UTC),
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
     }
     with patch.object(
-        bridge_mcp_handlers.bridge_repo, "list_for_user", new_callable=AsyncMock, return_value=[row]
+        bridge_mcp_handlers.bridge_repo,
+        "list_for_user",
+        new_callable=AsyncMock,
+        return_value=[row],
     ):
         raw = await bridge_mcp_handlers.list_bridges(engine, {"user_id": "u1"})
         bridges = json.loads(raw)["bridges"]
@@ -699,7 +716,10 @@ async def test_list_bridges_and_status() -> None:
         assert bridges[0]["provider"] == "dropbox"
 
     with patch.object(
-        bridge_mcp_handlers.bridge_repo, "get_by_id", new_callable=AsyncMock, return_value=row
+        bridge_mcp_handlers.bridge_repo,
+        "get_by_id",
+        new_callable=AsyncMock,
+        return_value=row,
     ):
         raw = await bridge_mcp_handlers.bridge_status(
             engine, {"user_id": "u1", "bridge_id": str(rid)}
@@ -713,7 +733,7 @@ async def test_list_bridges_and_status() -> None:
 async def test_complete_bridge_auth_validations() -> None:
     engine = _engine_pool_context(AsyncMock())
     bid = str(uuid.uuid4())
-    with pytest.raises(ValueError, match="authorization_code"):
+    with pytest.raises(McpError) as exc_info:
         await bridge_mcp_handlers.complete_bridge_auth(
             engine,
             {
@@ -722,8 +742,9 @@ async def test_complete_bridge_auth_validations() -> None:
                 "provider": "dropbox",
             },
         )
+    assert "authorization_code" in exc_info.value.data["detail"]
 
-    with pytest.raises(ValueError, match="resource_id required"):
+    with pytest.raises(McpError) as exc_info:
         await bridge_mcp_handlers.complete_bridge_auth(
             engine,
             {
@@ -734,11 +755,15 @@ async def test_complete_bridge_auth_validations() -> None:
                 "resource_id": "pending",
             },
         )
+    assert "resource_id required" in exc_info.value.data["detail"]
 
     with patch.object(
-        bridge_mcp_handlers.bridge_repo, "get_by_id", new_callable=AsyncMock, return_value=None
+        bridge_mcp_handlers.bridge_repo,
+        "get_by_id",
+        new_callable=AsyncMock,
+        return_value=None,
     ):
-        with pytest.raises(ValueError, match="bridge not found"):
+        with pytest.raises(McpError) as exc_info:
             await bridge_mcp_handlers.complete_bridge_auth(
                 engine,
                 {
@@ -749,6 +774,7 @@ async def test_complete_bridge_auth_validations() -> None:
                     "resource_id": "dbid:x",
                 },
             )
+        assert "bridge not found" in exc_info.value.data["detail"]
 
 
 @pytest.mark.asyncio
@@ -771,14 +797,24 @@ async def test_complete_bridge_auth_dropbox_updates_row() -> None:
         return row
 
     with (
-        patch.object(bridge_mcp_handlers.bridge_repo, "get_by_id", side_effect=_get_by_id),
+        patch.object(
+            bridge_mcp_handlers.bridge_repo, "get_by_id", side_effect=_get_by_id
+        ),
         patch.object(
             bridge_mcp_handlers,
             "_exchange_oauth_code",
             new_callable=AsyncMock,
-            return_value={"access_token": "tok", "refresh_token": "ref", "expires_at": 9999999999},
+            return_value={
+                "access_token": "tok",
+                "refresh_token": "ref",
+                "expires_at": 9999999999,
+            },
         ),
-        patch.object(bridge_mcp_handlers, "_bridge_oauth_ciphertext", return_value=b"\xaa"),
+        patch.object(
+            bridge_mcp_handlers.bridge_repo,
+            "save_token",
+            new_callable=AsyncMock,
+        ),
     ):
         out = await bridge_mcp_handlers.complete_bridge_auth(
             engine,
@@ -804,8 +840,24 @@ async def test_disconnect_bridge_dropbox() -> None:
         "resource_id": "dbid:1",
         "oauth_access_token_enc": None,
     }
-    with patch.object(
-        bridge_mcp_handlers.bridge_repo, "get_by_id", new_callable=AsyncMock, return_value=row
+    with (
+        patch.object(
+            bridge_mcp_handlers.bridge_repo,
+            "get_by_id",
+            new_callable=AsyncMock,
+            return_value=row,
+        ),
+        patch.object(
+            bridge_mcp_handlers.bridge_repo,
+            "get_token",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch.object(
+            bridge_mcp_handlers.bridge_repo,
+            "save_token",
+            new_callable=AsyncMock,
+        ),
     ):
         raw = await bridge_mcp_handlers.disconnect_bridge(
             engine, {"user_id": "u1", "bridge_id": str(bid)}
@@ -814,8 +866,12 @@ async def test_disconnect_bridge_dropbox() -> None:
 
 
 @pytest.mark.asyncio
-async def test_force_resync_bridge_dropbox_enqueues(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bridge_mcp_handlers.cfg, "REDIS_URL", "redis://localhost:6379/0")
+async def test_force_resync_bridge_dropbox_enqueues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        bridge_mcp_handlers.cfg, "REDIS_URL", "redis://localhost:6379/0"
+    )
     engine = _engine_pool_context(AsyncMock())
     bid = uuid.uuid4()
     row = {
@@ -830,7 +886,10 @@ async def test_force_resync_bridge_dropbox_enqueues(monkeypatch: pytest.MonkeyPa
     mock_r = MagicMock()
     with (
         patch.object(
-            bridge_mcp_handlers.bridge_repo, "get_by_id", new_callable=AsyncMock, return_value=row
+            bridge_mcp_handlers.bridge_repo,
+            "get_by_id",
+            new_callable=AsyncMock,
+            return_value=row,
         ),
         patch.object(bridge_mcp_handlers, "bridge_redis", return_value=mock_r),
         patch.object(bridge_mcp_handlers, "Redis") as RedisM,
@@ -893,9 +952,16 @@ async def test_connect_bridge_ok_auth_urls(monkeypatch: pytest.MonkeyPatch) -> N
 async def test_exchange_oauth_token_flows(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "AZURE_CLIENT_ID", "c1")
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "AZURE_CLIENT_SECRET", "s1")
-    monkeypatch.setattr(bridge_mcp_handlers.cfg, "BRIDGE_OAUTH_REDIRECT_URI", "http://127.0.0.1/r")
-    post_r = _httpx_resp(json_data={"access_token": "at1", "refresh_token": "ref1", "expires_in": 3600})
-    with patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(post_r)):
+    monkeypatch.setattr(
+        bridge_mcp_handlers.cfg, "BRIDGE_OAUTH_REDIRECT_URI", "http://127.0.0.1/r"
+    )
+    post_r = _httpx_resp(
+        json_data={"access_token": "at1", "refresh_token": "ref1", "expires_in": 3600}
+    )
+    with patch(
+        "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
+        _patch_httpx_async_client(post_r),
+    ):
         tok = await bridge_mcp_handlers._exchange_oauth_code("sharepoint", "code")
     assert tok["access_token"] == "at1"
     assert tok["refresh_token"] == "ref1"
@@ -903,16 +969,26 @@ async def test_exchange_oauth_token_flows(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "GDRIVE_OAUTH_CLIENT_ID", "gc")
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "GDRIVE_OAUTH_CLIENT_SECRET", "gs")
-    post_r2 = _httpx_resp(json_data={"access_token": "at2", "refresh_token": "ref2", "expires_in": 3600})
-    with patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(post_r2)):
+    post_r2 = _httpx_resp(
+        json_data={"access_token": "at2", "refresh_token": "ref2", "expires_in": 3600}
+    )
+    with patch(
+        "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
+        _patch_httpx_async_client(post_r2),
+    ):
         tok = await bridge_mcp_handlers._exchange_oauth_code("gdrive", "c2")
     assert tok["access_token"] == "at2"
     assert tok["refresh_token"] == "ref2"
     assert "expires_at" in tok
 
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "DROPBOX_OAUTH_CLIENT_ID", "dc")
-    post_r3 = _httpx_resp(json_data={"access_token": "at3", "refresh_token": "ref3", "expires_in": 3600})
-    with patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(post_r3)):
+    post_r3 = _httpx_resp(
+        json_data={"access_token": "at3", "refresh_token": "ref3", "expires_in": 3600}
+    )
+    with patch(
+        "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
+        _patch_httpx_async_client(post_r3),
+    ):
         tok = await bridge_mcp_handlers._exchange_oauth_code("dropbox", "c3")
     assert tok["access_token"] == "at3"
     assert tok["refresh_token"] == "ref3"
@@ -937,41 +1013,66 @@ async def test_exchange_oauth_config_errors(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_exchange_oauth_missing_access_token(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_exchange_oauth_missing_access_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "AZURE_CLIENT_ID", "c1")
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "AZURE_CLIENT_SECRET", "s1")
-    monkeypatch.setattr(bridge_mcp_handlers.cfg, "BRIDGE_OAUTH_REDIRECT_URI", "http://127.0.0.1/r")
+    monkeypatch.setattr(
+        bridge_mcp_handlers.cfg, "BRIDGE_OAUTH_REDIRECT_URI", "http://127.0.0.1/r"
+    )
     post_r = _httpx_resp(json_data={})
-    with patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(post_r)):
+    with patch(
+        "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
+        _patch_httpx_async_client(post_r),
+    ):
         with pytest.raises(ValueError, match="missing access_token"):
             await bridge_mcp_handlers._exchange_oauth_code("sharepoint", "code")
 
 
 @pytest.mark.asyncio
 async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
-    ok_sub = _httpx_resp(json_data={"id": "sub-1", "expirationDateTime": "2030-01-01T00:00:00Z"})
-    with patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(ok_sub)):
+    ok_sub = _httpx_resp(
+        json_data={"id": "sub-1", "expirationDateTime": "2030-01-01T00:00:00Z"}
+    )
+    with patch(
+        "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
+        _patch_httpx_async_client(ok_sub),
+    ):
         sid, exp = await bridge_mcp_handlers._setup_sharepoint_webhook(
-            "tok", base="https://example.com", site="s", drive="d", bridge_client_state="cs"
+            "tok",
+            base="https://example.com",
+            site="s",
+            drive="d",
+            bridge_client_state="cs",
         )
     assert sid == "sub-1"
     assert exp is not None
 
     bad = _httpx_resp(status_code=400, json_data={}, text="nope")
-    with patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad)):
+    with patch(
+        "trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad)
+    ):
         with pytest.raises(ValueError, match="Graph subscription failed"):
             await bridge_mcp_handlers._setup_sharepoint_webhook(
-                "tok", base="https://example.com", site="s", drive="d", bridge_client_state="cs"
+                "tok",
+                base="https://example.com",
+                site="s",
+                drive="d",
+                bridge_client_state="cs",
             )
 
     ok_drive = _httpx_resp(
         json_data={
             "id": "ch-1",
             "resourceId": "rid-g",
-            "expiration": str(int(datetime.now(UTC).timestamp() * 1000) + 1000),
+            "expiration": str(int(datetime.now(timezone.utc).timestamp() * 1000) + 1000),
         }
     )
-    with patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(ok_drive)):
+    with patch(
+        "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
+        _patch_httpx_async_client(ok_drive),
+    ):
         sid2, rid2, exp2 = await bridge_mcp_handlers._setup_gdrive_webhook(
             "gtok",
             base="https://example.com",
@@ -983,7 +1084,9 @@ async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
     assert exp2 is not None
 
     bad_d = _httpx_resp(status_code=401, json_data={}, text="fail")
-    with patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad_d)):
+    with patch(
+        "trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad_d)
+    ):
         with pytest.raises(ValueError, match="Drive watch failed"):
             await bridge_mcp_handlers._setup_gdrive_webhook(
                 "gtok",
@@ -994,32 +1097,29 @@ async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bridge_oauth_ciphertext_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bridge_mcp_handlers, "require_master_key", lambda: b"k" * 32)
-    monkeypatch.setattr(
-        bridge_mcp_handlers,
-        "encrypt_signing_key",
-        lambda pt, _mk: b"enc:" + pt,
-    )
-    monkeypatch.setattr(
-        bridge_mcp_handlers,
-        "decrypt_signing_key",
-        lambda ct, _mk: ct[len(b"enc:") :],
-    )
-    ct = bridge_mcp_handlers._bridge_oauth_ciphertext("hello")
-    assert ct.startswith(b"enc:")
-    row = {"oauth_access_token_enc": ct}
-    assert bridge_mcp_handlers._decrypt_bridge_oauth_if_present(row) == "hello"  # type: ignore[arg-type]
-    assert (
-        bridge_mcp_handlers._decrypt_bridge_oauth_if_present({"oauth_access_token_enc": None}) == ""
-    )  # type: ignore[arg-type]
+async def test_bridge_repo_token_roundtrip() -> None:
+    """Verify bridge_repo.save_token / get_token via mocked connection."""
+    conn = AsyncMock()
+    bid = uuid.uuid4()
+    payload = {"access_token": "hello", "refresh_token": "ref"}
+
+    with patch.object(
+        bridge_mcp_handlers.bridge_repo,
+        "get_token",
+        new_callable=AsyncMock,
+        return_value=payload,
+    ):
+        result = await bridge_mcp_handlers.bridge_repo.get_token(conn, bid)
+    assert result == payload
 
 
 @pytest.mark.asyncio
 async def test_complete_bridge_auth_sharepoint_happy_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(bridge_mcp_handlers.cfg, "BRIDGE_WEBHOOK_BASE_URL", "http://127.0.0.1")
+    monkeypatch.setattr(
+        bridge_mcp_handlers.cfg, "BRIDGE_WEBHOOK_BASE_URL", "http://127.0.0.1"
+    )
     conn = AsyncMock()
     conn.execute = AsyncMock()
     engine = _engine_pool_context(conn)
@@ -1038,20 +1138,30 @@ async def test_complete_bridge_auth_sharepoint_happy_path(
         return row
 
     with (
-        patch.object(bridge_mcp_handlers.bridge_repo, "get_by_id", side_effect=_get_by_id),
+        patch.object(
+            bridge_mcp_handlers.bridge_repo, "get_by_id", side_effect=_get_by_id
+        ),
         patch.object(
             bridge_mcp_handlers,
             "_exchange_oauth_code",
             new_callable=AsyncMock,
-            return_value={"access_token": "access", "refresh_token": "ref", "expires_at": 9999999999},
+            return_value={
+                "access_token": "access",
+                "refresh_token": "ref",
+                "expires_at": 9999999999,
+            },
         ),
         patch.object(
             bridge_mcp_handlers,
             "_setup_sharepoint_webhook",
             new_callable=AsyncMock,
-            return_value=("sub-x", datetime.now(UTC)),
+            return_value=("sub-x", datetime.now(timezone.utc)),
         ),
-        patch.object(bridge_mcp_handlers, "_bridge_oauth_ciphertext", return_value=b"\xbb"),
+        patch.object(
+            bridge_mcp_handlers.bridge_repo,
+            "save_token",
+            new_callable=AsyncMock,
+        ),
     ):
         out = await bridge_mcp_handlers.complete_bridge_auth(
             engine,
@@ -1067,8 +1177,12 @@ async def test_complete_bridge_auth_sharepoint_happy_path(
 
 
 @pytest.mark.asyncio
-async def test_complete_bridge_auth_gdrive_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bridge_mcp_handlers.cfg, "BRIDGE_WEBHOOK_BASE_URL", "http://127.0.0.1")
+async def test_complete_bridge_auth_gdrive_happy_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        bridge_mcp_handlers.cfg, "BRIDGE_WEBHOOK_BASE_URL", "http://127.0.0.1"
+    )
     conn = AsyncMock()
     conn.execute = AsyncMock()
     engine = _engine_pool_context(conn)
@@ -1092,15 +1206,23 @@ async def test_complete_bridge_auth_gdrive_happy_path(monkeypatch: pytest.Monkey
             bridge_mcp_handlers,
             "_exchange_oauth_code",
             new_callable=AsyncMock,
-            return_value={"access_token": "gacc", "refresh_token": "ref", "expires_at": 9999999999},
+            return_value={
+                "access_token": "gacc",
+                "refresh_token": "ref",
+                "expires_at": 9999999999,
+            },
         ),
         patch.object(
             bridge_mcp_handlers,
             "_setup_gdrive_webhook",
             new_callable=AsyncMock,
-            return_value=("ch-y", "res-final", datetime.now(UTC)),
+            return_value=("ch-y", "res-final", datetime.now(timezone.utc)),
         ),
-        patch.object(bridge_mcp_handlers, "_bridge_oauth_ciphertext", return_value=b"\xcc"),
+        patch.object(
+            bridge_mcp_handlers.bridge_repo,
+            "save_token",
+            new_callable=AsyncMock,
+        ),
     ):
         out = await bridge_mcp_handlers.complete_bridge_auth(
             engine,
@@ -1134,16 +1256,23 @@ async def test_complete_bridge_auth_webhook_base_validation_errors(
     }
     with (
         patch.object(
-            bridge_mcp_handlers.bridge_repo, "get_by_id", new_callable=AsyncMock, return_value=row
+            bridge_mcp_handlers.bridge_repo,
+            "get_by_id",
+            new_callable=AsyncMock,
+            return_value=row,
         ),
         patch.object(
             bridge_mcp_handlers,
             "_exchange_oauth_code",
             new_callable=AsyncMock,
-            return_value={"access_token": "tok", "refresh_token": "ref", "expires_at": 9999999999},
+            return_value={
+                "access_token": "tok",
+                "refresh_token": "ref",
+                "expires_at": 9999999999,
+            },
         ),
     ):
-        with pytest.raises(ValueError, match="BRIDGE_WEBHOOK_BASE_URL"):
+        with pytest.raises(McpError) as exc_info:
             await bridge_mcp_handlers.complete_bridge_auth(
                 engine,
                 {
@@ -1154,20 +1283,30 @@ async def test_complete_bridge_auth_webhook_base_validation_errors(
                     "resource_id": "s|d",
                 },
             )
+        assert "BRIDGE_WEBHOOK_BASE_URL" in exc_info.value.data["detail"]
 
-    monkeypatch.setattr(bridge_mcp_handlers.cfg, "BRIDGE_WEBHOOK_BASE_URL", "ftp://evil.com")
+    monkeypatch.setattr(
+        bridge_mcp_handlers.cfg, "BRIDGE_WEBHOOK_BASE_URL", "ftp://evil.com"
+    )
     with (
         patch.object(
-            bridge_mcp_handlers.bridge_repo, "get_by_id", new_callable=AsyncMock, return_value=row
+            bridge_mcp_handlers.bridge_repo,
+            "get_by_id",
+            new_callable=AsyncMock,
+            return_value=row,
         ),
         patch.object(
             bridge_mcp_handlers,
             "_exchange_oauth_code",
             new_callable=AsyncMock,
-            return_value={"access_token": "tok", "refresh_token": "ref", "expires_at": 9999999999},
+            return_value={
+                "access_token": "tok",
+                "refresh_token": "ref",
+                "expires_at": 9999999999,
+            },
         ),
     ):
-        with pytest.raises(ValueError, match="http or https"):
+        with pytest.raises(McpError) as exc_info:
             await bridge_mcp_handlers.complete_bridge_auth(
                 engine,
                 {
@@ -1196,7 +1335,7 @@ async def test_complete_bridge_auth_state_machine_errors() -> None:
         new_callable=AsyncMock,
         return_value=row_bad_prov,
     ):
-        with pytest.raises(ValueError, match="provider mismatch"):
+        with pytest.raises(McpError) as exc_info:
             await bridge_mcp_handlers.complete_bridge_auth(
                 engine,
                 {
@@ -1220,7 +1359,7 @@ async def test_complete_bridge_auth_state_machine_errors() -> None:
         new_callable=AsyncMock,
         return_value=row_active,
     ):
-        with pytest.raises(ValueError, match="connectable state"):
+        with pytest.raises(McpError) as exc_info:
             await bridge_mcp_handlers.complete_bridge_auth(
                 engine,
                 {
@@ -1231,10 +1370,13 @@ async def test_complete_bridge_auth_state_machine_errors() -> None:
                     "resource_id": "dbid:1",
                 },
             )
+        assert "connectable state" in exc_info.value.data["detail"]
 
 
 @pytest.mark.asyncio
-async def test_disconnect_sharepoint_and_gdrive_http_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_disconnect_sharepoint_and_gdrive_http_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "GRAPH_BRIDGE_TOKEN", "gtok")
     post_r = _httpx_resp(status_code=204, json_data={})
     engine = _engine_pool_context(AsyncMock())
@@ -1253,7 +1395,10 @@ async def test_disconnect_sharepoint_and_gdrive_http_paths(monkeypatch: pytest.M
             new_callable=AsyncMock,
             return_value=row_sp,
         ),
-        patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(post_r)),
+        patch(
+            "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
+            _patch_httpx_async_client(post_r),
+        ),
     ):
         raw = await bridge_mcp_handlers.disconnect_bridge(
             engine, {"user_id": "u1", "bridge_id": str(bid)}
@@ -1270,9 +1415,15 @@ async def test_disconnect_sharepoint_and_gdrive_http_paths(monkeypatch: pytest.M
     }
     with (
         patch.object(
-            bridge_mcp_handlers.bridge_repo, "get_by_id", new_callable=AsyncMock, return_value=row_g
+            bridge_mcp_handlers.bridge_repo,
+            "get_by_id",
+            new_callable=AsyncMock,
+            return_value=row_g,
         ),
-        patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(post_r)),
+        patch(
+            "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
+            _patch_httpx_async_client(post_r),
+        ),
     ):
         raw = await bridge_mcp_handlers.disconnect_bridge(
             engine, {"user_id": "u1", "bridge_id": str(bid)}
@@ -1302,7 +1453,9 @@ async def test_disconnect_sharepoint_and_gdrive_http_paths(monkeypatch: pytest.M
 async def test_force_resync_sharepoint_and_gdrive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(bridge_mcp_handlers.cfg, "REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setattr(
+        bridge_mcp_handlers.cfg, "REDIS_URL", "redis://localhost:6379/0"
+    )
     engine = _engine_pool_context(AsyncMock())
     bid = uuid.uuid4()
     job = MagicMock()
@@ -1330,7 +1483,9 @@ async def test_force_resync_sharepoint_and_gdrive(
             ),
             patch.object(bridge_mcp_handlers, "bridge_redis", return_value=mock_r),
             patch.object(bridge_mcp_handlers, "Redis") as RedisM,
-            patch.object(bridge_mcp_handlers, "get_priority_queue", return_value=mock_q),
+            patch.object(
+                bridge_mcp_handlers, "get_priority_queue", return_value=mock_q
+            ),
         ):
             RedisM.from_url.return_value = MagicMock()
             raw = await bridge_mcp_handlers.force_resync_bridge(
@@ -1352,18 +1507,24 @@ async def test_force_resync_sharepoint_bad_resource() -> None:
     }
     with (
         patch.object(
-            bridge_mcp_handlers.bridge_repo, "get_by_id", new_callable=AsyncMock, return_value=row
+            bridge_mcp_handlers.bridge_repo,
+            "get_by_id",
+            new_callable=AsyncMock,
+            return_value=row,
         ),
         patch.object(bridge_mcp_handlers, "bridge_redis", return_value=MagicMock()),
     ):
-        with pytest.raises(ValueError, match="force_resync"):
+        with pytest.raises(McpError) as exc_info:
             await bridge_mcp_handlers.force_resync_bridge(
                 engine, {"user_id": "u1", "bridge_id": str(bid)}
             )
+        assert "force_resync" in exc_info.value.data["detail"]
 
 
 def test_bridge_redis_uses_config_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bridge_mcp_handlers.cfg, "REDIS_URL", "redis://localhost:9999/1")
+    monkeypatch.setattr(
+        bridge_mcp_handlers.cfg, "REDIS_URL", "redis://localhost:9999/1"
+    )
     with patch.object(bridge_mcp_handlers, "Redis") as R:
         bridge_mcp_handlers.bridge_redis()
     R.from_url.assert_called_once()
@@ -1373,9 +1534,12 @@ def test_bridge_redis_uses_config_url(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_bridge_status_not_found() -> None:
     engine = _engine_pool_context(AsyncMock())
     with patch.object(
-        bridge_mcp_handlers.bridge_repo, "get_by_id", new_callable=AsyncMock, return_value=None
+        bridge_mcp_handlers.bridge_repo,
+        "get_by_id",
+        new_callable=AsyncMock,
+        return_value=None,
     ):
-        with pytest.raises(ValueError, match="bridge not found"):
+        with pytest.raises(McpError):
             await bridge_mcp_handlers.bridge_status(
                 engine, {"user_id": "u1", "bridge_id": str(uuid.uuid4())}
             )
@@ -1418,7 +1582,7 @@ async def test_replay_observe_truncates_at_max_events() -> None:
 
 @pytest.mark.asyncio
 async def test_replay_fork_invalid_parameters() -> None:
-    with pytest.raises(ValueError, match="Invalid replay_fork"):
+    with pytest.raises(McpError) as exc_info:
         await replay_mcp_handlers.handle_replay_fork(
             _engine_pool_context(),
             {
@@ -1428,6 +1592,7 @@ async def test_replay_fork_invalid_parameters() -> None:
                 "expected_sha256": "0" * 64,
             },
         )
+    assert "Invalid replay_fork" in exc_info.value.data["detail"]
 
 
 @pytest.mark.asyncio

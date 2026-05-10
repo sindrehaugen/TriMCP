@@ -143,10 +143,14 @@ def patch_signing(monkeypatch: pytest.MonkeyPatch):
         return ("test-key-id", b"\x11" * 32)
 
     monkeypatch.setattr("trimcp.consolidation.get_active_key", _gk)
-    monkeypatch.setattr("trimcp.consolidation.sign_fields", lambda fields, key: b"signed-by-test")
+    monkeypatch.setattr(
+        "trimcp.consolidation.sign_fields", lambda fields, key: b"signed-by-test"
+    )
 
 
-def test_consolidation_no_memories_completes(patch_signing, monkeypatch: pytest.MonkeyPatch):
+def test_consolidation_no_memories_completes(
+    patch_signing, monkeypatch: pytest.MonkeyPatch
+):
     import sklearn.cluster as skc
 
     monkeypatch.setattr(skc, "HDBSCAN", _FakeHDBSCAN)
@@ -155,7 +159,9 @@ def test_consolidation_no_memories_completes(patch_signing, monkeypatch: pytest.
     conn = FakeConsolidationConn(namespace_id=ns, memory_rows=[])
 
     async def _run() -> None:
-        worker = ConsolidationWorker(FakePool(conn), StubLLMProvider(_good_abstraction([])))
+        worker = ConsolidationWorker(
+            FakePool(conn), StubLLMProvider(_good_abstraction([]))
+        )
         await worker.run_consolidation(ns)
 
     asyncio.run(_run())
@@ -250,14 +256,18 @@ def _good_abstraction(ids: list[UUID]) -> ConsolidatedAbstraction:
     return ConsolidatedAbstraction(
         abstraction="Unified finding about the cluster.",
         key_entities=["AcmeCorp"],
-        key_relations=[{"subject": "AcmeCorp", "predicate": "uses", "object": "TriMCP"}],
+        key_relations=[
+            {"subject": "AcmeCorp", "predicate": "uses", "object": "TriMCP"}
+        ],
         supporting_memory_ids=sids,
         contradicting_memory_ids=[],
         confidence=0.95,
     )
 
 
-def test_consolidation_happy_path_writes_memory_event_and_kg(patch_hdbscan, patch_signing):
+def test_consolidation_happy_path_writes_memory_event_and_kg(
+    patch_hdbscan, patch_signing
+):
     ns = uuid4()
     mid_a, mid_b = uuid4(), uuid4()
     rows = [
@@ -319,7 +329,9 @@ def test_consolidated_abstraction_roundtrip():
         confidence=0.42,
     )
     data = m.model_dump()
-    assert ConsolidatedAbstraction.model_validate(data).confidence == pytest.approx(0.42)
+    assert ConsolidatedAbstraction.model_validate(data).confidence == pytest.approx(
+        0.42
+    )
 
 
 def test_prompt_injection_sanitization():

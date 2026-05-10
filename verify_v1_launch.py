@@ -48,20 +48,28 @@ VERIFY_NS_SLUG = "trimcp-v1-launch-verify"
 class _NoopLLM:
     """Provider stub; unused when the verify namespace has no episodic memories."""
 
-    async def complete(self, messages: list, response_model: type) -> Any:  # noqa: ANN401
-        raise RuntimeError("verify_v1_launch: LLM should not run in empty-namespace dry-run")
+    async def complete(
+        self, messages: list, response_model: type
+    ) -> Any:  # noqa: ANN401
+        raise RuntimeError(
+            "verify_v1_launch: LLM should not run in empty-namespace dry-run"
+        )
 
     def model_identifier(self) -> str:
         return "verify/noop"
 
 
-def _admin_hmac_headers(api_key: str, method: str, path: str, body: bytes = b"") -> dict[str, str]:
+def _admin_hmac_headers(
+    api_key: str, method: str, path: str, body: bytes = b""
+) -> dict[str, str]:
     ts = int(time.time())
     parts = [method.upper(), path, str(ts)]
     if body:
         parts.append(hashlib.sha256(body).hexdigest())
     canonical = "\n".join(parts)
-    sig = hmac.new(api_key.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+    sig = hmac.new(
+        api_key.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
     return {
         "X-TriMCP-Timestamp": str(ts),
         "Authorization": f"HMAC-SHA256 {sig}",
@@ -127,7 +135,9 @@ async def _step_a2a(base: str) -> None:
 
 
 async def _step_consolidation() -> None:
-    pool = await asyncpg.create_pool(cfg.PG_DSN, min_size=1, max_size=2, command_timeout=120)
+    pool = await asyncpg.create_pool(
+        cfg.PG_DSN, min_size=1, max_size=2, command_timeout=120
+    )
     try:
         async with pool.acquire() as conn:
             ns_id = await conn.fetchval(
@@ -195,7 +205,9 @@ async def _async_main(admin_base: str, a2a_base: str) -> None:
     cfg.validate()
     api_key = cfg.TRIMCP_API_KEY
     if not api_key:
-        _fail("Configuration", "TRIMCP_API_KEY is empty (required for HMAC admin calls)")
+        _fail(
+            "Configuration", "TRIMCP_API_KEY is empty (required for HMAC admin calls)"
+        )
 
     limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
     async with httpx.AsyncClient(

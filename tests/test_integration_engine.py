@@ -133,9 +133,9 @@ class TestSagaMetricsOnFailure:
 
         # The stage must be the safe default "unknown", not a KeyError crash
         assert stages, "SAGA_FAILURES.labels was never called — metric not emitted"
-        assert stages[0] == "unknown", (
-            f"Expected stage='unknown' when step_name omitted, got {stages[0]!r}"
-        )
+        assert (
+            stages[0] == "unknown"
+        ), f"Expected stage='unknown' when step_name omitted, got {stages[0]!r}"
 
     def test_on_saga_failure_with_step_name(self, monkeypatch):
         """When step_name is provided it is forwarded as the metric stage."""
@@ -235,11 +235,13 @@ async def test_semantic_search(engine):
     )
     await engine.store_memory(payload)
 
-    results_sr = await engine.semantic_search(test_id, "vector database embeddings", limit=3)
-    assert len(results_sr) > 0, "No results returned"
-    assert "pgvector" in str(results_sr[0].get("raw_data", "")), (
-        f"Expected pgvector in top result, got: {results_sr[0].get('raw_data', '')!r}"
+    results_sr = await engine.semantic_search(
+        test_id, "vector database embeddings", limit=3
     )
+    assert len(results_sr) > 0, "No results returned"
+    assert "pgvector" in str(
+        results_sr[0].get("raw_data", "")
+    ), f"Expected pgvector in top result, got: {results_sr[0].get('raw_data', '')!r}"
 
 
 @_skip_no_containers
@@ -247,9 +249,7 @@ async def test_semantic_search(engine):
 async def test_index_and_search_code(engine):
     """index_code_file + search_codebase finds the function"""
     run_id = str(int(time.time()))
-    sample_code = (
-        "def calculate_embedding_distance(vec_a, vec_b):\n    pass\nclass VectorStore:\n    pass\n"
-    )
+    sample_code = "def calculate_embedding_distance(vec_a, vec_b):\n    pass\nclass VectorStore:\n    pass\n"
     result = await engine.index_code_file(
         filepath=f"test_fixtures/vector_utils_{run_id}.py",
         raw_code=sample_code,
@@ -257,9 +257,13 @@ async def test_index_and_search_code(engine):
     )
     assert result["status"] == "indexed", f"Unexpected status: {result}"
 
-    code_results = await engine.search_codebase("cosine distance between vectors", top_k=3)
+    code_results = await engine.search_codebase(
+        "cosine distance between vectors", top_k=3
+    )
     assert len(code_results) > 0, "No code results returned"
-    assert any("calculate_embedding_distance" in r.get("name", "") for r in code_results)
+    assert any(
+        "calculate_embedding_distance" in r.get("name", "") for r in code_results
+    )
 
 
 @_skip_no_containers
@@ -269,7 +273,9 @@ async def test_change_detection(engine):
     code = "def noop(): pass\n"
     fp = "test_fixtures/noop.py"
     await engine.index_code_file(filepath=fp, raw_code=code, language="python")
-    result2 = await engine.index_code_file(filepath=fp, raw_code=code, language="python")
+    result2 = await engine.index_code_file(
+        filepath=fp, raw_code=code, language="python"
+    )
     assert result2["status"] == "skipped", f"Expected skipped, got: {result2}"
 
 
@@ -301,7 +307,9 @@ async def test_rollback(engine):
 
     test_id = str(uuid4())
 
-    db = AsyncIOMotorClient(os.getenv("MONGO_URI", "mongodb://localhost:27017")).memory_archive
+    db = AsyncIOMotorClient(
+        os.getenv("MONGO_URI", "mongodb://localhost:27017")
+    ).memory_archive
     before_count = await db.episodes.count_documents({})
 
     real_pool = engine.pg_pool
@@ -323,6 +331,6 @@ async def test_rollback(engine):
         engine.pg_pool = real_pool
 
     after_count = await db.episodes.count_documents({})
-    assert after_count == before_count, (
-        f"MongoDB grew by {after_count - before_count} — orphan NOT cleaned up"
-    )
+    assert (
+        after_count == before_count
+    ), f"MongoDB grew by {after_count - before_count} — orphan NOT cleaned up"

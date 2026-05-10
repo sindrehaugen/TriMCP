@@ -48,7 +48,9 @@ class _FakeInsertResult:
 
 def _make_mongo_mock():
     collection = AsyncMock()
-    collection.insert_one = AsyncMock(return_value=_FakeInsertResult("507f1f77bcf86cd799439011"))
+    collection.insert_one = AsyncMock(
+        return_value=_FakeInsertResult("507f1f77bcf86cd799439011")
+    )
     collection.delete_one = AsyncMock()
     db = MagicMock()
     type(db).episodes = PropertyMock(return_value=collection)
@@ -63,9 +65,19 @@ class _FakeConn:
     def __init__(self, fetchrow_result=None, fetchval_result=None, fetch_result=None):
         self.fetchrow = AsyncMock(return_value=fetchrow_result)
         self.fetchval = AsyncMock(return_value=fetchval_result)
-        self.fetch = AsyncMock(return_value=fetch_result or [])
+        self._fetch_result = fetch_result or []
         self.execute = AsyncMock()
         self.executemany = AsyncMock()
+
+    async def fetch(self, query: str = "", *args):
+        # Return node rows for kg_nodes RETURNING, model rows otherwise
+        if "kg_nodes" in query and "RETURNING" in query:
+            labels = args[0] if args else []
+            return [
+                {"id": f"node-{i}", "label": label}
+                for i, label in enumerate(labels)
+            ]
+        return self._fetch_result
 
     async def __aenter__(self):
         return self
@@ -79,7 +91,7 @@ class _FakeConn:
 
 def _make_pg_mock():
     conn = _FakeConn(
-        fetchrow_result={"metadata": "{}"},
+        fetchrow_result={"id": "saga-uuid-123", "metadata": "{}"},
         fetchval_result="mem-uuid-0001",
         fetch_result=[{"id": "model-1"}],
     )
@@ -89,7 +101,9 @@ def _make_pg_mock():
     return pool, conn
 
 
-def _pii_mock(sanitized="sanitized", redacted=False, entities_found=0, vault_entries=None):
+def _pii_mock(
+    sanitized="sanitized", redacted=False, entities_found=0, vault_entries=None
+):
     m = MagicMock()
     m.sanitized_text = sanitized
     m.redacted = redacted
@@ -167,7 +181,9 @@ async def test_rollback_all_stores_when_post_pg_failure(engine):
 
     entities = [KGNode(label="Alice", entity_type="Person", source_text="Alice")]
     triplets = [
-        KGEdge(subject_label="Alice", predicate="knows", object_label="Bob", confidence=0.9)
+        KGEdge(
+            subject_label="Alice", predicate="knows", object_label="Bob", confidence=0.9
+        )
     ]
     vault = [
         {"token": "tok1", "encrypted_value": "enc1", "entity_type": "EMAIL"},
@@ -184,7 +200,7 @@ async def test_rollback_all_stores_when_post_pg_failure(engine):
                     vault_entries=vault,
                 ),
             ):
-                with patch(_P_EVENT, return_value=None):
+                with patch(_P_EVENT, return_value=None) as mock_append:
                     with pytest.raises(Exception, match="Redis exploded"):
                         await engine.store_memory(payload)
 
@@ -197,8 +213,15 @@ async def test_rollback_all_stores_when_post_pg_failure(engine):
     assert "DELETE FROM kg_node_embeddings" in pg_sql
     assert "DELETE FROM kg_edges" in pg_sql
     assert "DELETE FROM kg_nodes" in pg_sql
-    assert "DELETE FROM event_log" in pg_sql
-    assert "DELETE FROM memories" in pg_sql
+    assert "UPDATE memories SET valid_to" in pg_sql
+
+    # WORM compliance: rollback emits compensating event via append_event
+    rollback_calls = [
+        c for c in mock_append.call_args_list
+        if c.kwargs.get("event_type") == "store_memory_rolled_back"
+    ]
+    assert len(rollback_calls) == 1
+    assert rollback_calls[0].kwargs["params"]["memory_id"] == "mem-uuid-0001"
 
 
 @pytest.mark.asyncio

@@ -28,12 +28,11 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from trimcp.mcp_errors import mcp_handler
-
 import asyncpg
 
 from trimcp.auth import require_scope
 from trimcp.event_log import append_event
+from trimcp.mcp_errors import mcp_handler
 from trimcp.orchestrator import TriStackEngine
 
 log = logging.getLogger("trimcp.migration_mcp_handlers")
@@ -123,7 +122,9 @@ async def handle_start_migration(
 
 @require_scope("admin")
 @mcp_handler
-async def handle_migration_status(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_migration_status(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """[ADMIN] Check the status of a running migration."""
     res = await engine.migration_status(arguments["migration_id"])
     return json.dumps(res)
@@ -131,7 +132,9 @@ async def handle_migration_status(engine: TriStackEngine, arguments: dict[str, A
 
 @require_scope("admin")
 @mcp_handler
-async def handle_validate_migration(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_validate_migration(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """[ADMIN] Validate the results of a completed migration."""
     res = await engine.validate_migration(arguments["migration_id"])
     return json.dumps(res)

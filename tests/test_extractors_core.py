@@ -16,7 +16,9 @@ from trimcp.extractors.pdf_ext import _check_pdf_bomb
 @patch("trimcp.extractors.dispatch._REGISTRY", new_callable=dict)
 def test_extract_with_fallback_unsupported_extension(mock_registry, mock_ensure):
     # Test that unsupported extensions return a graceful skip instead of crashing
-    result = asyncio.run(extract_with_fallback(b"dummy data", filename="test.unknownext"))
+    result = asyncio.run(
+        extract_with_fallback(b"dummy data", filename="test.unknownext")
+    )
     assert result.skipped is True
     assert result.skip_reason == "unsupported_format"
     assert "unknown or unregistered extension" in result.warnings[0]
@@ -40,8 +42,14 @@ def test_extract_with_fallback_malformed_pdf(mock_registry, mock_ensure):
 
 
 def test_chunk_structured_basic():
-    sections = [Section(text="Short text.", structure_path="/p", section_type="paragraph", order=0)]
-    chunks = chunk_structured(sections, max_chars=100, overlap=10, prepend_header_context=False)
+    sections = [
+        Section(
+            text="Short text.", structure_path="/p", section_type="paragraph", order=0
+        )
+    ]
+    chunks = chunk_structured(
+        sections, max_chars=100, overlap=10, prepend_header_context=False
+    )
     assert len(chunks) == 1
     assert chunks[0].text == "Short text."
     assert chunks[0].structure_path == "/p"
@@ -54,11 +62,15 @@ def test_chunk_structured_long_text_split():
     para2 = "B" * 60
     text = f"{para1}\n\n{para2}"
 
-    sections = [Section(text=text, structure_path="/p", section_type="paragraph", order=0)]
+    sections = [
+        Section(text=text, structure_path="/p", section_type="paragraph", order=0)
+    ]
 
     # max_chars=100 means para1 (60) + \n\n (2) + para2 (60) = 122 > 100
     # So it should split into two chunks
-    chunks = chunk_structured(sections, max_chars=100, overlap=0, prepend_header_context=False)
+    chunks = chunk_structured(
+        sections, max_chars=100, overlap=0, prepend_header_context=False
+    )
 
     assert len(chunks) == 2
     assert chunks[0].text == para1
@@ -74,7 +86,9 @@ def test_chunk_structured_no_cross_section_merging():
         Section(text="Section 2", structure_path="/s2", section_type="h1", order=1),
     ]
 
-    chunks = chunk_structured(sections, max_chars=1000, overlap=0, prepend_header_context=False)
+    chunks = chunk_structured(
+        sections, max_chars=1000, overlap=0, prepend_header_context=False
+    )
     assert len(chunks) == 2
     assert chunks[0].text == "Section 1"
     assert chunks[1].text == "Section 2"
@@ -99,8 +113,12 @@ class TestCheckZipBomb:
 
     def test_small_zip_passes(self, monkeypatch: pytest.MonkeyPatch):
         """A small zip below all thresholds should return None (pass)."""
-        monkeypatch.setattr("trimcp.extractors.office_word.MAX_DECOMPRESSED_SIZE", 10_000)
-        monkeypatch.setattr("trimcp.extractors.office_word.MAX_ENTRY_DECOMPRESSED_SIZE", 5_000)
+        monkeypatch.setattr(
+            "trimcp.extractors.office_word.MAX_DECOMPRESSED_SIZE", 10_000
+        )
+        monkeypatch.setattr(
+            "trimcp.extractors.office_word.MAX_ENTRY_DECOMPRESSED_SIZE", 5_000
+        )
 
         blob = _make_zip_with_sizes([b"A" * 100, b"B" * 200])
         assert _check_zip_bomb(blob) is None
@@ -108,7 +126,9 @@ class TestCheckZipBomb:
     def test_total_exceeds_limit(self, monkeypatch: pytest.MonkeyPatch):
         """Total uncompressed size exceeding MAX_DECOMPRESSED_SIZE should be rejected."""
         monkeypatch.setattr("trimcp.extractors.office_word.MAX_DECOMPRESSED_SIZE", 250)
-        monkeypatch.setattr("trimcp.extractors.office_word.MAX_ENTRY_DECOMPRESSED_SIZE", 500)
+        monkeypatch.setattr(
+            "trimcp.extractors.office_word.MAX_ENTRY_DECOMPRESSED_SIZE", 500
+        )
 
         blob = _make_zip_with_sizes([b"X" * 150, b"Y" * 150])
         err = _check_zip_bomb(blob)
@@ -117,8 +137,12 @@ class TestCheckZipBomb:
 
     def test_entry_exceeds_limit(self, monkeypatch: pytest.MonkeyPatch):
         """Single entry exceeding MAX_ENTRY_DECOMPRESSED_SIZE should be rejected."""
-        monkeypatch.setattr("trimcp.extractors.office_word.MAX_DECOMPRESSED_SIZE", 10_000)
-        monkeypatch.setattr("trimcp.extractors.office_word.MAX_ENTRY_DECOMPRESSED_SIZE", 100)
+        monkeypatch.setattr(
+            "trimcp.extractors.office_word.MAX_DECOMPRESSED_SIZE", 10_000
+        )
+        monkeypatch.setattr(
+            "trimcp.extractors.office_word.MAX_ENTRY_DECOMPRESSED_SIZE", 100
+        )
 
         blob = _make_zip_with_sizes([b"X" * 200, b"Y" * 50])
         err = _check_zip_bomb(blob)

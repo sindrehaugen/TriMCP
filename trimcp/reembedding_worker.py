@@ -169,6 +169,7 @@ async def _fetch_memories_batch(
                     OR embedding_model_id::text <> $1)
             ORDER  BY created_at ASC, id ASC
             LIMIT  $2
+            FOR UPDATE SKIP LOCKED
             """,
             model_str,
             batch_size,
@@ -185,6 +186,7 @@ async def _fetch_memories_batch(
           AND  (created_at, id) > ($2, $3)
         ORDER  BY created_at ASC, id ASC
         LIMIT  $4
+        FOR UPDATE SKIP LOCKED
         """,
         model_str,
         cursor_created_at,
@@ -204,21 +206,23 @@ async def _fetch_kg_nodes_batch(
     if cursor_id is None:
         return await conn.fetch(
             """
-            SELECT id, label FROM kg_nodes 
-            WHERE embedding IS NOT NULL 
+            SELECT id, label FROM kg_nodes
+            WHERE embedding IS NOT NULL
               AND (embedding_model_id IS NULL OR embedding_model_id::text <> $1)
             ORDER BY id ASC LIMIT $2
+            FOR UPDATE SKIP LOCKED
             """,
             model_str,
             batch_size,
         )
     return await conn.fetch(
         """
-        SELECT id, label FROM kg_nodes 
-        WHERE embedding IS NOT NULL 
+        SELECT id, label FROM kg_nodes
+        WHERE embedding IS NOT NULL
           AND (embedding_model_id IS NULL OR embedding_model_id::text <> $1)
-          AND id > $2 
+          AND id > $2
         ORDER BY id ASC LIMIT $3
+        FOR UPDATE SKIP LOCKED
         """,
         model_str,
         cursor_id,
@@ -272,7 +276,9 @@ async def _resolve_texts_from_mongo(
     if code_refs:
         try:
             oids = [ObjectId(r) for r in code_refs]
-            async for doc in db.code_files.find({"_id": {"$in": oids}}, {"raw_code": 1}):
+            async for doc in db.code_files.find(
+                {"_id": {"$in": oids}}, {"raw_code": 1}
+            ):
                 ref = str(doc["_id"])
                 result[ref] = str(doc.get("raw_code", ""))[:max_text_chars]
         except Exception as exc:
@@ -312,7 +318,10 @@ async def _update_memories_batch(
             WHERE  id         = $3
               AND  created_at = $4
             """,
-            [(json.dumps(vec), model_str, mem_id, created_at) for mem_id, created_at, vec in batch],
+            [
+                (json.dumps(vec), model_str, mem_id, created_at)
+                for mem_id, created_at, vec in batch
+            ],
         )
 
 
@@ -471,13 +480,14 @@ class ReembeddingWorker:
                 break
 
             async with pool.acquire() as conn:
-                rows = await _fetch_memories_batch(
-                    conn,
-                    model_uuid,
-                    self.batch_size,
-                    cursor_created_at,
-                    cursor_id,
-                )
+                async with conn.transaction():
+                    rows = await _fetch_memories_batch(
+                        conn,
+                        model_uuid,
+                        self.batch_size,
+                        cursor_created_at,
+                        cursor_id,
+                    )
 
             if not rows:
                 log.debug("Re-embed: no more stale memories found.")
@@ -497,7 +507,9 @@ class ReembeddingWorker:
                 ref = row.get("payload_ref") or ""
                 text = mongo_texts.get(ref) or _fallback_text(row, self.max_text_chars)
                 if not text:
-                    log.debug("Re-embed: skipping memory %s — no text available.", row["id"])
+                    log.debug(
+                        "Re-embed: skipping memory %s — no text available.", row["id"]
+                    )
                     continue
                 texts.append(text)
                 selected.append((row["id"], row["created_at"]))
@@ -557,7 +569,10 @@ class ReembeddingWorker:
 
         while True:
             async with pool.acquire() as conn:
-                rows = await _fetch_kg_nodes_batch(conn, model_uuid, self.batch_size, kg_cursor_id)
+                async with conn.transaction():
+                    rows = await _fetch_kg_nodes_batch(
+                        conn, model_uuid, self.batch_size, kg_cursor_id
+                    )
 
             if not rows:
                 break
@@ -627,14 +642,18 @@ class ReembeddingWorker:
         kg_nodes_done = 0
 
         try:
-            memories_done = await self._run_memories_phase(pool, mongo_client, model_uuid, run_id)
+            memories_done = await self._run_memories_phase(
+                pool, mongo_client, model_uuid, run_id
+            )
 
             if self.include_kg_nodes:
                 kg_nodes_done = await self._run_kg_nodes_phase(
                     pool, run_id, memories_done, model_uuid
                 )
 
-            await self._close_run(pool, run_id, "completed", memories_done, kg_nodes_done)
+            await self._close_run(
+                pool, run_id, "completed", memories_done, kg_nodes_done
+            )
             log.info(
                 "Re-embedding run %s completed | memories=%d kg_nodes=%d",
                 run_id,
@@ -682,7 +701,7 @@ async def async_main() -> None:
         command_timeout=120,
     )
 
-    mongo_client = None
+    mongo_client: Any = None
     try:
         from motor.motor_asyncio import AsyncIOMotorClient
 

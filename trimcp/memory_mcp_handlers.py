@@ -19,7 +19,6 @@ import json
 from typing import Any
 
 from trimcp.mcp_errors import mcp_handler
-
 from trimcp.models import (
     BoostMemoryRequest,
     ForgetMemoryRequest,
@@ -67,7 +66,9 @@ async def handle_store_media(engine: TriStackEngine, arguments: dict[str, Any]) 
 
 
 @mcp_handler
-async def handle_semantic_search(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_semantic_search(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """Search stored memories by semantic similarity (pgvector cosine search)."""
     req = SemanticSearchRequest(**arguments)
     results = await engine.semantic_search(
@@ -82,7 +83,9 @@ async def handle_semantic_search(engine: TriStackEngine, arguments: dict[str, An
 
 
 @mcp_handler
-async def handle_get_recent_context(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_get_recent_context(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """Retrieve the most recent cached context for a user/session from Redis."""
     req = GetRecentContextRequest(**arguments)
     context = await engine.recall_recent(
@@ -109,7 +112,9 @@ async def handle_boost_memory(engine: TriStackEngine, arguments: dict[str, Any])
 
 
 @mcp_handler
-async def handle_forget_memory(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_forget_memory(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """Set salience to 0.0 for the calling agent (soft-delete)."""
     req = ForgetMemoryRequest(**arguments)
     res = await engine.forget_memory(
@@ -121,7 +126,9 @@ async def handle_forget_memory(engine: TriStackEngine, arguments: dict[str, Any]
 
 
 @mcp_handler
-async def handle_unredact_memory(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_unredact_memory(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """Reverse pseudonymisation for a given memory (requires elevated permissions)."""
     req = UnredactMemoryRequest(**arguments)
     result = await engine.unredact_memory(

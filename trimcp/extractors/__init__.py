@@ -4,7 +4,10 @@ from trimcp.extractors.chunking import StructuredChunk, chunk_structured
 from trimcp.extractors.core import ExtractionResult, Section, empty_skipped
 
 # J.14 API (OAuth); invoke from workers with board/document id + token.
-from trimcp.extractors.diagram_api import lucidchart_extract_document, miro_extract_board
+from trimcp.extractors.diagram_api import (
+    lucidchart_extract_document,
+    miro_extract_board,
+)
 from trimcp.extractors.dispatch import (
     ensure_registered,
     extension_from_filename,

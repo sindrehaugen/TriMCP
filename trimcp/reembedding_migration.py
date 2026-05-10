@@ -14,9 +14,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import math
+import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from enum import StrEnum
+
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    from strenum import StrEnum  # type: ignore[import-untyped]
 from typing import Protocol
 
 
@@ -160,8 +165,12 @@ class ReembeddingMigrationOrchestrator:
                 continue
             vec = self.embed_fn_v2(row.canonical_text, dimension=self.dimension)
             if len(vec) != self.dimension:
-                raise ValueError(f"embed_fn_v2 returned dim {len(vec)}, expected {self.dimension}")
-            await self._store.write_embedding_v2(mid, embedding=vec, model_id=self.target_model_id)
+                raise ValueError(
+                    f"embed_fn_v2 returned dim {len(vec)}, expected {self.dimension}"
+                )
+            await self._store.write_embedding_v2(
+                mid, embedding=vec, model_id=self.target_model_id
+            )
         async with self._cv:
             self._cv.notify_all()
         return len(ids)

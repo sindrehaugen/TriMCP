@@ -413,7 +413,9 @@ class TestMemoryOrchestratorObservabilityContract:
         # Mock insert_one to return a result with inserted_id
         insert_result = MagicMock()
         insert_result.inserted_id = MagicMock()
-        insert_result.inserted_id.__str__ = MagicMock(return_value="507f1f77bcf86cd799439011")
+        insert_result.inserted_id.__str__ = MagicMock(
+            return_value="507f1f77bcf86cd799439011"
+        )
         collection.insert_one = AsyncMock(return_value=insert_result)
         collection.delete_one = AsyncMock()
         db.episodes = collection
@@ -552,9 +554,9 @@ class TestMemoryOrchestratorObservabilityContract:
 
         class _TracerSpy:
             def start_as_current_span(self, name, **kw):
-                assert "store_memory" in name, (
-                    f"Expected span name containing 'store_memory', got {name!r}"
-                )
+                assert (
+                    "store_memory" in name
+                ), f"Expected span name containing 'store_memory', got {name!r}"
                 return _SpanSpy()
 
         monkeypatch.setattr(
@@ -601,7 +603,9 @@ class TestMemoryOrchestratorObservabilityContract:
         assert exited[0], "The store_memory OTel span was never exited"
 
     @pytest.mark.asyncio
-    async def test_store_media_saga_metrics_records_work(self, orchestrator, monkeypatch) -> None:
+    async def test_store_media_saga_metrics_records_work(
+        self, orchestrator, monkeypatch
+    ) -> None:
         """store_media must also properly wrap work in SagaMetrics."""
         monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
         observed_durations: list[float] = []

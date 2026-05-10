@@ -180,7 +180,9 @@ def test_v4_blob_still_decrypts_v2():
 def test_v4_blob_roundtrip_without_argon2():
     """v4 (PBKDF2 @ 600K) encrypt → decrypt round-trip must work."""
     if _HAS_ARGON2:
-        pytest.skip("argon2-cffi masks PBKDF2 v4 path — test separately without argon2-cffi")
+        pytest.skip(
+            "argon2-cffi masks PBKDF2 v4 path — test separately without argon2-cffi"
+        )
     mk = MasterKey(b"V" * 32)
     raw = os.urandom(32)
     blob = encrypt_signing_key(raw, mk)
@@ -192,7 +194,9 @@ def test_v4_blob_roundtrip_without_argon2():
 def test_v4_blob_wrong_master_fails():
     """Decrypting a v4 blob with a different MasterKey must raise."""
     if _HAS_ARGON2:
-        pytest.skip("argon2-cffi masks PBKDF2 v4 path — test separately without argon2-cffi")
+        pytest.skip(
+            "argon2-cffi masks PBKDF2 v4 path — test separately without argon2-cffi"
+        )
     mk1 = MasterKey(b"A" * 32)
     mk2 = MasterKey(b"B" * 32)
     raw = os.urandom(32)

@@ -33,6 +33,53 @@ from trimcp.observability import TASK_DLQ_BACKLOG, TASK_DLQ_TOTAL
 log = logging.getLogger("trimcp.dead_letter_queue")
 
 # ---------------------------------------------------------------------------
+# DLQ payload sanitisation
+# ---------------------------------------------------------------------------
+
+_DLQ_SENSITIVE_KEYS: frozenset[str] = frozenset({
+    "access_token",
+    "refresh_token",
+    "token",
+    "password",
+    "secret",
+    "api_key",
+    "private_key",
+    "client_secret",
+    "raw_code",
+    "code",
+})
+_MAX_DLQ_STRING_LEN: int = 4096
+_MAX_DLQ_NESTED_KEYS: int = 50
+
+
+def _sanitize_dlq_kwargs(value: Any) -> Any:
+    """Return a copy of *value* safe for DLQ persistence.
+
+    - Redacts values for known sensitive keys.
+    - Truncates strings longer than ``_MAX_DLQ_STRING_LEN``.
+    - Limits nested dict/list sizes.
+    """
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k, v in list(value.items())[:_MAX_DLQ_NESTED_KEYS]:
+            if k in _DLQ_SENSITIVE_KEYS:
+                out[k] = "[REDACTED]"
+            else:
+                out[k] = _sanitize_dlq_kwargs(v)
+        return out
+    if isinstance(value, list):
+        return [
+            _sanitize_dlq_kwargs(i)
+            for i in value[:_MAX_DLQ_NESTED_KEYS]
+        ]
+    if isinstance(value, str):
+        if len(value) > _MAX_DLQ_STRING_LEN:
+            return value[:_MAX_DLQ_STRING_LEN] + "...[truncated]"
+        return value
+    return value
+
+
+# ---------------------------------------------------------------------------
 # Redis attempt tracking (used by tasks.py wrappers)
 # ---------------------------------------------------------------------------
 
@@ -51,7 +98,7 @@ def _track_attempt(redis_client: Redis, job_id: str) -> int:
     Returns the **new** attempt count (1-based).
     """
     key = _attempt_key(job_id)
-    count: int = redis_client.incr(key)
+    count: int = redis_client.incr(key)  # type: ignore[assignment]
     if count == 1:
         redis_client.expire(key, cfg.TASK_DLQ_REDIS_TTL)
     return count
@@ -99,7 +146,7 @@ async def store_dead_letter(
                     """,
                     task_name,
                     job_id,
-                    json.dumps(kwargs),
+                    json.dumps(_sanitize_dlq_kwargs(kwargs)),
                     error_message,
                     attempt_count,
                 )
@@ -199,7 +246,9 @@ async def list_dead_letters(
             "id": str(r["id"]),
             "task_name": r["task_name"],
             "job_id": r["job_id"],
-            "kwargs": json.loads(r["kwargs"]) if isinstance(r["kwargs"], str) else r["kwargs"],
+            "kwargs": (
+                json.loads(r["kwargs"]) if isinstance(r["kwargs"], str) else r["kwargs"]
+            ),
             "error_message": r["error_message"],
             "attempt_count": r["attempt_count"],
             "status": r["status"],
@@ -234,15 +283,26 @@ async def replay_dead_letter(
                 dlq_id,
             )
             if row is None:
-                raise ValueError(f"DLQ entry {dlq_id} not found or not in 'pending' status")
+                raise ValueError(
+                    f"DLQ entry {dlq_id} not found or not in 'pending' status"
+                )
 
-    log.info("[DLQ] Replayed entry %s (task=%s, job=%s)", dlq_id, row["task_name"], row["job_id"])
+    log.info(
+        "[DLQ] Replayed entry %s (task=%s, job=%s)",
+        dlq_id,
+        row["task_name"],
+        row["job_id"],
+    )
 
     return {
         "id": dlq_id,
         "task_name": row["task_name"],
         "job_id": row["job_id"],
-        "kwargs": json.loads(row["kwargs"]) if isinstance(row["kwargs"], str) else row["kwargs"],
+        "kwargs": (
+            json.loads(row["kwargs"])
+            if isinstance(row["kwargs"], str)
+            else row["kwargs"]
+        ),
         "attempt_count": row["attempt_count"],
         "status": "replayed",
     }

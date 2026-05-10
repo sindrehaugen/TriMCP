@@ -19,7 +19,6 @@ import logging
 from typing import Any
 
 from trimcp.mcp_errors import mcp_handler
-
 from trimcp.models import GraphSearchRequest
 from trimcp.orchestrator import TriStackEngine
 

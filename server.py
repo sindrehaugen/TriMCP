@@ -20,7 +20,6 @@ import os
 import re
 import secrets
 import sys
-import traceback
 from typing import Any
 
 from mcp.server import Server
@@ -42,7 +41,7 @@ from trimcp import (
     snapshot_mcp_handlers,
 )
 from trimcp.auth import RateLimitError, ScopeError
-from trimcp.config import redact_secrets_in_text
+from trimcp.config import cfg, redact_secrets_in_text
 from trimcp.mcp_errors import McpError, UnknownToolError
 
 logging.basicConfig(
@@ -62,6 +61,64 @@ app = Server("tri-stack-memory")
 
 # --- Tool Definitions ---
 
+_MIGRATION_TOOLS = [
+    Tool(
+        name="start_migration",
+        description="[Phase 2.1] Start an embedding migration.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "target_model_id": {"type": "string"},
+            },
+            "required": ["target_model_id"],
+        },
+    ),
+    Tool(
+        name="migration_status",
+        description="[Phase 2.1] Check the status of an embedding migration.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "migration_id": {"type": "string"},
+            },
+            "required": ["migration_id"],
+        },
+    ),
+    Tool(
+        name="validate_migration",
+        description="[Phase 2.1] Run quality gate checks on a finished migration.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "migration_id": {"type": "string"},
+            },
+            "required": ["migration_id"],
+        },
+    ),
+    Tool(
+        name="commit_migration",
+        description="[Phase 2.1] Commit a validated migration, making it the active model.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "migration_id": {"type": "string"},
+            },
+            "required": ["migration_id"],
+        },
+    ),
+    Tool(
+        name="abort_migration",
+        description="[Phase 2.1] Abort a migration and clean up.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "migration_id": {"type": "string"},
+            },
+            "required": ["migration_id"],
+        },
+    ),
+]
+
 TOOLS = [
     Tool(
         name="store_memory",
@@ -75,8 +132,14 @@ TOOLS = [
                 "namespace_id": {"type": "string"},
                 "agent_id": {"type": "string"},
                 "content": {"type": "string"},
-                "summary": {"type": "string", "description": "Short summary used for embedding"},
-                "heavy_payload": {"type": "string", "description": "Full raw content to archive"},
+                "summary": {
+                    "type": "string",
+                    "description": "Short summary used for embedding",
+                },
+                "heavy_payload": {
+                    "type": "string",
+                    "description": "Full raw content to archive",
+                },
                 "content_type": {
                     "type": "string",
                     "enum": ["chat", "code"],
@@ -131,7 +194,10 @@ TOOLS = [
             "properties": {
                 "namespace_id": {"type": "string"},
                 "agent_id": {"type": "string"},
-                "query": {"type": "string", "description": "Natural language search query"},
+                "query": {
+                    "type": "string",
+                    "description": "Natural language search query",
+                },
                 "limit": {
                     "type": "integer",
                     "default": 5,
@@ -172,12 +238,18 @@ TOOLS = [
                     "type": "string",
                     "description": "Absolute or relative path of the file",
                 },
-                "raw_code": {"type": "string", "description": "Full source code content"},
+                "raw_code": {
+                    "type": "string",
+                    "description": "Full source code content",
+                },
                 "language": {
                     "type": "string",
                     "description": "Language: 'python', 'javascript', 'typescript', 'go', 'rust'",
                 },
-                "namespace_id": {"type": "string", "description": "Namespace ID for scoping."},
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Namespace ID for scoping.",
+                },
                 "user_id": {
                     "type": "string",
                     "description": "Optional. Required when private=true — scopes this index to the user.",
@@ -218,7 +290,10 @@ TOOLS = [
                     "type": "string",
                     "description": "Natural language description of the code to find",
                 },
-                "namespace_id": {"type": "string", "description": "Namespace ID to search within."},
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Namespace ID to search within.",
+                },
                 "language_filter": {
                     "type": "string",
                     "description": "Optional: filter by language ('python', 'javascript')",
@@ -252,7 +327,10 @@ TOOLS = [
                     "type": "string",
                     "description": "Natural language query to anchor the graph search",
                 },
-                "namespace_id": {"type": "string", "description": "Namespace ID to search within."},
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Namespace ID to search within.",
+                },
                 "max_depth": {
                     "type": "integer",
                     "default": 2,
@@ -318,7 +396,12 @@ TOOLS = [
                     "type": "string",
                     "description": "Agent identifier; 'default' if not specified.",
                 },
-                "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 100},
+                "limit": {
+                    "type": "integer",
+                    "default": 10,
+                    "minimum": 1,
+                    "maximum": 100,
+                },
                 "offset": {
                     "type": "integer",
                     "default": 0,
@@ -363,13 +446,22 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "user_id": {"type": "string"},
-                "bridge_id": {"type": "string", "description": "UUID from connect_bridge"},
+                "bridge_id": {
+                    "type": "string",
+                    "description": "UUID from connect_bridge",
+                },
                 "provider": {
                     "type": "string",
                     "enum": ["sharepoint", "gdrive", "dropbox"],
                 },
-                "authorization_code": {"type": "string", "description": "OAuth code from redirect"},
-                "code": {"type": "string", "description": "Alias for authorization_code"},
+                "authorization_code": {
+                    "type": "string",
+                    "description": "OAuth code from redirect",
+                },
+                "code": {
+                    "type": "string",
+                    "description": "Alias for authorization_code",
+                },
                 "resource_id": {
                     "type": "string",
                     "description": (
@@ -489,12 +581,22 @@ TOOLS = [
                 },
                 "resolution": {
                     "type": "string",
-                    "enum": ["resolved_a", "resolved_b", "both_valid", "false_positive"],
+                    "enum": [
+                        "resolved_a",
+                        "resolved_b",
+                        "both_valid",
+                        "false_positive",
+                    ],
                 },
                 "resolved_by": {"type": "string"},
                 "note": {"type": "string"},
             },
-            "required": ["contradiction_id", "namespace_id", "resolution", "resolved_by"],
+            "required": [
+                "contradiction_id",
+                "namespace_id",
+                "resolution",
+                "resolved_by",
+            ],
         },
     ),
     Tool(
@@ -514,61 +616,7 @@ TOOLS = [
             "required": ["memory_id", "namespace_id", "agent_id", "admin_api_key"],
         },
     ),
-    Tool(
-        name="start_migration",
-        description="[Phase 2.1] Start an embedding migration.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "target_model_id": {"type": "string"},
-            },
-            "required": ["target_model_id"],
-        },
-    ),
-    Tool(
-        name="migration_status",
-        description="[Phase 2.1] Check the status of an embedding migration.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "migration_id": {"type": "string"},
-            },
-            "required": ["migration_id"],
-        },
-    ),
-    Tool(
-        name="validate_migration",
-        description="[Phase 2.1] Run quality gate checks on a finished migration.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "migration_id": {"type": "string"},
-            },
-            "required": ["migration_id"],
-        },
-    ),
-    Tool(
-        name="commit_migration",
-        description="[Phase 2.1] Commit a validated migration, making it the active model.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "migration_id": {"type": "string"},
-            },
-            "required": ["migration_id"],
-        },
-    ),
-    Tool(
-        name="abort_migration",
-        description="[Phase 2.1] Abort a migration and clean up.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "migration_id": {"type": "string"},
-            },
-            "required": ["migration_id"],
-        },
-    ),
+    # Migration tools are appended conditionally below
     Tool(
         name="replay_observe",
         description=(
@@ -669,7 +717,12 @@ TOOLS = [
                     "description": "Server-side admin API key for elevated access",
                 },
             },
-            "required": ["source_namespace_id", "target_namespace_id", "fork_seq", "admin_api_key"],
+            "required": [
+                "source_namespace_id",
+                "target_namespace_id",
+                "fork_seq",
+                "admin_api_key",
+            ],
         },
     ),
     Tool(
@@ -709,7 +762,12 @@ TOOLS = [
                     "description": "Server-side admin API key for elevated access",
                 },
             },
-            "required": ["source_namespace_id", "target_namespace_id", "end_seq", "admin_api_key"],
+            "required": [
+                "source_namespace_id",
+                "target_namespace_id",
+                "end_seq",
+                "admin_api_key",
+            ],
         },
     ),
     Tool(
@@ -760,7 +818,10 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "namespace_id": {"type": "string", "description": "Owner namespace UUID."},
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Owner namespace UUID.",
+                },
                 "agent_id": {"type": "string", "description": "Owner agent ID."},
                 "scopes": {
                     "type": "array",
@@ -807,9 +868,15 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "namespace_id": {"type": "string", "description": "Owner namespace UUID."},
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Owner namespace UUID.",
+                },
                 "agent_id": {"type": "string", "description": "Owner agent ID."},
-                "grant_id": {"type": "string", "description": "UUID of the grant to revoke."},
+                "grant_id": {
+                    "type": "string",
+                    "description": "UUID of the grant to revoke.",
+                },
             },
             "required": ["namespace_id", "agent_id", "grant_id"],
         },
@@ -823,7 +890,10 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "namespace_id": {"type": "string", "description": "Owner namespace UUID."},
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Owner namespace UUID.",
+                },
                 "agent_id": {"type": "string", "description": "Owner agent ID."},
                 "include_inactive": {
                     "type": "boolean",
@@ -853,8 +923,14 @@ TOOLS = [
                     "type": "string",
                     "description": "UUID of the namespace consuming the token.",
                 },
-                "consumer_agent_id": {"type": "string", "description": "Agent ID of the consumer."},
-                "query": {"type": "string", "description": "Semantic search query string."},
+                "consumer_agent_id": {
+                    "type": "string",
+                    "description": "Agent ID of the consumer.",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Semantic search query string.",
+                },
                 "resource_type": {
                     "type": "string",
                     "enum": ["namespace", "memory", "kg_node", "subgraph"],
@@ -953,7 +1029,10 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "command": {"type": "string", "enum": ["set", "list", "delete", "reset"]},
+                "command": {
+                    "type": "string",
+                    "enum": ["set", "list", "delete", "reset"],
+                },
                 "namespace_id": {"type": "string"},
                 "agent_id": {"type": "string"},
                 "resource_type": {
@@ -995,6 +1074,45 @@ TOOLS = [
                 },
             },
             "required": ["admin_api_key"],
+        },
+    ),
+    Tool(
+        name="list_dlq",
+        description="[ADMIN] List dead-letter queue entries (failed tasks that exhausted retries).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "admin_api_key": {"type": "string", "description": "Admin API key"},
+                "task_name": {"type": "string", "description": "Filter by task function name"},
+                "status": {"type": "string", "enum": ["pending", "replayed", "purged"]},
+                "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
+            },
+            "required": ["admin_api_key"],
+        },
+    ),
+    Tool(
+        name="replay_dlq",
+        description="[ADMIN] Mark a dead-letter queue entry as replayed (re-enqueue manually).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "admin_api_key": {"type": "string", "description": "Admin API key"},
+                "dlq_id": {"type": "string", "description": "UUID of the DLQ entry to replay"},
+            },
+            "required": ["admin_api_key", "dlq_id"],
+        },
+    ),
+    Tool(
+        name="purge_dlq",
+        description="[ADMIN] Permanently remove a dead-letter queue entry.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "admin_api_key": {"type": "string", "description": "Admin API key"},
+                "dlq_id": {"type": "string", "description": "UUID of the DLQ entry to purge"},
+            },
+            "required": ["admin_api_key", "dlq_id"],
         },
     ),
     Tool(
@@ -1052,6 +1170,10 @@ TOOLS = [
     ),
 ]
 
+# Conditionally include migration tools based on operator config.
+if not cfg.TRIMCP_DISABLE_MIGRATION_MCP:
+    TOOLS = TOOLS + _MIGRATION_TOOLS
+
 
 # --- Tool Handlers ---
 
@@ -1096,12 +1218,20 @@ def _check_admin(arguments: dict[str, Any]) -> None:
         )
 
     provided_key: str | None = arguments.get("admin_api_key")
-    if not provided_key or not isinstance(provided_key, str) or not provided_key.strip():
-        raise ValueError("Unauthorized administrative attempt: missing admin_api_key (-32001)")
+    if (
+        not provided_key
+        or not isinstance(provided_key, str)
+        or not provided_key.strip()
+    ):
+        raise ValueError(
+            "Unauthorized administrative attempt: missing admin_api_key (-32001)"
+        )
 
     if not secrets.compare_digest(provided_key.strip(), server_key):
         log.warning("Admin auth rejected: invalid admin_api_key")
-        raise ValueError("Unauthorized administrative attempt: invalid admin_api_key (-32001)")
+        raise ValueError(
+            "Unauthorized administrative attempt: invalid admin_api_key (-32001)"
+        )
 
 
 def _model_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1192,7 +1322,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         try:
             # --- API Cache Layer ---
             CACHEABLE_TOOLS = {"semantic_search", "search_codebase", "graph_search"}
-            MUTATION_TOOLS = {
+            _base_mutation_tools = {
                 "store_memory",
                 "store_media",
                 "index_code_file",
@@ -1211,12 +1341,16 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 "forget_memory",
                 "a2a_create_grant",
                 "a2a_revoke_grant",
-                "start_migration",
-                "commit_migration",
-                "abort_migration",
                 "unredact_memory",
                 "replay_reconstruct",
             }
+            if not cfg.TRIMCP_DISABLE_MIGRATION_MCP:
+                _base_mutation_tools |= {
+                    "start_migration",
+                    "commit_migration",
+                    "abort_migration",
+                }
+            MUTATION_TOOLS = _base_mutation_tools
 
             if name in MUTATION_TOOLS:
                 from trimcp.mcp_args import bump_cache_generation, purge_document_cache
@@ -1268,17 +1402,25 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 )
                 cached_val = await engine.redis_client.get(cache_key)
                 if cached_val:
-                    log.info("API Cache hit for tool %s (ns=%s)", name, (ns_id or "global")[:8])
+                    log.info(
+                        "API Cache hit for tool %s (ns=%s)",
+                        name,
+                        (ns_id or "global")[:8],
+                    )
                     return [TextContent(type="text", text=cached_val.decode())]
 
             # --- Tool dispatch ---
             try:
                 if name == "store_memory":
-                    result_text = await memory_mcp_handlers.handle_store_memory(engine, arguments)
+                    result_text = await memory_mcp_handlers.handle_store_memory(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "store_media":
-                    result_text = await memory_mcp_handlers.handle_store_media(engine, arguments)
+                    result_text = await memory_mcp_handlers.handle_store_media(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "semantic_search":
@@ -1290,7 +1432,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "index_code_file":
-                    result_text = await code_mcp_handlers.handle_index_code_file(engine, arguments)
+                    result_text = await code_mcp_handlers.handle_index_code_file(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "check_indexing_status":
@@ -1300,13 +1444,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "search_codebase":
-                    result_text = await code_mcp_handlers.handle_search_codebase(engine, arguments)
+                    result_text = await code_mcp_handlers.handle_search_codebase(
+                        engine, arguments
+                    )
                     if cache_key:
                         await engine.redis_client.setex(cache_key, 300, result_text)
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "graph_search":
-                    result_text = await graph_mcp_handlers.handle_graph_search(engine, arguments)
+                    result_text = await graph_mcp_handlers.handle_graph_search(
+                        engine, arguments
+                    )
                     if cache_key:
                         await engine.redis_client.setex(cache_key, 300, result_text)
                     return [TextContent(type="text", text=result_text)]
@@ -1322,7 +1470,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     return [TextContent(type="text", text=text)]
 
                 if name == "complete_bridge_auth":
-                    text = await bridge_mcp_handlers.complete_bridge_auth(engine, arguments)
+                    text = await bridge_mcp_handlers.complete_bridge_auth(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=text)]
 
                 if name == "list_bridges":
@@ -1330,11 +1480,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     return [TextContent(type="text", text=text)]
 
                 if name == "disconnect_bridge":
-                    text = await bridge_mcp_handlers.disconnect_bridge(engine, arguments)
+                    text = await bridge_mcp_handlers.disconnect_bridge(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=text)]
 
                 if name == "force_resync_bridge":
-                    text = await bridge_mcp_handlers.force_resync_bridge(engine, arguments)
+                    text = await bridge_mcp_handlers.force_resync_bridge(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=text)]
 
                 if name == "bridge_status":
@@ -1342,22 +1496,30 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     return [TextContent(type="text", text=text)]
 
                 if name == "boost_memory":
-                    result_text = await memory_mcp_handlers.handle_boost_memory(engine, arguments)
-                    return [TextContent(type="text", text=result_text)]
-
-                if name == "forget_memory":
-                    result_text = await memory_mcp_handlers.handle_forget_memory(engine, arguments)
-                    return [TextContent(type="text", text=result_text)]
-
-                if name == "list_contradictions":
-                    result_text = await contradiction_mcp_handlers.handle_list_contradictions(
+                    result_text = await memory_mcp_handlers.handle_boost_memory(
                         engine, arguments
                     )
                     return [TextContent(type="text", text=result_text)]
 
-                if name == "resolve_contradiction":
-                    result_text = await contradiction_mcp_handlers.handle_resolve_contradiction(
+                if name == "forget_memory":
+                    result_text = await memory_mcp_handlers.handle_forget_memory(
                         engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "list_contradictions":
+                    result_text = (
+                        await contradiction_mcp_handlers.handle_list_contradictions(
+                            engine, arguments
+                        )
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "resolve_contradiction":
+                    result_text = (
+                        await contradiction_mcp_handlers.handle_resolve_contradiction(
+                            engine, arguments
+                        )
                     )
                     return [TextContent(type="text", text=result_text)]
 
@@ -1368,39 +1530,53 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     )
                     return [TextContent(type="text", text=result_text)]
 
-                if name == "start_migration":
-                    result_text = await migration_mcp_handlers.handle_start_migration(
-                        engine, arguments
-                    )
-                    return [TextContent(type="text", text=result_text)]
-
-                if name == "migration_status":
-                    result_text = await migration_mcp_handlers.handle_migration_status(
-                        engine, arguments
-                    )
-                    return [TextContent(type="text", text=result_text)]
-
-                if name == "validate_migration":
-                    result_text = await migration_mcp_handlers.handle_validate_migration(
-                        engine, arguments
-                    )
-                    return [TextContent(type="text", text=result_text)]
-
-                if name == "commit_migration":
-                    result_text = await migration_mcp_handlers.handle_commit_migration(
-                        engine, arguments
-                    )
-                    return [TextContent(type="text", text=result_text)]
-
-                if name == "abort_migration":
-                    result_text = await migration_mcp_handlers.handle_abort_migration(
-                        engine, arguments
-                    )
-                    return [TextContent(type="text", text=result_text)]
+                if name in (
+                    "start_migration",
+                    "migration_status",
+                    "validate_migration",
+                    "commit_migration",
+                    "abort_migration",
+                ):
+                    if cfg.TRIMCP_DISABLE_MIGRATION_MCP:
+                        return [
+                            TextContent(
+                                type="text",
+                                text="Migration tools are disabled (TRIMCP_DISABLE_MIGRATION_MCP=true).",
+                            )
+                        ]
+                    if name == "start_migration":
+                        result_text = await migration_mcp_handlers.handle_start_migration(
+                            engine, arguments
+                        )
+                        return [TextContent(type="text", text=result_text)]
+                    if name == "migration_status":
+                        result_text = await migration_mcp_handlers.handle_migration_status(
+                            engine, arguments
+                        )
+                        return [TextContent(type="text", text=result_text)]
+                    if name == "validate_migration":
+                        result_text = (
+                            await migration_mcp_handlers.handle_validate_migration(
+                                engine, arguments
+                            )
+                        )
+                        return [TextContent(type="text", text=result_text)]
+                    if name == "commit_migration":
+                        result_text = await migration_mcp_handlers.handle_commit_migration(
+                            engine, arguments
+                        )
+                        return [TextContent(type="text", text=result_text)]
+                    if name == "abort_migration":
+                        result_text = await migration_mcp_handlers.handle_abort_migration(
+                            engine, arguments
+                        )
+                        return [TextContent(type="text", text=result_text)]
 
                 if name == "replay_observe":
                     _check_admin(arguments)
-                    result_text = await replay_mcp_handlers.handle_replay_observe(engine, arguments)
+                    result_text = await replay_mcp_handlers.handle_replay_observe(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "replay_reconstruct":
@@ -1412,12 +1588,16 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
                 if name == "replay_fork":
                     _check_admin(arguments)
-                    result_text = await replay_mcp_handlers.handle_replay_fork(engine, arguments)
+                    result_text = await replay_mcp_handlers.handle_replay_fork(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "replay_status":
                     _check_admin(arguments)
-                    result_text = await replay_mcp_handlers.handle_replay_status(engine, arguments)
+                    result_text = await replay_mcp_handlers.handle_replay_status(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "get_event_provenance":
@@ -1427,19 +1607,27 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "a2a_create_grant":
-                    result_text = await a2a_mcp_handlers.handle_a2a_create_grant(engine, arguments)
+                    result_text = await a2a_mcp_handlers.handle_a2a_create_grant(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "a2a_revoke_grant":
-                    result_text = await a2a_mcp_handlers.handle_a2a_revoke_grant(engine, arguments)
+                    result_text = await a2a_mcp_handlers.handle_a2a_revoke_grant(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "a2a_list_grants":
-                    result_text = await a2a_mcp_handlers.handle_a2a_list_grants(engine, arguments)
+                    result_text = await a2a_mcp_handlers.handle_a2a_list_grants(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "a2a_query_shared":
-                    result_text = await a2a_mcp_handlers.handle_a2a_query_shared(engine, arguments)
+                    result_text = await a2a_mcp_handlers.handle_a2a_query_shared(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "manage_namespace":
@@ -1449,7 +1637,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "verify_memory":
-                    result_text = await admin_mcp_handlers.handle_verify_memory(engine, arguments)
+                    result_text = await admin_mcp_handlers.handle_verify_memory(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "trigger_consolidation":
@@ -1465,7 +1655,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "manage_quotas":
-                    result_text = await admin_mcp_handlers.handle_manage_quotas(engine, arguments)
+                    result_text = await admin_mcp_handlers.handle_manage_quotas(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "rotate_signing_key":
@@ -1475,7 +1667,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "get_health":
-                    result_text = await admin_mcp_handlers.handle_get_health(engine, arguments)
+                    result_text = await admin_mcp_handlers.handle_get_health(
+                        engine, arguments
+                    )
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "create_snapshot":
@@ -1498,6 +1692,24 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
                 if name == "compare_states":
                     result_text = await snapshot_mcp_handlers.handle_compare_states(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "list_dlq":
+                    result_text = await admin_mcp_handlers.handle_list_dlq(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "replay_dlq":
+                    result_text = await admin_mcp_handlers.handle_replay_dlq(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "purge_dlq":
+                    result_text = await admin_mcp_handlers.handle_purge_dlq(
                         engine, arguments
                     )
                     return [TextContent(type="text", text=result_text)]
@@ -1591,7 +1803,9 @@ async def main():
     try:
         async with stdio_server() as (read_stream, write_stream):
             log.info("MCP server listening on stdio.")
-            await app.run(read_stream, write_stream, app.create_initialization_options())
+            await app.run(
+                read_stream, write_stream, app.create_initialization_options()
+            )
     finally:
         gc_task.cancel()
         try:

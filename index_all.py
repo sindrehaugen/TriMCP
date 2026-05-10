@@ -35,7 +35,11 @@ def get_files_to_index(root_dir="."):
 
 async def index_repo(namespace_id: str = "default"):
     files_to_index = get_files_to_index()
-    log.info("Found %s Python files to index (namespace=%s).", len(files_to_index), namespace_id)
+    log.info(
+        "Found %s Python files to index (namespace=%s).",
+        len(files_to_index),
+        namespace_id,
+    )
 
     engine = TriStackEngine()
     await engine.connect()
@@ -47,7 +51,7 @@ async def index_repo(namespace_id: str = "default"):
         async def process_file(filepath):
             async with sem:
                 try:
-                    with open(filepath, encoding='utf-8') as f:
+                    with open(filepath, encoding="utf-8") as f:
                         raw_code = f.read()
 
                     res = await engine.index_code_file(
@@ -62,7 +66,9 @@ async def index_repo(namespace_id: str = "default"):
         tasks = [process_file(f) for f in files_to_index]
         results = await asyncio.gather(*tasks)
 
-        enqueued_jobs = [r["job_id"] for r in results if r and r.get("status") == "enqueued"]
+        enqueued_jobs = [
+            r["job_id"] for r in results if r and r.get("status") == "enqueued"
+        ]
         skipped = [r for r in results if r and r.get("status") == "skipped"]
         errors = [r for r in results if r and r.get("status") == "error"]
 
@@ -83,7 +89,9 @@ async def index_repo(namespace_id: str = "default"):
                 async with sem:
                     return await engine.get_job_status(j_id)
 
-            status_results = await asyncio.gather(*(check_status(j_id) for j_id in pending_jobs))
+            status_results = await asyncio.gather(
+                *(check_status(j_id) for j_id in pending_jobs)
+            )
 
             done_jobs = set()
             for status_res in status_results:
@@ -108,7 +116,7 @@ async def index_repo(namespace_id: str = "default"):
         await engine.disconnect()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import sys
 
     ns = os.environ.get("TRIMCP_NAMESPACE_ID", "default")

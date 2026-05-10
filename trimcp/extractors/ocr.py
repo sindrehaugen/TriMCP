@@ -21,7 +21,9 @@ async def ocr_pil_image(img: Any, *, lang: str = "eng") -> tuple[str, list[str]]
     def _run() -> tuple[str, float]:
         import pytesseract
 
-        data = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
+        data = pytesseract.image_to_data(
+            img, lang=lang, output_type=pytesseract.Output.DICT
+        )
         confs: list[int] = []
         for c in data.get("conf", []):
             try:

@@ -36,21 +36,25 @@ def _extract_dxf_sync(blob: bytes) -> ExtractionResult:
     try:
         import ezdxf
     except ImportError as e:
-        return empty_skipped("dxf", "dependency_missing", warnings=[f"ezdxf_unavailable:{e}"])
+        return empty_skipped(
+            "dxf", "dependency_missing", warnings=[f"ezdxf_unavailable:{e}"]
+        )
 
     try:
-        doc = ezdxf.read(io.BytesIO(blob))
+        doc = ezdxf.read(io.BytesIO(blob))  # type: ignore[arg-type]
     except Exception as e:
         log.warning("dxf_read_failed: %s", e)
         name = type(e).__name__
-        reason = "malformed_dxf" if "DXF" in name or "Structure" in name else "read_failed"
+        reason = (
+            "malformed_dxf" if "DXF" in name or "Structure" in name else "read_failed"
+        )
         return empty_skipped("dxf", reason, warnings=[str(e)])
 
     lines: list[str] = []
     try:
         msp = doc.modelspace()
-        for e in msp:
-            t = _entity_text(e)
+        for entity in msp:
+            t = _entity_text(entity)
             if t:
                 lines.append(t)
     except Exception as e:
@@ -88,12 +92,14 @@ def _extract_dwg_sync(blob: bytes) -> ExtractionResult:
     try:
         import ezdxf
     except ImportError as e:
-        return empty_skipped("dwg", "dependency_missing", warnings=[f"ezdxf_unavailable:{e}"])
+        return empty_skipped(
+            "dwg", "dependency_missing", warnings=[f"ezdxf_unavailable:{e}"]
+        )
 
     path: Path | None = None
     try:
         try:
-            doc = ezdxf.read(io.BytesIO(blob))
+            doc = ezdxf.read(io.BytesIO(blob))  # type: ignore[arg-type]
         except Exception:
             doc = None
         if doc is None:
@@ -109,7 +115,7 @@ def _extract_dwg_sync(blob: bytes) -> ExtractionResult:
                 tf.write(blob)
                 path = Path(tf.name)
             try:
-                doc = odafc.readfile(str(path))
+                doc = odafc.readfile(str(path))  # type: ignore[attr-defined]
             except Exception as e:
                 warnings.append(f"dwg_odafc:{e}")
                 return empty_skipped(
@@ -182,7 +188,9 @@ def _rvt_metadata_sync(blob: bytes) -> ExtractionResult:
 
     meta_lines = [f"bytes: {size}", *hints]
     body = "Revit project (.rvt) — metadata only.\n" + "\n".join(meta_lines)
-    sec = Section(text=body, structure_path="RVT metadata", section_type="metadata", order=0)
+    sec = Section(
+        text=body, structure_path="RVT metadata", section_type="metadata", order=0
+    )
     return ExtractionResult(
         method="rvt",
         text=body,
@@ -214,7 +222,9 @@ def _skp_metadata_sync(blob: bytes) -> ExtractionResult:
     if ver:
         lines.append(f"possible_version_marker: {ver}")
     body = "\n".join(lines)
-    sec = Section(text=body, structure_path="SKP metadata", section_type="metadata", order=0)
+    sec = Section(
+        text=body, structure_path="SKP metadata", section_type="metadata", order=0
+    )
     return ExtractionResult(
         method="skp",
         text=body,

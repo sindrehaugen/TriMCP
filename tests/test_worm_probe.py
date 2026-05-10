@@ -100,7 +100,9 @@ async def test_worm_both_succeed_raises_on_update_first():
 async def test_table_missing_propagates_error():
     """If the table doesn't exist, the error propagates (not caught)."""
     conn = _conn()
-    conn.execute.side_effect = asyncpg.exceptions.UndefinedTableError("event_log missing")
+    conn.execute.side_effect = asyncpg.exceptions.UndefinedTableError(
+        "event_log missing"
+    )
 
     with pytest.raises(asyncpg.exceptions.UndefinedTableError):
         await verify_worm_enforcement(conn)

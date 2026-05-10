@@ -80,7 +80,10 @@ async def extract_msg(blob: bytes) -> ExtractionResult:
         )
         sections.append(
             Section(
-                text=headers.strip(), structure_path="Headers", section_type="metadata", order=order
+                text=headers.strip(),
+                structure_path="Headers",
+                section_type="metadata",
+                order=order,
             )
         )
         order += 1
@@ -131,7 +134,9 @@ async def extract_msg(blob: bytes) -> ExtractionResult:
                 continue
             from trimcp.extractors.dispatch import extract_with_fallback
 
-            att_result = await extract_with_fallback(blob=data, filename=str(fname), mime_type=None)
+            att_result = await extract_with_fallback(
+                blob=data, filename=str(fname), mime_type=None
+            )
             block = f"[Attachment: {fname}]\n\n{att_result.text}"
             if att_result.warnings:
                 warnings.extend([f"att:{fname}:{w}" for w in att_result.warnings])
@@ -240,7 +245,9 @@ async def extract_eml(blob: bytes) -> ExtractionResult:
         warnings.append(f"eml_body_walk:{e}")
 
     body = body_plain or body_html or "(no body)"
-    sections.append(Section(text=body, structure_path="Body", section_type="body", order=order))
+    sections.append(
+        Section(text=body, structure_path="Body", section_type="body", order=order)
+    )
     order += 1
 
     try:

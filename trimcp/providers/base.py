@@ -27,12 +27,23 @@ from __future__ import annotations
 import ipaddress
 import logging
 import socket
+import sys
 from abc import ABC, abstractmethod
-from enum import StrEnum
+
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    from strenum import StrEnum  # type: ignore[import-untyped]
 from typing import TypeVar
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, field_validator
+
+try:
+    from trimcp.observability import CIRCUIT_BREAKER_FAILURES, CIRCUIT_BREAKER_STATE
+except Exception:
+    CIRCUIT_BREAKER_STATE = None
+    CIRCUIT_BREAKER_FAILURES = None
 
 log = logging.getLogger(__name__)
 
@@ -81,11 +92,15 @@ def validate_base_url(
         raise LLMProviderError(f"SSRF guard: invalid base_url {base_url!r}")
 
     if not allow_http and parsed.scheme != "https":
-        raise LLMProviderError(f"SSRF guard: base_url must use HTTPS, got {parsed.scheme!r}")
+        raise LLMProviderError(
+            f"SSRF guard: base_url must use HTTPS, got {parsed.scheme!r}"
+        )
 
     hostname = parsed.hostname
     if not hostname:
-        raise LLMProviderError(f"SSRF guard: could not extract hostname from {base_url!r}")
+        raise LLMProviderError(
+            f"SSRF guard: could not extract hostname from {base_url!r}"
+        )
 
     # Resolve hostname to IP addresses (synchronous, fast for typical hostnames).
     try:
@@ -146,11 +161,15 @@ async def validate_base_url_async(
         raise LLMProviderError(f"SSRF guard: invalid base_url {base_url!r}")
 
     if not allow_http and parsed.scheme != "https":
-        raise LLMProviderError(f"SSRF guard: base_url must use HTTPS, got {parsed.scheme!r}")
+        raise LLMProviderError(
+            f"SSRF guard: base_url must use HTTPS, got {parsed.scheme!r}"
+        )
 
     hostname = parsed.hostname
     if not hostname:
-        raise LLMProviderError(f"SSRF guard: could not extract hostname from {base_url!r}")
+        raise LLMProviderError(
+            f"SSRF guard: could not extract hostname from {base_url!r}"
+        )
 
     loop = asyncio.get_running_loop()
     try:
@@ -448,6 +467,19 @@ class CircuitBreaker:
                 return True
             return False
 
+    def _emit_metrics(self, provider_label: str = "default") -> None:
+        if CIRCUIT_BREAKER_STATE is None:
+            return
+        state_map = {
+            CircuitBreakerState.CLOSED: 0,
+            CircuitBreakerState.HALF_OPEN: 1,
+            CircuitBreakerState.OPEN: 2,
+        }
+        CIRCUIT_BREAKER_STATE.labels(provider=provider_label).set(
+            state_map.get(self._state, 0)
+        )
+        CIRCUIT_BREAKER_FAILURES.labels(provider=provider_label).set(self._failure_count)
+
     async def record_success(self) -> None:
         """Record a successful call — resets failure count (and closes if half-open)."""
         async with self._lock:
@@ -455,6 +487,7 @@ class CircuitBreaker:
             if self._state is CircuitBreakerState.HALF_OPEN:
                 self._state = CircuitBreakerState.CLOSED
                 log.debug("Circuit breaker CLOSED — upstream recovered.")
+            self._emit_metrics()
 
     async def record_failure(self) -> None:
         """Record a failed call — may open the circuit at threshold."""
@@ -470,6 +503,7 @@ class CircuitBreaker:
                         self._failure_count,
                         self.recovery_timeout,
                     )
+            self._emit_metrics()
 
     def __repr__(self) -> str:
         return (
@@ -528,10 +562,10 @@ class LLMProvider(ABC):
     @property
     def _retry_policy(self) -> RetryPolicy:
         try:
-            return self.__retry_policy
+            return self.__retry_policy  # type: ignore[has-type]
         except AttributeError:
-            self.__retry_policy = DEFAULT_RETRY_POLICY
-            return self.__retry_policy
+            self.__retry_policy = DEFAULT_RETRY_POLICY  # type: ignore[has-type]
+            return self.__retry_policy  # type: ignore[has-type]
 
     @_retry_policy.setter
     def _retry_policy(self, value: RetryPolicy) -> None:
@@ -540,10 +574,10 @@ class LLMProvider(ABC):
     @property
     def _circuit_breaker(self) -> CircuitBreaker:
         try:
-            return self.__circuit_breaker
+            return self.__circuit_breaker  # type: ignore[has-type]
         except AttributeError:
-            self.__circuit_breaker = DEFAULT_CIRCUIT_BREAKER
-            return self.__circuit_breaker
+            self.__circuit_breaker = DEFAULT_CIRCUIT_BREAKER  # type: ignore[has-type]
+            return self.__circuit_breaker  # type: ignore[has-type]
 
     @_circuit_breaker.setter
     def _circuit_breaker(self, value: CircuitBreaker) -> None:

@@ -69,18 +69,18 @@ class TestCaseNormalisation:
         text = "Redis is great. REDIS is fast. redis uses memory."
         nodes, _ = _regex_extract(text)
         redis_nodes = [n for n in nodes if n.label.lower() == "redis"]
-        assert len(redis_nodes) == 1, (
-            f"Expected 1 Redis node, got {len(redis_nodes)}: {[n.label for n in redis_nodes]}"
-        )
+        assert (
+            len(redis_nodes) == 1
+        ), f"Expected 1 Redis node, got {len(redis_nodes)}: {[n.label for n in redis_nodes]}"
 
     def test_postgres_casing_variants_produce_single_node(self):
         """'PostgreSQL' and 'postgresql' → one node."""
         text = "PostgreSQL stores data. postgresql uses pgvector."
         nodes, _ = _regex_extract(text)
         pg_nodes = [n for n in nodes if n.label.lower() in ("postgres", "postgresql")]
-        assert len(pg_nodes) == 1, (
-            f"Expected 1 Postgres node, got {len(pg_nodes)}: {[n.label for n in pg_nodes]}"
-        )
+        assert (
+            len(pg_nodes) == 1
+        ), f"Expected 1 Postgres node, got {len(pg_nodes)}: {[n.label for n in pg_nodes]}"
 
     def test_first_occurrence_label_wins(self):
         """Original casing of the first match is preserved as the node label."""
@@ -154,7 +154,9 @@ class TestDeduplicateGraphEdgeWeights:
     """Edge deduplication with confidence accumulation and occurrence tracking."""
 
     def _make_edge(self, subj: str, pred: str, obj: str, conf: float = 0.6) -> KGEdge:
-        return KGEdge(subject_label=subj, predicate=pred, object_label=obj, confidence=conf)
+        return KGEdge(
+            subject_label=subj, predicate=pred, object_label=obj, confidence=conf
+        )
 
     def test_duplicate_edges_merged(self):
         edges = [

@@ -147,7 +147,9 @@ def test_detect_records_contradiction_when_llm_confident(
     conn.execute.assert_awaited()
 
 
-def test_detect_no_insert_when_llm_rejects_contradiction(monkeypatch: pytest.MonkeyPatch):
+def test_detect_no_insert_when_llm_rejects_contradiction(
+    monkeypatch: pytest.MonkeyPatch,
+):
     cand_id = uuid4()
     ns = str(uuid4())
     new_mid = str(uuid4())
@@ -165,7 +167,9 @@ def test_detect_no_insert_when_llm_rejects_contradiction(monkeypatch: pytest.Mon
     )
 
     llm = StubContradictionLLM(
-        ContradictionResult(is_contradiction=False, confidence=0.2, explanation="Compatible.")
+        ContradictionResult(
+            is_contradiction=False, confidence=0.2, explanation="Compatible."
+        )
     )
     monkeypatch.setattr("trimcp.contradictions.get_provider", lambda _name: llm)
 
@@ -211,7 +215,9 @@ def test_detect_inserts_on_kg_when_llm_raises(monkeypatch: pytest.MonkeyPatch):
     conn.execute = AsyncMock(return_value="INSERT 1")
 
     mongo = MagicMock()
-    mongo.memory_archive.episodes.find_one = AsyncMock(return_value={"raw_data": "legacy doc"})
+    mongo.memory_archive.episodes.find_one = AsyncMock(
+        return_value={"raw_data": "legacy doc"}
+    )
 
     class BoomLLM:
         async def complete(self, messages: list, response_model: type):  # noqa: ANN401
@@ -542,7 +548,9 @@ def test_detect_contradictions_still_records_on_kg_signal_with_llm_timeout(
     conn.execute = AsyncMock(return_value="INSERT 1")
 
     mongo = MagicMock()
-    mongo.memory_archive.episodes.find_one = AsyncMock(return_value={"raw_data": "legacy doc"})
+    mongo.memory_archive.episodes.find_one = AsyncMock(
+        return_value={"raw_data": "legacy doc"}
+    )
 
     monkeypatch.setattr(
         "trimcp.contradictions.check_nli_contradiction",
@@ -598,7 +606,9 @@ def test_detect_contradictions_returns_none_when_no_signals_and_llm_fails(
     conn.execute = AsyncMock(return_value="INSERT 1")
 
     mongo = MagicMock()
-    mongo.memory_archive.episodes.find_one = AsyncMock(return_value={"raw_data": "compatible text"})
+    mongo.memory_archive.episodes.find_one = AsyncMock(
+        return_value={"raw_data": "compatible text"}
+    )
 
     # NLI returns low contradiction score (no signal) → triggers LLM tiebreaker
     monkeypatch.setattr(

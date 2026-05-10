@@ -14,21 +14,20 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-
-from trimcp.mcp_errors import mcp_handler
 from typing import Any
 
 from trimcp.a2a import (
     A2AGrantRequest,
     A2AGrantResponse,
-    A2AScope,
     create_grant,
     enforce_scope,
     list_grants,
     revoke_grant,
     verify_token,
 )
-from trimcp.auth import NamespaceContext
+from trimcp.mcp_errors import mcp_handler
+from trimcp.mcp_utils import build_caller_context as _build_caller_context
+from trimcp.mcp_utils import parse_scopes as _parse_scopes
 from trimcp.orchestrator import TriStackEngine
 
 log = logging.getLogger("trimcp.a2a_mcp_handlers")
@@ -36,21 +35,6 @@ log = logging.getLogger("trimcp.a2a_mcp_handlers")
 # ---------------------------------------------------------------------------
 # Private helpers — argument extraction (transport concern)
 # ---------------------------------------------------------------------------
-
-
-def _build_caller_context(arguments: dict[str, Any]) -> NamespaceContext:
-    """Extract the caller's identity from raw MCP arguments."""
-    return NamespaceContext(
-        namespace_id=uuid.UUID(arguments["namespace_id"]),
-        agent_id=arguments.get("agent_id", "default"),
-    )
-
-
-def _parse_scopes(raw_scopes: Any) -> list[A2AScope]:
-    """Parse A2A scopes from JSON string or list-of-dicts."""
-    if isinstance(raw_scopes, str):
-        raw_scopes = json.loads(raw_scopes)
-    return [A2AScope.model_validate(s) for s in raw_scopes]
 
 
 def _build_grant_request(arguments: dict[str, Any]) -> A2AGrantRequest:
@@ -69,7 +53,9 @@ def _build_grant_request(arguments: dict[str, Any]) -> A2AGrantRequest:
 
 
 @mcp_handler
-async def handle_a2a_create_grant(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_a2a_create_grant(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """Create an A2A sharing grant — generates a token for cross-namespace access."""
     caller_ctx = _build_caller_context(arguments)
     grant_request = _build_grant_request(arguments)
@@ -87,7 +73,9 @@ async def handle_a2a_create_grant(engine: TriStackEngine, arguments: dict[str, A
 
 
 @mcp_handler
-async def handle_a2a_revoke_grant(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_a2a_revoke_grant(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """Revoke an active A2A sharing grant."""
     caller_ctx = _build_caller_context(arguments)
 
@@ -98,7 +86,9 @@ async def handle_a2a_revoke_grant(engine: TriStackEngine, arguments: dict[str, A
 
 
 @mcp_handler
-async def handle_a2a_list_grants(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_a2a_list_grants(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """List all active A2A sharing grants owned by this namespace."""
     caller_ctx = _build_caller_context(arguments)
     include_inactive = bool(arguments.get("include_inactive", False))
@@ -110,7 +100,9 @@ async def handle_a2a_list_grants(engine: TriStackEngine, arguments: dict[str, An
 
 
 @mcp_handler
-async def handle_a2a_query_shared(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_a2a_query_shared(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """Execute a semantic search against another agent's memories using an A2A token."""
     consumer_ctx = _build_caller_context(arguments)
 

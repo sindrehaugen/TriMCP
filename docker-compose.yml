@@ -177,6 +177,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      jaeger:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -205,6 +207,7 @@ services:
         "8004",
       ]
     container_name: tri-stack-a2a
+    stop_grace_period: 35s
     env_file:
       - deploy/compose.stack.env
       - deploy/compose.stack.env.generated
@@ -220,6 +223,8 @@ services:
       mongodb:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      jaeger:
         condition: service_healthy
     restart: unless-stopped
 
@@ -247,7 +252,26 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      jaeger:
+        condition: service_healthy
     restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: tri-stack-jaeger
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+      - "${JAEGER_OTLP_HTTP_PORT:-4318}:4318"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    volumes:
+      - jaeger_data:/badger
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:16686/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   caddy:
     image: caddy:2.8-alpine
@@ -272,4 +296,5 @@ volumes:
   mongo_data:
   minio_data:
   caddy_data:
+  jaeger_data:
   caddy_config:

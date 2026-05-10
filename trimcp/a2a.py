@@ -15,9 +15,15 @@ import hashlib
 import json
 import logging
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
+
+try:
+    from cryptography import x509 as crypto_x509
+    _CRYPTOGRAPHY_AVAILABLE = True
+except Exception:  # pragma: no cover
+    _CRYPTOGRAPHY_AVAILABLE = False
 
 import asyncpg
 from pydantic import BaseModel, Field
@@ -47,7 +53,8 @@ class A2AScope(BaseModel):
     )
     resource_id: str = Field(..., description="UUID or label of the resource")
     permissions: list[Literal["read"]] = Field(
-        default=["read"], description="Granted permissions (currently only 'read' is supported)"
+        default=["read"],
+        description="Granted permissions (currently only 'read' is supported)",
     )
 
 
@@ -55,7 +62,8 @@ class A2AGrantRequest(BaseModel):
     """Request payload to create a new A2A sharing grant."""
 
     target_namespace_id: UUID | None = Field(
-        None, description="Restrict to a specific receiving namespace (None = any bearer)"
+        None,
+        description="Restrict to a specific receiving namespace (None = any bearer)",
     )
     target_agent_id: str | None = Field(
         None, description="Restrict to a specific receiving agent (None = any agent)"
@@ -174,7 +182,12 @@ def _parse_fingerprint_from_cert_dict(cert: dict[str, Any]) -> str | None:
     ``sha256``, or ``sha256_fingerprint`` keys.
     Returns normalised fingerprint or None if not present.
     """
-    raw = cert.get("sha256_fingerprint") or cert.get("sha256") or cert.get("fingerprint") or ""
+    raw = (
+        cert.get("sha256_fingerprint")
+        or cert.get("sha256")
+        or cert.get("fingerprint")
+        or ""
+    )
     if not raw:
         return None
     try:
@@ -252,6 +265,79 @@ def _ssl_cert_to_dict(peer_cert: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _parse_pem_cert(pem_b64_or_raw: str) -> dict[str, Any] | None:
+    """Parse a PEM-encoded certificate string (base64 or raw PEM) into a cert dict.
+
+    Returns dict with ``fingerprint``, ``san``, ``subject``, ``pem`` keys,
+    or None if parsing fails.
+    """
+    if not _CRYPTOGRAPHY_AVAILABLE:
+        return None
+
+    pem_str = pem_b64_or_raw.strip()
+    # Traefik may send base64-encoded PEM; try decoding first
+    if not pem_str.startswith("-----"):
+        try:
+            pem_str = __import__("base64").b64decode(pem_str).decode("ascii")
+        except Exception:
+            pass  # Leave as-is if not base64
+
+    if not pem_str.startswith("-----BEGIN CERTIFICATE-----"):
+        return None
+
+    try:
+        cert = crypto_x509.load_pem_x509_certificate(pem_str.encode("ascii"))
+    except Exception:
+        return None
+
+    out: dict[str, Any] = {}
+
+    # SHA-256 fingerprint
+    try:
+        from cryptography.hazmat.primitives import hashes as _hashes
+
+        fp = cert.fingerprint(_hashes.SHA256())
+        out["fingerprint"] = fp.hex(":").lower()
+    except Exception:
+        pass
+
+    # Subject
+    try:
+        out["subject"] = cert.subject.rfc4514_string()
+    except Exception:
+        pass
+
+    # CommonName as SAN fallback
+    try:
+        cn = cert.subject.get_attributes_for_oid(crypto_x509.NameOID.COMMON_NAME)
+        if cn:
+            out["commonName"] = cn[0].value
+    except Exception:
+        pass
+
+    # SANs
+    sans: list[str] = []
+    try:
+        ext = cert.extensions.get_extension_for_oid(
+            crypto_x509.ExtensionOID.SUBJECT_ALTERNATIVE_NAME
+        )
+        for name in ext.value:  # type: ignore[union-attr, attr-defined]
+            if isinstance(name, crypto_x509.DNSName):
+                sans.append(name.value.lower())
+            elif isinstance(name, crypto_x509.IPAddress):
+                sans.append(str(name.value).lower())
+            elif isinstance(name, crypto_x509.GeneralName) and hasattr(name, "value"):
+                sans.append(str(name.value).lower())
+    except Exception:
+        pass
+    if sans:
+        out["san"] = sans
+        out["san_set"] = set(sans)
+
+    out["pem"] = pem_str
+    return out
+
+
 def parse_client_cert_from_headers(headers: dict[str, str]) -> dict[str, Any] | None:
     """
     Extract client certificate info from reverse-proxy headers.
@@ -261,6 +347,8 @@ def parse_client_cert_from_headers(headers: dict[str, str]) -> dict[str, Any] | 
     * ``X-Forwarded-Client-Cert`` — standard format used by Caddy, Envoy,
       nginx.  May contain ``Hash=...``, ``SAN=...``, ``Subject=...``
       semicolon-delimited fields.
+    * ``X-Forwarded-Tls-Client-Cert`` — raw PEM-encoded client certificate
+      sent by Traefik.
     * ``X-SSL-Client-Cert`` — raw PEM-encoded client certificate (some proxies).
     * ``X-Client-Cert-SAN`` — dedicated SAN header (simpler setups).
 
@@ -269,6 +357,14 @@ def parse_client_cert_from_headers(headers: dict[str, str]) -> dict[str, Any] | 
     """
     cert_dict: dict[str, Any] = {}
     found_any = False
+
+    # Traefik: X-Forwarded-Tls-Client-Cert (full PEM)
+    traefik_cert = headers.get("x-forwarded-tls-client-cert", "")
+    if traefik_cert:
+        parsed = _parse_pem_cert(traefik_cert)
+        if parsed:
+            found_any = True
+            cert_dict.update(parsed)
 
     # X-Forwarded-Client-Cert (Caddy / Envoy style)
     fwd_cert = headers.get("x-forwarded-client-cert", "")
@@ -286,7 +382,9 @@ def parse_client_cert_from_headers(headers: dict[str, str]) -> dict[str, Any] | 
                 try:
                     cert_dict["fingerprint"] = _normalise_fingerprint(value)
                 except A2AMTLSError:
-                    log.warning("mTLS: unparseable fingerprint in X-Forwarded-Client-Cert")
+                    log.warning(
+                        "mTLS: unparseable fingerprint in X-Forwarded-Client-Cert"
+                    )
             elif key == "san":
                 sans = [s.strip().lower() for s in value.split(",") if s.strip()]
                 cert_dict.setdefault("san", []).extend(sans)
@@ -348,7 +446,9 @@ def validate_mtls_cert(
                               colon-separated hex).
     """
     allowed_sans = [s.lower() for s in (allowed_sans or [])]
-    allowed_fingerprints = [_normalise_fingerprint(f) for f in (allowed_fingerprints or [])]
+    allowed_fingerprints = [
+        _normalise_fingerprint(f) for f in (allowed_fingerprints or [])
+    ]
 
     if not allowed_sans and not allowed_fingerprints:
         raise A2AMTLSError(
@@ -477,7 +577,7 @@ async def create_grant(
     token = f"trimcp_a2a_{secrets.token_urlsafe(32)}"
     token_hash = _hash_token(token)
     grant_id = uuid4()
-    expires_at = datetime.now(UTC) + timedelta(seconds=request.expires_in_seconds)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=request.expires_in_seconds)
     scopes_json = json.dumps([s.model_dump() for s in request.scopes])
 
     await conn.execute(
@@ -506,7 +606,9 @@ async def create_grant(
         len(request.scopes),
         expires_at.isoformat(),
     )
-    return A2AGrantResponse(grant_id=grant_id, sharing_token=token, expires_at=expires_at)
+    return A2AGrantResponse(
+        grant_id=grant_id, sharing_token=token, expires_at=expires_at
+    )
 
 
 async def verify_token(
@@ -537,17 +639,19 @@ async def verify_token(
     )
 
     if not row:
-        log.warning("A2A token verification failed: not found or inactive hash=<redacted>")
+        log.warning(
+            "A2A token verification failed: not found or inactive hash=<redacted>"
+        )
         raise A2AAuthorizationError("Invalid or revoked sharing token.")
 
     # Normalise timezone awareness for comparison
     expires_at: datetime = row["expires_at"]
     if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=UTC)
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
 
-    if expires_at < datetime.now(UTC):
+    if expires_at < datetime.now(timezone.utc):
         await conn.execute(
-            "UPDATE a2a_grants SET status = 'expired' WHERE id = $1",
+            "UPDATE a2a_grants SET status = 'expired' WHERE id = $1 AND status = 'active'",
             row["id"],
         )
         log.info("A2A token auto-expired: grant_id=%s", row["id"])
@@ -611,7 +715,11 @@ async def revoke_grant(
     )
     revoked = result == "UPDATE 1"
     if revoked:
-        log.info("A2A grant revoked: grant_id=%s owner_ns=%s", grant_id, owner_ctx.namespace_id)
+        log.info(
+            "A2A grant revoked: grant_id=%s owner_ns=%s",
+            grant_id,
+            owner_ctx.namespace_id,
+        )
     else:
         log.warning(
             "A2A revoke no-op: grant_id=%s owner_ns=%s (not found or already inactive)",
@@ -664,9 +772,9 @@ async def list_grants(
         {
             "grant_id": str(row["id"]),
             "owner_agent_id": row["owner_agent_id"],
-            "target_namespace_id": str(row["target_namespace_id"])
-            if row["target_namespace_id"]
-            else None,
+            "target_namespace_id": (
+                str(row["target_namespace_id"]) if row["target_namespace_id"] else None
+            ),
             "target_agent_id": row["target_agent_id"],
             "scopes": json.loads(row["scopes"]),
             "status": row["status"],

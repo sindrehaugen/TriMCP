@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,10 +17,13 @@ def mock_pg_pool():
 
 class _AsyncCursor:
     """Minimal async iterator wrapper for MongoDB cursor mocking."""
+
     def __init__(self, docs: list[dict]):
         self._docs = docs
+
     def __aiter__(self):
         return self
+
     async def __anext__(self):
         if not self._docs:
             raise StopAsyncIteration
@@ -46,7 +49,9 @@ def traverser(mock_pg_pool, mock_mongo_client):
     async def dummy_embed(query: str):
         return [0.1, 0.2, 0.3]
 
-    return GraphRAGTraverser(pg_pool=pool, mongo_client=client, embedding_fn=dummy_embed)
+    return GraphRAGTraverser(
+        pg_pool=pool, mongo_client=client, embedding_fn=dummy_embed
+    )
 
 
 @pytest.mark.asyncio
@@ -86,7 +91,9 @@ async def test_bfs(traverser, mock_pg_pool):
         ],
     ]
 
-    visited, edges = await traverser._bfs("Redis", max_depth=1, _allow_global_sweep=True)
+    visited, edges = await traverser._bfs(
+        "Redis", max_depth=1, _allow_global_sweep=True
+    )
 
     assert "Redis" in visited
     assert "Data" in visited
@@ -101,9 +108,13 @@ async def test_hydrate_sources(traverser, mock_mongo_client):
 
     # Batch hydration uses find() with $in — return an async cursor
     doc_id = ObjectId("5f3b3e3e3e3e3e3e3e3e3e3e")
-    db.episodes.find = MagicMock(return_value=_AsyncCursor([
-        {"_id": doc_id, "raw_data": "Test memory", "type": "chat"},
-    ]))
+    db.episodes.find = MagicMock(
+        return_value=_AsyncCursor(
+            [
+                {"_id": doc_id, "raw_data": "Test memory", "type": "chat"},
+            ]
+        )
+    )
 
     sources = await traverser._hydrate_sources({"5f3b3e3e3e3e3e3e3e3e3e3e"})
 
@@ -119,7 +130,11 @@ async def test_search_full_pipeline(traverser, mock_pg_pool, mock_mongo_client):
 
     # Setup step 1: find anchor
     async def mock_find_anchor(*args, **kwargs):
-        return [GraphNode(label="Anchor", entity_type="CONCEPT", payload_ref="abc", distance=0.0)]
+        return [
+            GraphNode(
+                label="Anchor", entity_type="CONCEPT", payload_ref="abc", distance=0.0
+            )
+        ]
 
     traverser._find_anchor = mock_find_anchor
 
@@ -127,7 +142,11 @@ async def test_search_full_pipeline(traverser, mock_pg_pool, mock_mongo_client):
     async def mock_bfs(*args, **kwargs):
         edges = [
             GraphEdge(
-                subject="Anchor", predicate="is", obj="Target", confidence=1.0, payload_ref="def"
+                subject="Anchor",
+                predicate="is",
+                obj="Target",
+                confidence=1.0,
+                payload_ref="def",
             )
         ]
         return {"Anchor", "Target"}, edges
@@ -163,13 +182,21 @@ async def test_search_edge_pagination(traverser, mock_pg_pool, mock_mongo_client
     _, conn = mock_pg_pool
 
     async def mock_find_anchor(*args, **kwargs):
-        return [GraphNode(label="A", entity_type="CONCEPT", payload_ref="p1", distance=0.0)]
+        return [
+            GraphNode(label="A", entity_type="CONCEPT", payload_ref="p1", distance=0.0)
+        ]
 
     async def mock_bfs(*args, **kwargs):
         edges = [
-            GraphEdge(subject="A", predicate="r", obj="B", confidence=1.0, payload_ref=None),
-            GraphEdge(subject="A", predicate="r2", obj="C", confidence=0.9, payload_ref=None),
-            GraphEdge(subject="B", predicate="r3", obj="D", confidence=0.8, payload_ref=None),
+            GraphEdge(
+                subject="A", predicate="r", obj="B", confidence=1.0, payload_ref=None
+            ),
+            GraphEdge(
+                subject="A", predicate="r2", obj="C", confidence=0.9, payload_ref=None
+            ),
+            GraphEdge(
+                subject="B", predicate="r3", obj="D", confidence=0.8, payload_ref=None
+            ),
         ]
         return {"A", "B", "C", "D"}, edges
 
@@ -285,7 +312,7 @@ async def test_time_travel_anchor_detects_tampered_event(
             "query",
             namespace_id="11111111-2222-3333-4444-555555555555",
             top_k=1,
-            as_of=datetime(2025, 1, 2, tzinfo=UTC),
+            as_of=datetime(2025, 1, 2, tzinfo=timezone.utc),
         )
 
 
@@ -349,7 +376,7 @@ async def test_time_travel_bfs_detects_tampered_event(
             "Redis",
             max_depth=1,
             namespace_id="11111111-2222-3333-4444-555555555555",
-            as_of=datetime(2025, 1, 2, tzinfo=UTC),
+            as_of=datetime(2025, 1, 2, tzinfo=timezone.utc),
         )
 
 
@@ -407,7 +434,7 @@ async def test_time_travel_passes_with_valid_signatures(
         "query",
         namespace_id="11111111-2222-3333-4444-555555555555",
         top_k=1,
-        as_of=datetime(2025, 1, 2, tzinfo=UTC),
+        as_of=datetime(2025, 1, 2, tzinfo=timezone.utc),
     )
     assert len(anchors) == 1
     assert anchors[0].label == "Redis"
@@ -463,8 +490,8 @@ async def test_bfs_allows_none_namespace_with_flag(
     _, conn = mock_pg_pool
     # New BFS makes 2 fetch calls: recursive CTE (labels) then batch edges
     conn.fetch.side_effect = [
-        [{"label": "Redis", "depth": 0}],   # recursive CTE → start label
-        [],                                     # batch edge fetch → no edges
+        [{"label": "Redis", "depth": 0}],  # recursive CTE → start label
+        [],  # batch edge fetch → no edges
     ]
     visited, edges = await traverser._bfs(
         "Redis", max_depth=1, namespace_id=None, _allow_global_sweep=True
@@ -507,5 +534,7 @@ async def test_search_allows_none_namespace_with_flag(
 
     traverser._hydrate_sources = mock_hydrate
 
-    subgraph = await traverser.search("query", namespace_id=None, _allow_global_sweep=True)
+    subgraph = await traverser.search(
+        "query", namespace_id=None, _allow_global_sweep=True
+    )
     assert subgraph.anchor == "Redis"

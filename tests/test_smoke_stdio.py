@@ -47,22 +47,23 @@ async def test_stdio_smoke_indexing():
             # Smoke test: index a file and check status
             index_res = await asyncio.wait_for(
                 session.call_tool(
-                    'index_code_file',
+                    "index_code_file",
                     {
-                        'filepath': 'smoke_test_target.py',
-                        'language': 'python',
-                        'raw_code': 'def smoke_task():\n    return 42',
+                        "filepath": "smoke_test_target.py",
+                        "language": "python",
+                        "raw_code": "def smoke_task():\n    return 42",
                     },
                 ),
                 timeout=30.0,
             )
             index_data = json.loads(index_res.content[0].text)
-            assert index_data.get('status') in ['indexed', 'skipped']
+            assert index_data.get("status") in ["indexed", "skipped"]
 
-            job_id = index_data.get('job_id')
+            job_id = index_data.get("job_id")
             if job_id:
                 status_res = await asyncio.wait_for(
-                    session.call_tool('check_indexing_status', {'job_id': job_id}), timeout=30.0
+                    session.call_tool("check_indexing_status", {"job_id": job_id}),
+                    timeout=30.0,
                 )
                 assert status_res.content[0].text
 
@@ -84,13 +85,13 @@ async def test_stdio_smoke_memory():
 
             res = await asyncio.wait_for(
                 session.call_tool(
-                    'store_memory',
+                    "store_memory",
                     {
-                        'namespace_id': test_ns,
-                        'agent_id': 'smoke-agent',
-                        'content': 'Smoke test content',
-                        'summary': 'Smoke test summary',
-                        'heavy_payload': 'Smoke test payload',
+                        "namespace_id": test_ns,
+                        "agent_id": "smoke-agent",
+                        "content": "Smoke test content",
+                        "summary": "Smoke test summary",
+                        "heavy_payload": "Smoke test payload",
                     },
                 ),
                 timeout=30.0,
@@ -99,14 +100,14 @@ async def test_stdio_smoke_memory():
             assert isinstance(res_data, dict), f"Expected dict, got {type(res_data)}"
             assert res_data.get("status") == "ok", f"Expected status=ok, got {res_data}"
             assert "payload_ref" in res_data, f"Missing payload_ref in {res_data}"
-            assert len(res_data["payload_ref"]) == 24, (
-                f"Expected 24-char ObjectId, got {res_data['payload_ref']!r}"
-            )
+            assert (
+                len(res_data["payload_ref"]) == 24
+            ), f"Expected 24-char ObjectId, got {res_data['payload_ref']!r}"
 
             res_ctx = await asyncio.wait_for(
                 session.call_tool(
-                    'get_recent_context',
-                    {'namespace_id': test_ns, 'agent_id': 'smoke-agent', 'limit': 1},
+                    "get_recent_context",
+                    {"namespace_id": test_ns, "agent_id": "smoke-agent", "limit": 1},
                 ),
                 timeout=30.0,
             )

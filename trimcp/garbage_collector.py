@@ -1,7 +1,7 @@
 """
 Tri-Stack Garbage Collector
 Runs every hour as an async background task.
-Finds MongoDB documents older than 5 minutes with no matching payload_ref
+Finds MongoDB documents older than GC_ORPHAN_AGE_SECONDS with no matching payload_ref
 in either PG table (memories or memories), then deletes them.
 Guarantees data purity even if the Python process is hard-killed mid-transaction.
 
@@ -13,7 +13,7 @@ Hardening:
 
 import asyncio
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import asyncpg
@@ -23,11 +23,35 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from trimcp.auth import set_namespace_context
 from trimcp.config import cfg, redact_secrets_in_text
 
+_GC_LOCK_KEY: str = "trimcp:gc:lock"
+_GC_LOCK_TTL_SECONDS: int = cfg.GC_INTERVAL_SECONDS + 60
+
+
+async def _acquire_gc_lock() -> bool:
+    """Try to acquire a Redis distributed lock for the GC singleton.
+
+    Returns ``True`` if the lock was acquired, ``False`` if another
+    instance is already running.
+    """
+    if not cfg.REDIS_URL:
+        log.warning("REDIS_URL not set — GC distributed lock disabled; "
+                    "multiple instances may race.")
+        return True
+    try:
+        from redis.asyncio import Redis as AsyncRedis
+        client = AsyncRedis.from_url(cfg.REDIS_URL)
+        acquired = await client.set(_GC_LOCK_KEY, "1", nx=True, ex=_GC_LOCK_TTL_SECONDS)
+        await client.aclose()
+        return bool(acquired)
+    except Exception as exc:
+        log.error("GC lock acquisition failed: %s", exc)
+        return True  # fail-open: run without lock rather than skip entirely
+
 log = logging.getLogger("tri-stack-gc")
 
-PAGE_SIZE = 500  # rows fetched per PG cursor page
-MAX_CONNECT_ATTEMPTS = 5
-CONNECT_BASE_DELAY = 2.0  # seconds; doubles each retry
+PAGE_SIZE = cfg.GC_PAGE_SIZE  # rows fetched per PG cursor page
+MAX_CONNECT_ATTEMPTS = cfg.GC_MAX_CONNECT_ATTEMPTS
+CONNECT_BASE_DELAY = cfg.GC_CONNECT_BASE_DELAY  # seconds; doubles each retry
 CHUNK_DELETE_SIZE = 1000  # rows deleted per chunk to prevent table locks
 
 
@@ -44,7 +68,7 @@ async def _connect_with_retry() -> tuple[AsyncIOMotorClient, asyncpg.Pool]:
 
     for attempt in range(1, MAX_CONNECT_ATTEMPTS + 1):
         try:
-            mongo_client = AsyncIOMotorClient(
+            mongo_client: AsyncIOMotorClient = AsyncIOMotorClient(
                 cfg.MONGO_URI,
                 serverSelectionTimeoutMS=5_000,
             )
@@ -73,7 +97,9 @@ async def _connect_with_retry() -> tuple[AsyncIOMotorClient, asyncpg.Pool]:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 60)
 
-    raise RuntimeError(f"GC could not connect after {MAX_CONNECT_ATTEMPTS} attempts: {last_exc}")
+    raise RuntimeError(
+        f"GC could not connect after {MAX_CONNECT_ATTEMPTS} attempts: {last_exc}"
+    )
 
 
 # --- Paginated PG reference set builder ---
@@ -140,10 +166,13 @@ async def _clean_orphaned_cascade(
     Iterates with ``await asyncio.sleep(0.1)`` between chunks to yield the
     event loop so other connections can process during a large GC sweep.
 
-    Returns cumulative counts for ``salience``, ``contradictions``, ``events``,
-    and ``nodes`` across all chunks.
+    Returns cumulative counts for ``salience``, ``contradictions``, ``events``
+    across all chunks.
     """
-    totals: dict[str, int] = {"salience": 0, "contradictions": 0, "events": 0, "nodes": 0}
+    totals: dict[str, int] = {
+        "salience": 0,
+        "contradictions": 0,
+    }
 
     while True:
         try:
@@ -198,27 +227,9 @@ async def _clean_orphaned_cascade(
                           AND namespace_id = $1::uuid
                         RETURNING 1 AS dummy
                     ),
-                    deleted_events AS (
-                        DELETE FROM event_log
-                        WHERE (params->>'memory_id')::uuid
-                              IN (SELECT memory_id FROM orphan_memory_ids)
-                          AND namespace_id = $1::uuid
-                        RETURNING 1 AS dummy
-                    ),
-                    deleted_nodes AS (
-                        DELETE FROM kg_nodes
-                        WHERE label NOT IN (
-                            SELECT subject_label FROM kg_edges
-                            UNION
-                            SELECT object_label FROM kg_edges
-                        )
-                        RETURNING 1 AS dummy
-                    )
                     SELECT
                         (SELECT count(*) FROM deleted_salience)      AS salience_count,
-                        (SELECT count(*) FROM deleted_contradictions) AS contradictions_count,
-                        (SELECT count(*) FROM deleted_events)         AS event_count,
-                        (SELECT count(*) FROM deleted_nodes)          AS nodes_count
+                        (SELECT count(*) FROM deleted_contradictions) AS contradictions_count
                     """,
                     namespace_id,
                     CHUNK_DELETE_SIZE,
@@ -227,19 +238,13 @@ async def _clean_orphaned_cascade(
                     break
                 chunk_salience = int(row["salience_count"])
                 chunk_contradictions = int(row["contradictions_count"])
-                chunk_events = int(row["event_count"])
-                chunk_nodes = int(row["nodes_count"])
                 if (
                     chunk_salience == 0
                     and chunk_contradictions == 0
-                    and chunk_events == 0
-                    and chunk_nodes == 0
                 ):
                     break
                 totals["salience"] += chunk_salience
                 totals["contradictions"] += chunk_contradictions
-                totals["events"] += chunk_events
-                totals["nodes"] += chunk_nodes
         except Exception as exc:
             log.error("GC: cascade cleanup failed for ns=%s: %s", namespace_id, exc)
             break
@@ -256,7 +261,7 @@ async def _collect_orphans(
     mongo_client: AsyncIOMotorClient,
     pg_pool: asyncpg.Pool,
 ) -> dict:
-    cutoff = datetime.now(UTC) - timedelta(seconds=cfg.GC_ORPHAN_AGE_SECONDS)
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=cfg.GC_ORPHAN_AGE_SECONDS)
     db = mongo_client.memory_archive
 
     candidates: list[tuple[str, str]] = []
@@ -273,7 +278,6 @@ async def _collect_orphans(
         log.info("GC: no candidates — Tri-Stack is clean.")
         return {
             "deleted_docs": 0,
-            "deleted_nodes": 0,
             "deleted_salience": 0,
             "deleted_contradictions": 0,
         }
@@ -293,7 +297,9 @@ async def _collect_orphans(
     orphans = [(col, oid) for col, oid in candidates if oid not in pg_refs]
 
     if not orphans:
-        log.info("GC: all %d candidates referenced in PG — no orphans.", len(candidates))
+        log.info(
+            "GC: all %d candidates referenced in PG — no orphans.", len(candidates)
+        )
         return {
             "deleted_docs": 0,
             "deleted_nodes": 0,
@@ -313,8 +319,8 @@ async def _collect_orphans(
             log.error("GC: failed to delete %s from [%s]: %s", str_id, col_name, exc)
 
     # --- Namespace-aware PG maintenance passes ---
-    # These operations hit RLS-protected tables (kg_nodes, memory_salience,
-    # contradictions, event_log).  We iterate over all namespaces and set the
+    # These operations hit RLS-protected tables (memory_salience,
+    # contradictions).  We iterate over all namespaces and set the
     # session variable so RLS allows the cross-table orphan detection to work.
     #
     # Unified single-pass CTE: one query identifies orphaned memory_ids via
@@ -326,44 +332,37 @@ async def _collect_orphans(
         log.info("GC: no namespaces found — skipping PG maintenance passes.")
         return {
             "deleted_docs": deleted,
-            "deleted_nodes": 0,
             "deleted_salience": 0,
             "deleted_contradictions": 0,
         }
 
     log.info(
-        "GC: running per-namespace cascade maintenance across %d namespace(s).", len(namespaces)
+        "GC: running per-namespace cascade maintenance across %d namespace(s).",
+        len(namespaces),
     )
 
-    total_kg_nodes = 0
     total_salience = 0
     total_contradictions = 0
-    total_events = 0
 
     for ns_id in namespaces:
         counts = await _clean_orphaned_cascade(pg_pool, ns_id)
         total_salience += counts["salience"]
         total_contradictions += counts["contradictions"]
-        total_events += counts["events"]
-        total_kg_nodes += counts["nodes"]
 
-    if total_kg_nodes > 0:
-        log.info("GC: purged %d orphaned kg_nodes across all namespaces.", total_kg_nodes)
     if total_salience > 0:
         log.info(
-            "GC: purged %d orphaned memory_salience rows across all namespaces.", total_salience
+            "GC: purged %d orphaned memory_salience rows across all namespaces.",
+            total_salience,
         )
     if total_contradictions > 0:
         log.info(
-            "GC: purged %d orphaned contradictions across all namespaces.", total_contradictions
+            "GC: purged %d orphaned contradictions across all namespaces.",
+            total_contradictions,
         )
-    if total_events > 0:
-        log.info("GC: purged %d orphaned event_log rows across all namespaces.", total_events)
 
     log.info("GC: pass complete — %d orphan(s) removed.", deleted)
     return {
         "deleted_docs": deleted,
-        "deleted_nodes": total_kg_nodes,
         "deleted_salience": total_salience,
         "deleted_contradictions": total_contradictions,
     }
@@ -394,6 +393,10 @@ async def run_gc_loop():
 
     try:
         while True:
+            if not await _acquire_gc_lock():
+                log.info("GC lock held by another instance — skipping this pass.")
+                await asyncio.sleep(cfg.GC_INTERVAL_SECONDS)
+                continue
             try:
                 await _collect_orphans(mongo_client, pg_pool)
             except Exception as exc:
@@ -406,5 +409,7 @@ async def run_gc_loop():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [GC] %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s [GC] %(levelname)s %(message)s"
+    )
     asyncio.run(run_gc_loop())

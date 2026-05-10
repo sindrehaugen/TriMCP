@@ -172,7 +172,9 @@ def _load_public_key(raw: str) -> str:
         allowed_base = Path(allowed_dir_raw).resolve(strict=True)
 
         if not key_path.is_relative_to(allowed_base):
-            raise ValueError(f"TRIMCP_JWT_PUBLIC_KEY path escapes allowed directory: {path_str!r}")
+            raise ValueError(
+                f"TRIMCP_JWT_PUBLIC_KEY path escapes allowed directory: {path_str!r}"
+            )
 
         if not key_path.is_file():
             raise ValueError(f"TRIMCP_JWT_PUBLIC_KEY file not found: {path_str!r}")
@@ -262,7 +264,9 @@ def decode_agent_token(
         ) from exc
 
     # Resolve audience: explicit param > global config > None (claim required, value unchecked)
-    resolved_audience = audience if audience is not None else (cfg.TRIMCP_JWT_AUDIENCE or None)
+    resolved_audience = (
+        audience if audience is not None else (cfg.TRIMCP_JWT_AUDIENCE or None)
+    )
     # Resolve issuer: coerce empty string to None so PyJWT skips validation
     resolved_issuer = cfg.TRIMCP_JWT_ISSUER or None
 

@@ -6,6 +6,7 @@ Extracted from TriStackEngine (Prompt 54, Step 3).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -14,6 +15,33 @@ from uuid import UUID
 import asyncpg
 
 log = logging.getLogger("tri-stack-orchestrator.namespace")
+
+_NS_DELETE_CHUNK_SIZE = 1_000
+
+
+async def _delete_namespace_rows_chunked(
+    conn: asyncpg.Connection,
+    table: str,
+    namespace_id: UUID,
+) -> None:
+    """Delete all rows for namespace_id in 1000-row chunks to limit lock duration."""
+    while True:
+        result = await conn.execute(
+            f"""
+            WITH to_delete AS (
+                SELECT id FROM {table}
+                WHERE namespace_id = $1
+                LIMIT $2
+            )
+            DELETE FROM {table}
+            WHERE id IN (SELECT id FROM to_delete)
+            """,
+            namespace_id,
+            _NS_DELETE_CHUNK_SIZE,
+        )
+        if result == "DELETE 0":
+            break
+        await asyncio.sleep(0)  # yield event loop between chunks
 
 
 class NamespaceOrchestrator:
@@ -34,7 +62,7 @@ class NamespaceOrchestrator:
             return val
         return UUID(str(val))
 
-    async def scoped_session(self, namespace_id: str | UUID):
+    def scoped_session(self, namespace_id: str | UUID):
         from contextlib import asynccontextmanager
 
         @asynccontextmanager
@@ -46,7 +74,12 @@ class NamespaceOrchestrator:
                 from trimcp.auth import set_namespace_context
 
                 await set_namespace_context(conn, ns_uuid)
-                yield conn
+                try:
+                    yield conn
+                finally:
+                    from trimcp.auth import _reset_rls_context
+
+                    await _reset_rls_context(conn)
 
         return _session(namespace_id)
 
@@ -97,30 +130,33 @@ class NamespaceOrchestrator:
                         event_type="namespace_created",
                         params={
                             "slug": payload.create.slug,
-                            "parent_id": str(payload.create.parent_id)
-                            if payload.create.parent_id
-                            else None,
+                            "parent_id": (
+                                str(payload.create.parent_id)
+                                if payload.create.parent_id
+                                else None
+                            ),
                         },
                     )
                 return dict(row)
 
         if payload.command == ManageNamespaceCommand.list:
             async with self.pg_pool.acquire() as conn:
-                rows = await conn.fetch("SELECT * FROM namespaces ORDER BY created_at DESC")
+                rows = await conn.fetch(
+                    "SELECT * FROM namespaces ORDER BY created_at DESC"
+                )
                 return {"namespaces": [dict(r) for r in rows]}
 
         if payload.command == ManageNamespaceCommand.update_metadata:
             async with self.scoped_session(payload.namespace_id) as conn:
                 old_meta_json = await conn.fetchval(
-                    "SELECT metadata FROM namespaces WHERE id = $1", payload.namespace_id
+                    "SELECT metadata FROM namespaces WHERE id = $1",
+                    payload.namespace_id,
                 )
                 if not old_meta_json:
                     raise ValueError(f"Namespace {payload.namespace_id} not found")
 
                 old_meta = json.loads(old_meta_json)
-                old_meta.update(
-                    payload.metadata_patch.model_dump(exclude_none=True)
-                )
+                old_meta.update(payload.metadata_patch.model_dump(exclude_none=True))
 
                 from trimcp.models import NamespaceMetadata
 
@@ -215,31 +251,34 @@ class NamespaceOrchestrator:
 
             async with self.pg_pool.acquire() as conn:
                 async with conn.transaction():
-                    # Delete namespace data from all tenant-scoped tables.
-                    for table in (
-                        "event_log",
-                        "memory_salience",
-                        "contradictions",
-                        "memories",
-                        "resource_quotas",
-                        "embedding_migrations",
-                    ):
+                    # Large tables — chunked to limit per-statement lock duration.
+                    for table in ("event_log", "memories", "memory_salience", "kg_nodes"):
+                        await _delete_namespace_rows_chunked(conn, table, payload.namespace_id)
+
+                    # KG edges span two namespace columns; use a direct DELETE.
+                    while True:
+                        result = await conn.execute(
+                            """
+                            WITH to_delete AS (
+                                SELECT id FROM kg_edges
+                                WHERE source_namespace_id = $1 OR target_namespace_id = $1
+                                LIMIT $2
+                            )
+                            DELETE FROM kg_edges WHERE id IN (SELECT id FROM to_delete)
+                            """,
+                            payload.namespace_id,
+                            _NS_DELETE_CHUNK_SIZE,
+                        )
+                        if result == "DELETE 0":
+                            break
+                        await asyncio.sleep(0)
+
+                    # Small tables — single-shot deletes are safe.
+                    for table in ("contradictions", "resource_quotas", "embedding_migrations"):
                         await conn.execute(
                             f"DELETE FROM {table} WHERE namespace_id = $1",
                             payload.namespace_id,
                         )
-                    # Delete KG data associated with this namespace.
-                    await conn.execute(
-                        """
-                        DELETE FROM kg_edges
-                        WHERE source_namespace_id = $1 OR target_namespace_id = $1
-                        """,
-                        payload.namespace_id,
-                    )
-                    await conn.execute(
-                        "DELETE FROM kg_nodes WHERE namespace_id = $1",
-                        payload.namespace_id,
-                    )
                     # Finally delete the namespace record itself.
                     result = await conn.execute(
                         "DELETE FROM namespaces WHERE id = $1",
@@ -268,7 +307,10 @@ class NamespaceOrchestrator:
                 except Exception as exc:
                     log.warning("Namespace delete: global cache bump failed: %s", exc)
 
-            return {"status": "ok", "message": f"Namespace {payload.namespace_id} deleted"}
+            return {
+                "status": "ok",
+                "message": f"Namespace {payload.namespace_id} deleted",
+            }
 
         raise ValueError(f"Unsupported command: {payload.command}")
 
@@ -322,7 +364,10 @@ class NamespaceOrchestrator:
                     payload.resource_type,
                     payload.agent_id,
                 )
-                return {"status": "ok", "message": f"Quota for {payload.resource_type} deleted"}
+                return {
+                    "status": "ok",
+                    "message": f"Quota for {payload.resource_type} deleted",
+                }
 
             if payload.command == ManageQuotasCommand.reset:
                 await conn.execute(
@@ -336,6 +381,9 @@ class NamespaceOrchestrator:
                     payload.resource_type,
                     payload.agent_id,
                 )
-                return {"status": "ok", "message": f"Usage reset for {payload.resource_type}"}
+                return {
+                    "status": "ok",
+                    "message": f"Usage reset for {payload.resource_type}",
+                }
 
         raise ValueError(f"Unsupported quota command: {payload.command}")

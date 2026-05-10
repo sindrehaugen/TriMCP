@@ -64,7 +64,9 @@ async def dropbox_webhook(request: Request):
     """Receive Dropbox webhook notifications."""
     signature = request.headers.get("X-Dropbox-Signature")
     if not signature:
-        raise HTTPException(status_code=403, detail="Missing X-Dropbox-Signature header")
+        raise HTTPException(
+            status_code=403, detail="Missing X-Dropbox-Signature header"
+        )
 
     body = await request.body()
     expected_signature = hmac.new(
@@ -100,7 +102,9 @@ async def graph_webhook(
     # Validate clientState and resource URLs for security (SSRF guard)
     for notification in payload.get("value", []):
         client_state = notification.get("clientState")
-        if not client_state or not hmac.compare_digest(client_state, GRAPH_CLIENT_STATE):
+        if not client_state or not hmac.compare_digest(
+            client_state, GRAPH_CLIENT_STATE
+        ):
             raise HTTPException(status_code=403, detail="Invalid clientState")
 
         resource = notification.get("resource", "")
@@ -129,7 +133,9 @@ async def drive_webhook(
 ):
     """Receive Google Drive webhook notifications."""
     if not channel_token or not hmac.compare_digest(channel_token, DRIVE_CHANNEL_TOKEN):
-        raise HTTPException(status_code=403, detail="Invalid or missing X-Goog-Channel-Token")
+        raise HTTPException(
+            status_code=403, detail="Invalid or missing X-Goog-Channel-Token"
+        )
 
     if not resource_state:
         raise HTTPException(status_code=400, detail="Missing X-Goog-Resource-State")

@@ -26,7 +26,9 @@ from trimcp.observability import EMBEDDING_COUNT
 
 log = logging.getLogger("tri-stack-embeddings")
 
-degraded_embedding_flag: ContextVar[bool] = ContextVar("degraded_embedding_flag", default=False)
+degraded_embedding_flag: ContextVar[bool] = ContextVar(
+    "degraded_embedding_flag", default=False
+)
 
 MODEL_ID = "jinaai/jina-embeddings-v2-base-code"
 VECTOR_DIM = cfg.EMBEDDING.VECTOR_DIM
@@ -38,7 +40,7 @@ _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trimcp-embed")
 _backend: EmbeddingBackend | None = None
 
 
-def _stub_vector(text: str) -> list[float]:
+def _deterministic_hash_embedding(text: str) -> list[float]:
     """Deterministic mock vector (``VECTOR_DIM``); identical inputs → identical vectors (CI)."""
     seed = int(hashlib.md5(text.encode()).hexdigest(), 16) % (2**31)
     rng = random.Random(seed)
@@ -138,7 +140,7 @@ class EmbeddingBackend(ABC):
     async def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(_executor, self._sync_embed_batch, texts)
 
 
@@ -157,7 +159,7 @@ class TorchEmbeddingBackend(EmbeddingBackend):
         device = self.get_device()
         model = _load_sentence_transformer(device)
         if model is None:
-            return [_stub_vector(t) for t in texts]
+            return [_deterministic_hash_embedding(t) for t in texts]
         try:
             vectors = model.encode(
                 texts,
@@ -168,7 +170,7 @@ class TorchEmbeddingBackend(EmbeddingBackend):
             return [v.tolist() for v in vectors]
         except Exception as e:
             log.error("%s batch embedding failed: %s", self.get_backend_name(), e)
-            return [_stub_vector(t) for t in texts]
+            return [_deterministic_hash_embedding(t) for t in texts]
 
 
 class CPUBackend(TorchEmbeddingBackend):
@@ -243,7 +245,7 @@ class CognitiveRemoteBackend(EmbeddingBackend):
     def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
         if not self._base:
             log.warning("CognitiveRemoteBackend: empty base URL — stubbing.")
-            return [_stub_vector(t) for t in texts]
+            return [_deterministic_hash_embedding(t) for t in texts]
         import httpx
 
         api_key = cfg.TRIMCP_COGNITIVE_API_KEY
@@ -263,7 +265,9 @@ class CognitiveRemoteBackend(EmbeddingBackend):
                 data = r.json()
         except Exception as e:
             # Check for RateLimitError (429 status) or TimeoutException
-            is_rate_limit = isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429
+            is_rate_limit = (
+                isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429
+            )
             is_timeout = isinstance(e, httpx.TimeoutException)
             if not (is_rate_limit or is_timeout):
                 # Fallback on generic rate limit or timeout indicators in the string representation
@@ -285,9 +289,14 @@ class CognitiveRemoteBackend(EmbeddingBackend):
                 # Fallback to secondary model
                 fallback_model = (
                     getattr(cfg, "TRIMCP_COGNITIVE_FALLBACK_MODEL", None)
-                    or os.getenv("TRIMCP_COGNITIVE_FALLBACK_MODEL", "text-embedding-3-small")
-                ).strip()
-                log.info("CognitiveRemoteBackend: triggering fallback model: %s", fallback_model)
+                    or os.getenv(
+                        "TRIMCP_COGNITIVE_FALLBACK_MODEL", "text-embedding-3-small"
+                    )
+                ).strip()  # type: ignore[union-attr]
+                log.info(
+                    "CognitiveRemoteBackend: triggering fallback model: %s",
+                    fallback_model,
+                )
 
                 payload_fallback = dict(payload)
                 payload_fallback["model"] = fallback_model
@@ -299,26 +308,26 @@ class CognitiveRemoteBackend(EmbeddingBackend):
                         data = r.json()
                 except Exception as fe:
                     log.error("Fallback embedding model also failed: %s", fe)
-                    return [_stub_vector(t) for t in texts]
+                    return [_deterministic_hash_embedding(t) for t in texts]
             else:
                 log.error("Cognitive embedding HTTP failed: %s", e)
-                return [_stub_vector(t) for t in texts]
+                return [_deterministic_hash_embedding(t) for t in texts]
 
         rows = data.get("data") if isinstance(data, dict) else None
         if not rows or not isinstance(rows, list):
             log.error("Cognitive embedding response missing data[]: %s", data)
-            return [_stub_vector(t) for t in texts]
+            return [_deterministic_hash_embedding(t) for t in texts]
 
         # OpenAI-style payloads include ``index``; sort defensively when batched.
         indexed: list[tuple[int, list[float]]] = []
         for item in rows:
             if not isinstance(item, dict):
                 log.error("Invalid embedding row from cognitive: %r", item)
-                return [_stub_vector(t) for t in texts]
+                return [_deterministic_hash_embedding(t) for t in texts]
             emb = item.get("embedding")
             if not isinstance(emb, list):
                 log.error("Invalid embedding row from cognitive: %r", item)
-                return [_stub_vector(t) for t in texts]
+                return [_deterministic_hash_embedding(t) for t in texts]
             idx = int(item["index"]) if "index" in item else len(indexed)
             indexed.append((idx, [float(x) for x in emb]))
         indexed.sort(key=lambda t: t[0])
@@ -330,7 +339,7 @@ class CognitiveRemoteBackend(EmbeddingBackend):
                 len(vectors),
                 len(texts),
             )
-            return [_stub_vector(t) for t in texts]
+            return [_deterministic_hash_embedding(t) for t in texts]
 
         bad_dims = [len(v) for v in vectors if len(v) != VECTOR_DIM]
         if bad_dims:
@@ -341,7 +350,7 @@ class CognitiveRemoteBackend(EmbeddingBackend):
                 bad_dims[:5],
                 VECTOR_DIM,
             )
-            return [_stub_vector(t) for t in texts]
+            return [_deterministic_hash_embedding(t) for t in texts]
         return vectors
 
 
@@ -354,17 +363,19 @@ class OpenVINONPUBackend(EmbeddingBackend):
     def __init__(self, model_dir: str | None = None):
         self.model_dir = (model_dir or cfg.TRIMCP_OPENVINO_MODEL_DIR or "").strip()
         if not self.model_dir:
-            log.warning("OpenVINONPUBackend: TRIMCP_OPENVINO_MODEL_DIR not set — will stub.")
+            log.warning(
+                "OpenVINONPUBackend: TRIMCP_OPENVINO_MODEL_DIR not set — will stub."
+            )
 
     def _sync_embed_batch(self, texts: list[str]) -> list[list[float]]:
         if not self.model_dir or not os.path.isdir(self.model_dir):
-            return [_stub_vector(t) for t in texts]
+            return [_deterministic_hash_embedding(t) for t in texts]
         seq_len = cfg.TRIMCP_OPENVINO_SEQ_LEN
         try:
             model, tokenizer, _ = _load_openvino_npu_bundle(self.model_dir, seq_len)
         except Exception as e:
             log.error("OpenVINO NPU load failed: %s", e)
-            return [_stub_vector(t) for t in texts]
+            return [_deterministic_hash_embedding(t) for t in texts]
 
         try:
             import numpy as np
@@ -381,7 +392,9 @@ class OpenVINONPUBackend(EmbeddingBackend):
             # convert to numpy for widest compatibility.
             inputs = {k: v.numpy() for k, v in encoded.items()}
             out = model(**inputs)
-            last = out.last_hidden_state if hasattr(out, "last_hidden_state") else out[0]
+            last = (
+                out.last_hidden_state if hasattr(out, "last_hidden_state") else out[0]
+            )
             if not isinstance(last, torch.Tensor):
                 last = torch.tensor(last)
             mask = encoded["attention_mask"]
@@ -390,7 +403,7 @@ class OpenVINONPUBackend(EmbeddingBackend):
             return pooled.detach().cpu().numpy().astype(np.float64).tolist()
         except Exception as e:
             log.error("OpenVINO NPU inference failed: %s", e)
-            return [_stub_vector(t) for t in texts]
+            return [_deterministic_hash_embedding(t) for t in texts]
 
 
 _BACKEND_BUILDERS = {
@@ -416,7 +429,9 @@ def detect_backend() -> EmbeddingBackend:
 
     if pref:
         if pref not in _BACKEND_BUILDERS:
-            log.warning("Unknown TRIMCP_BACKEND=%r — falling back to auto-detect.", pref)
+            log.warning(
+                "Unknown TRIMCP_BACKEND=%r — falling back to auto-detect.", pref
+            )
         else:
             log.info("Embedding backend forced by TRIMCP_BACKEND=%s", pref)
             return _BACKEND_BUILDERS[pref]()
@@ -474,7 +489,7 @@ def reset_backend_singleton_for_tests() -> None:
 async def embed(text: str) -> list[float]:
     degraded_embedding_flag.set(False)
     vecs = await get_backend().embed([text])
-    return vecs[0] if vecs else _stub_vector(text)
+    return vecs[0] if vecs else _deterministic_hash_embedding(text)
 
 
 async def embed_batch(texts: list[str]) -> list[list[float]]:

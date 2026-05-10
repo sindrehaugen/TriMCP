@@ -26,20 +26,20 @@ async def test_trimcp_app_missing_update_delete_grants_event_log() -> None:
 
     conn = await asyncpg.connect(PG_DSN)
     try:
-        rows = await conn.fetch(
-            """
+        rows = await conn.fetch("""
             SELECT privilege_type
             FROM   information_schema.role_table_grants
             WHERE  table_schema = 'public'
               AND  table_name   = 'event_log'
               AND  grantee     = 'trimcp_app'
-            """
-        )
+            """)
     finally:
         await conn.close()
 
     if not rows:
-        pytest.skip("Role trimcp_app has no grants on event_log (schema not bootstrapped).")
+        pytest.skip(
+            "Role trimcp_app has no grants on event_log (schema not bootstrapped)."
+        )
 
     privs = {r["privilege_type"] for r in rows}
     assert "INSERT" in privs

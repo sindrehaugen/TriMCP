@@ -16,7 +16,9 @@ log = logging.getLogger("trimcp.contradiction_mcp_handlers")
 
 
 @mcp_handler
-async def handle_list_contradictions(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_list_contradictions(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """List contradictions detected in the knowledge graph."""
     res = await engine.list_contradictions(
         namespace_id=arguments["namespace_id"],
@@ -27,7 +29,9 @@ async def handle_list_contradictions(engine: TriStackEngine, arguments: dict[str
 
 
 @mcp_handler
-async def handle_resolve_contradiction(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_resolve_contradiction(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """Resolve a detected contradiction with a resolution decision. RLS-enforced via namespace_id."""
     res = await engine.resolve_contradiction(
         contradiction_id=arguments["contradiction_id"],

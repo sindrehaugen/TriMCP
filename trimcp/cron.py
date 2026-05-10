@@ -16,14 +16,17 @@ import asyncio
 import json
 import logging
 import random
+from typing import Any
 from uuid import UUID
 
 import asyncpg
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from trimcp.bridge_renewal import renew_expiring_subscriptions
 from trimcp.config import cfg
+from trimcp.cron_lock import acquire_cron_lock as _acquire_cron_lock
 from trimcp.reembedding_worker import CRON_INTERVAL_MINUTES as _REEMBED_INTERVAL
 from trimcp.reembedding_worker import ReembeddingWorker
 
@@ -31,6 +34,10 @@ log = logging.getLogger("trimcp.cron")
 
 
 async def _renewal_tick(pool: asyncpg.Pool) -> None:
+    ttl = cfg.BRIDGE_CRON_INTERVAL_MINUTES * 60 + 60
+    if not await _acquire_cron_lock("bridge_subscription_renewal", ttl):
+        log.debug("Skipping bridge_subscription_renewal — lock held by another instance")
+        return
     try:
         stats = await renew_expiring_subscriptions(pool)
         log.info("bridge renewal tick: %s", stats)
@@ -44,16 +51,18 @@ async def _consolidation_tick(pool: asyncpg.Pool) -> None:
 
     Sequential per-namespace runs; failures are logged and do not stop other namespaces.
     """
+    ttl = min(cfg.CONSOLIDATION_CRON_INTERVAL_MINUTES * 60, 7200) + 60
+    if not await _acquire_cron_lock("sleep_consolidation", ttl):
+        log.debug("Skipping sleep_consolidation — lock held by another instance")
+        return
     try:
         from trimcp.consolidation import ConsolidationWorker
         from trimcp.providers import get_provider
 
-        rows = await pool.fetch(
-            """
+        rows = await pool.fetch("""
             SELECT id, metadata FROM namespaces
             WHERE COALESCE((metadata->'consolidation'->>'enabled')::boolean, false) = true
-            """
-        )
+            """)
         for row in rows:
             ns_id: UUID = row["id"]
             raw_meta = row["metadata"]
@@ -74,7 +83,124 @@ async def _consolidation_tick(pool: asyncpg.Pool) -> None:
         log.exception("consolidation tick failed unexpectedly")
 
 
-async def _reembedding_tick(pool: asyncpg.Pool, mongo_client: object | None) -> None:
+async def _partition_maintenance_tick(pool: asyncpg.Pool) -> None:
+    """
+    Ensure event_log monthly partitions exist ahead of time.
+    Re-entrant: the PostgreSQL function uses IF NOT EXISTS.
+    """
+    if not await _acquire_cron_lock("event_log_partition_maintenance", 3600):
+        log.debug("Skipping event_log_partition_maintenance — lock held by another instance")
+        return
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("SELECT trimcp_ensure_event_log_monthly_partitions(3)")
+            # Update Prometheus gauge with how many future partitions exist
+            row = await conn.fetchrow(
+                """
+                SELECT count(*) AS cnt
+                FROM pg_inherits i
+                JOIN pg_class c ON c.oid = i.inhrelid
+                WHERE i.inhparent = 'event_log'::regclass
+                  AND c.relname LIKE 'event_log_%'
+                  AND c.relname > 'event_log_' || to_char(now(), 'YYYY_MM')
+                """
+            )
+            from trimcp.observability import EVENT_LOG_PARTITION_MONTHS_AHEAD
+
+            months_ahead = row["cnt"] if row else 0
+            EVENT_LOG_PARTITION_MONTHS_AHEAD.set(months_ahead)
+            log.info("event_log partition maintenance complete: %s months ahead", months_ahead)
+            if months_ahead < 2:
+                log.warning(
+                    "event_log partition runway low: only %s months ahead (need >= 2)",
+                    months_ahead,
+                )
+    except Exception:
+        log.exception("event_log partition maintenance tick failed")
+
+
+async def _saga_recovery_tick(pool: asyncpg.Pool) -> None:
+    """
+    Re-drive rollback for sagas that crashed between PG commit and completion.
+    Stale 'pg_committed' rows older than 5 minutes are assumed zombie sagas.
+    """
+    try:
+        from trimcp.auth import set_namespace_context
+        from trimcp.event_log import append_event
+
+        rows = await pool.fetch(
+            """
+            SELECT id, namespace_id, agent_id, payload
+            FROM saga_execution_log
+            WHERE state = 'pg_committed'
+              AND created_at < now() - interval '5 minutes'
+            ORDER BY created_at
+            LIMIT 100
+            """
+        )
+        for row in rows:
+            saga_id: str = str(row["id"])
+            ns_id: str = str(row["namespace_id"])
+            agent_id: str = row["agent_id"]
+            payload: dict = row["payload"] if isinstance(row["payload"], dict) else {}
+            memory_id = payload.get("memory_id")
+
+            log.warning(
+                "[SAGA-RECOVERY] Re-driving rollback for saga=%s memory_id=%s",
+                saga_id,
+                memory_id,
+            )
+            try:
+                async with pool.acquire() as conn:
+                    await set_namespace_context(conn, UUID(ns_id))
+                    await conn.execute(
+                        """
+                        UPDATE saga_execution_log
+                        SET state = 'recovery_needed', updated_at = NOW()
+                        WHERE id = $1::uuid
+                        """,
+                        saga_id,
+                    )
+                    if memory_id:
+                        # Soft-close memory
+                        await conn.execute(
+                            """
+                            UPDATE memories
+                            SET valid_to = NOW()
+                            WHERE id = $1::uuid AND namespace_id = $2::uuid AND valid_to IS NULL
+                            """,
+                            memory_id,
+                            ns_id,
+                        )
+                        # Compensating event
+                        await append_event(
+                            conn=conn,
+                            namespace_id=UUID(ns_id),
+                            agent_id=agent_id,
+                            event_type="store_memory_rolled_back",
+                            params={
+                                "memory_id": memory_id,
+                                "reason": "saga_recovery_cron",
+                                "saga_id": saga_id,
+                            },
+                        )
+                    # Mark rolled_back
+                    await conn.execute(
+                        """
+                        UPDATE saga_execution_log
+                        SET state = 'rolled_back', updated_at = NOW()
+                        WHERE id = $1::uuid
+                        """,
+                        saga_id,
+                    )
+                log.info("[SAGA-RECOVERY] Rolled back saga=%s", saga_id)
+            except Exception:
+                log.exception("[SAGA-RECOVERY] Failed to recover saga=%s", saga_id)
+    except Exception:
+        log.exception("saga recovery tick failed unexpectedly")
+
+
+async def _reembedding_tick(pool: asyncpg.Pool, mongo_client: Any) -> None:
     """
     APScheduler job: run one re-embedding sweep.
 
@@ -118,7 +244,7 @@ async def async_main() -> None:
     )
 
     # Optional Mongo client for re-embedding text resolution.
-    mongo_client: object | None = None
+    mongo_client: Any = None
     try:
         from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -162,6 +288,26 @@ async def async_main() -> None:
         replace_existing=True,
     )
 
+    scheduler.add_job(
+        _partition_maintenance_tick,
+        CronTrigger(day=1, hour=0, minute=0),  # first of every month at 00:00 UTC
+        args=[pool],
+        id="event_log_partition_maintenance",
+        coalesce=True,
+        max_instances=1,
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        _saga_recovery_tick,
+        IntervalTrigger(minutes=5),
+        args=[pool],
+        id="saga_recovery",
+        coalesce=True,
+        max_instances=1,
+        replace_existing=True,
+    )
+
     scheduler.start()
     log.info(
         "Started bridge renewal scheduler: interval=%s min, lookahead=%s h",
@@ -182,6 +328,8 @@ async def async_main() -> None:
     await _renewal_tick(pool)
     await _reembedding_tick(pool, mongo_client)
     await _consolidation_tick(pool)
+    await _partition_maintenance_tick(pool)
+    await _saga_recovery_tick(pool)
 
     try:
         await asyncio.Event().wait()

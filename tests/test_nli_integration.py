@@ -39,7 +39,9 @@ async def test_detect_uses_nli_and_skips_llm_on_strong_agreement():
     )
 
     # Mock NLI to return high contradiction score
-    with patch("trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock) as mock_nli:
+    with patch(
+        "trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock
+    ) as mock_nli:
         mock_nli.return_value = 0.9
 
         # Mock LLM provider (should NOT be called if we don't trigger tiebreaker)
@@ -50,7 +52,9 @@ async def test_detect_uses_nli_and_skips_llm_on_strong_agreement():
         # So LLM WILL be triggered because KG and NLI disagree (KG=No, NLI=Yes)
 
         llm = StubLLM(
-            ContradictionResult(is_contradiction=True, confidence=0.95, explanation="LLM agrees")
+            ContradictionResult(
+                is_contradiction=True, confidence=0.95, explanation="LLM agrees"
+            )
         )
         with patch("trimcp.contradictions.get_provider", return_value=llm):
             out = await detect_contradictions(
@@ -90,19 +94,31 @@ async def test_detect_llm_tiebreaker_prefers_llm_decision():
     )
 
     # Mock NLI to return high contradiction score (hit)
-    with patch("trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock) as mock_nli:
+    with patch(
+        "trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock
+    ) as mock_nli:
         mock_nli.return_value = 0.9  # NLI hit
 
         # Mock LLM to say NO contradiction
         llm = StubLLM(
             ContradictionResult(
-                is_contradiction=False, confidence=0.1, explanation="Not a contradiction"
+                is_contradiction=False,
+                confidence=0.1,
+                explanation="Not a contradiction",
             )
         )
         with patch("trimcp.contradictions.get_provider", return_value=llm):
             # KG says NO (empty triplets)
             out = await detect_contradictions(
-                conn, mongo, ns, new_mid, "New text.", "fact", [0.1] * 768, "agent-1", []
+                conn,
+                mongo,
+                ns,
+                new_mid,
+                "New text.",
+                "fact",
+                [0.1] * 768,
+                "agent-1",
+                [],
             )
 
     # In this case:

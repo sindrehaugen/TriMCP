@@ -131,7 +131,9 @@ class TestDecodeAgentTokenAudience:
         ctx = decode_agent_token(token, audience=None)
         assert str(ctx.namespace_id) == _NS_ID
 
-    def test_replay_token_rejected_explicit_audience(self, monkeypatch: pytest.MonkeyPatch):
+    def test_replay_token_rejected_explicit_audience(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
         """Simulates a token issued for the web frontend hitting the A2A server."""
         monkeypatch.setattr(cfg, "TRIMCP_JWT_SECRET", _SECRET)
         monkeypatch.setattr(cfg, "TRIMCP_JWT_ALGORITHM", "HS256")
@@ -180,7 +182,9 @@ class TestJWTAuthMiddlewareAudience:
         token = _make_token(aud="trimcp_a2a", namespace_id=_NS_ID)
 
         with TestClient(app) as client:
-            resp = client.get("/api/action", headers={"Authorization": f"Bearer {token}"})
+            resp = client.get(
+                "/api/action", headers={"Authorization": f"Bearer {token}"}
+            )
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
@@ -195,7 +199,9 @@ class TestJWTAuthMiddlewareAudience:
         token = _make_token(aud="trimcp_web_frontend", namespace_id=_NS_ID)
 
         with TestClient(app) as client:
-            resp = client.get("/api/action", headers={"Authorization": f"Bearer {token}"})
+            resp = client.get(
+                "/api/action", headers={"Authorization": f"Bearer {token}"}
+            )
         assert resp.status_code == 401
         error = resp.json()
         assert "error" in error
@@ -210,7 +216,9 @@ class TestJWTAuthMiddlewareAudience:
         token = _make_token(aud="trimcp_admin", namespace_id=_NS_ID)
 
         with TestClient(app) as client:
-            resp = client.get("/api/action", headers={"Authorization": f"Bearer {token}"})
+            resp = client.get(
+                "/api/action", headers={"Authorization": f"Bearer {token}"}
+            )
         assert resp.status_code == 200
 
     def test_protected_prefix_not_matched(self, monkeypatch: pytest.MonkeyPatch):

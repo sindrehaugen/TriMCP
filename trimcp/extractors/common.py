@@ -52,7 +52,9 @@ def trim_trailing_empty(rows: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
     width = max(len(row) for row in r)
     while width > 0:
         if all(
-            len(row) < width or row[width - 1] is None or str(row[width - 1]).strip() == ""
+            len(row) < width
+            or row[width - 1] is None
+            or str(row[width - 1]).strip() == ""
             for row in r
         ):
             width -= 1
@@ -60,7 +62,9 @@ def trim_trailing_empty(rows: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
             break
     if width <= 0:
         return []
-    return [tuple((row[i] if i < len(row) else None) for i in range(width)) for row in r]
+    return [
+        tuple((row[i] if i < len(row) else None) for i in range(width)) for row in r
+    ]
 
 
 def cell_to_str(v: Any) -> str:
@@ -93,7 +97,9 @@ def looks_garbled(text: str, threshold: float = 0.12) -> bool:
         return True
     bad = len(_NON_PRINT_RATIO_RE.findall(text))
     ctl_ratio = bad / max(len(text), 1)
-    high_xor = sum(1 for c in text[:2000] if ord(c) > 0xFF) / max(min(len(text), 2000), 1)
+    high_xor = sum(1 for c in text[:2000] if ord(c) > 0xFF) / max(
+        min(len(text), 2000), 1
+    )
     return ctl_ratio > threshold or high_xor > 0.25
 
 
@@ -108,7 +114,9 @@ def split_tables_by_blank_rows(
     tables: list[list[tuple[Any, ...]]] = []
     cur: list[tuple[Any, ...]] = []
     for row in rows:
-        empty = all(v is None or (isinstance(v, str) and not str(v).strip()) for v in row)
+        empty = all(
+            v is None or (isinstance(v, str) and not str(v).strip()) for v in row
+        )
         if empty and cur:
             tables.append(cur)
             cur = []

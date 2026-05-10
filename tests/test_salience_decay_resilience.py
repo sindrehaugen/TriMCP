@@ -7,7 +7,7 @@ Tests for salience.py math resilience:
 - Near-zero half_life_days (overflow guard on decay constant)
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -20,11 +20,11 @@ from trimcp.salience import compute_decayed_score
 
 def _utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
+        return dt.replace(tzinfo=timezone.utc)
     return dt
 
 
-_NOW = datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+_NOW = datetime(2026, 5, 8, 12, 0, 0, tzinfo=timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -44,9 +44,9 @@ class TestZeroAndNegativeDelta:
         """updated_at 1 second in the future (clock skew) → clamped to 0."""
         future = _NOW + timedelta(seconds=1)
         score = compute_decayed_score(0.9, future, half_life_days=30.0, now=_NOW)
-        assert score == pytest.approx(0.9), (
-            "Clock-skewed future timestamp must return s_last, not a boosted score"
-        )
+        assert score == pytest.approx(
+            0.9
+        ), "Clock-skewed future timestamp must return s_last, not a boosted score"
 
     def test_negative_delta_large_skew_returns_unmodified(self):
         """updated_at 7 days in the future → still returns s_last."""
@@ -55,10 +55,13 @@ class TestZeroAndNegativeDelta:
         assert score == pytest.approx(0.5)
 
     def test_zero_delta_naive_datetime_handled(self):
-        """Naive datetime (no tzinfo) is treated as UTC — zero delta still works."""
+        """Naive datetime (no tzinfo) is treated as timezone.utc — zero delta still works."""
         naive_now = datetime(2026, 5, 8, 12, 0, 0)  # no tzinfo
         score = compute_decayed_score(
-            1.0, naive_now, half_life_days=30.0, now=datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+            1.0,
+            naive_now,
+            half_life_days=30.0,
+            now=datetime(2026, 5, 8, 12, 0, 0, tzinfo=timezone.utc),
         )
         assert score == pytest.approx(1.0)
 
@@ -115,13 +118,13 @@ class TestNormalDecay:
 class TestOverflowGuard:
     def test_epoch_timestamp_does_not_raise(self):
         """updated_at at Unix epoch (year 1970) — ~20,000 day delta → no OverflowError."""
-        epoch = datetime(1970, 1, 1, tzinfo=UTC)
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
         score = compute_decayed_score(1.0, epoch, half_life_days=30.0, now=_NOW)
         assert 0.0 <= score <= 1.0  # must return a valid float, not raise
 
     def test_extremely_large_delta_clamps_to_near_zero(self):
         """Memory from year 1970 (~50+ years old) → score floors near 0 without OverflowError."""
-        ancient = datetime(1970, 1, 1, tzinfo=UTC)
+        ancient = datetime(1970, 1, 1, tzinfo=timezone.utc)
         score = compute_decayed_score(1.0, ancient, half_life_days=30.0, now=_NOW)
         assert score >= 0.0  # must not be NaN or negative
         assert score < 1e-100  # should be astronomically small
@@ -137,12 +140,16 @@ class TestOverflowGuard:
         # timedelta(days=1_000_000) overflows Python's date range; use a concrete
         # ancient date (~18,750 days before _NOW) which still exercises the exponent
         # clamp guard in compute_decayed_score.
-        ancient = datetime(1975, 1, 1, tzinfo=UTC)
+        ancient = datetime(1975, 1, 1, tzinfo=timezone.utc)
         cases = [
             (0.0, _NOW, 30.0),
             (1.0, ancient, 0.001),  # near-zero half-life, old timestamp
             (0.5, _NOW + timedelta(days=365), 30.0),  # clock skew (future ts)
         ]
         for s_last, updated_at, half_life in cases:
-            score = compute_decayed_score(s_last, updated_at, half_life_days=half_life, now=_NOW)
-            assert score >= 0.0, f"Negative score for inputs ({s_last}, {updated_at}, {half_life})"
+            score = compute_decayed_score(
+                s_last, updated_at, half_life_days=half_life, now=_NOW
+            )
+            assert (
+                score >= 0.0
+            ), f"Negative score for inputs ({s_last}, {updated_at}, {half_life})"

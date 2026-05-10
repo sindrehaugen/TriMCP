@@ -49,8 +49,8 @@ def _check_pdf_bomb(blob: bytes) -> str | None:
         # Sum declared stream lengths as a conservative estimate.
         total_stream = 0
         for page in reader.pages:
-            for key in page.get_object().keys():
-                obj = page.get_object()[key]
+            for key in page.get_object().keys():  # type: ignore[union-attr]
+                obj = page.get_object()[key]  # type: ignore[index]
                 if hasattr(obj, "get"):
                     length = obj.get("/Length", 0)
                     if isinstance(length, int):
@@ -90,7 +90,12 @@ def _pymupdf_extract_sync(blob: bytes) -> tuple[str, list[Section], list[str]]:
                     t = ""
                 t = t.strip()
                 sections.append(
-                    Section(text=t, structure_path=f"Page {i}", section_type="body", order=i - 1)
+                    Section(
+                        text=t,
+                        structure_path=f"Page {i}",
+                        section_type="body",
+                        order=i - 1,
+                    )
                 )
                 texts.append(t)
     except Exception as e:
@@ -126,7 +131,9 @@ def _pypdf_extract_sync(blob: bytes) -> tuple[str, list[Section], list[str]]:
             warnings.append(f"pypdf_page_{i}:{e}")
         t = t.strip()
         sections.append(
-            Section(text=t, structure_path=f"Page {i}", section_type="body", order=i - 1)
+            Section(
+                text=t, structure_path=f"Page {i}", section_type="body", order=i - 1
+            )
         )
         texts.append(t)
     return "\n\n".join(texts), sections, warnings
@@ -154,13 +161,17 @@ def _pdfminer_extract_sync(blob: bytes) -> tuple[str, list[Section], list[str]]:
             warnings.append(f"pdfminer_page_{i}:{e}")
         t = "".join(parts).strip()
         sections.append(
-            Section(text=t, structure_path=f"Page {i}", section_type="body", order=i - 1)
+            Section(
+                text=t, structure_path=f"Page {i}", section_type="body", order=i - 1
+            )
         )
         texts.append(t)
     return "\n\n".join(texts), sections, warnings
 
 
-def _merge_pdfplumber_tables(blob: bytes, sections: list[Section], warnings: list[str]) -> None:
+def _merge_pdfplumber_tables(
+    blob: bytes, sections: list[Section], warnings: list[str]
+) -> None:
     import pdfplumber
 
     try:
@@ -195,56 +206,64 @@ def _merge_pdfplumber_tables(blob: bytes, sections: list[Section], warnings: lis
 
 
 async def extract_pdf(blob: bytes) -> ExtractionResult:
-    # Decompression bomb guard before any extraction.
-    bomb_err = _check_pdf_bomb(blob)
-    if bomb_err:
-        return empty_skipped("pypdf", bomb_err)
-
-    if is_pdf_encrypted_blob(blob):
-        return empty_skipped("pypdf", "encrypted", warnings=["PDF /Encrypt detected"])
-
-    warnings: list[str] = []
-
-    # Check if fitz (PyMuPDF) is available without importing the heavy module unless present.
     try:
-        has_fitz = importlib_util.find_spec("fitz") is not None
-    except Exception:
-        has_fitz = "fitz" in sys.modules
+        # Decompression bomb guard before any extraction.
+        bomb_err = _check_pdf_bomb(blob)
+        if bomb_err:
+            return empty_skipped("pypdf", bomb_err)
 
-    if has_fitz:
-        method = "pymupdf"
-        text, sections, w = await asyncio.to_thread(_pymupdf_extract_sync, blob)
-    else:
-        method = "pypdf"
-        text, sections, w = await asyncio.to_thread(_pypdf_extract_sync, blob)
+        if is_pdf_encrypted_blob(blob):
+            return empty_skipped("pypdf", "encrypted", warnings=["PDF /Encrypt detected"])
 
-    warnings.extend(w)
+        warnings: list[str] = []
 
-    if len(text.strip()) < MIN_TEXT_FOR_SKIP_OCR or looks_garbled(text):
-        t2, s2, w2 = await asyncio.to_thread(_pdfminer_extract_sync, blob)
-        warnings.extend(w2)
-        if len(t2.strip()) > len(text.strip()) * 1.5:
-            text, sections = t2, s2
-            warnings.append("used_pdfminer_fallback")
-            method = f"{method}+pdfminer"
+        # Check if fitz (PyMuPDF) is available without importing the heavy module unless present.
+        try:
+            has_fitz = importlib_util.find_spec("fitz") is not None
+        except Exception:
+            has_fitz = "fitz" in sys.modules
 
-    if len(text.strip()) < MIN_TEXT_FOR_SKIP_OCR:
-        text, sections, w3 = await ocr_pdf_to_sections(blob)
-        warnings.extend(w3)
-        method = f"{method}+pdfminer+tesseract" if "+pdfminer" in method else f"{method}+tesseract"
+        if has_fitz:
+            method = "pymupdf"
+            text, sections, w = await asyncio.to_thread(_pymupdf_extract_sync, blob)
+        else:
+            method = "pypdf"
+            text, sections, w = await asyncio.to_thread(_pypdf_extract_sync, blob)
 
-    try:
-        await asyncio.to_thread(_merge_pdfplumber_tables, blob, sections, warnings)
-    except Exception as e:
-        warnings.append(f"pdfplumber_merge_failed:{e}")
-        log.debug("pdfplumber merge: %s", e)
+        warnings.extend(w)
 
-    full_text = "\n\n".join(s.text for s in sections)
-    metadata = {"page_sections": len(sections), "method_chain": method}
-    return ExtractionResult(
-        method=method,
-        text=full_text,
-        sections=sections,
-        metadata=metadata,
-        warnings=warnings,
-    )
+        if len(text.strip()) < MIN_TEXT_FOR_SKIP_OCR or looks_garbled(text):
+            t2, s2, w2 = await asyncio.to_thread(_pdfminer_extract_sync, blob)
+            warnings.extend(w2)
+            if len(t2.strip()) > len(text.strip()) * 1.5:
+                text, sections = t2, s2
+                warnings.append("used_pdfminer_fallback")
+                method = f"{method}+pdfminer"
+
+        if len(text.strip()) < MIN_TEXT_FOR_SKIP_OCR:
+            text, sections, w3 = await ocr_pdf_to_sections(blob)
+            warnings.extend(w3)
+            method = (
+                f"{method}+pdfminer+tesseract"
+                if "+pdfminer" in method
+                else f"{method}+tesseract"
+            )
+
+        try:
+            await asyncio.to_thread(_merge_pdfplumber_tables, blob, sections, warnings)
+        except Exception as e:
+            warnings.append(f"pdfplumber_merge_failed:{e}")
+            log.debug("pdfplumber merge: %s", e)
+
+        full_text = "\n\n".join(s.text for s in sections)
+        metadata = {"page_sections": len(sections), "method_chain": method}
+        return ExtractionResult(
+            method=method,
+            text=full_text,
+            sections=sections,
+            metadata=metadata,
+            warnings=warnings,
+        )
+    except Exception as exc:
+        log.warning("extract_pdf failed on corrupted blob: %s", exc)
+        return empty_skipped("pypdf", "corrupt", warnings=[f"extract_pdf_failed:{exc}"])

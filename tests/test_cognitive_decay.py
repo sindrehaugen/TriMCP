@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -15,31 +15,39 @@ from trimcp import salience
 def test_compute_decayed_score_half_life_halves_salience():
     half_life_days = 7.0
     s_last = 1.0
-    updated_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
-    reference_now = datetime(2026, 1, 8, 0, 0, tzinfo=UTC)
+    updated_at = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    reference_now = datetime(2026, 1, 8, 0, 0, tzinfo=timezone.utc)
 
-    out = salience.compute_decayed_score(s_last, updated_at, half_life_days, now=reference_now)
+    out = salience.compute_decayed_score(
+        s_last, updated_at, half_life_days, now=reference_now
+    )
     assert out == pytest.approx(0.5, rel=1e-9)
 
 
 def test_compute_decayed_score_zero_half_life_returns_unchanged():
-    ref = datetime(2026, 6, 1, tzinfo=UTC)
+    ref = datetime(2026, 6, 1, tzinfo=timezone.utc)
     assert (
-        salience.compute_decayed_score(0.8, datetime(2020, 1, 1, tzinfo=UTC), 0.0, now=ref) == 0.8
+        salience.compute_decayed_score(
+            0.8, datetime(2020, 1, 1, tzinfo=timezone.utc), 0.0, now=ref
+        )
+        == 0.8
     )
     assert (
-        salience.compute_decayed_score(0.8, datetime(2020, 1, 1, tzinfo=UTC), -1.0, now=ref) == 0.8
+        salience.compute_decayed_score(
+            0.8, datetime(2020, 1, 1, tzinfo=timezone.utc), -1.0, now=ref
+        )
+        == 0.8
     )
 
 
 def test_compute_decayed_score_future_updated_at_returns_unchanged():
-    ref = datetime(2026, 1, 1, tzinfo=UTC)
-    future = datetime(2030, 1, 1, tzinfo=UTC)
+    ref = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    future = datetime(2030, 1, 1, tzinfo=timezone.utc)
     assert salience.compute_decayed_score(1.0, future, 30.0, now=ref) == 1.0
 
 
 def test_compute_decayed_score_naive_updated_at_assumed_utc():
-    reference_now = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+    reference_now = datetime(2026, 1, 10, 12, 0, tzinfo=timezone.utc)
     naive = datetime(2026, 1, 9, 12, 0)
     out = salience.compute_decayed_score(1.0, naive, 30.0, now=reference_now)
     assert 0.9 < out <= 1.0
@@ -87,8 +95,8 @@ class TestDeterministicJitter:
         memory_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         half_life = 30.0
         s_last = 1.0
-        updated_at = datetime(2026, 1, 1, tzinfo=UTC)
-        now = datetime(2026, 5, 8, tzinfo=UTC)
+        updated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        now = datetime(2026, 5, 8, tzinfo=timezone.utc)
 
         score_a = salience.compute_decayed_score(
             s_last,
@@ -112,8 +120,8 @@ class TestDeterministicJitter:
         id_b = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeee02"
         half_life = 30.0
         s_last = 1.0
-        updated_at = datetime(2026, 1, 1, tzinfo=UTC)
-        now = datetime(2026, 5, 8, tzinfo=UTC)
+        updated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        now = datetime(2026, 5, 8, tzinfo=timezone.utc)
 
         score_a = salience.compute_decayed_score(
             s_last,
@@ -138,14 +146,16 @@ class TestDeterministicJitter:
         for mid in memory_ids:
             # Call the internal helper directly to verify the range
             factor = salience._jitter_factor(mid)
-            assert -0.05 <= factor <= 0.05, f"Jitter factor {factor} out of +/- 5% range for {mid}"
+            assert (
+                -0.05 <= factor <= 0.05
+            ), f"Jitter factor {factor} out of +/- 5% range for {mid}"
 
     def test_jitter_without_memory_id_is_backward_compatible(self):
         """Omitting memory_id must produce the same result as before."""
         s_last = 0.8
-        updated_at = datetime(2026, 1, 1, tzinfo=UTC)
+        updated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
         half_life = 30.0
-        now = datetime(2026, 5, 8, tzinfo=UTC)
+        now = datetime(2026, 5, 8, tzinfo=timezone.utc)
 
         score = salience.compute_decayed_score(
             s_last,
@@ -160,18 +170,18 @@ class TestDeterministicJitter:
         """Jitter must not override the zero-half-life guard."""
         score = salience.compute_decayed_score(
             0.8,
-            datetime(2020, 1, 1, tzinfo=UTC),
+            datetime(2020, 1, 1, tzinfo=timezone.utc),
             0.0,
-            now=datetime(2026, 6, 1, tzinfo=UTC),
+            now=datetime(2026, 6, 1, tzinfo=timezone.utc),
             memory_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         )
         assert score == 0.8
 
         score = salience.compute_decayed_score(
             0.8,
-            datetime(2020, 1, 1, tzinfo=UTC),
+            datetime(2020, 1, 1, tzinfo=timezone.utc),
             -1.0,
-            now=datetime(2026, 6, 1, tzinfo=UTC),
+            now=datetime(2026, 6, 1, tzinfo=timezone.utc),
             memory_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         )
         assert score == 0.8
@@ -181,9 +191,9 @@ class TestDeterministicJitter:
         half_life = 0.01  # very small
         score = salience.compute_decayed_score(
             0.5,
-            datetime(2026, 1, 1, tzinfo=UTC),
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
             half_life,
-            now=datetime(2026, 5, 8, tzinfo=UTC),
+            now=datetime(2026, 5, 8, tzinfo=timezone.utc),
             memory_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         )
         assert 0.0 <= score <= 1.0

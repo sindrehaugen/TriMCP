@@ -13,7 +13,7 @@ log = logging.getLogger("trimcp.net_safety")
 
 # Explicit IPv6 CIDR denylist for SSRF (defense in depth next to ipaddress is_* flags).
 _SSRF_DENIED_IPV6_NETWORKS: tuple[ipaddress.IPv6Network, ...] = tuple(
-    ipaddress.ip_network(c)
+    ipaddress.ip_network(c)  # type: ignore[misc]
     for c in (
         "::/128",
         "::1/128",
@@ -30,7 +30,9 @@ class BridgeURLValidationError(ValueError):
     """Raised when a bridge-related URL fails safety checks."""
 
 
-def _parse_ip_from_getaddrinfo(sockaddr_ip: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+def _parse_ip_from_getaddrinfo(
+    sockaddr_ip: str,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
     """
     Parse the host portion of a ``getaddrinfo`` sockaddr tuple.
 
@@ -55,7 +57,7 @@ def _resolve_ips(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Ad
         sockaddr = item[4]
         ip_str = sockaddr[0]
         try:
-            out.append(_parse_ip_from_getaddrinfo(ip_str))
+            out.append(_parse_ip_from_getaddrinfo(ip_str))  # type: ignore[arg-type]
         except ValueError:
             continue
     if not out:
@@ -67,7 +69,9 @@ def _all_loopback(ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address]) -> b
     return bool(ips) and all(ip.is_loopback for ip in ips)
 
 
-def _ipv6_in_explicit_denylist(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+def _ipv6_in_explicit_denylist(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
     if ip.version != 6:
         return False
     return any(ip in net for net in _SSRF_DENIED_IPV6_NETWORKS)
@@ -77,7 +81,13 @@ def _any_non_public(ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address]) ->
     for ip in ips:
         if _ipv6_in_explicit_denylist(ip):
             return True
-        if ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_loopback:
+        if (
+            ip.is_private
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_loopback
+        ):
             return True
     return False
 
@@ -124,7 +134,9 @@ def validate_bridge_webhook_base_url(raw: str) -> str:
     return base
 
 
-def assert_url_allowed_prefix(url: str, allowed_prefixes: tuple[str, ...], *, what: str) -> None:
+def assert_url_allowed_prefix(
+    url: str, allowed_prefixes: tuple[str, ...], *, what: str
+) -> None:
     """
     Ensure ``url`` is strictly under one of ``allowed_prefixes`` (character prefix match after
     normalisation). Used for delta / pagination links stored in Redis.
@@ -193,7 +205,9 @@ def validate_extractor_url(url: str, *, what: str = "extractor") -> str:
         raise
     except Exception as e:
         log.warning("%s: DNS resolution failed for %r: %s", what, host, e)
-        raise BridgeURLValidationError(f"{what}: could not resolve host {host!r}: {e}") from e
+        raise BridgeURLValidationError(
+            f"{what}: could not resolve host {host!r}: {e}"
+        ) from e
 
     if _any_non_public(ips):
         raise BridgeURLValidationError(
@@ -267,7 +281,9 @@ def validate_webhook_payload_url(
         )
     host = parsed.hostname
     if not host:
-        raise BridgeURLValidationError(f"webhook {field_name}: URL missing hostname: {raw!r}")
+        raise BridgeURLValidationError(
+            f"webhook {field_name}: URL missing hostname: {raw!r}"
+        )
     try:
         ips = _resolve_ips(host)
         # Webhook payload URLs come from external sources — always reject

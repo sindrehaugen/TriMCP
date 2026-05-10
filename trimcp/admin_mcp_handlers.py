@@ -22,9 +22,8 @@ import json
 import logging
 from typing import Any
 
-from trimcp.mcp_errors import mcp_handler
-
 from trimcp.auth import admin_rate_limit, require_scope
+from trimcp.mcp_errors import mcp_handler
 from trimcp.orchestrator import TriStackEngine
 
 log = logging.getLogger("trimcp.admin_mcp_handlers")
@@ -49,7 +48,9 @@ async def handle_manage_namespace(
 @require_scope("admin")
 @admin_rate_limit(limit=10, period=60)
 @mcp_handler
-async def handle_verify_memory(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_verify_memory(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """Verify the integrity and causal provenance of a memory."""
     from trimcp.temporal import parse_as_of
 
@@ -61,12 +62,16 @@ async def handle_verify_memory(engine: TriStackEngine, arguments: dict[str, Any]
 @require_scope("admin")
 @admin_rate_limit(limit=10, period=60)
 @mcp_handler
-async def handle_trigger_consolidation(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_trigger_consolidation(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """[ADMIN] Manually trigger a sleep-consolidation run for a namespace."""
     from trimcp.temporal import parse_as_of
 
     since_dt = (
-        parse_as_of(arguments.get("since_timestamp")) if "since_timestamp" in arguments else None
+        parse_as_of(arguments.get("since_timestamp"))
+        if "since_timestamp" in arguments
+        else None
     )
     res = await engine.trigger_consolidation(
         namespace_id=arguments["namespace_id"], since_timestamp=since_dt
@@ -77,7 +82,9 @@ async def handle_trigger_consolidation(engine: TriStackEngine, arguments: dict[s
 @require_scope("admin")
 @admin_rate_limit(limit=10, period=60)
 @mcp_handler
-async def handle_consolidation_status(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_consolidation_status(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """[ADMIN] Check the status of a consolidation run."""
     res = await engine.consolidation_status(run_id=arguments["run_id"])
     return json.dumps(res)
@@ -86,7 +93,9 @@ async def handle_consolidation_status(engine: TriStackEngine, arguments: dict[st
 @require_scope("admin")
 @admin_rate_limit(limit=10, period=60)
 @mcp_handler
-async def handle_manage_quotas(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_manage_quotas(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """[ADMIN] Manage resource quotas for a namespace."""
     from trimcp.models import ManageQuotasRequest
 
@@ -98,7 +107,9 @@ async def handle_manage_quotas(engine: TriStackEngine, arguments: dict[str, Any]
 @require_scope("admin")
 @admin_rate_limit(limit=10, period=60)
 @mcp_handler
-async def handle_rotate_signing_key(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+async def handle_rotate_signing_key(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
     """[ADMIN] Generate a new active signing key and retire the current one."""
     from trimcp.signing import rotate_key
 
@@ -111,6 +122,62 @@ async def handle_rotate_signing_key(engine: TriStackEngine, arguments: dict[str,
 @admin_rate_limit(limit=10, period=60)
 @mcp_handler
 async def handle_get_health(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
-    """[ADMIN] Comprehensive v1.0 health check for all database and cognitive layers."""
-    res = await engine.check_health_v1()
+    """[ADMIN] Comprehensive health check for all database and cognitive layers."""
+    res = await engine.check_health()
     return json.dumps(res)
+
+
+@require_scope("admin")
+@admin_rate_limit(limit=30, period=60)
+@mcp_handler
+async def handle_list_dlq(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+    """[ADMIN] List dead-letter queue entries.
+
+    Args:
+        task_name (optional): Filter by task function name.
+        status (optional): Filter by status (pending, replayed, purged).
+        limit (optional): Max rows (default 50, max 200).
+        offset (optional): Pagination offset (default 0).
+    """
+    from trimcp.dead_letter_queue import list_dead_letters
+
+    entries = await list_dead_letters(
+        engine.pg_pool,
+        task_name=arguments.get("task_name"),
+        status=arguments.get("status"),
+        limit=int(arguments.get("limit", 50)),
+        offset=int(arguments.get("offset", 0)),
+    )
+    return json.dumps({"entries": entries, "count": len(entries)}, default=str)
+
+
+@require_scope("admin")
+@admin_rate_limit(limit=10, period=60)
+@mcp_handler
+async def handle_replay_dlq(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+    """[ADMIN] Mark a dead-letter queue entry as replayed.
+
+    Args:
+        dlq_id: UUID of the DLQ entry to replay.
+    """
+    from trimcp.dead_letter_queue import replay_dead_letter
+
+    dlq_id: str = arguments["dlq_id"]
+    result = await replay_dead_letter(engine.pg_pool, dlq_id)
+    return json.dumps(result, default=str)
+
+
+@require_scope("admin")
+@admin_rate_limit(limit=10, period=60)
+@mcp_handler
+async def handle_purge_dlq(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+    """[ADMIN] Permanently remove a dead-letter queue entry.
+
+    Args:
+        dlq_id: UUID of the DLQ entry to purge.
+    """
+    from trimcp.dead_letter_queue import purge_dead_letter
+
+    dlq_id: str = arguments["dlq_id"]
+    await purge_dead_letter(engine.pg_pool, dlq_id)
+    return json.dumps({"status": "ok", "id": dlq_id})

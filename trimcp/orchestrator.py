@@ -9,12 +9,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from trimcp.orchestrators.cognitive import CognitiveOrchestrator
+    from trimcp.orchestrators.graph import GraphOrchestrator
+    from trimcp.orchestrators.memory import MemoryOrchestrator
+    from trimcp.orchestrators.migration import MigrationOrchestrator
+    from trimcp.orchestrators.namespace import NamespaceOrchestrator
+    from trimcp.orchestrators.temporal import TemporalOrchestrator
 
 import asyncpg
 import redis.asyncio as redis
@@ -27,6 +34,7 @@ from trimcp.config import cfg
 from trimcp.models import (
     CompareStatesRequest,
     CreateSnapshotRequest,
+    DeleteSnapshotResult,
     GraphSearchRequest,
     IndexCodeFileRequest,
     ManageNamespaceRequest,
@@ -42,12 +50,7 @@ MemoryPayload = StoreMemoryRequest
 
 log = logging.getLogger("tri-stack-orchestrator")
 
-# --- Constants ---
-
-_SAFE_ID_RE = re.compile(r"^[\w\-]{1,128}$")  # alphanumeric, hyphens, underscores
 _ALLOWED_LANGUAGES = frozenset({"python", "javascript", "typescript", "go", "rust"})
-_MAX_SUMMARY_LEN = 8_192
-_MAX_PAYLOAD_LEN = 10 * 1024 * 1024  # 10 MB hard cap
 _MAX_TOP_K = 100
 _MAX_DEPTH = 3
 
@@ -65,7 +68,9 @@ def _metadata_as_dict(raw: Any) -> dict[str, Any]:
     return dict(raw)
 
 
-def _shallow_metadata_delta(old: dict[str, Any], new: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _shallow_metadata_delta(
+    old: dict[str, Any], new: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
     """Keys added or with changed JSON-serializable values (string compare)."""
     delta: dict[str, dict[str, Any]] = {}
     for k, nv in new.items():
@@ -144,7 +149,7 @@ class MongoDocument(BaseModel):
     session_id: str | None = None
     type: str
     raw_data: str
-    ingested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    ingested_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # --- Config ---
@@ -156,17 +161,18 @@ class TriStackEngine:
     def __init__(self):
         self.mongo_client = None
         self.pg_pool = None
+        self.pg_read_pool = None
         self.redis_client = None
         self.redis_sync_client = None
         self.minio_client = None  # New Quad-Stack MinIO property
         self._graph_traverser = None
         # Domain orchestrators (created in connect())
-        self.memory: object | None = None  # MemoryOrchestrator
-        self.graph: object | None = None  # GraphOrchestrator
-        self.temporal: object | None = None  # TemporalOrchestrator
-        self.namespace: object | None = None  # NamespaceOrchestrator
-        self.cognitive: object | None = None  # CognitiveOrchestrator
-        self.migration: object | None = None  # MigrationOrchestrator
+        self.memory: MemoryOrchestrator | None = None
+        self.graph: GraphOrchestrator | None = None
+        self.temporal: TemporalOrchestrator | None = None
+        self.namespace: NamespaceOrchestrator | None = None
+        self.cognitive: CognitiveOrchestrator | None = None
+        self.migration: MigrationOrchestrator | None = None  # trimcp.orchestrators.migration
 
     async def connect(self):
         cfg.validate()
@@ -197,6 +203,15 @@ class TriStackEngine:
             max_connections=cfg.REDIS_MAX_CONNECTIONS,
             health_check_interval=30,
         )
+
+        # Optional read-replica pool
+        if cfg.DB_READ_URL and cfg.DB_READ_URL != cfg.PG_DSN:
+            self.pg_read_pool = await asyncpg.create_pool(
+                cfg.DB_READ_URL,
+                min_size=cfg.PG_MIN_POOL,
+                max_size=cfg.PG_MAX_POOL,
+                command_timeout=30,
+            )
 
         await self._init_pg_schema()
         await self._verify_worm_enforcement()
@@ -231,6 +246,7 @@ class TriStackEngine:
             mongo_client=self.mongo_client,
             redis_client=self.redis_client,
             minio_client=self.minio_client,
+            pg_read_pool=self.pg_read_pool,
         )
         from trimcp.orchestrators.graph import GraphOrchestrator
 
@@ -273,6 +289,8 @@ class TriStackEngine:
             self.mongo_client.close()
         if self.pg_pool:
             await self.pg_pool.close()
+        if self.pg_read_pool:
+            await self.pg_read_pool.close()
         if self.redis_client:
             await self.redis_client.aclose()
         if self.redis_sync_client:
@@ -417,7 +435,7 @@ class TriStackEngine:
             return
 
         ns_id = row["id"]
-        now_dt = datetime.now(UTC)
+        now_dt = datetime.now(timezone.utc)
         created_dt = row["created_at"]
         if created_dt and created_dt.tzinfo is None:
             now_dt = now_dt.replace(tzinfo=None)
@@ -447,7 +465,9 @@ class TriStackEngine:
             else:
                 log.info("[legacy-warn] %s — will escalate after 30 days.", msg)
         else:
-            log.info("[legacy-warn] _global_legacy namespace exists but has no KG entities.")
+            log.info(
+                "[legacy-warn] _global_legacy namespace exists but has no KG entities."
+            )
 
     async def _init_mongo_indexes(self):
         db = self._mongo_db
@@ -460,32 +480,24 @@ class TriStackEngine:
 
     # --- Database Helpers ---
 
+    def _get_db_pool(self, read_only: bool = False) -> asyncpg.Pool:
+        """Return the appropriate pool for the operation type.
+
+        Routes read-only queries to the read-replica pool when configured.
+        """
+        if read_only and self.pg_read_pool is not None:
+            return self.pg_read_pool
+        return self.pg_pool
+
     @asynccontextmanager
     async def scoped_session(self, namespace_id: str | UUID):
         """
         Context manager for tenant-isolated PostgreSQL sessions.
-        Automatically sets 'trimcp.namespace_id' for RLS enforcement.
-
-        Instrumented with SCOPED_SESSION_LATENCY histogram (Prompt 28)
-        to monitor RLS SET LOCAL overhead on the hot path.
+        Delegates to :func:`trimcp.db_utils.scoped_pg_session`.
         """
-        import time as _time
+        from trimcp.db_utils import scoped_pg_session
 
-        if not namespace_id:
-            raise ValueError("namespace_id is required for scoped sessions")
-
-        ns_uuid = self._ensure_uuid(namespace_id)
-        _t0 = _time.perf_counter()
-
-        async with self.pg_pool.acquire() as conn:
-            from trimcp.auth import set_namespace_context
-
-            await set_namespace_context(conn, ns_uuid)
-            from trimcp.observability import SCOPED_SESSION_LATENCY
-
-            SCOPED_SESSION_LATENCY.labels(
-                namespace_id=str(ns_uuid)[:8],  # truncated for cardinality safety
-            ).observe(_time.perf_counter() - _t0)
+        async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
             yield conn
 
     # --- Phase 0.1: Namespace Management ---
@@ -511,7 +523,9 @@ class TriStackEngine:
 
     # --- Phase 0.2: Memory Integrity ---
 
-    async def verify_memory(self, memory_id: str, as_of: datetime | None = None) -> dict:
+    async def verify_memory(
+        self, memory_id: str, as_of: datetime | None = None
+    ) -> dict:
         """[Phase 0.2] Delegate to MemoryOrchestrator."""
         if self.memory is None:
             from trimcp.orchestrators.memory import MemoryOrchestrator
@@ -545,7 +559,9 @@ class TriStackEngine:
 
     # --- Code Indexing ---
 
-    async def index_code_file(self, payload: IndexCodeFileRequest, *, priority: int = 0) -> dict:
+    async def index_code_file(
+        self, payload: IndexCodeFileRequest, *, priority: int = 0
+    ) -> dict:
         """[Phase 3.2] Code indexing — delegating to MigrationOrchestrator.
 
         *priority* routes to queue lane: >0 = high_priority, 0 = batch_processing.
@@ -662,7 +678,7 @@ class TriStackEngine:
 
         # Check if we purged an abnormally large amount
         total_deleted = result.get("deleted_docs", 0) + result.get("deleted_nodes", 0)
-        if total_deleted > 100:
+        if total_deleted > cfg.GC_ALERT_THRESHOLD:
             from trimcp.notifications import dispatcher
 
             await dispatcher.dispatch_alert(
@@ -672,63 +688,26 @@ class TriStackEngine:
         return result
 
     async def check_health(self) -> dict:
-        """Live non-blocking health checks for all databases."""
-        health = {"mongo": "down", "postgres": "down", "redis": "down", "rq_queue": "unknown"}
-
-        # Mongo
-        try:
-            if self.mongo_client:
-                await self.mongo_client.admin.command("ping")
-                health["mongo"] = "up"
-        except Exception:
-            pass
-
-        # Postgres
-        try:
-            if self.pg_pool:
-                async with self.pg_pool.acquire() as conn:
-                    await conn.execute("SELECT 1")
-                health["postgres"] = "up"
-        except Exception:
-            pass
-
-        # Redis
-        try:
-            if self.redis_client:
-                await self.redis_client.ping()
-                health["redis"] = "up"
-        except Exception:
-            pass
-
-        # RQ Queue
-        try:
-            if self.redis_sync_client:
-                from rq import Queue
-
-                q = Queue(connection=self.redis_sync_client)
-                health["rq_queue"] = f"{len(q)} pending jobs"
-        except Exception:
-            pass
-
-        return health
-
-    async def check_health_v1(self) -> dict:
-        """
-        [Phase 3.1] Comprehensive v1.0 health check.
-        Verifies databases, local model readiness, and cognitive sidecar connectivity.
-        """
-        health = {
+        """Comprehensive health check — databases, security, cognitive, queues."""
+        health: dict[str, Any] = {
             "status": "ok",
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "security": {
-                "master_key": "valid"
-                if (cfg.TRIMCP_MASTER_KEY and len(cfg.TRIMCP_MASTER_KEY) >= 32)
-                else "missing/invalid"
+                "master_key": (
+                    "valid"
+                    if (cfg.TRIMCP_MASTER_KEY and len(cfg.TRIMCP_MASTER_KEY) >= 32)
+                    else "missing/invalid"
+                )
             },
             "databases": {
                 "mongo": "down",
-                "postgres": "up",  # if we are in this method, PG is already up
+                "postgres": "down",
                 "redis": "down",
+            },
+            "queues": {
+                "default": "unknown",
+                "high_priority": "unknown",
+                "batch_processing": "unknown",
             },
             "cognitive": {"backend": cfg.TRIMCP_BACKEND or "auto", "engine": "unknown"},
         }
@@ -741,7 +720,16 @@ class TriStackEngine:
         except Exception:
             health["status"] = "degraded"
 
-        # 2. Redis
+        # 2. Postgres (actual probe, not hard-coded)
+        try:
+            if self.pg_pool:
+                async with self.pg_pool.acquire() as conn:
+                    await conn.execute("SELECT 1")
+                health["databases"]["postgres"] = "up"
+        except Exception:
+            health["status"] = "degraded"
+
+        # 3. Redis
         try:
             if self.redis_client:
                 await self.redis_client.ping()
@@ -749,13 +737,23 @@ class TriStackEngine:
         except Exception:
             health["status"] = "degraded"
 
-        # 3. Cognitive / Embeddings
+        # 4. RQ queues — all three lanes
+        try:
+            if self.redis_sync_client:
+                from rq import Queue
+
+                for queue_name in ("default", "high_priority", "batch_processing"):
+                    q = Queue(queue_name, connection=self.redis_sync_client)
+                    health["queues"][queue_name] = f"{len(q)} pending jobs"
+        except Exception:
+            pass
+
+        # 5. Cognitive / Embeddings
         from trimcp.embeddings import get_backend
 
         try:
             backend = get_backend()
             health["cognitive"]["backend_type"] = type(backend).__name__
-            # Check if we can route to cognitive sidecar if applicable
             import httpx
 
             async with httpx.AsyncClient(timeout=2.0) as client:
@@ -771,7 +769,6 @@ class TriStackEngine:
                     health["cognitive"]["engine"] = f"down ({resp.status_code})"
         except Exception as e:
             health["cognitive"]["engine"] = f"unreachable ({type(e).__name__})"
-            # If cognitive is the ONLY way we get embeddings, mark degraded
             if not cfg.TRIMCP_BACKEND:
                 health["status"] = "degraded"
 
@@ -853,9 +850,13 @@ class TriStackEngine:
             from trimcp.orchestrators.cognitive import CognitiveOrchestrator
 
             self.cognitive = CognitiveOrchestrator(self.pg_pool)
-        return await self.cognitive.boost_memory(memory_id, agent_id, namespace_id, factor)
+        return await self.cognitive.boost_memory(
+            memory_id, agent_id, namespace_id, factor
+        )
 
-    async def forget_memory(self, memory_id: str, agent_id: str, namespace_id: str) -> dict:
+    async def forget_memory(
+        self, memory_id: str, agent_id: str, namespace_id: str
+    ) -> dict:
         """[Phase 1.1] Forget memory — delegating to CognitiveOrchestrator."""
         if self.cognitive is None:
             self._warn_connect_not_called("forget_memory")
@@ -867,7 +868,10 @@ class TriStackEngine:
     # --- Phase 1.3: Contradictions ---
 
     async def list_contradictions(
-        self, namespace_id: str, resolution: str | None = None, agent_id: str | None = None
+        self,
+        namespace_id: str,
+        resolution: str | None = None,
+        agent_id: str | None = None,
     ) -> list[dict]:
         """[Phase 1.3] List contradictions — delegating to CognitiveOrchestrator."""
         if self.cognitive is None:
@@ -875,7 +879,9 @@ class TriStackEngine:
             from trimcp.orchestrators.cognitive import CognitiveOrchestrator
 
             self.cognitive = CognitiveOrchestrator(self.pg_pool)
-        return await self.cognitive.list_contradictions(namespace_id, resolution, agent_id)
+        return await self.cognitive.list_contradictions(
+            namespace_id, resolution, agent_id
+        )
 
     async def resolve_contradiction(
         self,
@@ -915,7 +921,7 @@ class TriStackEngine:
             self.temporal = TemporalOrchestrator(self.pg_pool, self.mongo_client, self)
         return await self.temporal.list_snapshots(namespace_id)
 
-    async def delete_snapshot(self, snapshot_id: str, namespace_id: str) -> dict:
+    async def delete_snapshot(self, snapshot_id: str, namespace_id: str) -> DeleteSnapshotResult:
         """[Phase 2.2] Delete snapshot — delegating to TemporalOrchestrator."""
         if self.temporal is None:
             self._warn_connect_not_called("delete_snapshot")
@@ -937,7 +943,9 @@ class TriStackEngine:
             from trimcp.orchestrators.temporal import TemporalOrchestrator
 
             self.temporal = TemporalOrchestrator(self.pg_pool, self.mongo_client, self)
-        return await self.temporal._fetch_memories_valid_at(conn, namespace_id, memory_ids, as_of)
+        return await self.temporal._fetch_memories_valid_at(
+            conn, namespace_id, memory_ids, as_of
+        )
 
     async def compare_states(self, payload: CompareStatesRequest) -> StateDiffResult:
         """[Phase 2.2] Compare states — delegating to TemporalOrchestrator."""

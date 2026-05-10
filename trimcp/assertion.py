@@ -14,13 +14,18 @@ def infer_assertion_type(text: str) -> str:
     """
     text_lower = text.lower()
     if any(
-        phrase in text_lower for phrase in ["i think", "i believe", "in my opinion", "seems like"]
+        phrase in text_lower
+        for phrase in ["i think", "i believe", "in my opinion", "seems like"]
     ):
         return "opinion"
     if any(
-        phrase in text_lower for phrase in ["i prefer", "i like", "i love", "i hate", "favorite"]
+        phrase in text_lower
+        for phrase in ["i prefer", "i like", "i love", "i hate", "favorite"]
     ):
         return "preference"
-    if any(phrase in text_lower for phrase in ["i saw", "i noticed", "observed", "looks like"]):
+    if any(
+        phrase in text_lower
+        for phrase in ["i saw", "i noticed", "observed", "looks like"]
+    ):
         return "observation"
     return "fact"

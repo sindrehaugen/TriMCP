@@ -107,6 +107,10 @@ class _Config:
         or os.getenv("DATABASE_URL")
         or "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta"
     )
+    # Read/write split — fall back to PG_DSN when not explicitly configured
+    DB_READ_URL: str = os.getenv("DB_READ_URL") or os.getenv("PG_DSN") or os.getenv("DATABASE_URL") or "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta"
+    DB_WRITE_URL: str = os.getenv("DB_WRITE_URL") or os.getenv("PG_DSN") or os.getenv("DATABASE_URL") or "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta"
+    PG_BOUNCER_URL: str = os.getenv("PG_BOUNCER_URL", "")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
     # --- Redis ---
@@ -119,7 +123,18 @@ class _Config:
 
     # --- Garbage collector ---
     GC_INTERVAL_SECONDS: int = int(os.getenv("GC_INTERVAL_SECONDS", "3600"))
-    GC_ORPHAN_AGE_SECONDS: int = int(os.getenv("GC_ORPHAN_AGE_SECONDS", "300"))
+    GC_ORPHAN_AGE_SECONDS: int = int(os.getenv("GC_ORPHAN_AGE_SECONDS", "86400"))
+    GC_PAGE_SIZE: int = int(os.getenv("GC_PAGE_SIZE", "500"))
+    GC_MAX_CONNECT_ATTEMPTS: int = int(os.getenv("GC_MAX_CONNECT_ATTEMPTS", "5"))
+    GC_CONNECT_BASE_DELAY: float = float(os.getenv("GC_CONNECT_BASE_DELAY", "2.0"))
+    GC_ALERT_THRESHOLD: int = int(os.getenv("GC_ALERT_THRESHOLD", "100"))
+
+    # --- Attachment / extraction size limits ---
+    # Maximum blob size accepted by extract_bytes and store_media.
+    # Oversized payloads are rejected before any I/O to prevent RQ worker OOM.
+    TRIMCP_MAX_ATTACHMENT_BYTES: int = int(
+        os.getenv("TRIMCP_MAX_ATTACHMENT_BYTES", str(50 * 1024 * 1024))
+    )  # 50 MB default
 
     # --- Temporal queries ---
     # Maximum lookback window for ``as_of`` temporal queries.  Prevents
@@ -133,7 +148,9 @@ class _Config:
     EMBED_BATCH_CHUNK: int = int(os.getenv("EMBED_BATCH_CHUNK", "64"))
     # Enterprise §8 — hardware backend / OpenVINO NPU (see trimcp.embeddings, openvino_npu_export).
     TRIMCP_BACKEND: str = (os.getenv("TRIMCP_BACKEND") or "").strip().lower()
-    TRIMCP_OPENVINO_MODEL_DIR: str = (os.getenv("TRIMCP_OPENVINO_MODEL_DIR") or "").strip()
+    TRIMCP_OPENVINO_MODEL_DIR: str = (
+        os.getenv("TRIMCP_OPENVINO_MODEL_DIR") or ""
+    ).strip()
     TRIMCP_OPENVINO_SEQ_LEN: int = int(os.getenv("TRIMCP_OPENVINO_SEQ_LEN", "512"))
 
     # --- Contradictions / NLI ---
@@ -148,9 +165,13 @@ class _Config:
     TRIMCP_COGNITIVE_EMBEDDING_MODEL: str = (
         os.getenv("TRIMCP_COGNITIVE_EMBEDDING_MODEL") or ""
     ).strip()
-    TRIMCP_COGNITIVE_API_KEY: str = (os.getenv("TRIMCP_COGNITIVE_API_KEY") or "").strip()
+    TRIMCP_COGNITIVE_API_KEY: str = (
+        os.getenv("TRIMCP_COGNITIVE_API_KEY") or ""
+    ).strip()
     # Declarative default LLM provider label for operators / future LLMProvider wiring [D2].
-    TRIMCP_LLM_PROVIDER: str = (os.getenv("TRIMCP_LLM_PROVIDER") or "local-cognitive-model").strip()
+    TRIMCP_LLM_PROVIDER: str = (
+        os.getenv("TRIMCP_LLM_PROVIDER") or "local-cognitive-model"
+    ).strip()
 
     # --- Document bridges (Phase 2 / §10.3) — OAuth tokens from env or future bridge_tokens PG ---
     GRAPH_BRIDGE_TOKEN: str = os.getenv("GRAPH_BRIDGE_TOKEN", "")
@@ -168,8 +189,12 @@ class _Config:
     GDRIVE_OAUTH_CLIENT_ID: str = os.getenv("GDRIVE_OAUTH_CLIENT_ID", "")
     GDRIVE_OAUTH_CLIENT_SECRET: str = os.getenv("GDRIVE_OAUTH_CLIENT_SECRET", "")
     DROPBOX_OAUTH_CLIENT_ID: str = os.getenv("DROPBOX_OAUTH_CLIENT_ID", "")
-    BRIDGE_RENEWAL_LOOKAHEAD_HOURS: int = int(os.getenv("BRIDGE_RENEWAL_LOOKAHEAD_HOURS", "12"))
-    BRIDGE_CRON_INTERVAL_MINUTES: int = int(os.getenv("BRIDGE_CRON_INTERVAL_MINUTES", "45"))
+    BRIDGE_RENEWAL_LOOKAHEAD_HOURS: int = int(
+        os.getenv("BRIDGE_RENEWAL_LOOKAHEAD_HOURS", "12")
+    )
+    BRIDGE_CRON_INTERVAL_MINUTES: int = int(
+        os.getenv("BRIDGE_CRON_INTERVAL_MINUTES", "45")
+    )
 
     # --- MinIO Object Storage ---
     MINIO_ENDPOINT: str = os.getenv("MINIO_ENDPOINT", "localhost:9000")
@@ -215,7 +240,9 @@ class _Config:
     #                         Default: "/api/v1/" (agent-facing endpoints).
     TRIMCP_JWT_SECRET: str = os.getenv("TRIMCP_JWT_SECRET", "")
     TRIMCP_JWT_PUBLIC_KEY: str = os.getenv("TRIMCP_JWT_PUBLIC_KEY", "")
-    TRIMCP_JWT_ALGORITHM: str = (os.getenv("TRIMCP_JWT_ALGORITHM") or "HS256").upper().strip()
+    TRIMCP_JWT_ALGORITHM: str = (
+        (os.getenv("TRIMCP_JWT_ALGORITHM") or "HS256").upper().strip()
+    )
     TRIMCP_JWT_ISSUER: str = os.getenv("TRIMCP_JWT_ISSUER", "")
     TRIMCP_JWT_AUDIENCE: str = os.getenv("TRIMCP_JWT_AUDIENCE", "")
     TRIMCP_JWT_PREFIX: str = os.getenv("TRIMCP_JWT_PREFIX", "/api/v1/")
@@ -250,7 +277,9 @@ class _Config:
     #                                     for X-Forwarded-Client-Cert header.
     #                                     0 = only direct TLS (uvicorn SSL).
     #                                     1 = one reverse proxy (Caddy / nginx).
-    TRIMCP_A2A_MTLS_ENABLED: bool = os.getenv("TRIMCP_A2A_MTLS_ENABLED", "").strip().lower() in (
+    TRIMCP_A2A_MTLS_ENABLED: bool = os.getenv(
+        "TRIMCP_A2A_MTLS_ENABLED", ""
+    ).strip().lower() in (
         "1",
         "true",
         "yes",
@@ -266,7 +295,9 @@ class _Config:
         for s in os.getenv("TRIMCP_A2A_MTLS_ALLOWED_FINGERPRINTS", "").split(",")
         if s.strip()
     ]
-    TRIMCP_A2A_MTLS_STRICT: bool = os.getenv("TRIMCP_A2A_MTLS_STRICT", "true").strip().lower() in (
+    TRIMCP_A2A_MTLS_STRICT: bool = os.getenv(
+        "TRIMCP_A2A_MTLS_STRICT", "true"
+    ).strip().lower() in (
         "1",
         "true",
         "yes",
@@ -276,9 +307,41 @@ class _Config:
         os.getenv("TRIMCP_A2A_MTLS_TRUSTED_PROXY_HOP", "1")
     )
 
+    # --- Admin server mTLS (B6) ---
+    # Mirror of the A2A mTLS block but scoped to the admin surface.
+    # All vars default to disabled/empty so existing deployments are unaffected.
+    TRIMCP_ADMIN_MTLS_ENABLED: bool = os.getenv(
+        "TRIMCP_ADMIN_MTLS_ENABLED", ""
+    ).strip().lower() in ("1", "true", "yes")
+    TRIMCP_ADMIN_MTLS_STRICT: bool = os.getenv(
+        "TRIMCP_ADMIN_MTLS_STRICT", "true"
+    ).strip().lower() in ("1", "true", "yes")
+    TRIMCP_ADMIN_MTLS_TRUSTED_PROXY_HOP: int = int(
+        os.getenv("TRIMCP_ADMIN_MTLS_TRUSTED_PROXY_HOP", "1")
+    )
+    TRIMCP_ADMIN_MTLS_ALLOWED_SANS: list[str] = [
+        s.strip().lower()
+        for s in os.getenv("TRIMCP_ADMIN_MTLS_ALLOWED_SANS", "").split(",")
+        if s.strip()
+    ]
+    TRIMCP_ADMIN_MTLS_ALLOWED_FINGERPRINTS: list[str] = [
+        s.strip().lower()
+        for s in os.getenv("TRIMCP_ADMIN_MTLS_ALLOWED_FINGERPRINTS", "").split(",")
+        if s.strip()
+    ]
+
+    # --- Phase 0.1: HMAC replay-protection clock skew ---
+    # Maximum allowed drift between client timestamp and server time (seconds).
+    # Requests with timestamps outside this window are rejected as replays.
+    TRIMCP_CLOCK_SKEW_TOLERANCE_S: int = int(
+        os.getenv("TRIMCP_CLOCK_SKEW_TOLERANCE_S", "300")
+    )
+
     # --- Phase 3.2: Per-namespace / per-agent quotas ---
     # When false, no quota queries run on the tool hot path.
-    TRIMCP_QUOTAS_ENABLED: bool = os.getenv("TRIMCP_QUOTAS_ENABLED", "true").lower() == "true"
+    TRIMCP_QUOTAS_ENABLED: bool = (
+        os.getenv("TRIMCP_QUOTAS_ENABLED", "true").lower() == "true"
+    )
     # Rough chars-per-token for pre-flight estimates (embedding / LLM analog).
     TRIMCP_QUOTA_TOKEN_ESTIMATE_DIVISOR: int = int(
         os.getenv("TRIMCP_QUOTA_TOKEN_ESTIMATE_DIVISOR", "4")
@@ -290,6 +353,9 @@ class _Config:
     )
     CONSOLIDATION_CRON_INTERVAL_MINUTES: int = int(
         os.getenv("CONSOLIDATION_CRON_INTERVAL_MINUTES", "360")
+    )
+    CONSOLIDATION_HALF_LIFE_DAYS: float = float(
+        os.getenv("CONSOLIDATION_HALF_LIFE_DAYS", "30.0")
     )
 
     # --- Cron startup jitter ---
@@ -323,7 +389,9 @@ class _Config:
     TRIMCP_OPENAI_API_KEY: str = os.getenv("TRIMCP_OPENAI_API_KEY", "")
     TRIMCP_AZURE_OPENAI_API_KEY: str = os.getenv("TRIMCP_AZURE_OPENAI_API_KEY", "")
     TRIMCP_AZURE_OPENAI_ENDPOINT: str = os.getenv("TRIMCP_AZURE_OPENAI_ENDPOINT", "")
-    TRIMCP_AZURE_OPENAI_DEPLOYMENT: str = os.getenv("TRIMCP_AZURE_OPENAI_DEPLOYMENT", "")
+    TRIMCP_AZURE_OPENAI_DEPLOYMENT: str = os.getenv(
+        "TRIMCP_AZURE_OPENAI_DEPLOYMENT", ""
+    )
     TRIMCP_GEMINI_API_KEY: str = os.getenv("TRIMCP_GEMINI_API_KEY", "")
     TRIMCP_DEEPSEEK_API_KEY: str = os.getenv("TRIMCP_DEEPSEEK_API_KEY", "")
     TRIMCP_MOONSHOT_API_KEY: str = os.getenv("TRIMCP_MOONSHOT_API_KEY", "")
@@ -336,7 +404,9 @@ class _Config:
     TRIMCP_OTEL_EXPORTER_OTLP_ENDPOINT: str = os.getenv(
         "TRIMCP_OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"
     )
-    TRIMCP_OTEL_SERVICE_NAME: str = os.getenv("TRIMCP_OTEL_SERVICE_NAME", "trimcp-python")
+    TRIMCP_OTEL_SERVICE_NAME: str = os.getenv(
+        "TRIMCP_OTEL_SERVICE_NAME", "trimcp-python"
+    )
     TRIMCP_OBSERVABILITY_ENABLED: bool = (
         os.getenv("TRIMCP_OBSERVABILITY_ENABLED", "true").lower() == "true"
     )
@@ -347,6 +417,19 @@ class _Config:
     # processing loop.  Set to 0 to disable DLQ routing (all failures retry
     # indefinitely — not recommended for production).
     TASK_MAX_RETRIES: int = int(os.getenv("TASK_MAX_RETRIES", "5"))
+
+    # --- Migration MCP tools disable switch ---
+    # When true, start_migration / commit_migration / abort_migration are excluded
+    # from the MCP tool list and dispatch table.  Recommended for production SaaS
+    # deployments where live migration tools are an unnecessary risk surface.
+    TRIMCP_DISABLE_MIGRATION_MCP: bool = os.getenv(
+        "TRIMCP_DISABLE_MIGRATION_MCP", ""
+    ).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     # Redis TTL (seconds) for attempt-count keys.  After this window, a task
     # that has been failing for longer than TTL will restart its attempt
     # counter from 1.  Default 86 400 s = 24 h.
@@ -362,7 +445,9 @@ class _Config:
         _fail_unless_trimcp_master_key_ok(cls.TRIMCP_MASTER_KEY)
 
         # P0: Database connections
-        missing_conns = [k for k in ("MONGO_URI", "PG_DSN", "REDIS_URL") if not getattr(cls, k)]
+        missing_conns = [
+            k for k in ("MONGO_URI", "PG_DSN", "REDIS_URL") if not getattr(cls, k)
+        ]
         if missing_conns:
             raise RuntimeError(
                 f"CRITICAL CONFIGURATION FAILURE: Missing required connection strings: {', '.join(missing_conns)}"

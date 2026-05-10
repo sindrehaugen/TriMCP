@@ -35,8 +35,10 @@ Notes:
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import hmac as _hmac
+import inspect
 import logging
 import os
 import secrets
@@ -52,13 +54,15 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from trimcp.config import cfg
+
 log = logging.getLogger("trimcp.auth")
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-_TIMESTAMP_DRIFT_SECONDS: int = 300  # ±5 minutes replay window
+_TIMESTAMP_DRIFT_SECONDS: int = cfg.TRIMCP_CLOCK_SKEW_TOLERANCE_S
 _NONCE_TTL_SECONDS: int = _TIMESTAMP_DRIFT_SECONDS * 2  # 600 s — auto-cleanup
 _NONCE_KEY_PREFIX: str = "trimcp:nonce:"
 
@@ -71,7 +75,9 @@ _PBKDF2_ITERATIONS: int = max(
     600_000,
     int(os.environ.get("TRIMCP_PBKDF2_ITERATIONS", "600000")),
 )
-_PBKDF2_HASH_FORMAT_PREFIX: str = "$pbkdf2$"  # format: $pbkdf2$iterations$salt_hex$hash_hex
+_PBKDF2_HASH_FORMAT_PREFIX: str = (
+    "$pbkdf2$"  # format: $pbkdf2$iterations$salt_hex$hash_hex
+)
 _PBKDF2_SALT_LEN: int = 16
 _PBKDF2_DKLEN: int = 32
 
@@ -162,7 +168,9 @@ def verify_admin_password(
     rest = stored_hash[len(_PBKDF2_HASH_FORMAT_PREFIX) :]
     parts = rest.split("$", 2)
     if len(parts) != 3:
-        log.warning("Invalid PBKDF2 hash format (expected 3 parts, got %d).", len(parts))
+        log.warning(
+            "Invalid PBKDF2 hash format (expected 3 parts, got %d).", len(parts)
+        )
         return False, None
 
     iterations_str, salt_hex, hash_hex = parts
@@ -240,7 +248,9 @@ def _jsonrpc_error(
       400 — malformed namespace / agent_id
     """
     http_status = (
-        _HTTP_UNAUTHORIZED if code in (_CODE_AUTH_FAILED, _CODE_REPLAY) else _HTTP_BAD_REQUEST
+        _HTTP_UNAUTHORIZED
+        if code in (_CODE_AUTH_FAILED, _CODE_REPLAY)
+        else _HTTP_BAD_REQUEST
     )
     return JSONResponse(
         status_code=http_status,
@@ -293,15 +303,12 @@ def _validate_scope(scope: str, arguments: dict[str, Any]) -> None:
     Raises:
         ScopeError: When the caller lacks the required scope.
     """
-    import os as _os
-    import secrets as _secrets
-
     if scope == "admin":
         # Dev override — intentionally first so local dev is frictionless
-        if _os.environ.get("TRIMCP_ADMIN_OVERRIDE") == "true":
+        if os.environ.get("TRIMCP_ADMIN_OVERRIDE") == "true":
             return
 
-        server_key = _os.environ.get("TRIMCP_ADMIN_API_KEY", "")
+        server_key = os.environ.get("TRIMCP_ADMIN_API_KEY", "")
         if not server_key:
             raise ScopeError(
                 "admin",
@@ -310,10 +317,14 @@ def _validate_scope(scope: str, arguments: dict[str, Any]) -> None:
             )
 
         provided_key: str | None = arguments.get("admin_api_key")
-        if not provided_key or not isinstance(provided_key, str) or not provided_key.strip():
+        if (
+            not provided_key
+            or not isinstance(provided_key, str)
+            or not provided_key.strip()
+        ):
             raise ScopeError("admin", "missing admin_api_key")
 
-        if not _secrets.compare_digest(provided_key.strip(), server_key):
+        if not secrets.compare_digest(provided_key.strip(), server_key):
             log.warning("Admin scope rejected: invalid admin_api_key")
             raise ScopeError("admin", "invalid admin_api_key")
 
@@ -347,13 +358,10 @@ def require_scope(scope: str):
             exception unchanged through your dispatch layer so the MCP
             framework produces a JSON-RPC error response.
     """
-    import functools as _functools
-    import inspect as _inspect
-
     from trimcp.mcp_args import _MCP_AUTH_KEYS
 
     def decorator(func):
-        @_functools.wraps(func)
+        @functools.wraps(func)
         async def wrapper(*args, **kwargs):
             # MCP handler convention: arguments is always the 2nd positional arg
             if len(args) < 2:
@@ -375,7 +383,7 @@ def require_scope(scope: str):
             new_args = (args[0], clean_args) + args[2:]
 
             # 5. Forward admin_identity if the handler accepts it
-            sig = _inspect.signature(func)
+            sig = inspect.signature(func)
             if "admin_identity" in sig.parameters:
                 kwargs = {**kwargs, "admin_identity": admin_identity}
 
@@ -411,12 +419,29 @@ class RateLimitError(Exception):
 
 _IN_MEMORY_LIMITS: dict[str, list[float]] = {}
 
+# Atomic Lua script for sliding-window rate limiting.
+# Returns 1 if allowed, 0 if limit exceeded.
+_RATE_LIMIT_LUA = """
+local key = KEYS[1]
+local window_start = ARGV[1]
+local now = ARGV[2]
+local limit = tonumber(ARGV[3])
+local period = tonumber(ARGV[4])
+
+redis.call('ZREMRANGEBYSCORE', key, 0, window_start)
+local count = redis.call('ZCARD', key)
+if count >= limit then
+    return 0
+end
+redis.call('ZADD', key, now, now)
+redis.call('EXPIRE', key, period)
+return 1
+"""
+
 
 def _check_in_memory_rate_limit(key: str, limit: int, period: int) -> bool:
     """Safe local sliding window fallback if Redis is unavailable/offline."""
-    import time as _time
-
-    now = _time.time()
+    now = time.time()
     if key not in _IN_MEMORY_LIMITS:
         _IN_MEMORY_LIMITS[key] = []
     _IN_MEMORY_LIMITS[key] = [t for t in _IN_MEMORY_LIMITS[key] if t > now - period]
@@ -437,11 +462,8 @@ def admin_rate_limit(limit: int = 10, period: int = 60):
     Uses Redis sorted sets (ZSET) with automatic expiration, gracefully falling
     back to thread-safe in-memory sliding windows on any Redis failure or omission.
     """
-    import functools as _functools
-    import time as _time
-
     def decorator(func):
-        @_functools.wraps(func)
+        @functools.wraps(func)
         async def wrapper(*args, **kwargs):
             if len(args) < 2:
                 return await func(*args, **kwargs)
@@ -454,7 +476,9 @@ def admin_rate_limit(limit: int = 10, period: int = 60):
 
             # Resolve key suffix
             namespace_id = arguments.get("namespace_id")
-            admin_identity = arguments.get("admin_identity") or kwargs.get("admin_identity")
+            admin_identity = arguments.get("admin_identity") or kwargs.get(
+                "admin_identity"
+            )
 
             if namespace_id:
                 key_suffix = f"tenant:{namespace_id}"
@@ -465,35 +489,36 @@ def admin_rate_limit(limit: int = 10, period: int = 60):
 
             key = f"trimcp:ratelimit:admin:{key_suffix}"
 
-            # Sliding window zset logic
+            # Sliding window zset logic (atomic via Lua)
             redis_client = getattr(engine, "redis_client", None)
             allowed = True
 
             if redis_client is not None:
                 try:
-                    now = _time.time()
+                    now = time.time()
                     clear_before = now - period
-                    pipe = redis_client.pipeline()
-                    pipe.zremrangebyscore(key, 0, clear_before)
-                    pipe.zcard(key)
-                    pipe.zadd(key, {str(now): now})
-                    pipe.expire(key, period)
-                    results = await pipe.execute()
-
-                    # ZCARD result is at index 1 of transaction pipeline
-                    cardinality = results[1]
-                    if cardinality >= limit:
-                        # Clean up added element on exceed
-                        await redis_client.zrem(key, str(now))
-                        allowed = False
+                    result = await redis_client.eval(
+                        _RATE_LIMIT_LUA,
+                        1,
+                        key,
+                        str(clear_before),
+                        str(now),
+                        str(limit),
+                        str(period),
+                    )
+                    allowed = bool(result)
                 except Exception as exc:
-                    log.warning("Redis rate limiter failed, falling back to RAM: %s", exc)
+                    log.warning(
+                        "Redis rate limiter failed, falling back to RAM: %s", exc
+                    )
                     allowed = _check_in_memory_rate_limit(key, limit, period)
             else:
                 allowed = _check_in_memory_rate_limit(key, limit, period)
 
             if not allowed:
-                log.warning("Rate limit exceeded for key %s (limit: %d/%ds)", key, limit, period)
+                log.warning(
+                    "Rate limit exceeded for key %s (limit: %d/%ds)", key, limit, period
+                )
                 raise RateLimitError(key_suffix, limit, period)
 
             return await func(*args, **kwargs)
@@ -516,8 +541,12 @@ class HMACAuthContext(BaseModel):
 
     model_config = {"frozen": True}
 
-    timestamp: int = Field(..., description="Unix epoch seconds (from X-TriMCP-Timestamp)")
-    signature: str = Field(..., description="Lowercase hex HMAC (from Authorization header)")
+    timestamp: int = Field(
+        ..., description="Unix epoch seconds (from X-TriMCP-Timestamp)"
+    )
+    signature: str = Field(
+        ..., description="Lowercase hex HMAC (from Authorization header)"
+    )
 
     @field_validator("timestamp")
     @classmethod
@@ -654,6 +683,20 @@ async def set_namespace_context(conn: Any, namespace_id: UUID) -> None:
     await conn.execute(
         "SELECT set_config('trimcp.namespace_id', $1, true)",
         str(namespace_id),
+    )
+
+
+async def _reset_rls_context(conn: Any) -> None:
+    """Reset the Postgres RLS session variable to empty string.
+
+    Uses set_config(..., true) so the reset is scoped to the current
+    transaction and does not leak across pooled connections.
+
+    Call this in a ``finally`` block after every ``yield conn`` that
+    previously called :func:`set_namespace_context`.
+    """
+    await conn.execute(
+        "SELECT set_config('trimcp.namespace_id', '', true)",
     )
 
 
@@ -805,10 +848,8 @@ async def audited_session(
         )
         try:
             yield conn
-        except Exception:
-            # Audit is already committed on the separate connection —
-            # it survives any failure in the caller's with-block.
-            raise
+        finally:
+            await _reset_rls_context(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -985,8 +1026,6 @@ def optional_hmac_nonce_store() -> NonceStore | None:
 
     Warns and returns ``None`` if replay protection is requested but ``REDIS_URL`` is blank.
     """
-    from trimcp.config import cfg
-
     if not cfg.TRIMCP_DISTRIBUTED_REPLAY:
         return None
     url = (cfg.REDIS_URL or "").strip()
@@ -1060,7 +1099,9 @@ class HMACAuthMiddleware(BaseHTTPMiddleware):
     # Dispatch helpers (extracted per Clean Code — Prompt 24)
     # ------------------------------------------------------------------
 
-    async def _extract_hmac_context(self, request: Request) -> HMACAuthContext | JSONResponse:
+    async def _extract_hmac_context(
+        self, request: Request
+    ) -> HMACAuthContext | JSONResponse:
         """Extract and validate X-TriMCP-Timestamp + Authorization headers.
 
         Returns an ``HMACAuthContext`` on success, or a JSON-RPC error response.
@@ -1076,7 +1117,9 @@ class HMACAuthMiddleware(BaseHTTPMiddleware):
         scheme, _, sig_value = auth_header.partition(" ")
         if scheme.upper() != "HMAC-SHA256" or not sig_value.strip():
             return _jsonrpc_error(
-                _CODE_AUTH_FAILED, "Authentication failed", "invalid_authorization_scheme"
+                _CODE_AUTH_FAILED,
+                "Authentication failed",
+                "invalid_authorization_scheme",
             )
 
         try:
@@ -1101,7 +1144,9 @@ class HMACAuthMiddleware(BaseHTTPMiddleware):
                 abs(now - ctx.timestamp),
             )
             return _jsonrpc_error(
-                _CODE_REPLAY, "Request timestamp out of acceptable range", "replay_or_clock_skew"
+                _CODE_REPLAY,
+                "Request timestamp out of acceptable range",
+                "replay_or_clock_skew",
             )
         return None
 
@@ -1121,16 +1166,22 @@ class HMACAuthMiddleware(BaseHTTPMiddleware):
             ctx.signature,
         ):
             log.warning(
-                "HMAC signature mismatch: method=%s path=%s", request.method, request.url.path
+                "HMAC signature mismatch: method=%s path=%s",
+                request.method,
+                request.url.path,
             )
-            return _jsonrpc_error(_CODE_AUTH_FAILED, "Authentication failed", "invalid_signature")
+            return _jsonrpc_error(
+                _CODE_AUTH_FAILED, "Authentication failed", "invalid_signature"
+            )
         return None
 
     async def _check_nonce(self, ctx: HMACAuthContext) -> JSONResponse | None:
         """Distributed nonce check via Redis SETNX (if NonceStore is configured)."""
         if self._nonce_store is not None:
             if not await self._nonce_store.check_and_store(ctx.signature):
-                log.warning("HMAC nonce replay detected: signature=%s...", ctx.signature[:16])
+                log.warning(
+                    "HMAC nonce replay detected: signature=%s...", ctx.signature[:16]
+                )
                 return _jsonrpc_error(
                     _CODE_REPLAY,
                     "Request already processed (replay detected)",
@@ -1138,17 +1189,23 @@ class HMACAuthMiddleware(BaseHTTPMiddleware):
                 )
         return None
 
-    def _resolve_namespace_context(self, request: Request) -> NamespaceContext | JSONResponse:
+    def _resolve_namespace_context(
+        self, request: Request
+    ) -> NamespaceContext | JSONResponse:
         """Extract namespace_id + agent_id from headers, store on request.state."""
         try:
             ns_id = resolve_namespace(dict(request.headers))
-            agent_id = validate_agent_id(request.headers.get("x-trimcp-agent-id", "default"))
+            agent_id = validate_agent_id(
+                request.headers.get("x-trimcp-agent-id", "default")
+            )
             ns_ctx = NamespaceContext(namespace_id=ns_id, agent_id=agent_id)
             request.state.namespace_ctx = ns_ctx
             return ns_ctx
         except (ValueError, ValidationError) as exc:
             log.warning("Namespace resolution failed: %s", exc)
-            return _jsonrpc_error(_CODE_INVALID_NAMESPACE, "Invalid namespace context", str(exc))
+            return _jsonrpc_error(
+                _CODE_INVALID_NAMESPACE, "Invalid namespace context", str(exc)
+            )
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
         """HMAC-SHA256 authentication middleware entry point."""
@@ -1156,7 +1213,9 @@ class HMACAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if not self._api_key:
-            log.error("HMAC auth rejected: TRIMCP_API_KEY is empty (server misconfigured)")
+            log.error(
+                "HMAC auth rejected: TRIMCP_API_KEY is empty (server misconfigured)"
+            )
             return _jsonrpc_error(
                 _CODE_AUTH_FAILED, "Authentication failed", "server_misconfigured"
             )

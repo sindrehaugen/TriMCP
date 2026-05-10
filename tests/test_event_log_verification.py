@@ -1,6 +1,6 @@
 import uuid
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,7 +20,7 @@ async def test_verify_event_signature_tampered_record_raises_error():
         "agent_id": "test_agent",
         "event_type": "store_memory",
         "event_seq": 1,
-        "occurred_at": datetime.now(UTC),
+        "occurred_at": datetime.now(timezone.utc),
         "params": '{"tampered": "yes"}',
         "parent_event_id": None,
         "signature": b"fake_signature",
@@ -31,7 +31,9 @@ async def test_verify_event_signature_tampered_record_raises_error():
     with patch("trimcp.signing.get_key_by_id", new_callable=AsyncMock) as mock_get_key:
         mock_get_key.return_value = b"raw_secret_key"
         with patch("trimcp.signing.verify_fields", return_value=False) as mock_verify:
-            with pytest.raises(DataIntegrityError, match="Event signature mismatch for event_id="):
+            with pytest.raises(
+                DataIntegrityError, match="Event signature mismatch for event_id="
+            ):
                 await verify_event_signature(conn, record)
             mock_verify.assert_called_once()
 
@@ -48,7 +50,7 @@ async def test_observational_replay_yields_error_on_tampering():
         "agent_id": "test_agent",
         "event_type": "store_memory",
         "event_seq": 1,
-        "occurred_at": datetime.now(UTC),
+        "occurred_at": datetime.now(timezone.utc),
         "params": '{"tampered": "yes"}',
         "parent_event_id": None,
         "signature": b"fake_signature",
@@ -78,14 +80,22 @@ async def test_observational_replay_yields_error_on_tampering():
 
     replay = ObservationalReplay(pool)
 
-    with patch("trimcp.replay.verify_event_signature", new_callable=AsyncMock) as mock_verify:
+    with patch(
+        "trimcp.replay.verify_event_signature", new_callable=AsyncMock
+    ) as mock_verify:
         mock_verify.side_effect = DataIntegrityError("Tampering detected.")
 
         # We need to mock _create_run and _build_event_query to not fail
-        with patch("trimcp.replay._create_run", new_callable=AsyncMock, return_value=uuid.uuid4()):
+        with patch(
+            "trimcp.replay._create_run",
+            new_callable=AsyncMock,
+            return_value=uuid.uuid4(),
+        ):
             with patch("trimcp.replay._build_event_query", return_value=("SQL", [])):
                 with patch("trimcp.replay._finish_run", new_callable=AsyncMock):
                     with pytest.raises(DataIntegrityError):
-                        async for item in replay.execute(source_namespace_id=uuid.uuid4()):
+                        async for item in replay.execute(
+                            source_namespace_id=uuid.uuid4()
+                        ):
                             if item["type"] == "error":
                                 assert item["message"] == "Tampering detected."

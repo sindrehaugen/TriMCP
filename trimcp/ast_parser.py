@@ -56,7 +56,7 @@ def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | Non
         return None
 
     try:
-        parser = get_parser(language)
+        parser = get_parser(language)  # type: ignore[arg-type]
         tree = parser.parse(raw_code.encode("utf-8"))
     except Exception as e:
         log.warning("Tree-sitter language pack failed for %r: %s", language, e)
@@ -81,7 +81,13 @@ def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | Non
             "type_alias_declaration",
         },
         "go": {"function_declaration", "method_declaration", "type_declaration"},
-        "rust": {"function_item", "struct_item", "enum_item", "impl_item", "trait_item"},
+        "rust": {
+            "function_item",
+            "struct_item",
+            "enum_item",
+            "impl_item",
+            "trait_item",
+        },
     }
     targets = target_types.get(language, set())
     lines = raw_code.splitlines()
@@ -124,7 +130,9 @@ def parse_file(raw_code: str, language: str) -> Iterator[CodeChunk]:
     Tries Tree-sitter first; falls back to whole-file chunk if unavailable.
     """
     if language not in SUPPORTED_LANGUAGES:
-        log.warning("Language %r not supported — yielding single whole-file chunk.", language)
+        log.warning(
+            "Language %r not supported — yielding single whole-file chunk.", language
+        )
         yield CodeChunk(
             node_type="file",
             name="<whole_file>",

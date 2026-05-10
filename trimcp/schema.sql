@@ -532,6 +532,8 @@ CREATE INDEX IF NOT EXISTS idx_event_log_ns_seq  ON event_log (namespace_id, eve
 CREATE INDEX IF NOT EXISTS idx_event_log_parent  ON event_log (parent_event_id) WHERE parent_event_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_event_log_memory_id ON event_log (((params->>'memory_id')::uuid));
 CREATE INDEX IF NOT EXISTS idx_event_log_event_type ON event_log (event_type);
+CREATE INDEX IF NOT EXISTS idx_event_log_time_travel ON event_log (namespace_id, occurred_at)
+    WHERE event_type IN ('store_memory', 'forget_memory');
 CREATE INDEX IF NOT EXISTS idx_event_log_params_gin ON event_log USING GIN (params);
 
 -- Monthly partition windows (UTC); keeps hot data off the DEFAULT catch-all partition
@@ -602,18 +604,52 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- WORM immutability: reject any UPDATE or DELETE on event_log.
+CREATE OR REPLACE FUNCTION prevent_mutation()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'event_log is immutable (WORM). % operation is forbidden.', TG_OP;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Salience decay UDF (Item B): pushes Ebbinghaus decay into PostgreSQL
+CREATE OR REPLACE FUNCTION trimcp_decayed_score(
+    s_last FLOAT,
+    updated_at TIMESTAMPTZ,
+    half_life_days FLOAT
+) RETURNS FLOAT AS $$
+DECLARE
+    delta_t FLOAT;
+    decay_constant FLOAT;
+    exponent FLOAT;
+    MAX_EXP CONSTANT FLOAT := 20.0;
+BEGIN
+    IF half_life_days <= 0 THEN
+        RETURN s_last;
+    END IF;
+    delta_t := GREATEST(0.0, EXTRACT(EPOCH FROM (NOW() - updated_at)) / 86400.0);
+    decay_constant := LN(2) / half_life_days;
+    exponent := LEAST(decay_constant * delta_t, MAX_EXP);
+    RETURN s_last * EXP(-exponent);
+END;
+$$ LANGUAGE plpgsql STABLE;
+
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_event_log_parent_fk_insupd') THEN
-        CREATE TRIGGER trg_event_log_parent_fk_insupd
-            BEFORE INSERT OR UPDATE ON event_log
-            FOR EACH ROW EXECUTE FUNCTION trg_event_log_parent_fk();
+    -- Drop the old partition-scan trigger that causes Full Table Scan DoS
+    IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_event_log_parent_fk_insupd') THEN
+        DROP TRIGGER trg_event_log_parent_fk_insupd ON event_log;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_event_log_parent_fk_del') THEN
-        CREATE TRIGGER trg_event_log_parent_fk_del
-            AFTER DELETE ON event_log
-            FOR EACH ROW WHEN (OLD.parent_event_id IS NULL)
-            EXECUTE FUNCTION trg_event_log_parent_set_null();
+    -- Drop the AFTER DELETE trigger since DELETE is now forbidden by WORM
+    IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_event_log_parent_fk_del') THEN
+        DROP TRIGGER trg_event_log_parent_fk_del ON event_log;
+    END IF;
+    -- Install WORM immutability trigger
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_event_log_worm') THEN
+        CREATE TRIGGER trg_event_log_worm
+            BEFORE UPDATE OR DELETE ON event_log
+            FOR EACH ROW EXECUTE FUNCTION prevent_mutation();
     END IF;
 END $$;
 
@@ -694,7 +730,8 @@ CREATE TABLE IF NOT EXISTS resource_quotas (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (agent_id IS NULL OR (length(agent_id) >= 1 AND length(agent_id) <= 128)),
-    CHECK (resource_type <> '')
+    CHECK (resource_type <> ''),
+    CONSTRAINT chk_quota CHECK (used_amount <= limit_amount)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_resource_quotas_ns_res
@@ -750,6 +787,8 @@ BEGIN
         EXECUTE 'CREATE POLICY namespace_isolation_policy ON memory_embeddings FOR ALL USING (memory_embeddings.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
         EXECUTE 'CREATE POLICY namespace_isolation_policy ON kg_nodes FOR ALL USING (kg_nodes.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
         EXECUTE 'CREATE POLICY namespace_isolation_policy ON kg_edges FOR ALL USING (kg_edges.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
+        EXECUTE 'CREATE POLICY namespace_isolation_policy ON outbox_events FOR ALL USING (outbox_events.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
+        EXECUTE 'CREATE POLICY namespace_isolation_policy ON saga_execution_log FOR ALL USING (saga_execution_log.namespace_id = current_setting(''trimcp.namespace_id'', true)::uuid)';
     END IF;
 END $$;
 
@@ -780,5 +819,71 @@ BEGIN
         GRANT SELECT, INSERT, UPDATE ON dead_letter_queue TO trimcp_app;
     ELSE
         RAISE NOTICE 'trimcp_app role not found — dead_letter_queue GRANTs skipped';
+    END IF;
+END $$;
+
+-- --- Phase 4: Transactional Outbox ---
+-- Ordered, at-most-once delivery of domain events.
+-- The relay process polls unpublished rows, delivers to downstream
+-- consumers, and marks published_at.
+CREATE TABLE IF NOT EXISTS outbox_events (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    namespace_id   UUID NOT NULL,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id   TEXT NOT NULL,
+    event_type     TEXT NOT NULL,
+    payload        JSONB NOT NULL,
+    headers        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    attempt_count  INTEGER NOT NULL DEFAULT 0,
+    error_message  TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at   TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
+    ON outbox_events (created_at)
+    WHERE published_at IS NULL;
+
+ALTER TABLE outbox_events ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    REVOKE ALL ON outbox_events FROM PUBLIC;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON outbox_events TO trimcp_app;
+    ELSE
+        RAISE NOTICE 'trimcp_app role not found — outbox_events GRANTs skipped';
+    END IF;
+END $$;
+
+-- --- Phase 4: Saga Execution Log ---
+-- Durable saga state for crash-recovery.  If a worker dies between PG commit
+-- and rollback completion, the recovery cron re-drives compensation from the
+-- persisted payload.
+CREATE TABLE IF NOT EXISTS saga_execution_log (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    saga_type    TEXT NOT NULL,           -- 'store_memory', 'forget_memory', etc.
+    namespace_id UUID NOT NULL,
+    agent_id     TEXT NOT NULL,
+    state        TEXT NOT NULL
+                 CHECK (state IN ('started', 'pg_committed', 'completed', 'rolled_back', 'recovery_needed')),
+    payload      JSONB NOT NULL,          -- enough to re-drive rollback
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_saga_state_created
+    ON saga_execution_log (state, created_at)
+    WHERE state IN ('started', 'pg_committed', 'recovery_needed');
+
+ALTER TABLE saga_execution_log ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    REVOKE ALL ON saga_execution_log FROM PUBLIC;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
+        GRANT SELECT, INSERT, UPDATE ON saga_execution_log TO trimcp_app;
+    ELSE
+        RAISE NOTICE 'trimcp_app role not found — saga_execution_log GRANTs skipped';
     END IF;
 END $$;

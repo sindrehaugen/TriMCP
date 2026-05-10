@@ -34,7 +34,8 @@ def test_pseudonym_suffix_is_base64url_22_chars():
     assert 20 <= len(digest) <= 24
     # Only base64url characters (A-Z, a-z, 0-9, -, _)
     assert all(
-        c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for c in digest
+        c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        for c in digest
     )
 
 
@@ -59,7 +60,8 @@ def test_pseudonym_per_namespace_key_changes_output():
     assert d1 != d2
 
 
-def test_namespace_key_too_short_raises():
+@pytest.mark.asyncio
+async def test_namespace_key_too_short_raises():
     cfg = NamespacePIIConfig(
         entity_types=["EMAIL"],
         policy=PIIPolicy.pseudonymise,
@@ -67,10 +69,11 @@ def test_namespace_key_too_short_raises():
         pseudonym_hmac_key="short",
     )
     with pytest.raises(ValueError, match="pseudonym_hmac_key"):
-        process("user@example.com", cfg)
+        await process("user@example.com", cfg)
 
 
-def test_missing_master_and_no_namespace_key_raises(monkeypatch):
+@pytest.mark.asyncio
+async def test_missing_master_and_no_namespace_key_raises(monkeypatch):
     monkeypatch.delenv("TRIMCP_MASTER_KEY", raising=False)
     cfg = NamespacePIIConfig(
         entity_types=["EMAIL"],
@@ -81,10 +84,11 @@ def test_missing_master_and_no_namespace_key_raises(monkeypatch):
     text = "Contact user@mail.com please"
     # scan finds email; process will need key material
     with pytest.raises(ValueError, match="Pseudonymisation requires"):
-        process(text, cfg)
+        await process(text, cfg)
 
 
-def test_process_pseudonym_uses_master_when_no_namespace_key(monkeypatch):
+@pytest.mark.asyncio
+async def test_process_pseudonym_uses_master_when_no_namespace_key(monkeypatch):
     monkeypatch.setenv("TRIMCP_MASTER_KEY", "m" * 32)
     cfg = NamespacePIIConfig(
         entity_types=["EMAIL"],
@@ -93,20 +97,21 @@ def test_process_pseudonym_uses_master_when_no_namespace_key(monkeypatch):
         pseudonym_hmac_key=None,
     )
     text = "Contact alice@example.com"
-    out = process(text, cfg)
+    out = await process(text, cfg)
     assert out.redacted
     assert "alice@example.com" not in out.sanitized_text
     # Base64url token: 20–24 chars, no = padding, only url-safe chars
     m = re.search(r"<EMAIL_([A-Za-z0-9_-]{20,24})>", out.sanitized_text)
     assert m
-    out2 = process(text, cfg)
+    out2 = await process(text, cfg)
     assert out2.sanitized_text == out.sanitized_text
 
 
-def test_process_pseudonym_with_explicit_namespace_key():
+@pytest.mark.asyncio
+async def test_process_pseudonym_with_explicit_namespace_key():
     cfg = _cfg_pseudo()
     text = "Reach me at bob@test.org"
-    out = process(text, cfg)
+    out = await process(text, cfg)
     assert out.redacted
     assert "bob@test.org" not in out.sanitized_text
     assert "<EMAIL_" in out.sanitized_text
@@ -114,7 +119,8 @@ def test_process_pseudonym_with_explicit_namespace_key():
     assert 20 <= len(inner) <= 24
 
 
-def test_reversible_pseudonym_vault_token_matches_sanitized(monkeypatch):
+@pytest.mark.asyncio
+async def test_reversible_pseudonym_vault_token_matches_sanitized(monkeypatch):
     monkeypatch.setenv("TRIMCP_MASTER_KEY", "z" * 32)
     cfg = NamespacePIIConfig(
         entity_types=["EMAIL"],
@@ -123,7 +129,7 @@ def test_reversible_pseudonym_vault_token_matches_sanitized(monkeypatch):
         pseudonym_hmac_key=None,
     )
     text = "Write to user@host.com today"
-    out = process(text, cfg)
+    out = await process(text, cfg)
     assert out.vault_entries
     tok = out.vault_entries[0]["token"]
     assert re.fullmatch(r"<EMAIL_[A-Za-z0-9_-]{20,24}>", tok)

@@ -7,7 +7,8 @@ import io
 import logging
 import re
 import zipfile
-from xml.etree import ElementTree as ET
+
+from defusedxml import ElementTree as ET
 
 from trimcp.extractors import pdf_ext
 from trimcp.extractors.core import ExtractionResult, Section, empty_skipped
@@ -41,7 +42,9 @@ def _extract_psd_sync(blob: bytes) -> ExtractionResult:
     try:
         from psd_tools import PSDImage
     except ImportError as e:
-        return empty_skipped("psd", "dependency_missing", warnings=[f"psd_tools_unavailable:{e}"])
+        return empty_skipped(
+            "psd", "dependency_missing", warnings=[f"psd_tools_unavailable:{e}"]
+        )
 
     try:
         psd = PSDImage.open(io.BytesIO(blob))
@@ -86,9 +89,13 @@ def _idml_story_texts(sync: bytes) -> list[str]:
     found: list[str] = []
     try:
         root = ET.fromstring(sync)
-    except ET.ParseError:
+    except (ET.ParseError, ET.EntitiesForbidden):
         raw = sync.decode("utf-8", errors="replace")
-        found.extend(m.group(1).strip() for m in _STORY_TEXT_RE.finditer(raw) if m.group(1).strip())
+        found.extend(
+            m.group(1).strip()
+            for m in _STORY_TEXT_RE.finditer(raw)
+            if m.group(1).strip()
+        )
         return found
     for el in root.iter():
         tag = el.tag.split("}")[-1].lower() if el.tag else ""
@@ -112,7 +119,9 @@ def _extract_idml_sync(blob: bytes) -> ExtractionResult:
     try:
         with zipfile.ZipFile(io.BytesIO(blob)) as z:
             names = z.namelist()
-            story_paths = [n for n in names if n.startswith("Stories/") and n.endswith(".xml")]
+            story_paths = [
+                n for n in names if n.startswith("Stories/") and n.endswith(".xml")
+            ]
             for sp in story_paths:
                 try:
                     raw = z.read(sp)
@@ -155,7 +164,11 @@ def _extract_idml_sync(blob: bytes) -> ExtractionResult:
         method="idml",
         text=full or "(no text)",
         sections=sections
-        or [Section(text="(no text)", structure_path="IDML", section_type="body", order=0)],
+        or [
+            Section(
+                text="(no text)", structure_path="IDML", section_type="body", order=0
+            )
+        ],
         metadata={"story_blocks": len(uniq)},
         warnings=warnings,
     )

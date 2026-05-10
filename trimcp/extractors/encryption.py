@@ -76,7 +76,11 @@ def is_ole_encrypted_or_encryptedpackage(blob: bytes) -> bool:
             return False
         ole = olefile.OleFileIO(io.BytesIO(blob))
         try:
-            parts = ["/".join(x) for x in ole.listdir(streams=True) if isinstance(x, (list, tuple))]
+            parts = [
+                "/".join(x)
+                for x in ole.listdir(streams=True)
+                if isinstance(x, (list, tuple))
+            ]
             joined = " ".join(parts).lower()
             if "encryption" in joined or "encryptedpackage" in joined:
                 return True
@@ -144,4 +148,6 @@ def maybe_encrypted_skip(
     reason = detect_encryption(blob, filename=filename, extension=extension)
     if not reason:
         return None
-    return extraction_encrypted_skip(filename=filename, format_hint=reason, detail=reason)
+    return extraction_encrypted_skip(
+        filename=filename, format_hint=reason, detail=reason
+    )

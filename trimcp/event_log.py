@@ -57,7 +57,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, Final
 
 import asyncpg
@@ -230,6 +230,7 @@ _RLS_TABLES: tuple[str, ...] = (
     "resource_quotas",
     "kg_nodes",
     "kg_edges",
+    "outbox_events",
 )
 
 
@@ -262,7 +263,12 @@ async def verify_rls_enforcement(conn: asyncpg.Connection, table_name: str) -> N
     try:
         count = await conn.fetchval(f"SELECT count(*) FROM {table_name}")
     except Exception as exc:
-        log.warning("[rls-probe] %s: could not query — %s: %s", table_name, type(exc).__name__, exc)
+        log.warning(
+            "[rls-probe] %s: could not query — %s: %s",
+            table_name,
+            type(exc).__name__,
+            exc,
+        )
         return
 
     if count is not None and count > 0:
@@ -273,7 +279,9 @@ async def verify_rls_enforcement(conn: asyncpg.Connection, table_name: str) -> N
             f"and the policy is correctly defined."
         )
 
-    log.info("[rls-probe] %s: unscoped SELECT returned 0 rows — RLS active ✅", table_name)
+    log.info(
+        "[rls-probe] %s: unscoped SELECT returned 0 rows — RLS active ✅", table_name
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +300,7 @@ class AppendResult:
     """Monotonically increasing per-namespace sequence number (no gaps)."""
 
     occurred_at: datetime
-    """DB-authoritative timestamp (``clock_timestamp()`` at insert time, UTC)."""
+    """DB-authoritative timestamp (``clock_timestamp()`` at insert time, timezone.utc)."""
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +318,9 @@ def _advisory_lock_key(namespace_id: uuid.UUID) -> int:
 
     Returns a *signed* int64 as required by ``pg_advisory_xact_lock(int8)``.
     """
-    digest = hashlib.sha256(_ADVISORY_DOMAIN.to_bytes(8, "big") + namespace_id.bytes).digest()
+    digest = hashlib.sha256(
+        _ADVISORY_DOMAIN.to_bytes(8, "big") + namespace_id.bytes
+    ).digest()
     raw = int.from_bytes(digest[:8], "big")
     # Wrap to signed int64 range.
     if raw >= (1 << 63):
@@ -366,7 +376,7 @@ def _serialise_jsonb(obj: Any) -> str | None:
 def _validate_params_no_backdated_timestamp(params: dict[str, Any]) -> None:
     """
     D8 defence-in-depth: reject if *params* contains a ``valid_from`` that
-    is in the past relative to now (UTC).
+    is in the past relative to now (timezone.utc).
 
     This does NOT prevent all backdating — the DB clock is authoritative.
     It is a cheap early rejection for clients that mistakenly pass a stale
@@ -380,7 +390,7 @@ def _validate_params_no_backdated_timestamp(params: dict[str, Any]) -> None:
             from datetime import datetime as _dt
 
             ts = _dt.fromisoformat(vf.replace("Z", "+00:00"))
-            now = _dt.now(UTC)
+            now = _dt.now(timezone.utc)
             if ts < now:
                 raise EventLogTimestampError(
                     "D8 violation: params['valid_from'] is a past timestamp "
@@ -434,7 +444,9 @@ def _compute_chain_hash(*, content_hash: bytes, previous_chain_hash: bytes) -> b
     return hashlib.sha256(content_hash + previous_chain_hash).digest()
 
 
-async def _fetch_previous_chain_hash(conn: asyncpg.Connection, namespace_id: uuid.UUID) -> bytes:
+async def _fetch_previous_chain_hash(
+    conn: asyncpg.Connection, namespace_id: uuid.UUID
+) -> bytes:
     """
     Fetch the ``chain_hash`` of the most recent event in *namespace_id*.
 
@@ -515,14 +527,14 @@ async def _next_event_seq(conn: asyncpg.Connection, namespace_id: uuid.UUID) -> 
 
 async def _fetch_db_clock(conn: asyncpg.Connection) -> datetime:
     """
-    Return the current DB-side timestamp (``clock_timestamp()``) as UTC-aware.
+    Return the current DB-side timestamp (``clock_timestamp()``) as timezone.utc-aware.
 
     Using the DB clock (not the Python process clock) ensures the value we
     sign is byte-identical to what the DB will store in ``occurred_at``.
     """
     ts: datetime = await conn.fetchval("SELECT clock_timestamp()")
-    # asyncpg returns a timezone-aware datetime; normalise to UTC.
-    return ts.astimezone(UTC)
+    # asyncpg returns a timezone-aware datetime; normalise to timezone.utc.
+    return ts.astimezone(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -552,7 +564,9 @@ def _validate_event_payload(event_type: str, agent_id: str) -> str:
     if not agent_id:
         raise ValueError("agent_id must not be empty or whitespace-only.")
     if len(agent_id) > _AGENT_ID_MAX_LEN:
-        raise ValueError(f"agent_id exceeds {_AGENT_ID_MAX_LEN} characters (got {len(agent_id)}).")
+        raise ValueError(
+            f"agent_id exceeds {_AGENT_ID_MAX_LEN} characters (got {len(agent_id)})."
+        )
     return agent_id
 
 
@@ -677,7 +691,7 @@ async def _insert_event(
     return AppendResult(
         event_id=row["id"],
         event_seq=row["event_seq"],
-        occurred_at=row["occurred_at"].astimezone(UTC),
+        occurred_at=row["occurred_at"].astimezone(timezone.utc),
     )
 
 
@@ -729,6 +743,18 @@ async def append_event(
     """
     # 1. Validate event_type and agent_id
     agent_id = _validate_event_payload(event_type, agent_id)
+
+    # 1b. Validate parent_event_id exists in the same namespace
+    if parent_event_id is not None:
+        parent_row = await conn.fetchrow(
+            "SELECT 1 FROM event_log WHERE id = $1 AND namespace_id = $2",
+            parent_event_id,
+            namespace_id,
+        )
+        if parent_row is None:
+            raise EventLogError(
+                f"parent_event_id {parent_event_id} does not exist in namespace {namespace_id}"
+            )
 
     # 2. D8 defence-in-depth: reject backdated timestamps in params
     _validate_params_no_backdated_timestamp(params)
@@ -844,7 +870,9 @@ async def verify_event_signature(
     try:
         raw_key = await get_key_by_id(conn, key_id)
     except Exception as exc:
-        raise DataIntegrityError(f"Failed to retrieve signing key {key_id}: {exc}") from exc
+        raise DataIntegrityError(
+            f"Failed to retrieve signing key {key_id}: {exc}"
+        ) from exc
 
     params: dict[str, Any] | None = record.get("params")
     if params is None:
@@ -855,7 +883,7 @@ async def verify_event_signature(
     # Coerce occurred_at to string representation as built during sign
     occurred_at = record.get("occurred_at")
     if isinstance(occurred_at, datetime):
-        occurred_at_iso = occurred_at.astimezone(UTC).isoformat()
+        occurred_at_iso = occurred_at.astimezone(timezone.utc).isoformat()
     elif isinstance(occurred_at, str):
         occurred_at_iso = occurred_at
     else:
@@ -988,7 +1016,7 @@ async def verify_merkle_chain(
         # Coerce occurred_at to ISO string
         occurred_at = row.get("occurred_at")
         if isinstance(occurred_at, datetime):
-            occurred_at_iso = occurred_at.astimezone(UTC).isoformat()
+            occurred_at_iso = occurred_at.astimezone(timezone.utc).isoformat()
         elif isinstance(occurred_at, str):
             occurred_at_iso = occurred_at
         else:

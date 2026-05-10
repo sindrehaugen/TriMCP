@@ -42,7 +42,9 @@ def _gate_all_pass(
         ([3.0, 4.0], [6.0, 8.0], 1.0),
     ],
 )
-def test_cosine_similarity_known_pairs(a: list[float], b: list[float], want: float) -> None:
+def test_cosine_similarity_known_pairs(
+    a: list[float], b: list[float], want: float
+) -> None:
     assert math.isclose(cosine_similarity(a, b), want, abs_tol=1e-9)
 
 
@@ -63,7 +65,9 @@ def test_neighbor_overlap_fraction(
     assert math.isclose(neighbor_overlap_fraction(old, new), want, abs_tol=1e-9)
 
 
-def test_deterministic_reembed_stable_within_model(TEST_2_1_01_tolerance: float = 0.01) -> None:
+def test_deterministic_reembed_stable_within_model(
+    TEST_2_1_01_tolerance: float = 0.01,
+) -> None:
     """Same canonical text produces identical deterministic mock vectors."""
     text = "Phase 2.1 — quality gate cohort"
     e1 = deterministic_unit_embedding(text, model_version="frozen", dimension=DIM)
@@ -101,7 +105,9 @@ async def test_worker_drains_queue_shadow_v2_reads_stay_on_v1() -> None:
     records: dict[str, MemoryEmbeddingRow] = {}
     for i, mid in enumerate(ids):
         text = f"memory body {i % 4}"
-        v1 = deterministic_unit_embedding(text, model_version="legacy/v1", dimension=DIM)
+        v1 = deterministic_unit_embedding(
+            text, model_version="legacy/v1", dimension=DIM
+        )
         records[mid] = MemoryEmbeddingRow(mid, text, embedding_v1=v1)
 
     store = InMemoryReembeddingStore.from_records(records, initial_pending=ids)
@@ -209,13 +215,17 @@ def test_quality_gate_neighbor_overlap_aggregate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_abort_clears_queue_and_shadow_without_touching_authoritative_v1() -> None:
+async def test_abort_clears_queue_and_shadow_without_touching_authoritative_v1() -> (
+    None
+):
     ids = ["a", "b", "c"]
     records = {
         mid: MemoryEmbeddingRow(
             mid,
             mid * 4,
-            embedding_v1=deterministic_unit_embedding(mid * 4, model_version="v1", dimension=DIM),
+            embedding_v1=deterministic_unit_embedding(
+                mid * 4, model_version="v1", dimension=DIM
+            ),
         )
         for mid in ids
     }
@@ -250,7 +260,9 @@ async def test_orchestrator_returns_zero_after_abort() -> None:
             "x": MemoryEmbeddingRow(
                 "x",
                 "tx",
-                embedding_v1=deterministic_unit_embedding("tx", model_version="v1", dimension=DIM),
+                embedding_v1=deterministic_unit_embedding(
+                    "tx", model_version="v1", dimension=DIM
+                ),
             )
         },
         initial_pending=["x"],
