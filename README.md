@@ -1,5 +1,8 @@
 # TriMCP — Enterprise-Grade AI Memory Layer
 
+**The codebase is not production-ready as of 2026-05-11.**
+
+
 TriMCP is an **MCP-native memory engine** for autonomous agents: a **quad-database** stack (PostgreSQL + pgvector, MongoDB, Redis, MinIO) with a **Saga**-style write path, **temporal** recall (`as_of` time-travel on semantic and graph search), **A2A** scoped sharing between agents, and **background workers** for re-embedding, bridge renewal, and GC. This repository documents **TriMCP v1.0** — the shipped integration surface in `server.py`, `admin_server.py`, `trimcp/a2a_server.py`, and `trimcp/cron.py`.
 
 Longer-horizon roadmap items (universal installers, 300+ language packs, broad format extraction) live in the innovation roadmap; deploy today **from source** with Docker Compose per [deploy/README.md](deploy/README.md).
