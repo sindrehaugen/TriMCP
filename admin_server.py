@@ -1482,6 +1482,205 @@ async def api_admin_dlq_purge(request):
     return JSONResponse({"status": "ok", "id": dlq_id})
 
 
+async def api_admin_db_postgres_status(request):
+    """GET /api/admin/db/postgres/status"""
+    if not engine or not engine.pg_pool:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    try:
+        async with engine.pg_pool.acquire() as conn:
+            # Query sizes and estimate row counts for core tables
+            tables_query = """
+                SELECT 
+                    c.relname AS name,
+                    c.reltuples::bigint AS row_count_estimate,
+                    pg_total_relation_size(c.oid) AS table_size_bytes,
+                    pg_relation_size(c.oid) AS relation_size_bytes
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' 
+                  AND c.relkind = 'r'
+                  AND c.relname IN ('memories', 'kg_nodes', 'kg_edges', 'event_log', 'outbox_events')
+            """
+            rows = await conn.fetch(tables_query)
+            tables = [dict(r) for r in rows]
+
+            # Estimate partition runway months
+            partitions_query = """
+                SELECT count(*) AS cnt
+                FROM pg_inherits i
+                JOIN pg_class c ON c.oid = i.inhrelid
+                WHERE i.inhparent = 'event_log'::regclass
+                  AND c.relname LIKE 'event_log_%'
+                  AND c.relname >= 'event_log_' || to_char(now(), 'YYYY_MM')
+            """
+            part_row = await conn.fetchrow(partitions_query)
+            runway_months = part_row["cnt"] if part_row else 0
+
+        return JSONResponse({
+            "tables": tables,
+            "partition_status": {
+                "runway_months": runway_months
+            }
+        })
+    except Exception as exc:
+        logger.exception("api_admin_db_postgres_status failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_admin_db_mongo_status(request):
+    """GET /api/admin/db/mongo/status"""
+    if not engine or not engine.mongo_client:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    try:
+        db = engine.mongo_client.get_database("memory_archive")
+        collections_list = await db.list_collection_names()
+        collections = []
+        for col_name in collections_list:
+            if col_name.startswith("system."):
+                continue
+            stats = await db.command("collStats", col_name)
+            collections.append({
+                "name": col_name,
+                "document_count": stats.get("count", 0),
+                "storage_size_bytes": stats.get("storageSize", 0),
+                "indexes": list(stats.get("indexSizes", {}).keys())
+            })
+        return JSONResponse({"collections": collections})
+    except Exception as exc:
+        logger.exception("api_admin_db_mongo_status failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_admin_db_redis_status(request):
+    """GET /api/admin/db/redis/status"""
+    if not engine or not engine.redis_client:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    try:
+        info = await engine.redis_client.info()
+        db_stats = info.get("db0", {})
+        keys_count = db_stats.get("keys", 0)
+
+        keys_cache_count = 0
+        keys_lock_count = 0
+        try:
+            # Safe non-blocking partial keyspace scan
+            cursor, keys = await engine.redis_client.scan(cursor=0, match="trimcp:*", count=500)
+            for k in keys:
+                k_str = k.decode("utf-8") if isinstance(k, bytes) else str(k)
+                if ":lock:" in k_str:
+                    keys_lock_count += 1
+                else:
+                    keys_cache_count += 1
+        except Exception:
+            pass
+
+        return JSONResponse({
+            "info": {
+                "used_memory_human": info.get("used_memory_human", "0B"),
+                "connected_clients": info.get("connected_clients", 0),
+                "instantaneous_ops_per_sec": info.get("instantaneous_ops_per_sec", 0)
+            },
+            "keyspaces": [
+                { "pattern": "trimcp:cache:*", "count": keys_cache_count },
+                { "pattern": "trimcp:lock:*", "count": keys_lock_count },
+                { "pattern": "all_keys", "count": keys_count }
+            ]
+        })
+    except Exception as exc:
+        logger.exception("api_admin_db_redis_status failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_admin_db_minio_status(request):
+    """GET /api/admin/db/minio/status"""
+    if not engine or not engine.minio_client:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    try:
+        import asyncio
+        def _get_buckets():
+            bucket_list = engine.minio_client.list_buckets()
+            res = []
+            for b in bucket_list:
+                obj_count = 0
+                total_size = 0
+                try:
+                    objects = engine.minio_client.list_objects(b.name, recursive=True)
+                    for i, o in enumerate(objects):
+                        if i >= 100:  # Limit safety scan depth
+                            break
+                        obj_count += 1
+                        total_size += o.size
+                except Exception:
+                    pass
+                res.append({
+                    "name": b.name,
+                    "object_count": obj_count,
+                    "total_size_bytes": total_size
+                })
+            return res
+
+        buckets = await asyncio.to_thread(_get_buckets)
+        return JSONResponse({"buckets": buckets})
+    except Exception as exc:
+        logger.exception("api_admin_db_minio_status failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_admin_connectors_status(request):
+    """GET /api/admin/connectors/status"""
+    try:
+        bridges = {
+            "google_drive": {
+                "enabled": bool(cfg.GDRIVE_OAUTH_CLIENT_ID),
+                "has_client_id": bool(cfg.GDRIVE_OAUTH_CLIENT_ID),
+                "token_status": "active" if cfg.GDRIVE_BRIDGE_TOKEN else "missing",
+                "sync_interval_mins": cfg.BRIDGE_CRON_INTERVAL_MINUTES
+            },
+            "dropbox": {
+                "enabled": bool(cfg.DROPBOX_OAUTH_CLIENT_ID),
+                "has_client_id": bool(cfg.DROPBOX_OAUTH_CLIENT_ID),
+                "token_status": "active" if cfg.DROPBOX_BRIDGE_TOKEN else "missing",
+                "sync_interval_mins": cfg.BRIDGE_CRON_INTERVAL_MINUTES
+            },
+            "onedrive": {
+                "enabled": bool(cfg.AZURE_CLIENT_ID),
+                "has_client_id": bool(cfg.AZURE_CLIENT_ID),
+                "token_status": "active" if cfg.GRAPH_BRIDGE_TOKEN else "missing",
+                "sync_interval_mins": cfg.BRIDGE_CRON_INTERVAL_MINUTES
+            }
+        }
+
+        cognitive_online = False
+        if cfg.TRIMCP_COGNITIVE_BASE_URL:
+            import httpx
+            try:
+                async with httpx.AsyncClient(timeout=1.0) as client:
+                    resp = await client.get(f"{cfg.TRIMCP_COGNITIVE_BASE_URL}/health")
+                    cognitive_online = (resp.status_code == 200)
+            except Exception:
+                cognitive_online = False
+
+        external_apis = {
+            "openai_compatible_cognitive": {
+                "endpoint": cfg.TRIMCP_COGNITIVE_BASE_URL or "not_configured",
+                "configured": bool(cfg.TRIMCP_COGNITIVE_BASE_URL),
+                "online": cognitive_online
+            },
+            "nli_deberta": {
+                "model_id": cfg.NLI_MODEL_ID or "not_configured",
+                "loaded": bool(cfg.NLI_MODEL_ID)
+            }
+        }
+
+        return JSONResponse({
+            "bridges": bridges,
+            "external_apis": external_apis
+        })
+    except Exception as exc:
+        logger.exception("api_admin_connectors_status failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
 app = Starlette(
     debug=False,
     lifespan=lifespan,
@@ -1624,6 +1823,31 @@ app = Starlette(
             "/api/admin/dlq/{dlq_id}/purge",
             endpoint=api_admin_dlq_purge,
             methods=["POST"],
+        ),
+        Route(
+            "/api/admin/db/postgres/status",
+            endpoint=api_admin_db_postgres_status,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/db/mongo/status",
+            endpoint=api_admin_db_mongo_status,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/db/redis/status",
+            endpoint=api_admin_db_redis_status,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/db/minio/status",
+            endpoint=api_admin_db_minio_status,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/connectors/status",
+            endpoint=api_admin_connectors_status,
+            methods=["GET"],
         ),
     ],
 )

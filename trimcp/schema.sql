@@ -553,6 +553,47 @@ CREATE TABLE IF NOT EXISTS event_sequences (
     seq          BIGINT NOT NULL DEFAULT 0
 );
 
+-- --- Phase 2.3: Memory Replay Engine Sessions ---
+CREATE TABLE IF NOT EXISTS replay_runs (
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_namespace_id  UUID NOT NULL REFERENCES namespaces(id),
+    target_namespace_id  UUID REFERENCES namespaces(id),
+    mode                 TEXT NOT NULL,          -- observational | reconstructive | forked
+    replay_mode          TEXT NOT NULL DEFAULT 'deterministic',  -- deterministic | re-execute
+    start_seq            BIGINT NOT NULL,
+    end_seq              BIGINT,
+    divergence_seq       BIGINT,
+    config_overrides     JSONB,
+    status               TEXT NOT NULL,          -- running | success | failed | aborted
+    events_applied       BIGINT NOT NULL DEFAULT 0,
+    started_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at          TIMESTAMPTZ,
+    error                TEXT
+);
+
+DO $$
+BEGIN
+    REVOKE ALL ON replay_runs FROM PUBLIC;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON replay_runs TO trimcp_app;
+    ELSE
+        RAISE NOTICE 'trimcp_app role not found — replay_runs GRANTs skipped';
+    END IF;
+END $$;
+
+ALTER TABLE replay_runs ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename = 'replay_runs' AND policyname = 'namespace_isolation_policy'
+    ) THEN
+        CREATE POLICY namespace_isolation_policy ON replay_runs FOR ALL USING (replay_runs.source_namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
+    END IF;
+END $$;
+
+
 CREATE INDEX IF NOT EXISTS idx_event_log_ns_time ON event_log (namespace_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_event_log_ns_seq  ON event_log (namespace_id, event_seq);
 CREATE INDEX IF NOT EXISTS idx_event_log_parent  ON event_log (parent_event_id) WHERE parent_event_id IS NOT NULL;

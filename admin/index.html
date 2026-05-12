@@ -3,52 +3,160 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TriMCP Admin</title>
+  <title>TriMCP Admin Console</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
       theme: {
         extend: {
           colors: {
-            surface: { DEFAULT: '#0f172a', elevated: '#1e293b', border: '#334155' }
+            surface: { 
+              DEFAULT: '#001a3f', // Bravo dark navy elevated card
+              elevated: '#00295e', 
+              border: '#0a306c' 
+            },
+            bravo: {
+              navy: '#000d23',      // Primary space black/navy
+              card: '#001a3f',      // Dark navy elevated cards
+              primary: '#002250',   // Dark blue brand anchor
+              green: '#29F285',     // Bright Green accent
+              green_sm: '#1BF47F',  // Social Media Green
+              pink: '#FF7BE0',      // Pink accent (Rosa 400)
+              pink300: '#FFB8E8',   // Medium pink
+              pink200: '#FFDFF4',   // Light pink
+              pink100: '#FFF1FA',   // Very light pink
+              blue: '#0068F9',      // Blue accent
+              blue300: '#7DB3FF',   // Medium blue
+              yellow: '#FFCE2D',    // Yellow accent
+              yellow300: '#FFD959', // Medium yellow
+              ui500: '#05063D',     // Dark text, primary UI
+              ui400: '#40406A',     // Secondary text
+              ui300: '#B3B3C7',     // Tertiary text
+              ui200: '#F2F2F5',     // Light background
+            }
+          },
+          fontFamily: {
+            sans: ['Poppins', 'sans-serif'],
+            hanken: ['"Hanken Grotesk"', 'sans-serif']
           }
         }
       }
     }
   </script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js"></script>
-</head>
-<body class="bg-slate-950 text-slate-100 min-h-screen antialiased" x-data="adminShell" x-init="init()">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,100..900;1,100..900&family=Poppins:ital,wght@0,100..900;1,100..900&display=swap');
+    
+    body {
+      font-family: 'Poppins', sans-serif;
+      background-color: #000714 !important; /* Premium space-dark navy blue background */
+    }
+    
+    h1, h2, h3, h4, .font-hanken, .brand-header {
+      font-family: 'Hanken Grotesk', sans-serif !important;
+    }
 
-  <!-- Top bar -->
-  <header class="sticky top-0 z-40 border-b border-slate-800 bg-slate-900/95 backdrop-blur">
-    <div class="max-w-7xl mx-auto px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <div class="flex items-center gap-3">
-        <h1 class="text-lg font-semibold tracking-tight">TriMCP <span class="text-sky-400">Admin</span></h1>
-        <nav class="hidden sm:flex items-center gap-2 text-sm text-slate-400">
-          <a href="#health" class="hover:text-slate-200">Health</a>
-          <span class="text-slate-600">·</span>
-          <a href="#events" class="hover:text-slate-200">Events</a>
-          <span class="text-slate-600">·</span>
-          <a href="#quotas" class="hover:text-slate-200">Quotas</a>
-          <span class="text-slate-600">·</span>
-          <a href="#graph" class="hover:text-slate-200">Graph</a>
-          <span class="text-slate-600">·</span>
-          <a href="#embedding-migration" class="hover:text-slate-200">Embeddings</a>
+    /* Predefined Bravo Gradients */
+    .bg-bravo-gradient-1 {
+      background: linear-gradient(135deg, #0068F9 0%, rgba(255, 123, 224, 0.4) 100%);
+    }
+    .bg-bravo-gradient-2 {
+      background: linear-gradient(135deg, #FFD959 0%, rgba(255, 123, 224, 0.4) 100%);
+    }
+    .bg-bravo-gradient-3 {
+      background: linear-gradient(135deg, #1BF47F 0%, rgba(0, 104, 249, 0.4) 100%);
+    }
+    .bg-bravo-gradient-4 {
+      background: linear-gradient(135deg, #FFDFF4 0%, rgba(255, 123, 224, 0.4) 100%);
+    }
+    .bg-bravo-gradient-5 {
+      background: linear-gradient(135deg, #FFDFF4 0%, #000284 100%);
+    }
+
+    /* Micro-interactions & animations */
+    .animate-bounce-slow {
+      animation: bounce 3s infinite;
+    }
+    @keyframes bounce {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-8px); }
+    }
+
+    /* Interactive components and scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #000714;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #00295e;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #FF7BE0;
+    }
+  </style>
+</head>
+<body class="text-slate-200 min-h-screen antialiased flex flex-col justify-between" x-data="adminShell" x-init="init()">
+
+  <!-- Top bar (Header block) -->
+  <header class="sticky top-0 z-40 border-b border-bravo-blue/20 bg-bravo-navy/90 backdrop-blur-md">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div class="flex items-center justify-between sm:justify-start gap-4">
+        <!-- TriMCP Memory Engine Logo Element -->
+        <div class="flex items-center gap-3">
+          <svg class="w-8 h-8 text-bravo-pink drop-shadow-[0_0_8px_rgba(0,104,249,0.5)]" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="16" cy="16" r="15" fill="#000714" stroke="#0068F9" stroke-width="1.5" />
+            <!-- Three interconnected storage/memory nodes (tri-channel) -->
+            <circle cx="16" cy="11" r="3.5" fill="#0068F9" />
+            <circle cx="11" cy="20" r="3.5" fill="#FF7BE0" />
+            <circle cx="21" cy="20" r="3.5" fill="#29F285" />
+            <!-- Connecting paths -->
+            <path d="M16 11L11 20M11 20H21M21 20L16 11" stroke="#ffffff" stroke-width="1" stroke-dasharray="2 1" class="opacity-70" />
+            <!-- Center nucleus -->
+            <circle cx="16" cy="17" r="1.5" fill="#FFFFFF" class="animate-pulse" />
+          </svg>
+          <div class="flex flex-col">
+            <div class="flex items-center gap-1.5">
+              <span class="text-xl font-extrabold tracking-tight font-hanken text-white">TriMCP<span class="text-bravo-pink">.</span></span>
+              <span class="text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-bravo-blue/20 text-bravo-blue300 border border-bravo-blue/30 uppercase tracking-wider font-semibold">Console</span>
+            </div>
+            <!-- Subtitle -->
+            <span class="text-[8px] font-mono tracking-widest text-slate-400 font-medium">Triple Memory Engine</span>
+          </div>
+        </div>
+        
+        <!-- Navigation Links -->
+        <nav class="hidden md:flex items-center gap-1 text-xs font-semibold text-slate-400">
+          <a href="#health" class="px-2.5 py-1.5 rounded-lg hover:text-white hover:bg-bravo-blue/10 transition">Health</a>
+          <span class="text-slate-700">/</span>
+          <a href="#events" class="px-2.5 py-1.5 rounded-lg hover:text-white hover:bg-bravo-blue/10 transition">Events</a>
+          <span class="text-slate-700">/</span>
+          <a href="#quotas" class="px-2.5 py-1.5 rounded-lg hover:text-white hover:bg-bravo-blue/10 transition">Quotas</a>
+          <span class="text-slate-700">/</span>
+          <a href="#graph" class="px-2.5 py-1.5 rounded-lg hover:text-white hover:bg-bravo-blue/10 transition">Graph</a>
+          <span class="text-slate-700">/</span>
+          <a href="#embedding-migration" class="px-2.5 py-1.5 rounded-lg hover:text-white hover:bg-bravo-blue/10 transition">Embeddings</a>
+          <span class="text-slate-700">/</span>
+          <a href="#datastores" class="px-2.5 py-1.5 rounded-lg hover:text-white hover:bg-bravo-blue/10 transition">Datastores</a>
         </nav>
       </div>
-      <div class="flex flex-wrap items-end gap-2 w-full sm:w-auto">
-        <label class="flex-1 min-w-[200px]">
-          <span class="block text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">HMAC secret (TRIMCP_API_KEY)</span>
+      
+      <!-- Key Credentials persistence -->
+      <div class="flex flex-wrap items-end gap-3 w-full sm:w-auto">
+        <label class="flex-grow sm:flex-grow-0 sm:w-56">
+          <span class="block text-[9px] uppercase tracking-wider text-slate-400 mb-1 font-semibold">HMAC Secret (TRIMCP_API_KEY)</span>
           <input type="password" x-model="apiKey" @change="persistKey"
-                 class="w-full rounded-md bg-slate-800 border border-slate-700 px-2 py-1.5 text-sm font-mono text-sky-200 focus:ring-1 focus:ring-sky-500 outline-none"
-                 placeholder="Paste API key"
+                 class="w-full rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-1.5 text-xs font-mono text-bravo-pink200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition"
+                 placeholder="Paste HMAC authorization key"
                  autocomplete="off">
         </label>
-        <label class="w-40">
-          <span class="block text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">Default namespace</span>
+        <label class="w-36">
+          <span class="block text-[9px] uppercase tracking-wider text-slate-400 mb-1 font-semibold">Default Namespace</span>
           <input type="text" x-model="defaultNs" @change="localStorage.setItem('trimcp_default_ns', defaultNs)"
-                 class="w-full rounded-md bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs font-mono"
+                 class="w-full rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-1.5 text-xs font-mono text-slate-200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition"
                  placeholder="UUID (optional)">
         </label>
       </div>
@@ -58,283 +166,362 @@
   <!-- Toasts -->
   <div class="fixed top-20 right-4 z-50 flex flex-col gap-2 max-w-sm" aria-live="polite">
     <template x-for="t in toasts" :key="t.id">
-      <div class="px-3 py-2 rounded-lg shadow-lg text-sm border"
-           :class="t.kind === 'error' ? 'bg-red-950 border-red-800 text-red-100' : 'bg-emerald-950 border-emerald-800 text-emerald-100'"
+      <div class="px-4 py-2.5 rounded-xl shadow-2xl text-xs border font-medium flex items-center gap-2"
+           :class="t.kind === 'error' ? 'bg-red-950 border-red-800 text-red-200' : 'bg-emerald-950 border-emerald-800 text-emerald-200'"
            x-text="t.msg"></div>
     </template>
   </div>
 
-  <main class="max-w-7xl mx-auto px-4 py-8 space-y-12">
+  <!-- Main Container -->
+  <main class="max-w-7xl mx-auto px-4 py-8 space-y-20 w-full flex-grow">
+
+    <!-- TriMCP Welcome Banner with Core Network Visualization -->
+    <section class="relative overflow-hidden rounded-2xl border border-bravo-blue/30 bg-gradient-to-r from-bravo-card via-[#002250]/40 to-bravo-navy p-6 sm:p-8 shadow-2xl">
+      <!-- Glow effects -->
+      <div class="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-bravo-pink/10 blur-[100px] pointer-events-none"></div>
+      <div class="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-bravo-blue/10 blur-[100px] pointer-events-none"></div>
+      
+      <div class="relative flex flex-col md:flex-row items-center gap-6">
+        <!-- Inlined Vector TriMCP Memory Core Visual -->
+        <div class="flex-shrink-0">
+          <svg class="w-24 h-24 drop-shadow-[0_0_20px_rgba(0,104,249,0.4)] animate-bounce-slow" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Concentric dynamic storage layers -->
+            <circle cx="50" cy="50" r="42" stroke="#0068F9" stroke-width="1" stroke-dasharray="4 2" class="opacity-30" />
+            <circle cx="50" cy="50" r="32" stroke="#FF7BE0" stroke-width="1" stroke-dasharray="3 3" class="opacity-55" />
+            <circle cx="50" cy="50" r="22" stroke="#29F285" stroke-width="1.5" stroke-dasharray="6 2" />
+            <!-- Concentric solid core boundary -->
+            <circle cx="50" cy="50" r="12" fill="#000714" stroke="#FFCE2D" stroke-width="2" />
+            
+            <!-- Radiating connection lines -->
+            <line x1="50" y1="8" x2="50" y2="92" stroke="#ffffff" stroke-width="0.5" stroke-dasharray="1 4" class="opacity-40" />
+            <line x1="8" y1="50" x2="92" y2="50" stroke="#ffffff" stroke-width="0.5" stroke-dasharray="1 4" class="opacity-40" />
+            
+            <!-- Nodes on the rings -->
+            <circle cx="50" cy="18" r="4.5" fill="#0068F9" class="animate-pulse" />
+            <circle cx="50" cy="82" r="4.5" fill="#0068F9" />
+            <circle cx="18" cy="50" r="4.5" fill="#FF7BE0" />
+            <circle cx="82" cy="50" r="4.5" fill="#FF7BE0" class="animate-pulse" />
+            <circle cx="34" cy="34" r="3.5" fill="#29F285" />
+            <circle cx="66" cy="66" r="3.5" fill="#29F285" />
+            <circle cx="66" cy="34" r="3.5" fill="#FFCE2D" />
+            <circle cx="34" cy="66" r="3.5" fill="#FFCE2D" />
+            
+            <!-- Core visual -->
+            <circle cx="50" cy="50" r="5" fill="#FFFFFF" class="animate-ping" />
+            <circle cx="50" cy="50" r="4" fill="#FFFFFF" />
+          </svg>
+        </div>
+        <!-- Welcome Message -->
+        <div class="flex-grow text-center md:text-left">
+          <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold font-hanken bg-bravo-blue/20 text-bravo-blue300 tracking-wider mb-2 uppercase border border-bravo-blue/30">
+            <span class="h-1.5 w-1.5 rounded-full bg-bravo-blue animate-ping"></span>
+            Telemetry Engine Active
+          </span>
+          <h2 class="text-2xl sm:text-3xl font-extrabold tracking-tight text-white font-hanken">Welcome to <span class="text-transparent bg-clip-text bg-gradient-to-r from-bravo-blue to-bravo-green">TriMCP Admin Console</span></h2>
+          <p class="text-slate-400 text-[11px] leading-relaxed mt-2.5 max-w-3xl font-medium">
+            The mathematical and telemetry core of the TriMCP Memory Engine. Designed with enterprise-grade precision, high-contrast aesthetics, and clear data visualization to monitor relational models, document archives, high-speed caches, and file systems. Use the controllers below to audit real-time RLS logs, manage token-based resource quotas, explore GraphRAG networks, or deploy model embedding migrations.
+          </p>
+        </div>
+      </div>
 
     <!-- Health -->
-    <section id="health" class="scroll-mt-24">
-      <h2 class="text-lg font-semibold border-b border-slate-800 pb-2 mb-4">Stack health</h2>
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <section id="health" class="scroll-mt-32 pt-12 border-t border-bravo-blue/10">
+      <div class="border-b border-bravo-blue/20 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+        <div>
+          <h2 class="text-lg font-bold font-hanken tracking-tight text-white uppercase">Stack health status</h2>
+          <p class="text-xs text-slate-400 mt-1">Realtime connectivity telemetry probes across infrastructure nodes</p>
+        </div>
+        <span class="self-start sm:self-auto text-[10px] font-mono text-slate-500 uppercase tracking-widest font-bold bg-bravo-blue/10 px-2.5 py-1 rounded-md border border-bravo-blue/20">REALTIME TELEMETRY</span>
+      </div>
+      
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <template x-for="(status, key) in healthRows" :key="key">
-          <div class="rounded-lg border border-slate-800 bg-slate-900 p-4">
-            <p class="text-xs uppercase tracking-wide text-slate-500 mb-1" x-text="key"></p>
-            <p class="font-mono text-sm"
-               :class="status === 'up' ? 'text-emerald-400' : (status === 'loading' ? 'text-slate-500' : 'text-amber-300')"
-               x-text="status"></p>
+          <div class="rounded-xl border border-bravo-blue/20 bg-bravo-card p-4 transition duration-200 hover:border-bravo-blue/40 shadow-lg">
+            <p class="text-[10px] uppercase tracking-widest text-slate-400 mb-1 font-bold" x-text="key"></p>
+            <div class="flex items-center gap-2">
+              <span class="relative flex h-2 w-2" x-show="status === 'up'">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-bravo-green opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2 w-2 bg-bravo-green"></span>
+              </span>
+              <p class="font-mono text-sm font-semibold tracking-wide"
+                 :class="status === 'up' ? 'text-bravo-green' : (status === 'loading' ? 'text-slate-500' : 'text-bravo-yellow')"
+                 x-text="status.toUpperCase()"></p>
+            </div>
           </div>
         </template>
       </div>
-      <div class="mt-4 flex flex-wrap gap-2 items-center">
+      
+      <div class="mt-4 flex flex-wrap gap-3 items-center justify-between">
         <button type="button" @click="loadHealth()"
-                class="rounded-md bg-sky-600 hover:bg-sky-500 px-3 py-1.5 text-sm font-medium disabled:opacity-50"
-                :disabled="loadingHealth">Refresh</button>
-        <span class="text-xs text-slate-500">Last refresh: <span x-text="lastHealthAt || '—'"></span></span>
+                class="rounded-lg bg-bravo-blue hover:bg-bravo-blue/90 px-4 py-2 text-xs font-bold text-white transition disabled:opacity-50 tracking-wide shadow-md shadow-bravo-blue/20"
+                :disabled="loadingHealth">Refresh Health</button>
+        <span class="text-xs text-slate-400 font-medium">Last active probe: <span class="text-bravo-pink300 font-mono" x-text="lastHealthAt || '—'"></span></span>
       </div>
     </section>
 
     <!-- Event Log -->
-    <section id="events" class="scroll-mt-24" x-data="eventLogComponent" x-init="mount($root)">
-      <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-4">
+    <section id="events" class="scroll-mt-32 pt-12 border-t border-bravo-blue/10" x-data="eventLogComponent" x-init="mount()">
+      <div class="border-b border-bravo-blue/20 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
-          <h2 class="text-lg font-semibold">Event log</h2>
-          <p class="text-sm text-slate-500 mt-1">Backed by <code class="text-sky-300">GET /api/admin/events</code> &amp; <code class="text-sky-300">/summary</code></p>
+          <h2 class="text-lg font-bold font-hanken tracking-tight text-white uppercase">Event stream trace</h2>
+          <p class="text-xs text-slate-400 mt-1">Telemetry feed via <code class="text-bravo-pink font-semibold">GET /api/admin/events</code></p>
         </div>
         <button type="button" @click="refreshAll()" :disabled="loading"
-                class="self-start rounded-md bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-700 disabled:opacity-50">
-          <span x-show="!loading">Refresh</span>
-          <span x-show="loading">Loading…</span>
+                class="self-start rounded-lg bg-bravo-card border border-bravo-blue/30 px-4 py-2 text-xs font-bold text-slate-200 hover:border-bravo-pink hover:text-white transition disabled:opacity-50 shadow-md">
+          <span x-show="!loading">Sync Stream</span>
+          <span x-show="loading" class="flex items-center gap-1"><span class="animate-spin h-3.5 w-3.5 border-2 border-slate-300 border-t-transparent rounded-full"></span>Loading…</span>
         </button>
       </div>
 
       <!-- Summary chips -->
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
-        <div class="rounded-lg border border-slate-800 bg-slate-900 p-3">
-          <p class="text-xs text-slate-500">Total events (filtered window)</p>
-          <p class="text-2xl font-semibold text-slate-100" x-text="summary.total_events ?? '—'"></p>
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+        <div class="rounded-xl border border-bravo-blue/20 bg-bravo-card p-4 shadow-lg">
+          <p class="text-[10px] uppercase tracking-widest text-slate-400 mb-1 font-bold">Captured event volume</p>
+          <p class="text-3xl font-extrabold text-white font-hanken" x-text="summary.total_events ?? '—'"></p>
         </div>
-        <div class="rounded-lg border border-slate-800 bg-slate-900 p-3">
-          <p class="text-xs text-slate-500">Latest event</p>
-          <p class="text-sm font-mono text-slate-300 truncate" x-text="summary.latest_occurred_at || '—'"></p>
+        <div class="rounded-xl border border-bravo-blue/20 bg-bravo-card p-4 shadow-lg">
+          <p class="text-[10px] uppercase tracking-widest text-slate-400 mb-1 font-bold">Latest entry occurred</p>
+          <p class="text-xs font-mono text-bravo-pink300 truncate mt-2 font-semibold" x-text="summary.latest_occurred_at || '—'"></p>
         </div>
-        <div class="rounded-lg border border-amber-900/50 bg-amber-950/30 p-3">
-          <p class="text-xs text-amber-200/70">Replay runs failed</p>
-          <p class="text-2xl font-semibold text-amber-300" x-text="summary.replay_failed_runs ?? '—'"></p>
+        <div class="rounded-xl border border-bravo-pink/30 bg-bravo-pink/10 p-4 shadow-lg">
+          <p class="text-[10px] uppercase tracking-widest text-bravo-pink mb-1 font-bold">Failed replay attempts</p>
+          <p class="text-3xl font-extrabold text-bravo-pink font-hanken" x-text="summary.replay_failed_runs ?? '0'"></p>
         </div>
-        <div class="rounded-lg border border-slate-800 bg-slate-900 p-3">
-          <p class="text-xs text-slate-500">Top event types</p>
-          <ul class="mt-1 text-xs font-mono space-y-0.5 max-h-16 overflow-y-auto">
+        <div class="rounded-xl border border-bravo-blue/20 bg-bravo-card p-4 shadow-lg">
+          <p class="text-[10px] uppercase tracking-widest text-slate-400 mb-1 font-bold">Frequent types</p>
+          <ul class="mt-1.5 text-[10px] font-mono space-y-1 max-h-16 overflow-y-auto">
             <template x-for="(count, typ) in (summary.by_event_type || {})" :key="typ">
-              <li><span class="text-slate-400" x-text="typ"></span> <span class="text-sky-300" x-text="count"></span></li>
+              <li class="flex justify-between border-b border-bravo-blue/10 pb-0.5"><span class="text-slate-400 truncate max-w-[130px]" x-text="typ"></span> <span class="text-bravo-green font-bold" x-text="count"></span></li>
             </template>
           </ul>
         </div>
       </div>
 
       <!-- Filters -->
-      <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-4 mb-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
+      <div class="rounded-xl border border-bravo-blue/20 bg-bravo-card p-4 mb-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4 shadow-lg">
         <label class="lg:col-span-2">
-          <span class="text-xs text-slate-500">namespace_id</span>
-          <input type="text" x-model="filters.namespace_id" class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs font-mono">
+          <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold">namespace_id</span>
+          <input type="text" x-model="filters.namespace_id" class="w-full mt-1.5 rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-1.5 text-xs font-mono text-slate-200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition">
         </label>
         <label>
-          <span class="text-xs text-slate-500">event_type</span>
-          <input type="text" x-model="filters.event_type" class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs">
+          <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold">event_type</span>
+          <input type="text" x-model="filters.event_type" class="w-full mt-1.5 rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-1.5 text-xs text-slate-200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition">
         </label>
         <label>
-          <span class="text-xs text-slate-500">agent_id</span>
-          <input type="text" x-model="filters.agent_id" class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs">
+          <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold">agent_id</span>
+          <input type="text" x-model="filters.agent_id" class="w-full mt-1.5 rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-1.5 text-xs text-slate-200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition">
         </label>
         <label>
-          <span class="text-xs text-slate-500">from (ISO)</span>
-          <input type="text" x-model="filters.from" placeholder="UTC ISO" class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs font-mono">
+          <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold">from (ISO)</span>
+          <input type="text" x-model="filters.from" placeholder="UTC ISO" class="w-full mt-1.5 rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-1.5 text-xs font-mono text-slate-200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition">
         </label>
         <label>
-          <span class="text-xs text-slate-500">to (ISO)</span>
-          <input type="text" x-model="filters.to" class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs font-mono">
+          <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold">to (ISO)</span>
+          <input type="text" x-model="filters.to" class="w-full mt-1.5 rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-1.5 text-xs font-mono text-slate-200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition">
         </label>
       </div>
 
-      <div class="overflow-x-auto rounded-xl border border-slate-800">
-        <table class="min-w-full text-left text-sm">
-          <thead class="bg-slate-900 text-xs uppercase text-slate-500">
+      <div class="overflow-x-auto rounded-xl border border-bravo-blue/20 bg-bravo-card shadow-lg">
+        <table class="min-w-full text-left text-xs">
+          <thead class="bg-[#00122e]/80 text-[10px] uppercase text-bravo-pink300 tracking-wider font-bold">
             <tr>
-              <th class="px-3 py-2">occurred_at</th>
-              <th class="px-3 py-2">seq</th>
-              <th class="px-3 py-2">type</th>
-              <th class="px-3 py-2">namespace</th>
-              <th class="px-3 py-2">agent</th>
-              <th class="px-3 py-2">parent</th>
+              <th class="px-4 py-3">occurred_at</th>
+              <th class="px-4 py-3">seq</th>
+              <th class="px-4 py-3">type</th>
+              <th class="px-4 py-3">namespace</th>
+              <th class="px-4 py-3">agent</th>
+              <th class="px-4 py-3">parent</th>
             </tr>
           </thead>
           <tbody>
             <template x-for="row in items" :key="row.id">
-              <tr class="border-t border-slate-800 hover:bg-slate-900/80">
-                <td class="px-3 py-2 font-mono text-xs text-slate-300" x-text="row.occurred_at"></td>
-                <td class="px-3 py-2 font-mono text-xs" x-text="row.event_seq"></td>
-                <td class="px-3 py-2 text-sky-300" x-text="row.event_type"></td>
-                <td class="px-3 py-2 font-mono text-xs truncate max-w-[140px]" :title="row.namespace_id" x-text="row.namespace_id"></td>
-                <td class="px-3 py-2 text-xs" x-text="row.agent_id"></td>
-                <td class="px-3 py-2 font-mono text-xs text-slate-500 truncate max-w-[100px]" x-text="row.parent_event_id || '—'"></td>
+              <tr class="border-t border-bravo-blue/10 hover:bg-bravo-blue/10 transition">
+                <td class="px-4 py-2.5 font-mono text-slate-300" x-text="row.occurred_at"></td>
+                <td class="px-4 py-2.5 font-mono font-semibold" x-text="row.event_seq"></td>
+                <td class="px-4 py-2.5 text-bravo-blue300 font-semibold" x-text="row.event_type"></td>
+                <td class="px-4 py-2.5 font-mono truncate max-w-[140px]" :title="row.namespace_id" x-text="row.namespace_id"></td>
+                <td class="px-4 py-2.5 font-medium" x-text="row.agent_id"></td>
+                <td class="px-4 py-2.5 font-mono text-slate-500 truncate max-w-[100px]" x-text="row.parent_event_id || '—'"></td>
               </tr>
             </template>
             <tr x-show="items.length === 0 && !loading">
-              <td colspan="6" class="px-3 py-8 text-center text-slate-500">No events. Adjust filters or refresh.</td>
+              <td colspan="6" class="px-4 py-8 text-center text-slate-500 font-medium">No system events matches the active filters.</td>
             </tr>
           </tbody>
         </table>
       </div>
-      <div class="flex justify-between items-center mt-3 text-sm text-slate-500">
-        <span>Page <span x-text="page"></span> · <span x-text="total"></span> total</span>
+      <div class="flex justify-between items-center mt-3 text-xs text-slate-400 font-medium">
+        <span>Displaying page <span class="text-bravo-pink font-bold" x-text="page"></span> · <span class="text-white font-bold" x-text="total"></span> total records</span>
         <div class="flex gap-2">
-          <button type="button" class="rounded border border-slate-700 px-2 py-1 disabled:opacity-40" :disabled="page <= 1 || loading" @click="prevPage()">Prev</button>
-          <button type="button" class="rounded border border-slate-700 px-2 py-1 disabled:opacity-40" :disabled="loading || (page * limit) >= total" @click="nextPage()">Next</button>
+          <button type="button" class="rounded-lg border border-bravo-blue/30 px-3 py-1.5 hover:border-bravo-pink hover:text-white disabled:opacity-30 disabled:pointer-events-none transition" :disabled="page <= 1 || loading" @click="prevPage()">Prev</button>
+          <button type="button" class="rounded-lg border border-bravo-blue/30 px-3 py-1.5 hover:border-bravo-pink hover:text-white disabled:opacity-30 disabled:pointer-events-none transition" :disabled="loading || (page * limit) >= total" @click="nextPage()">Next</button>
         </div>
       </div>
     </section>
 
     <!-- Quotas -->
-    <section id="quotas" class="scroll-mt-24" x-data="quotaComponent" x-init="mount($root)">
-      <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-4">
+    <section id="quotas" class="scroll-mt-32 pt-12 border-t border-bravo-blue/10" x-data="quotaComponent" x-init="mount()">
+      <div class="border-b border-bravo-blue/20 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
-          <h2 class="text-lg font-semibold">Resource quotas</h2>
-          <p class="text-sm text-slate-500 mt-1"><code class="text-sky-300">GET /api/admin/quotas</code> · <code class="text-sky-300">/summary</code></p>
+          <h2 class="text-lg font-bold font-hanken tracking-tight text-white uppercase">Token Resource quotas</h2>
+          <p class="text-xs text-slate-400 mt-1">Live consumption rate limiting via <code class="text-bravo-pink font-semibold">GET /api/admin/quotas</code></p>
         </div>
         <div class="flex flex-wrap gap-2">
-          <select x-model="window" @change="refresh()" class="rounded-md bg-slate-800 border border-slate-700 text-sm px-2 py-1.5">
+          <select x-model="window" @change="refresh()" class="rounded-lg bg-bravo-card border border-bravo-blue/30 text-xs px-3 py-2 text-slate-200 outline-none focus:border-bravo-pink transition">
             <option value="hour">window: hour</option>
             <option value="day">window: day</option>
             <option value="month">window: month</option>
           </select>
           <button type="button" @click="refresh()" :disabled="loading"
-                  class="rounded-md bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-700">Refresh</button>
+                  class="rounded-lg bg-bravo-blue hover:bg-bravo-blue/90 px-4 py-2 text-xs font-bold text-white transition disabled:opacity-50">Sync Quotas</button>
         </div>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
-        <div class="rounded-lg border border-slate-800 bg-slate-900 p-4">
-          <p class="text-xs text-slate-500 mb-1">Aggregate utilization</p>
-          <p class="text-3xl font-bold text-sky-300"><span x-text="totals.utilization_pct ?? 0"></span>%</p>
-          <p class="text-xs text-slate-500 mt-1"><span x-text="totals.used ?? 0"></span> / <span x-text="totals.limit ?? 0"></span> units</p>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div class="rounded-xl border border-bravo-blue/20 bg-bravo-card p-4 shadow-lg">
+          <p class="text-[10px] uppercase tracking-widest text-slate-400 mb-1 font-bold">Aggregate system utilization</p>
+          <p class="text-3xl font-extrabold text-bravo-pink font-hanken"><span x-text="totals.utilization_pct ?? 0"></span>%</p>
+          <p class="text-xs text-slate-400 mt-1"><span class="font-mono text-white font-semibold" x-text="totals.used ?? 0"></span> of <span class="font-mono text-slate-400" x-text="totals.limit ?? 0"></span> consumed units</p>
         </div>
-        <div class="rounded-lg border border-amber-900/40 bg-amber-950/20 p-4 md:col-span-2">
-          <p class="text-xs text-amber-200/80 mb-2">Near limit (&ge; 80%)</p>
-          <ul class="text-sm space-y-1 max-h-28 overflow-y-auto">
+        <div class="rounded-xl border border-bravo-pink/30 bg-bravo-pink/5 p-4 md:col-span-2 shadow-lg">
+          <p class="text-[10px] uppercase tracking-widest text-bravo-pink mb-2 font-bold">Namespaces near threshold (&ge; 80%)</p>
+          <ul class="text-xs space-y-1 max-h-28 overflow-y-auto pr-2">
             <template x-for="(n, i) in nearLimit" :key="i">
-              <li class="font-mono text-xs text-slate-300">
-                <span x-text="n.resource_type"></span>
-                <span class="text-slate-500" x-text="n.namespace_id?.slice(0,8)+'…'"></span>
-                <span class="text-amber-300" x-text="n.utilization_pct + '%'"></span>
+              <li class="font-mono text-slate-300 flex justify-between border-b border-bravo-blue/10 pb-0.5">
+                <span>
+                  <span class="text-bravo-pink300 font-bold" x-text="n.resource_type"></span>
+                  <span class="text-slate-500 text-[10px]" x-text="'('+n.namespace_id?.slice(0,12)+'…)'"></span>
+                </span>
+                <span class="text-bravo-pink font-bold" x-text="n.utilization_pct + '%'"></span>
               </li>
             </template>
-            <li x-show="!nearLimit.length" class="text-slate-500">None</li>
+            <li x-show="!nearLimit.length" class="text-slate-500 font-medium">No namespaces are currently hitting resource constraints.</li>
           </ul>
         </div>
       </div>
 
-      <div class="space-y-4">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <template x-for="tool in tools" :key="tool.namespace_id + ':' + (tool.agent_id || '') + ':' + tool.resource_type">
-          <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-            <div class="flex flex-wrap justify-between gap-2 mb-2">
-              <div>
-                <span class="text-sky-300 font-medium" x-text="tool.resource_type"></span>
-                <span class="text-slate-500 text-xs font-mono ml-2" x-text="tool.namespace_id?.slice(0,8)+'…'"></span>
+          <div class="rounded-xl border border-bravo-blue/20 bg-bravo-card p-4 shadow-lg flex flex-col justify-between">
+            <div>
+              <div class="flex justify-between items-start gap-2 mb-2">
+                <div>
+                  <span class="text-white font-bold text-xs" x-text="tool.resource_type.toUpperCase()"></span>
+                  <span class="text-slate-500 text-[10px] font-mono block mt-0.5" x-text="tool.namespace_id"></span>
+                </div>
+                <div class="text-right">
+                  <span class="text-xs font-bold text-white font-mono" x-text="tool.used.toLocaleString() + ' / ' + tool.limit.toLocaleString()"></span>
+                  <span class="text-[10px] text-slate-400 block mt-0.5">remaining: <span class="text-bravo-green font-bold" x-text="tool.remaining.toLocaleString()"></span></span>
+                </div>
               </div>
-              <div class="text-xs text-slate-500">
-                <span x-text="tool.used"></span> / <span x-text="tool.limit"></span>
-                <span class="text-slate-600">· remaining </span><span class="text-emerald-400" x-text="tool.remaining"></span>
+              <div class="h-2 rounded-full bg-bravo-navy overflow-hidden">
+                <div class="h-full rounded-full transition-all duration-500"
+                     :class="pctClass(tool)"
+                     :style="'width:' + barWidth(tool) + '%'"></div>
               </div>
             </div>
-            <div class="h-2 rounded-full bg-slate-800 overflow-hidden">
-              <div class="h-full rounded-full transition-all duration-500"
-                   :class="pctClass(tool)"
-                   :style="'width:' + barWidth(tool) + '%'"></div>
-            </div>
-            <p class="text-[10px] text-slate-600 mt-2 font-mono truncate" x-text="'reset ' + (tool.reset_at || '—')"></p>
+            <p class="text-[9px] text-slate-500 mt-3 font-mono border-t border-bravo-blue/10 pt-1.5" x-text="'window reset at: ' + (tool.reset_at || '—')"></p>
           </div>
         </template>
-        <p x-show="!tools.length && !loading" class="text-slate-500 text-sm">No quota rows. Pick a namespace filter or ingest traffic.</p>
+        <p x-show="!tools.length && !loading" class="text-slate-500 text-xs font-medium col-span-2 py-4 text-center">No token quota definitions allocated. Deploy workloads to sync rates.</p>
       </div>
     </section>
 
     <!-- Graph -->
-    <section id="graph" class="scroll-mt-24" x-data="graphVisualizer" x-init="mount($root)">
-      <div class="mb-4">
-        <h2 class="text-lg font-semibold">Graph visualizer</h2>
-        <p class="text-sm text-slate-500 mt-1"><code class="text-sky-300">POST /api/admin/graph/explore</code></p>
+    <section id="graph" class="scroll-mt-32 pt-12 border-t border-bravo-blue/10" x-data="graphVisualizer" x-init="mount()">
+      <div class="border-b border-bravo-blue/20 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+        <div>
+          <h2 class="text-lg font-bold font-hanken tracking-tight text-white uppercase">GraphRAG Subgraph visualizer</h2>
+          <p class="text-xs text-slate-400 mt-1">Endpoint interface: <code class="text-bravo-pink font-semibold">POST /api/admin/graph/explore</code></p>
+        </div>
       </div>
 
-      <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <div class="rounded-xl border border-bravo-blue/20 bg-bravo-card p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4 shadow-lg">
         <label class="lg:col-span-2">
-          <span class="text-xs text-slate-500">namespace_id *</span>
-          <input type="text" x-model="form.namespace_id" class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs font-mono">
+          <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold">namespace_id *</span>
+          <input type="text" x-model="form.namespace_id" class="w-full mt-1.5 rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-1.5 text-xs font-mono text-slate-200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition">
         </label>
         <label>
-          <span class="text-xs text-slate-500">max_depth</span>
-          <input type="number" min="1" max="3" x-model.number="form.max_depth" class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs">
+          <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold">max_depth</span>
+          <input type="number" min="1" max="3" x-model.number="form.max_depth" class="w-full mt-1.5 rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-1.5 text-xs text-slate-200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition">
         </label>
         <label>
-          <span class="text-xs text-slate-500">anchor_top_k</span>
-          <input type="number" min="1" max="10" x-model.number="form.anchor_top_k" class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs">
+          <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold">anchor_top_k</span>
+          <input type="number" min="1" max="10" x-model.number="form.anchor_top_k" class="w-full mt-1.5 rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-1.5 text-xs text-slate-200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition">
         </label>
         <label class="md:col-span-2 lg:col-span-4">
-          <span class="text-xs text-slate-500">query *</span>
-          <input type="text" x-model="form.query" class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-sm">
+          <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold">query *</span>
+          <input type="text" x-model="form.query" class="w-full mt-1.5 rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-2 text-xs text-slate-200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition">
         </label>
         <label class="md:col-span-2">
-          <span class="text-xs text-slate-500">as_of (optional ISO)</span>
-          <input type="text" x-model="form.as_of" class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs font-mono">
+          <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold">as_of (optional ISO)</span>
+          <input type="text" x-model="form.as_of" class="w-full mt-1.5 rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-1.5 text-xs font-mono text-slate-200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition">
         </label>
-        <div class="flex items-end">
+        <div class="flex items-end md:col-span-2">
           <button type="button" @click="explore()" :disabled="loading"
-                  class="rounded-md bg-violet-600 hover:bg-violet-500 px-4 py-2 text-sm font-medium disabled:opacity-50 w-full md:w-auto">
-            Explore graph
+                  class="rounded-lg bg-gradient-to-r from-bravo-blue to-bravo-pink hover:opacity-90 px-5 py-2.5 text-xs font-bold text-white transition disabled:opacity-50 w-full shadow-lg shadow-bravo-blue/20">
+            Explore Knowledge Network
           </button>
         </div>
       </div>
 
       <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        <div class="xl:col-span-2 rounded-xl border border-slate-800 bg-slate-900 overflow-hidden">
-          <div class="aspect-[16/10] min-h-[280px] relative bg-slate-950">
+        <!-- SVG Canvas Card with custom node rendering -->
+        <div class="xl:col-span-2 rounded-xl border border-bravo-blue/20 bg-bravo-card overflow-hidden shadow-lg">
+          <div class="aspect-[16/10] min-h-[300px] relative bg-bravo-navy">
             <svg class="w-full h-full" :viewBox="viewBox" preserveAspectRatio="xMidYMid meet">
               <!-- edges -->
-              <template x-for="(e, ei) in layout.edges" :key="'e'+ei">
-                <line :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2"
-                      stroke="#475569" stroke-width="1.2" opacity="0.7"/>
+              <template x-for="(edge, ei) in layout.edges" :key="'edge-'+ei">
+                <line :x1="edge.x1" :y1="edge.y1" :x2="edge.x2" :y2="edge.y2"
+                      stroke="#0068F9" stroke-width="1.5" opacity="0.4"/>
               </template>
               <!-- nodes -->
-              <template x-for="(n, ni) in layout.nodes" :key="'n'+ni">
-                <g :transform="'translate('+n.x+','+n.y+')'">
-                  <circle r="22" :fill="n.center ? '#0ea5e9' : '#1e293b'" stroke="#64748b" stroke-width="1.5"/>
-                  <text text-anchor="middle" dy="4" class="fill-slate-200 text-[9px] font-mono pointer-events-none"
-                        x-text="truncate(n.label, 12)"></text>
+              <template x-for="(node, ni) in layout.nodes" :key="'node-'+ni">
+                <g :transform="'translate('+node.x+','+node.y+')'">
+                  <!-- Glowing circle background matching Bravo palettes -->
+                  <circle r="22" :fill="node.center ? '#0068F9' : '#001a3f'" stroke="#FF7BE0" stroke-width="2" class="transition duration-300 hover:scale-110 cursor-pointer"/>
+                  <text text-anchor="middle" dy="4" class="fill-slate-100 text-[8px] font-mono font-bold pointer-events-none"
+                        x-text="truncate(node.label, 12)"></text>
                 </g>
               </template>
             </svg>
-            <div x-show="!layout.nodes.length && !loading" class="absolute inset-0 flex items-center justify-center text-slate-600 text-sm">
-              Run a query to render the subgraph.
+            <div x-show="!layout.nodes.length && !loading" class="absolute inset-0 flex items-center justify-center text-slate-500 text-xs font-medium">
+              Run a telemetry query to render the relational memory subgraph.
             </div>
           </div>
-          <p class="text-xs text-slate-500 px-3 py-2 border-t border-slate-800">
-            Anchor: <span class="text-sky-300 font-mono" x-text="result.anchor || '—'"></span>
+          <p class="text-xs text-slate-400 px-4 py-2.5 border-t border-bravo-blue/20 bg-[#00122e]/60 font-medium">
+            Active Query Anchor: <span class="text-bravo-pink font-mono font-bold" x-text="result.anchor || '—'"></span>
           </p>
         </div>
+        
+        <!-- Lists -->
         <div class="space-y-4">
-          <div class="rounded-xl border border-slate-800 bg-slate-900 p-3 max-h-64 overflow-y-auto">
-            <h3 class="text-xs uppercase text-slate-500 mb-2">Edges</h3>
-            <ul class="text-xs font-mono space-y-1 text-slate-300">
-              <template x-for="(e, i) in (result.edges || [])" :key="i">
-                <li>
-                  <span class="text-violet-300" x-text="e.subject"></span>
-                  <span class="text-slate-600" x-text="e.predicate"></span>
-                  <span class="text-sky-300" x-text="e.object"></span>
+          <div class="rounded-xl border border-bravo-blue/20 bg-bravo-card p-4 max-h-64 overflow-y-auto shadow-lg">
+            <h3 class="text-[10px] uppercase tracking-widest text-slate-400 mb-2.5 font-bold">Discovered Edges</h3>
+            <ul class="text-[10px] font-mono space-y-1.5 text-slate-300 pr-2">
+              <template x-for="(edge, i) in (result.edges || [])" :key="'list-edge-'+i">
+                <li class="border-b border-bravo-blue/10 pb-1">
+                  <span class="text-bravo-pink300 font-bold" x-text="edge.subject"></span>
+                  <span class="text-slate-400" x-text="edge.predicate"></span>
+                  <span class="text-bravo-blue300 font-bold" x-text="edge.object"></span>
                 </li>
               </template>
+              <li x-show="!(result.edges || []).length" class="text-slate-500 font-medium">No edges found.</li>
             </ul>
           </div>
-          <div class="rounded-xl border border-slate-800 bg-slate-900 p-3 max-h-48 overflow-y-auto">
-            <h3 class="text-xs uppercase text-slate-500 mb-2">Nodes</h3>
-            <ul class="text-xs space-y-1">
-              <template x-for="(n, i) in (result.nodes || [])" :key="i">
-                <li class="text-slate-400"><span class="text-slate-200" x-text="n.label"></span>
-                  <span class="text-slate-600" x-text="'('+n.type+')'"></span>
-                  <span class="text-sky-500" x-text="n.distance?.toFixed?.(3)"></span>
+          <div class="rounded-xl border border-bravo-blue/20 bg-bravo-card p-4 max-h-48 overflow-y-auto shadow-lg">
+            <h3 class="text-[10px] uppercase tracking-widest text-slate-400 mb-2.5 font-bold">Discovered Nodes</h3>
+            <ul class="text-[10px] space-y-1.5 pr-2">
+              <template x-for="(node, i) in (result.nodes || [])" :key="'list-node-'+i">
+                <li class="text-slate-300 border-b border-bravo-blue/10 pb-1 font-mono flex justify-between">
+                  <span>
+                    <span class="text-white font-bold" x-text="node.label"></span>
+                    <span class="text-slate-500" x-text="'('+node.type+')'"></span>
+                  </span>
+                  <span class="text-bravo-green font-bold" x-text="node.distance?.toFixed?.(3)"></span>
                 </li>
               </template>
+              <li x-show="!(result.nodes || []).length" class="text-slate-500 font-medium">No nodes found.</li>
             </ul>
           </div>
         </div>
@@ -342,116 +529,437 @@
     </section>
 
     <!-- Embedding migration -->
-    <section id="embedding-migration" class="scroll-mt-24" x-data="embeddingMigrationPanel" x-init="mount($root)">
-      <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-4">
+    <section id="embedding-migration" class="scroll-mt-32 pt-12 border-t border-bravo-blue/10" x-data="embeddingMigrationPanel" x-init="mount()">
+      <div class="border-b border-bravo-blue/20 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
-          <h2 class="text-lg font-semibold">Embedding migration</h2>
-          <p class="text-sm text-slate-500 mt-1">
-            <code class="text-sky-300">/api/admin/embedding-models</code> ·
-            <code class="text-sky-300">/api/admin/embedding-migrations/…</code>
+          <h2 class="text-lg font-bold font-hanken tracking-tight text-white uppercase">Embedding registry &amp; migration</h2>
+          <p class="text-xs text-slate-400 mt-1">
+            Endpoint interfaces: <code class="text-bravo-pink font-semibold">/api/admin/embedding-models</code>
           </p>
         </div>
         <button type="button" @click="loadAll()" :disabled="loading"
-                class="self-start rounded-md bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-700 disabled:opacity-50">
-          <span x-show="!loading">Refresh</span>
-          <span x-show="loading">Loading…</span>
+                class="self-start rounded-lg bg-bravo-card border border-bravo-blue/30 px-4 py-2 text-xs font-bold hover:border-bravo-pink hover:text-white transition disabled:opacity-50 shadow-md">
+          <span x-show="!loading">Refresh Model Registry</span>
+          <span x-show="loading" class="flex items-center gap-1"><span class="animate-spin h-3.5 w-3.5 border-2 border-slate-300 border-t-transparent rounded-full"></span>Loading…</span>
         </button>
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-          <h3 class="text-sm font-medium text-slate-300 mb-3">Registered models</h3>
+        <!-- Models table -->
+        <div class="rounded-xl border border-bravo-blue/20 bg-bravo-card p-4 shadow-lg">
+          <h3 class="text-xs uppercase tracking-widest text-slate-400 mb-3 font-bold">Registered embedding models</h3>
           <div class="overflow-x-auto">
-            <table class="w-full text-xs font-mono">
+            <table class="w-full text-[10px] font-mono">
               <thead>
-                <tr class="text-left text-slate-500 border-b border-slate-800">
-                  <th class="pb-2 pr-2">name</th>
-                  <th class="pb-2 pr-2">dim</th>
-                  <th class="pb-2 pr-2">status</th>
-                  <th class="pb-2">id</th>
+                <tr class="text-left text-slate-400 border-b border-bravo-blue/20">
+                  <th class="pb-2 pr-2">model name</th>
+                  <th class="pb-2 pr-2 text-right">dimension</th>
+                  <th class="pb-2 pr-2 text-center">status</th>
+                  <th class="pb-2 text-right">uuid</th>
                 </tr>
               </thead>
               <tbody>
                 <template x-for="m in models" :key="m.id">
-                  <tr class="border-b border-slate-800/80 text-slate-300">
-                    <td class="py-2 pr-2" x-text="m.name"></td>
-                    <td class="py-2 pr-2" x-text="m.dimension"></td>
-                    <td class="py-2 pr-2">
-                      <span class="text-sky-400" x-text="m.status"></span>
+                  <tr class="border-b border-bravo-blue/10 text-slate-300 hover:bg-bravo-blue/5 transition">
+                    <td class="py-2.5 pr-2 font-semibold" x-text="m.name"></td>
+                    <td class="py-2.5 pr-2 text-right font-bold" x-text="m.dimension"></td>
+                    <td class="py-2.5 pr-2 text-center">
+                      <span class="rounded-full px-2 py-0.5 font-bold uppercase text-[9px] bg-bravo-blue/20 text-bravo-blue300 border border-bravo-blue/30" x-text="m.status"></span>
                     </td>
-                    <td class="py-2 truncate max-w-[8rem]" :title="m.id" x-text="m.id"></td>
+                    <td class="py-2.5 text-right text-slate-500 truncate max-w-[8rem]" :title="m.id" x-text="m.id"></td>
                   </tr>
                 </template>
               </tbody>
             </table>
           </div>
-          <p x-show="!models.length && !loading" class="text-slate-500 text-sm mt-2">No models in registry.</p>
+          <p x-show="!models.length && !loading" class="text-slate-500 text-xs font-medium mt-2 py-4 text-center">No deep learning model registries indexed in downstreams.</p>
         </div>
 
-        <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-4 space-y-4">
-          <h3 class="text-sm font-medium text-slate-300">Run migration</h3>
+        <!-- Run migration -->
+        <div class="rounded-xl border border-bravo-blue/20 bg-bravo-card p-4 space-y-4 shadow-lg">
+          <h3 class="text-xs uppercase tracking-widest text-slate-400 font-bold">Trigger target database migration</h3>
           <label class="block">
-            <span class="text-xs text-slate-500">target_model_id (UUID)</span>
+            <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold">target_model_id (UUID)</span>
             <input type="text" x-model="targetModelId"
-                   class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs font-mono"
-                   placeholder="uuid of retired / candidate model"
+                   class="w-full mt-1.5 rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-1.5 text-xs font-mono text-slate-200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition"
+                   placeholder="uuid of candidate embedding model"
                    autocomplete="off">
           </label>
           <button type="button" @click="startMigration()"
-                  class="rounded-md bg-emerald-700 hover:bg-emerald-600 px-3 py-2 text-sm font-medium disabled:opacity-50"
+                  class="rounded-lg bg-gradient-to-r from-bravo-green_sm to-bravo-blue hover:opacity-90 px-4 py-2 text-xs font-bold text-white transition disabled:opacity-50"
                   :disabled="loading || !targetModelId.trim()">
-            Start migration
+            Initialize Pipeline Migration
           </button>
 
-          <div class="border-t border-slate-800 pt-4 space-y-2">
+          <div class="border-t border-bravo-blue/20 pt-4 space-y-3">
             <label class="block">
-              <span class="text-xs text-slate-500">active migration_id (fill after start or paste)</span>
+              <span class="text-[10px] uppercase tracking-widest text-slate-400 font-bold">active migration_id (persists dynamically)</span>
               <input type="text" x-model="migrationId"
-                     class="w-full mt-1 rounded bg-slate-800 border border-slate-700 px-2 py-1.5 text-xs font-mono"
-                     placeholder="uuid"
+                     class="w-full mt-1.5 rounded-lg bg-bravo-navy border border-bravo-blue/30 px-3 py-1.5 text-xs font-mono text-slate-200 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition"
+                     placeholder="active pipeline uuid"
                      autocomplete="off">
             </label>
-            <div class="flex flex-wrap gap-2">
+            <div class="flex flex-wrap gap-2 pt-1">
               <button type="button" @click="refreshStatus()"
-                      class="rounded-md bg-slate-700 hover:bg-slate-600 px-3 py-1.5 text-xs">Status</button>
+                      class="rounded-lg bg-bravo-navy border border-bravo-blue/30 hover:border-bravo-pink hover:text-white px-3 py-1.5 text-xs font-semibold transition">Status</button>
               <button type="button" @click="validateMigration()"
-                      class="rounded-md bg-amber-700/80 hover:bg-amber-600 px-3 py-1.5 text-xs">Validate</button>
+                      class="rounded-lg bg-bravo-yellow/20 text-bravo-yellow border border-bravo-yellow/30 hover:bg-bravo-yellow/30 px-3 py-1.5 text-xs font-semibold transition">Validate</button>
               <button type="button" @click="commitMigration()"
-                      class="rounded-md bg-sky-700 hover:bg-sky-600 px-3 py-1.5 text-xs">Commit</button>
+                      class="rounded-lg bg-bravo-green/20 text-bravo-green border border-bravo-green/30 hover:bg-bravo-green/30 px-3 py-1.5 text-xs font-semibold transition">Commit</button>
               <button type="button" @click="abortMigration()"
-                      class="rounded-md bg-rose-900/80 hover:bg-rose-800 px-3 py-1.5 text-xs">Abort</button>
+                      class="rounded-lg bg-red-950/40 text-red-400 border border-red-800/30 hover:bg-red-950 px-3 py-1.5 text-xs font-semibold transition">Abort</button>
             </div>
-            <p class="text-[10px] text-slate-500">Validate runs a count gate; commit retires previous active models. Operations require a valid migration id.</p>
+            <p class="text-[9px] text-slate-500 leading-relaxed font-mono">Validate asserts vector alignments; Commit executes database retention overrides. Requires authentic pipeline ID.</p>
           </div>
 
           <template x-if="statusJson">
-            <pre class="text-[11px] font-mono text-emerald-300/90 bg-slate-950 border border-slate-800 rounded-lg p-3 overflow-x-auto max-h-64"
+            <pre class="text-[10px] font-mono text-bravo-green bg-bravo-navy border border-bravo-blue/20 rounded-lg p-3 overflow-x-auto max-h-64"
                  x-text="statusJson"></pre>
           </template>
         </div>
       </div>
     </section>
 
+    <!-- Datastores & Connectors Console -->
+    <section id="datastores" class="scroll-mt-32 pt-12 border-t border-bravo-blue/10" x-data="dbConsoleComponent" x-init="mount()">
+      <div class="border-b border-bravo-blue/20 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+        <div>
+          <h2 class="text-lg font-bold font-hanken tracking-tight text-white uppercase">Storage engines &amp; document connectors</h2>
+          <p class="text-xs text-slate-400 mt-1">Real-time status metrics and storage footprint telemetry across active drivers.</p>
+        </div>
+        <button type="button" @click="refreshActive()" :disabled="loading"
+                class="self-start rounded-lg bg-bravo-card border border-bravo-blue/30 px-4 py-2 text-xs font-bold text-slate-200 hover:border-bravo-pink hover:text-white transition disabled:opacity-50 shadow-md">
+          <span x-show="!loading">Refresh telemetry</span>
+          <span x-show="loading" class="flex items-center gap-1"><span class="animate-spin h-3.5 w-3.5 border-2 border-slate-300 border-t-transparent rounded-full"></span>Loading…</span>
+        </button>
+      </div>
+
+      <!-- Tab Switcher (Redesigned with Bravo secondary colors indicating storage categories) -->
+      <div class="border border-bravo-blue/20 bg-bravo-navy/80 rounded-xl p-1 mb-6 flex flex-wrap gap-1 shadow-lg">
+        <button type="button" @click="setTab('postgres')"
+                class="flex-1 min-w-[120px] rounded-lg px-3 py-2 text-xs font-bold transition-all duration-200 flex items-center justify-center gap-2"
+                :class="activeTab === 'postgres' ? 'bg-bravo-blue/20 text-bravo-blue300 border border-bravo-blue/40 shadow-lg' : 'text-slate-400 hover:text-slate-200 border border-transparent'">
+          <span class="relative flex h-1.5 w-1.5">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-bravo-blue opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-bravo-blue"></span>
+          </span>
+          PostgreSQL
+        </button>
+        <button type="button" @click="setTab('mongo')"
+                class="flex-1 min-w-[120px] rounded-lg px-3 py-2 text-xs font-bold transition-all duration-200 flex items-center justify-center gap-2"
+                :class="activeTab === 'mongo' ? 'bg-bravo-green/20 text-bravo-green border border-bravo-green/40 shadow-lg' : 'text-slate-400 hover:text-slate-200 border border-transparent'">
+          <span class="relative flex h-1.5 w-1.5">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-bravo-green opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-bravo-green"></span>
+          </span>
+          MongoDB
+        </button>
+        <button type="button" @click="setTab('redis')"
+                class="flex-1 min-w-[120px] rounded-lg px-3 py-2 text-xs font-bold transition-all duration-200 flex items-center justify-center gap-2"
+                :class="activeTab === 'redis' ? 'bg-bravo-pink/20 text-bravo-pink border border-bravo-pink/40 shadow-lg' : 'text-slate-400 hover:text-slate-200 border border-transparent'">
+          <span class="relative flex h-1.5 w-1.5">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-bravo-pink opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-bravo-pink"></span>
+          </span>
+          Redis
+        </button>
+        <button type="button" @click="setTab('minio')"
+                class="flex-1 min-w-[120px] rounded-lg px-3 py-2 text-xs font-bold transition-all duration-200 flex items-center justify-center gap-2"
+                :class="activeTab === 'minio' ? 'bg-bravo-yellow/20 text-bravo-yellow border border-bravo-yellow/40 shadow-lg' : 'text-slate-400 hover:text-slate-200 border border-transparent'">
+          <span class="relative flex h-1.5 w-1.5">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-bravo-yellow opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-bravo-yellow"></span>
+          </span>
+          MinIO (S3)
+        </button>
+        <button type="button" @click="setTab('connectors')"
+                class="flex-1 min-w-[120px] rounded-lg px-3 py-2 text-xs font-bold transition-all duration-200 flex items-center justify-center gap-2"
+                :class="activeTab === 'connectors' ? 'bg-purple-950/50 text-purple-300 border border-purple-800/40 shadow-lg' : 'text-slate-400 hover:text-slate-200 border border-transparent'">
+          <span class="relative flex h-1.5 w-1.5">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-purple-500"></span>
+          </span>
+          Connectors
+        </button>
+      </div>
+
+      <!-- Tab Content Panels -->
+      <div class="rounded-2xl border border-bravo-blue/20 bg-bravo-card p-5 min-h-[300px] flex flex-col justify-between shadow-2xl">
+        
+        <!-- Loading overlay -->
+        <div x-show="loading" class="flex flex-col items-center justify-center py-12 text-slate-500">
+          <div class="animate-spin rounded-full h-8 w-8 border-2 border-bravo-pink border-t-transparent mb-3"></div>
+          <span class="text-xs font-semibold">Probing relational cluster metrics…</span>
+        </div>
+
+        <div x-show="!loading">
+          
+          <!-- PostgreSQL Tab -->
+          <div x-show="activeTab === 'postgres'" class="space-y-6">
+            <!-- Stats overview -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div class="rounded-xl border border-bravo-blue/10 bg-[#00122e]/40 p-4">
+                <p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Total Relational Tables</p>
+                <p class="text-2xl font-bold text-white font-hanken" x-text="postgresData.tables?.length || 0"></p>
+              </div>
+              <div class="rounded-xl border border-bravo-blue/10 bg-[#00122e]/40 p-4">
+                <p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Time Partition Runway</p>
+                <p class="text-2xl font-bold font-hanken" 
+                   :class="postgresData.partition_status?.runway_months < 2 ? 'text-bravo-yellow' : 'text-bravo-green'"
+                   x-text="(postgresData.partition_status?.runway_months ?? 0) + ' months'"></p>
+              </div>
+              <div class="rounded-xl border border-bravo-blue/10 bg-[#00122e]/40 p-4">
+                <p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Overall Relational Size</p>
+                <p class="text-2xl font-bold text-white font-hanken" x-text="formatBytes(totalPgBytes())"></p>
+              </div>
+            </div>
+
+            <!-- Tables list -->
+            <div class="overflow-x-auto rounded-xl border border-bravo-blue/10">
+              <table class="min-w-full text-left text-xs">
+                <thead class="bg-[#00122e]/80 text-[10px] uppercase text-bravo-pink300 tracking-wider font-bold">
+                  <tr>
+                    <th class="px-4 py-2.5">Table Name</th>
+                    <th class="px-4 py-2.5 text-right">Row Count (Estimate)</th>
+                    <th class="px-4 py-2.5 text-right">Relation Size</th>
+                    <th class="px-4 py-2.5 text-right">Table Size (incl. Indexes)</th>
+                  </tr>
+                </thead>
+                <tbody class="text-slate-300">
+                  <template x-for="tbl in postgresData.tables" :key="tbl.name">
+                    <tr class="border-t border-bravo-blue/10 hover:bg-bravo-blue/5 transition">
+                      <td class="px-4 py-2.5 font-mono font-bold text-bravo-blue300" x-text="tbl.name"></td>
+                      <td class="px-4 py-2.5 text-right font-mono text-slate-200" x-text="tbl.row_count_estimate.toLocaleString()"></td>
+                      <td class="px-4 py-2.5 text-right font-mono text-slate-400" x-text="formatBytes(tbl.relation_size_bytes)"></td>
+                      <td class="px-4 py-2.5 text-right font-mono text-bravo-green font-bold" x-text="formatBytes(tbl.table_size_bytes)"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- MongoDB Tab -->
+          <div x-show="activeTab === 'mongo'" class="space-y-6">
+            <!-- Stats overview -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div class="rounded-xl border border-bravo-blue/10 bg-[#00122e]/40 p-4">
+                <p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Active Collections</p>
+                <p class="text-2xl font-bold text-white font-hanken" x-text="mongoData.collections?.length || 0"></p>
+              </div>
+              <div class="rounded-xl border border-bravo-blue/10 bg-[#00122e]/40 p-4">
+                <p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Total Document Count</p>
+                <p class="text-2xl font-bold text-white font-hanken" x-text="totalMongoDocs().toLocaleString()"></p>
+              </div>
+              <div class="rounded-xl border border-bravo-blue/10 bg-[#00122e]/40 p-4">
+                <p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">NoSQL Storage Footprint</p>
+                <p class="text-2xl font-bold text-white font-hanken" x-text="formatBytes(totalMongoBytes())"></p>
+              </div>
+            </div>
+
+            <!-- Collection details -->
+            <div class="overflow-x-auto rounded-xl border border-bravo-blue/10">
+              <table class="min-w-full text-left text-xs">
+                <thead class="bg-[#00122e]/80 text-[10px] uppercase text-bravo-pink300 tracking-wider font-bold">
+                  <tr>
+                    <th class="px-4 py-2.5">Collection Name</th>
+                    <th class="px-4 py-2.5 text-right">Documents</th>
+                    <th class="px-4 py-2.5 text-right">Data Storage Size</th>
+                    <th class="px-4 py-2.5 text-right">Indexes Footprint</th>
+                  </tr>
+                </thead>
+                <tbody class="text-slate-300">
+                  <template x-for="col in mongoData.collections" :key="col.name">
+                    <tr class="border-t border-bravo-blue/10 hover:bg-bravo-blue/5 transition">
+                      <td class="px-4 py-2.5 font-mono font-bold text-bravo-green" x-text="col.name"></td>
+                      <td class="px-4 py-2.5 text-right font-mono text-slate-200" x-text="col.document_count.toLocaleString()"></td>
+                      <td class="px-4 py-2.5 text-right font-mono text-slate-400" x-text="formatBytes(col.storage_size_bytes)"></td>
+                      <td class="px-4 py-2.5 text-right font-mono text-bravo-pink300 font-bold" x-text="formatBytes(col.index_size_bytes)"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Redis Tab -->
+          <div x-show="activeTab === 'redis'" class="space-y-6">
+            <!-- Stats overview -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div class="rounded-xl border border-bravo-blue/10 bg-[#00122e]/40 p-4">
+                <p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Allocated Memory</p>
+                <p class="text-2xl font-bold text-bravo-pink font-hanken" x-text="redisData.info?.used_memory_human || '0B'"></p>
+              </div>
+              <div class="rounded-xl border border-bravo-blue/10 bg-[#00122e]/40 p-4">
+                <p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Connected Clients</p>
+                <p class="text-2xl font-bold text-white font-hanken" x-text="redisData.info?.connected_clients || 0"></p>
+              </div>
+              <div class="rounded-xl border border-bravo-blue/10 bg-[#00122e]/40 p-4">
+                <p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Ops / Second</p>
+                <p class="text-2xl font-bold text-white font-hanken" x-text="redisData.info?.instantaneous_ops_per_sec || 0"></p>
+              </div>
+              <div class="rounded-xl border border-bravo-blue/10 bg-[#00122e]/40 p-4">
+                <p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Logical Keys</p>
+                <p class="text-2xl font-bold text-white font-hanken" x-text="totalRedisKeys()"></p>
+              </div>
+            </div>
+
+            <!-- Keyspace keys distributions -->
+            <div class="rounded-xl border border-bravo-blue/20 bg-bravo-navy p-4 shadow-lg">
+              <h3 class="text-[10px] uppercase tracking-widest text-slate-400 mb-3.5 font-bold">Keyspace Family Distribution</h3>
+              <div class="space-y-4">
+                <template x-for="item in redisData.keyspaces" :key="item.pattern">
+                  <div>
+                    <div class="flex justify-between text-xs font-mono mb-1">
+                      <span class="text-bravo-pink300 font-bold" x-text="item.pattern"></span>
+                      <span class="text-slate-400 font-semibold" x-text="item.count + ' keys'"></span>
+                    </div>
+                    <div class="h-2 rounded-full bg-bravo-card overflow-hidden">
+                      <div class="h-full rounded-full bg-bravo-pink" :style="'width: ' + getRedisKeyPct(item.count) + '%'"></div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <!-- MinIO Tab -->
+          <div x-show="activeTab === 'minio'" class="space-y-6">
+            <!-- Stats overview -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div class="rounded-xl border border-bravo-blue/10 bg-[#00122e]/40 p-4">
+                <p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Active S3 Buckets</p>
+                <p class="text-2xl font-bold text-white font-hanken" x-text="minioData.buckets?.length || 0"></p>
+              </div>
+              <div class="rounded-xl border border-bravo-blue/10 bg-[#00122e]/40 p-4">
+                <p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Overall Objects Tracked</p>
+                <p class="text-2xl font-bold text-white font-hanken" x-text="totalMinioObjects().toLocaleString()"></p>
+              </div>
+              <div class="rounded-xl border border-bravo-blue/10 bg-[#00122e]/40 p-4">
+                <p class="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Storage Footprint Size</p>
+                <p class="text-2xl font-bold text-white font-hanken" x-text="formatBytes(totalMinioBytes())"></p>
+              </div>
+            </div>
+
+            <!-- Buckets list -->
+            <div class="overflow-x-auto rounded-xl border border-bravo-blue/10">
+              <table class="min-w-full text-left text-xs">
+                <thead class="bg-[#00122e]/80 text-[10px] uppercase text-bravo-pink300 tracking-wider font-bold">
+                  <tr>
+                    <th class="px-4 py-2.5">Bucket Name</th>
+                    <th class="px-4 py-2.5 text-right">Objects</th>
+                    <th class="px-4 py-2.5 text-right">Storage Footprint</th>
+                  </tr>
+                </thead>
+                <tbody class="text-slate-300">
+                  <template x-for="b in minioData.buckets" :key="b.name">
+                    <tr class="border-t border-bravo-blue/10 hover:bg-bravo-blue/5 transition">
+                      <td class="px-4 py-2.5 font-mono font-bold text-bravo-yellow" x-text="b.name"></td>
+                      <td class="px-4 py-2.5 text-right font-mono text-slate-200" x-text="b.object_count.toLocaleString()"></td>
+                      <td class="px-4 py-2.5 text-right font-mono text-bravo-yellow300 font-bold" x-text="formatBytes(b.total_size_bytes)"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Connectors Tab -->
+          <div x-show="activeTab === 'connectors'" class="space-y-6">
+            <h3 class="text-xs uppercase tracking-widest text-slate-400 mb-2 font-bold">Connected Knowledge Bridges</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <!-- Google Drive Card -->
+              <div class="rounded-xl border border-bravo-blue/20 bg-[#00122e]/40 p-5 flex flex-col justify-between min-h-[150px] relative overflow-hidden shadow-md">
+                <div class="absolute top-0 right-0 h-16 w-16 bg-gradient-to-br from-purple-500/10 to-transparent rounded-bl-full"></div>
+                <div>
+                  <div class="flex items-center justify-between gap-2 mb-2">
+                    <h4 class="text-xs font-bold text-white uppercase tracking-wider">Google Drive Bridge</h4>
+                    <span class="rounded-full px-2 py-0.5 text-[9px] font-mono border font-bold"
+                          :class="connectorData.bridges?.google_drive?.token_status === 'active' ? 'bg-emerald-950/80 text-bravo-green border-emerald-800' : 'bg-red-950/80 text-red-400 border-red-800'"
+                          x-text="connectorData.bridges?.google_drive?.token_status || 'missing'"></span>
+                  </div>
+                  <p class="text-xs text-slate-400 leading-relaxed">Syncs file embeddings from corporate shared Google Drives into TriMCP vector space.</p>
+                </div>
+                <div class="mt-4 flex items-center justify-between text-[10px] text-slate-500 font-mono">
+                  <span>Sync Interval: <span class="text-purple-300 font-bold" x-text="(connectorData.bridges?.google_drive?.sync_interval_mins || '—') + 'm'"></span></span>
+                  <span :class="connectorData.bridges?.google_drive?.enabled ? 'text-bravo-green font-bold' : 'text-slate-500'" 
+                        x-text="connectorData.bridges?.google_drive?.enabled ? 'Enabled' : 'Disabled'"></span>
+                </div>
+              </div>
+
+              <!-- Dropbox Card -->
+              <div class="rounded-xl border border-bravo-blue/20 bg-[#00122e]/40 p-5 flex flex-col justify-between min-h-[150px] relative overflow-hidden shadow-md">
+                <div class="absolute top-0 right-0 h-16 w-16 bg-gradient-to-br from-purple-500/10 to-transparent rounded-bl-full"></div>
+                <div>
+                  <div class="flex items-center justify-between gap-2 mb-2">
+                    <h4 class="text-xs font-bold text-white uppercase tracking-wider">Dropbox Bridge</h4>
+                    <span class="rounded-full px-2 py-0.5 text-[9px] font-mono border font-bold"
+                          :class="connectorData.bridges?.dropbox?.token_status === 'active' ? 'bg-emerald-950/80 text-bravo-green border-emerald-800' : 'bg-red-950/80 text-red-400 border-red-800'"
+                          x-text="connectorData.bridges?.dropbox?.token_status || 'missing'"></span>
+                  </div>
+                  <p class="text-xs text-slate-400 leading-relaxed">Crawls Dropbox folders periodically to parse file chunks and construct knowledge graphs.</p>
+                </div>
+                <div class="mt-4 flex items-center justify-between text-[10px] text-slate-500 font-mono">
+                  <span>Sync Interval: <span class="text-purple-300 font-bold" x-text="(connectorData.bridges?.dropbox?.sync_interval_mins || '—') + 'm'"></span></span>
+                  <span :class="connectorData.bridges?.dropbox?.enabled ? 'text-bravo-green font-bold' : 'text-slate-500'" 
+                        x-text="connectorData.bridges?.dropbox?.enabled ? 'Enabled' : 'Disabled'"></span>
+                </div>
+              </div>
+
+              <!-- OneDrive Card -->
+              <div class="rounded-xl border border-bravo-blue/20 bg-[#00122e]/40 p-5 flex flex-col justify-between min-h-[150px] relative overflow-hidden shadow-md">
+                <div class="absolute top-0 right-0 h-16 w-16 bg-gradient-to-br from-purple-500/10 to-transparent rounded-bl-full"></div>
+                <div>
+                  <div class="flex items-center justify-between gap-2 mb-2">
+                    <h4 class="text-xs font-bold text-white uppercase tracking-wider">OneDrive Bridge</h4>
+                    <span class="rounded-full px-2 py-0.5 text-[9px] font-mono border font-bold"
+                          :class="connectorData.bridges?.onedrive?.token_status === 'active' ? 'bg-emerald-950/80 text-bravo-green border-emerald-800' : 'bg-red-950/80 text-red-400 border-red-800'"
+                          x-text="connectorData.bridges?.onedrive?.token_status || 'missing'"></span>
+                  </div>
+                  <p class="text-xs text-slate-400 leading-relaxed">Consumes Microsoft 365 SharePoint/OneDrive documents using automated webhook events.</p>
+                </div>
+                <div class="mt-4 flex items-center justify-between text-[10px] text-slate-500 font-mono">
+                  <span>Sync Interval: <span class="text-purple-300 font-bold" x-text="(connectorData.bridges?.onedrive?.sync_interval_mins || '—') + 'm'"></span></span>
+                  <span :class="connectorData.bridges?.onedrive?.enabled ? 'text-bravo-green font-bold' : 'text-slate-500'" 
+                        x-text="connectorData.bridges?.onedrive?.enabled ? 'Enabled' : 'Disabled'"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
     <!-- GC -->
-    <section class="scroll-mt-24">
-      <h2 class="text-lg font-semibold border-b border-slate-800 pb-2 mb-4">Maintenance</h2>
-      <div class="rounded-xl border border-slate-800 bg-slate-900 p-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <p class="text-sm text-slate-400">Trigger garbage collection: <code class="text-sky-300">POST /api/gc/trigger</code></p>
+    <section class="scroll-mt-32 pt-12 border-t border-bravo-blue/10">
+      <div class="border-b border-bravo-blue/20 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+        <div>
+          <h2 class="text-lg font-bold font-hanken tracking-tight text-white uppercase">Engine Maintenance &amp; Cleanup</h2>
+          <p class="text-xs text-slate-400 mt-1">System level tasks for memory collection and optimization</p>
+        </div>
+        <span class="self-start sm:self-auto text-[10px] font-mono text-slate-500 uppercase tracking-widest font-bold bg-bravo-blue/10 px-2.5 py-1 rounded-md border border-bravo-blue/20">ADMIN CONTROL</span>
+      </div>
+      <div class="rounded-xl border border-bravo-blue/20 bg-bravo-card p-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4 shadow-lg">
+        <div>
+          <p class="text-sm text-slate-200 font-semibold">Trigger asynchronous garbage collection &amp; vector packing</p>
+          <p class="text-xs text-slate-400 mt-1 font-mono">POST /api/gc/trigger</p>
+        </div>
         <button type="button" @click="triggerGc()" :disabled="gcLoading"
-                class="rounded-md bg-rose-700 hover:bg-rose-600 px-4 py-2 text-sm font-medium disabled:opacity-50">
-          <span x-show="!gcLoading">Run GC</span>
-          <span x-show="gcLoading">Running…</span>
+                class="rounded-lg bg-red-950/40 text-red-400 border border-red-800/60 hover:bg-red-950 px-5 py-2.5 text-xs font-bold transition disabled:opacity-50 tracking-wide shadow-md shadow-red-950/20">
+          <span x-show="!gcLoading">Execute GC pack</span>
+          <span x-show="gcLoading">Running pack…</span>
         </button>
       </div>
       <template x-if="gcResult">
-        <pre class="mt-3 text-xs font-mono text-emerald-400 bg-slate-900 border border-slate-800 rounded-lg p-3 overflow-x-auto" x-text="JSON.stringify(gcResult, null, 2)"></pre>
+        <pre class="mt-3 text-[10px] font-mono text-bravo-green bg-bravo-navy border border-bravo-blue/20 rounded-lg p-3 overflow-x-auto" x-text="JSON.stringify(gcResult, null, 2)"></pre>
       </template>
     </section>
 
   </main>
 
-  <footer class="border-t border-slate-800 py-6 text-center text-xs text-slate-600">
-    TriMCP Admin · HMAC headers required for <code>/api/*</code> · no build step
+  <footer class="border-t border-bravo-blue/20 py-6 text-center text-[10px] text-slate-500 font-semibold tracking-wide font-mono uppercase bg-bravo-navy/40">
+    TriMCP Admin · HMAC Header Protocol Required · Enterprise Console v2.0
   </footer>
 
   <script>
@@ -589,7 +1097,6 @@
 
       /* ---------- Event log ---------- */
       Alpine.data('eventLogComponent', () => ({
-        shell: null,
         items: [],
         total: 0,
         page: 1,
@@ -598,9 +1105,8 @@
         summary: {},
         filters: { namespace_id: '', event_type: '', agent_id: '', from: '', to: '' },
 
-        mount(shell) {
-          this.shell = shell;
-          if (shell.defaultNs) this.filters.namespace_id = shell.defaultNs;
+        mount() {
+          if (this.defaultNs) this.filters.namespace_id = this.defaultNs;
           this.refreshAll();
         },
 
@@ -626,7 +1132,7 @@
 
         async refreshAll() {
           this.loading = true;
-          const key = this.shell.apiKey;
+          const key = this.apiKey;
           try {
             const [rItems, rSum] = await Promise.all([
               signedFetch(key, '/api/admin/events', { query: this.queryQs() }),
@@ -640,7 +1146,7 @@
             this.total = d1.total ?? 0;
             this.summary = d2;
           } catch (e) {
-            this.shell.toast('Event log: ' + (e.message || e), 'error');
+            this.toast('Event log: ' + (e.message || e), 'error');
           } finally {
             this.loading = false;
           }
@@ -661,31 +1167,29 @@
 
       /* ---------- Quotas ---------- */
       Alpine.data('quotaComponent', () => ({
-        shell: null,
         window: 'day',
         tools: [],
         totals: {},
         nearLimit: [],
         loading: false,
 
-        mount(shell) {
-          this.shell = shell;
+        mount() {
           this.refresh();
         },
 
         qs() {
           const p = new URLSearchParams();
           p.set('window', this.window);
-          if (this.shell.defaultNs) p.set('namespace_id', this.shell.defaultNs);
+          if (this.defaultNs) p.set('namespace_id', this.defaultNs);
           return p.toString();
         },
 
         async refresh() {
           this.loading = true;
-          const key = this.shell.apiKey;
+          const key = this.apiKey;
           try {
-            const sumQ = this.shell.defaultNs
-              ? 'namespace_id=' + encodeURIComponent(this.shell.defaultNs)
+            const sumQ = this.defaultNs
+              ? 'namespace_id=' + encodeURIComponent(this.defaultNs)
               : '';
             const [rq, rs] = await Promise.all([
               signedFetch(key, '/api/admin/quotas', { query: this.qs() }),
@@ -699,7 +1203,7 @@
             this.totals = d.totals || {};
             this.nearLimit = s.near_limit || [];
           } catch (e) {
-            this.shell.toast('Quotas: ' + (e.message || e), 'error');
+            this.toast('Quotas: ' + (e.message || e), 'error');
           } finally {
             this.loading = false;
           }
@@ -720,7 +1224,6 @@
 
       /* ---------- Embedding migration ---------- */
       Alpine.data('embeddingMigrationPanel', () => ({
-        shell: null,
         models: [],
         targetModelId: '',
         migrationId: '',
@@ -728,20 +1231,19 @@
         loading: false,
         _poll: null,
 
-        mount(shell) {
-          this.shell = shell;
+        mount() {
           this.loadAll();
         },
 
         async loadAll() {
           this.loading = true;
           try {
-            const res = await signedFetch(this.shell.apiKey, '/api/admin/embedding-models');
+            const res = await signedFetch(this.apiKey, '/api/admin/embedding-models');
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
             this.models = data.models || [];
           } catch (e) {
-            this.shell.toast('Embedding models: ' + (e.message || e), 'error');
+            this.toast('Embedding models: ' + (e.message || e), 'error');
           } finally {
             this.loading = false;
           }
@@ -772,7 +1274,7 @@
           this.loading = true;
           try {
             const body = { target_model_id: this.targetModelId.trim() };
-            const res = await signedFetch(this.shell.apiKey, '/api/admin/embedding-migrations/start', {
+            const res = await signedFetch(this.apiKey, '/api/admin/embedding-migrations/start', {
               method: 'POST',
               body: JSON.stringify(body),
             });
@@ -780,11 +1282,11 @@
             if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
             this.migrationId = data.migration_id || this.migrationId;
             this.statusJson = JSON.stringify(data, null, 2);
-            this.shell.toast('Migration started', 'ok');
+            this.toast('Migration started', 'ok');
             await this.loadAll();
             await this.refreshStatus(true);
           } catch (e) {
-            this.shell.toast('Start migration: ' + (e.message || e), 'error');
+            this.toast('Start migration: ' + (e.message || e), 'error');
           } finally {
             this.loading = false;
           }
@@ -792,71 +1294,69 @@
 
         async refreshStatus(silent) {
           if (!this.migrationId.trim()) {
-            if (!silent) this.shell.toast('Set migration id first', 'error');
+            if (!silent) this.toast('Set migration id first', 'error');
             return;
           }
           try {
-            const res = await signedFetch(this.shell.apiKey, this._midPath('/status'));
+            const res = await signedFetch(this.apiKey, this._midPath('/status'));
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
             this.statusJson = JSON.stringify(data, null, 2);
             this._maybeStartPoll(data);
           } catch (e) {
-            if (!silent) this.shell.toast('Status: ' + (e.message || e), 'error');
+            if (!silent) this.toast('Status: ' + (e.message || e), 'error');
           }
         },
 
         async validateMigration() {
           try {
-            const res = await signedFetch(this.shell.apiKey, this._midPath('/validate'), { method: 'POST', body: '{}' });
+            const res = await signedFetch(this.apiKey, this._midPath('/validate'), { method: 'POST', body: '{}' });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
             this.statusJson = JSON.stringify(data, null, 2);
             await this.refreshStatus(true);
           } catch (e) {
-            this.shell.toast('Validate: ' + (e.message || e), 'error');
+            this.toast('Validate: ' + (e.message || e), 'error');
           }
         },
 
         async commitMigration() {
           try {
-            const res = await signedFetch(this.shell.apiKey, this._midPath('/commit'), { method: 'POST', body: '{}' });
+            const res = await signedFetch(this.apiKey, this._midPath('/commit'), { method: 'POST', body: '{}' });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
             this.statusJson = JSON.stringify(data, null, 2);
             this._stopPoll();
             await this.loadAll();
           } catch (e) {
-            this.shell.toast('Commit: ' + (e.message || e), 'error');
+            this.toast('Commit: ' + (e.message || e), 'error');
           }
         },
 
         async abortMigration() {
           try {
-            const res = await signedFetch(this.shell.apiKey, this._midPath('/abort'), { method: 'POST', body: '{}' });
+            const res = await signedFetch(this.apiKey, this._midPath('/abort'), { method: 'POST', body: '{}' });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
             this.statusJson = JSON.stringify(data, null, 2);
             this._stopPoll();
             await this.loadAll();
           } catch (e) {
-            this.shell.toast('Abort: ' + (e.message || e), 'error');
+            this.toast('Abort: ' + (e.message || e), 'error');
           }
         },
       }));
 
       /* ---------- Graph ---------- */
       Alpine.data('graphVisualizer', () => ({
-        shell: null,
         loading: false,
         result: { anchor: '', nodes: [], edges: [] },
         form: { namespace_id: '', query: '', max_depth: 2, anchor_top_k: 3, as_of: '' },
         layout: { nodes: [], edges: [] },
         viewBox: '0 0 400 400',
 
-        mount(shell) {
-          this.shell = shell;
-          if (shell.defaultNs) this.form.namespace_id = shell.defaultNs;
+        mount() {
+          if (this.defaultNs) this.form.namespace_id = this.defaultNs;
         },
 
         truncate(s, n) {
@@ -902,7 +1402,7 @@
 
         async explore() {
           if (!this.form.namespace_id || !this.form.query) {
-            this.shell.toast('namespace_id and query are required', 'error');
+            this.toast('namespace_id and query are required', 'error');
             return;
           }
           this.loading = true;
@@ -914,7 +1414,7 @@
               anchor_top_k: Number(this.form.anchor_top_k) || 3,
             };
             if (this.form.as_of) body.as_of = this.form.as_of;
-            const res = await signedFetch(this.shell.apiKey, '/api/admin/graph/explore', {
+            const res = await signedFetch(this.apiKey, '/api/admin/graph/explore', {
               method: 'POST',
               body: JSON.stringify(body),
             });
@@ -923,11 +1423,102 @@
             this.result = data;
             this.buildLayout();
           } catch (e) {
-            this.shell.toast('Graph: ' + (e.message || e), 'error');
+            this.toast('Graph: ' + (e.message || e), 'error');
           } finally {
             this.loading = false;
           }
         },
+      }));
+
+      /* ---------- Datastores & Connectors Component ---------- */
+      Alpine.data('dbConsoleComponent', () => ({
+        loading: false,
+        activeTab: 'postgres',
+        postgresData: { tables: [], partition_status: { runway_months: 0 } },
+        mongoData: { collections: [] },
+        redisData: { info: {}, keyspaces: [] },
+        minioData: { buckets: [] },
+        connectorData: { bridges: {} },
+
+        mount() {
+          // Refresh default tab on load
+          this.setTab('postgres');
+        },
+
+        async setTab(tab) {
+          this.activeTab = tab;
+          await this.refreshActive();
+        },
+
+        async refreshActive() {
+          this.loading = true;
+          const key = this.apiKey;
+          try {
+            if (this.activeTab === 'postgres') {
+              const res = await signedFetch(key, '/api/admin/db/postgres/status');
+              if (!res.ok) throw new Error((await res.json()).error || 'PostgreSQL status failed');
+              this.postgresData = await res.json();
+            } else if (this.activeTab === 'mongo') {
+              const res = await signedFetch(key, '/api/admin/db/mongo/status');
+              if (!res.ok) throw new Error((await res.json()).error || 'MongoDB status failed');
+              this.mongoData = await res.json();
+            } else if (this.activeTab === 'redis') {
+              const res = await signedFetch(key, '/api/admin/db/redis/status');
+              if (!res.ok) throw new Error((await res.json()).error || 'Redis status failed');
+              this.redisData = await res.json();
+            } else if (this.activeTab === 'minio') {
+              const res = await signedFetch(key, '/api/admin/db/minio/status');
+              if (!res.ok) throw new Error((await res.json()).error || 'MinIO status failed');
+              this.minioData = await res.json();
+            } else if (this.activeTab === 'connectors') {
+              const res = await signedFetch(key, '/api/admin/connectors/status');
+              if (!res.ok) throw new Error((await res.json()).error || 'Connectors status failed');
+              this.connectorData = await res.json();
+            }
+          } catch (e) {
+            this.toast('Datastore console: ' + (e.message || e), 'error');
+          } finally {
+            this.loading = false;
+          }
+        },
+
+        formatBytes(bytes) {
+          if (!bytes) return '0 B';
+          const k = 1024;
+          const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+          const i = Math.floor(Math.log(bytes) / Math.log(k));
+          return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        },
+
+        totalPgBytes() {
+          return (this.postgresData.tables || []).reduce((acc, curr) => acc + (curr.table_size_bytes || 0), 0);
+        },
+
+        totalMongoDocs() {
+          return (this.mongoData.collections || []).reduce((acc, curr) => acc + (curr.document_count || 0), 0);
+        },
+
+        totalMongoBytes() {
+          return (this.mongoData.collections || []).reduce((acc, curr) => acc + (curr.storage_size_bytes || 0) + (curr.index_size_bytes || 0), 0);
+        },
+
+        totalRedisKeys() {
+          return (this.redisData.keyspaces || []).reduce((acc, curr) => acc + (curr.count || 0), 0);
+        },
+
+        getRedisKeyPct(cnt) {
+          const total = this.totalRedisKeys();
+          if (!total) return 0;
+          return Math.min(100, Math.round((cnt / total) * 100));
+        },
+
+        totalMinioObjects() {
+          return (this.minioData.buckets || []).reduce((acc, curr) => acc + (curr.object_count || 0), 0);
+        },
+
+        totalMinioBytes() {
+          return (this.minioData.buckets || []).reduce((acc, curr) => acc + (curr.total_size_bytes || 0), 0);
+        }
       }));
     });
   </script>
