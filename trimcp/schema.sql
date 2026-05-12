@@ -75,7 +75,16 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{
 
 -- Data Migration from legacy tables
 DO $$
+DECLARE
+    global_ns_id UUID;
 BEGIN
+    -- Ensure fallback namespace exists
+    INSERT INTO namespaces (slug, metadata)
+    VALUES ('_global_legacy', '{"description":"Fallback namespace for pre-RLS data"}'::jsonb)
+    ON CONFLICT (slug) DO NOTHING;
+    
+    SELECT id INTO global_ns_id FROM namespaces WHERE slug = '_global_legacy';
+
     IF EXISTS (SELECT FROM pg_tables WHERE tablename = 'memory_metadata') THEN
         INSERT INTO memories (
             id, user_id, session_id, embedding, payload_ref, created_at, content_fts, 
@@ -83,7 +92,7 @@ BEGIN
         )
         SELECT 
             id, user_id, session_id, embedding, mongo_ref_id, created_at, content_fts,
-            namespace_id, agent_id, signature, signature_key_id, 'episodic'
+            global_ns_id, 'default', NULL, NULL, 'episodic'
         FROM memory_metadata
         ON CONFLICT DO NOTHING;
         
@@ -93,11 +102,11 @@ BEGIN
     IF EXISTS (SELECT FROM pg_tables WHERE tablename = 'code_metadata') THEN
         INSERT INTO memories (
             id, filepath, language, node_type, name, start_line, end_line, file_hash, 
-            embedding, payload_ref, created_at, user_id, content_fts, memory_type
+            embedding, payload_ref, created_at, user_id, content_fts, namespace_id, memory_type
         )
         SELECT 
             id, filepath, language, node_type, name, start_line, end_line, file_hash, 
-            embedding, mongo_ref_id, created_at, user_id, content_fts, 'code_chunk'
+            embedding, mongo_ref_id, created_at, NULL, content_fts, global_ns_id, 'code_chunk'
         FROM code_metadata
         ON CONFLICT DO NOTHING;
         
@@ -228,10 +237,10 @@ CREATE TABLE IF NOT EXISTS kg_nodes_3 PARTITION OF kg_nodes FOR VALUES WITH (MOD
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'kg_nodes_old') THEN
-        INSERT INTO kg_nodes (id, label, entity_type, embedding, payload_ref, created_at, updated_at)
-        SELECT id, label, entity_type, embedding, mongo_ref_id, created_at, updated_at
+        INSERT INTO kg_nodes (id, label, entity_type, embedding, payload_ref, created_at, updated_at, namespace_id)
+        SELECT id, label, entity_type, embedding, mongo_ref_id, created_at, updated_at, (SELECT id FROM namespaces WHERE slug = '_global_legacy' LIMIT 1)
         FROM kg_nodes_old
-        ON CONFLICT (label) DO NOTHING;
+        ON CONFLICT (label, namespace_id) DO NOTHING;
         DROP TABLE kg_nodes_old CASCADE;
     END IF;
 END $$;
@@ -268,8 +277,8 @@ CREATE TABLE IF NOT EXISTS kg_edges_3 PARTITION OF kg_edges FOR VALUES WITH (MOD
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'kg_edges_old') THEN
-        INSERT INTO kg_edges (id, subject_label, predicate, object_label, confidence, payload_ref, created_at, updated_at)
-        SELECT id, subject_label, predicate, object_label, confidence, mongo_ref_id, created_at, updated_at
+        INSERT INTO kg_edges (id, subject_label, predicate, object_label, confidence, payload_ref, created_at, updated_at, namespace_id)
+        SELECT id, subject_label, predicate, object_label, confidence, mongo_ref_id, created_at, updated_at, (SELECT id FROM namespaces WHERE slug = '_global_legacy' LIMIT 1)
         FROM kg_edges_old
         -- FIX-038: 4-column conflict target matches the unique constraint on kg_edges.
         -- Do not revert to 3-column; namespace_id is required for multi-tenant isolation.
@@ -421,6 +430,7 @@ CREATE TABLE IF NOT EXISTS kg_node_embeddings_1 PARTITION OF kg_node_embeddings 
 CREATE TABLE IF NOT EXISTS kg_node_embeddings_2 PARTITION OF kg_node_embeddings FOR VALUES WITH (MODULUS 4, REMAINDER 2);
 CREATE TABLE IF NOT EXISTS kg_node_embeddings_3 PARTITION OF kg_node_embeddings FOR VALUES WITH (MODULUS 4, REMAINDER 3);
 
+ALTER TABLE embedding_migrations ADD COLUMN IF NOT EXISTS namespace_id UUID REFERENCES namespaces(id);
 CREATE TABLE IF NOT EXISTS embedding_migrations (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     namespace_id     UUID REFERENCES namespaces(id),
@@ -453,6 +463,7 @@ CREATE INDEX IF NOT EXISTS idx_bridge_subs_user_provider ON bridge_subscriptions
 CREATE INDEX IF NOT EXISTS idx_bridge_subs_expires_active ON bridge_subscriptions (expires_at) WHERE status = 'ACTIVE';
 
 ALTER TABLE bridge_subscriptions ADD COLUMN IF NOT EXISTS oauth_access_token_enc BYTEA;
+ALTER TABLE bridge_subscriptions ADD COLUMN IF NOT EXISTS namespace_id UUID REFERENCES namespaces(id);
 
 -- --- Phase 2.2: Time Travel Snapshots ---
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -561,6 +572,7 @@ DECLARE
     p_start timestamptz;
     p_end timestamptz;
     p_name text;
+    violating_count int;
 BEGIN
     IF p_months_ahead < 0 THEN
         RAISE EXCEPTION 'p_months_ahead must be >= 0';
@@ -570,12 +582,43 @@ BEGIN
         p_end := p_start + interval '1 month';
         p_name := 'event_log_' || to_char(p_start, 'YYYY_MM');
         IF to_regclass(format('public.%I', p_name)) IS NULL THEN
+            -- Check if there are violating rows in event_log_default
             EXECUTE format(
-                'CREATE TABLE %I PARTITION OF event_log FOR VALUES FROM (%L) TO (%L)',
-                p_name,
+                'SELECT count(*)::int FROM event_log_default WHERE occurred_at >= %L AND occurred_at < %L',
                 p_start,
                 p_end
-            );
+            ) INTO violating_count;
+            
+            IF violating_count > 0 THEN
+                -- Move violating rows from event_log_default to a temp table
+                CREATE TEMP TABLE temp_event_log_migrate ON COMMIT DROP AS 
+                    SELECT * FROM event_log_default 
+                    WHERE occurred_at >= p_start AND occurred_at < p_end;
+                    
+                DELETE FROM event_log_default 
+                WHERE occurred_at >= p_start AND occurred_at < p_end;
+                
+                -- Create partition
+                EXECUTE format(
+                    'CREATE TABLE %I PARTITION OF event_log FOR VALUES FROM (%L) TO (%L)',
+                    p_name,
+                    p_start,
+                    p_end
+                );
+                
+                -- Insert them back into event_log so they route to the new partition
+                INSERT INTO event_log SELECT * FROM temp_event_log_migrate;
+                
+                -- Drop the temp table
+                DROP TABLE temp_event_log_migrate;
+            ELSE
+                EXECUTE format(
+                    'CREATE TABLE %I PARTITION OF event_log FOR VALUES FROM (%L) TO (%L)',
+                    p_name,
+                    p_start,
+                    p_end
+                );
+            END IF;
         END IF;
     END LOOP;
 END;
@@ -760,6 +803,125 @@ BEGIN
     END IF;
 END $$;
 
+-- --- Phase 3: Dead Letter Queue (Poison Pill) ---
+-- Captures background-task payloads that exhaust their retry budget so they
+-- are not re-enqueued indefinitely.  Admin UI / API can replay or purge.
+CREATE TABLE IF NOT EXISTS dead_letter_queue (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    namespace_id   UUID REFERENCES namespaces(id),
+    task_name      TEXT NOT NULL,          -- e.g. 'process_code_indexing'
+    job_id         TEXT NOT NULL,          -- RQ job id
+    kwargs         JSONB NOT NULL,         -- frozen kwargs of the failed invocation
+    error_message  TEXT NOT NULL,          -- last exception message (truncated to 1024)
+    attempt_count  INTEGER NOT NULL CHECK (attempt_count > 0),
+    status         TEXT NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'replayed', 'purged')),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    replayed_at    TIMESTAMPTZ,
+    purged_at      TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_dlq_task_status ON dead_letter_queue (task_name, status);
+CREATE INDEX IF NOT EXISTS idx_dlq_created ON dead_letter_queue (created_at DESC);
+
+DO $$
+BEGIN
+    REVOKE ALL ON dead_letter_queue FROM PUBLIC;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
+        GRANT SELECT, INSERT, UPDATE ON dead_letter_queue TO trimcp_app;
+    ELSE
+        RAISE NOTICE 'trimcp_app role not found — dead_letter_queue GRANTs skipped';
+    END IF;
+END $$;
+
+-- --- Phase 4: Transactional Outbox ---
+-- Ordered, at-most-once delivery of domain events.
+-- The relay process polls unpublished rows, delivers to downstream
+-- consumers, and marks published_at.
+CREATE TABLE IF NOT EXISTS outbox_events (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    namespace_id   UUID NOT NULL,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id   TEXT NOT NULL,
+    event_type     TEXT NOT NULL,
+    payload        JSONB NOT NULL,
+    headers        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    attempt_count  INTEGER NOT NULL DEFAULT 0,
+    error_message  TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at   TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
+    ON outbox_events (created_at)
+    WHERE published_at IS NULL;
+
+ALTER TABLE outbox_events ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename = 'outbox_events' AND policyname = 'namespace_isolation_policy'
+    ) THEN
+        CREATE POLICY namespace_isolation_policy ON outbox_events FOR ALL USING (outbox_events.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    REVOKE ALL ON outbox_events FROM PUBLIC;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON outbox_events TO trimcp_app;
+    ELSE
+        RAISE NOTICE 'trimcp_app role not found — outbox_events GRANTs skipped';
+    END IF;
+END $$;
+
+-- --- Phase 4: Saga Execution Log ---
+-- Durable saga state for crash-recovery.  If a worker dies between PG commit
+-- and rollback completion, the recovery cron re-drives compensation from the
+-- persisted payload.
+CREATE TABLE IF NOT EXISTS saga_execution_log (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    saga_type    TEXT NOT NULL,           -- 'store_memory', 'forget_memory', etc.
+    namespace_id UUID NOT NULL,
+    agent_id     TEXT NOT NULL,
+    state        TEXT NOT NULL
+                 CHECK (state IN ('started', 'pg_committed', 'completed', 'rolled_back', 'recovery_needed')),
+    payload      JSONB NOT NULL,          -- enough to re-drive rollback
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_saga_state_created
+    ON saga_execution_log (state, created_at)
+    WHERE state IN ('started', 'pg_committed', 'recovery_needed');
+
+ALTER TABLE saga_execution_log ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies 
+        WHERE tablename = 'saga_execution_log' AND policyname = 'namespace_isolation_policy'
+    ) THEN
+        CREATE POLICY namespace_isolation_policy ON saga_execution_log FOR ALL USING (saga_execution_log.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    REVOKE ALL ON saga_execution_log FROM PUBLIC;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
+        GRANT SELECT, INSERT, UPDATE ON saga_execution_log TO trimcp_app;
+    ELSE
+        RAISE NOTICE 'trimcp_app role not found — saga_execution_log GRANTs skipped';
+    END IF;
+END $$;
+
+
+
 -- --- Row Level Security (Phase 0.1 Hardening) ---
 -- Applied after all tenant tables exist (EARLY ALTER TABLE ... RLS would fail on empty DBs).
 -- Enable RLS on all multi-tenant tables.
@@ -937,122 +1099,5 @@ BEGIN
         WHERE tablename = 'embedding_migrations' AND policyname = 'namespace_isolation_policy'
     ) THEN
         CREATE POLICY namespace_isolation_policy ON embedding_migrations FOR ALL USING (embedding_migrations.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
--- --- Phase 3: Dead Letter Queue (Poison Pill) ---
--- Captures background-task payloads that exhaust their retry budget so they
--- are not re-enqueued indefinitely.  Admin UI / API can replay or purge.
-CREATE TABLE IF NOT EXISTS dead_letter_queue (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    namespace_id   UUID REFERENCES namespaces(id),
-    task_name      TEXT NOT NULL,          -- e.g. 'process_code_indexing'
-    job_id         TEXT NOT NULL,          -- RQ job id
-    kwargs         JSONB NOT NULL,         -- frozen kwargs of the failed invocation
-    error_message  TEXT NOT NULL,          -- last exception message (truncated to 1024)
-    attempt_count  INTEGER NOT NULL CHECK (attempt_count > 0),
-    status         TEXT NOT NULL DEFAULT 'pending'
-                   CHECK (status IN ('pending', 'replayed', 'purged')),
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    replayed_at    TIMESTAMPTZ,
-    purged_at      TIMESTAMPTZ
-);
-
-CREATE INDEX IF NOT EXISTS idx_dlq_task_status ON dead_letter_queue (task_name, status);
-CREATE INDEX IF NOT EXISTS idx_dlq_created ON dead_letter_queue (created_at DESC);
-
-DO $$
-BEGIN
-    REVOKE ALL ON dead_letter_queue FROM PUBLIC;
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
-        GRANT SELECT, INSERT, UPDATE ON dead_letter_queue TO trimcp_app;
-    ELSE
-        RAISE NOTICE 'trimcp_app role not found — dead_letter_queue GRANTs skipped';
-    END IF;
-END $$;
-
--- --- Phase 4: Transactional Outbox ---
--- Ordered, at-most-once delivery of domain events.
--- The relay process polls unpublished rows, delivers to downstream
--- consumers, and marks published_at.
-CREATE TABLE IF NOT EXISTS outbox_events (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    namespace_id   UUID NOT NULL,
-    aggregate_type TEXT NOT NULL,
-    aggregate_id   TEXT NOT NULL,
-    event_type     TEXT NOT NULL,
-    payload        JSONB NOT NULL,
-    headers        JSONB NOT NULL DEFAULT '{}'::jsonb,
-    attempt_count  INTEGER NOT NULL DEFAULT 0,
-    error_message  TEXT,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    published_at   TIMESTAMPTZ
-);
-
-CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
-    ON outbox_events (created_at)
-    WHERE published_at IS NULL;
-
-ALTER TABLE outbox_events ENABLE ROW LEVEL SECURITY;
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'outbox_events' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON outbox_events FOR ALL USING (outbox_events.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
-DO $$
-BEGIN
-    REVOKE ALL ON outbox_events FROM PUBLIC;
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
-        GRANT SELECT, INSERT, UPDATE, DELETE ON outbox_events TO trimcp_app;
-    ELSE
-        RAISE NOTICE 'trimcp_app role not found — outbox_events GRANTs skipped';
-    END IF;
-END $$;
-
--- --- Phase 4: Saga Execution Log ---
--- Durable saga state for crash-recovery.  If a worker dies between PG commit
--- and rollback completion, the recovery cron re-drives compensation from the
--- persisted payload.
-CREATE TABLE IF NOT EXISTS saga_execution_log (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    saga_type    TEXT NOT NULL,           -- 'store_memory', 'forget_memory', etc.
-    namespace_id UUID NOT NULL,
-    agent_id     TEXT NOT NULL,
-    state        TEXT NOT NULL
-                 CHECK (state IN ('started', 'pg_committed', 'completed', 'rolled_back', 'recovery_needed')),
-    payload      JSONB NOT NULL,          -- enough to re-drive rollback
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_saga_state_created
-    ON saga_execution_log (state, created_at)
-    WHERE state IN ('started', 'pg_committed', 'recovery_needed');
-
-ALTER TABLE saga_execution_log ENABLE ROW LEVEL SECURITY;
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'saga_execution_log' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON saga_execution_log FOR ALL USING (saga_execution_log.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
-DO $$
-BEGIN
-    REVOKE ALL ON saga_execution_log FROM PUBLIC;
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
-        GRANT SELECT, INSERT, UPDATE ON saga_execution_log TO trimcp_app;
-    ELSE
-        RAISE NOTICE 'trimcp_app role not found — saga_execution_log GRANTs skipped';
     END IF;
 END $$;

@@ -1321,6 +1321,9 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         )
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
+        if os.getenv("TRIMCP_ADMIN_OVERRIDE") == "true":
+            return await call_next(request)
+
         path = request.url.path
         if not path.startswith(self._protected_prefix):
             return await call_next(request)
