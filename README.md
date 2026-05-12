@@ -59,7 +59,7 @@ flowchart TB
 
 Full diagrams (sequence charts for temporal + A2A, worker data flow): [docs/architecture-v1.md](docs/architecture-v1.md).
 
-**Detailed Feature Guides**: [docs/README.md](docs/README.md) (Multi-tenancy, PII, Cognitive Layer, Replay, etc.).
+**Documentation index**: [docs/README.md](docs/README.md) — architecture, database internals, security, service integrations, configuration reference, and developer onboarding.
 
 ## 🛠️ Tech Stack
 
@@ -91,25 +91,27 @@ For **v1.0**, run from this repository: start the **Compose** stack (see [deploy
 
 ### 2. Environment Configuration
 
-If running from source or configuring the server manually, copy the environment template:
+Copy the environment template and fill in your values:
 
 ```bash
 cp .env.example .env
 ```
 
-Core variables required in `.env`:
+Minimum variables for local development:
 
-| Variable                | Description                                       | Example                                                |
-| ----------------------- | ------------------------------------------------- | ------------------------------------------------------ |
-| `MONGO_URI`             | MongoDB connection string                         | `mongodb://localhost:27017`                            |
-| `PG_DSN`                | PostgreSQL connection string                      | `postgresql://mcp_user:mcp_password@localhost:5432/memory_meta` |
-| `REDIS_URL`             | Redis connection string                           | `redis://localhost:6379/0`                             |
-| `MINIO_ENDPOINT`        | MinIO connection endpoint                         | `localhost:9000`                                       |
-| `DROPBOX_APP_SECRET`    | Secret for Dropbox webhook HMAC validation        | `your_dropbox_secret`                                  |
-| `GRAPH_CLIENT_STATE`    | Client state token for MS Graph webhooks          | `your_graph_state`                                     |
-| `DRIVE_CHANNEL_TOKEN`   | Channel token for Google Drive webhooks           | `your_drive_token`                                     |
+| Variable | Example | Notes |
+|---|---|---|
+| `PG_DSN` | `postgresql://mcp_user:mcp_password@localhost:5432/memory_meta` | Required |
+| `MONGO_URI` | `mongodb://localhost:27017` | Required |
+| `REDIS_URL` | `redis://localhost:6379/0` | Required |
+| `MINIO_ENDPOINT` | `localhost:9000` | Required |
+| `MINIO_ACCESS_KEY` | `mcp_admin` | Required — no default in production |
+| `MINIO_SECRET_KEY` | `your_secret` | Required — no default in production |
+| `TRIMCP_MASTER_KEY` | 32+ random bytes | Required — server refuses to start without it |
 
-*Note: Never commit `.env` to version control.*
+For the complete reference of all ~70 environment variables, see [docs/configuration_reference.md](docs/configuration_reference.md).
+
+*Never commit `.env` to version control.*
 
 ### 3. Start the Server
 

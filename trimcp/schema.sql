@@ -535,6 +535,13 @@ CREATE TABLE IF NOT EXISTS event_log (
 
 CREATE TABLE IF NOT EXISTS event_log_default PARTITION OF event_log DEFAULT;
 
+-- Per-namespace monotonic event_seq counter (single-row UPSERT avoids MAX(event_seq)
+-- merge-append scans across event_log partitions on every append).
+CREATE TABLE IF NOT EXISTS event_sequences (
+    namespace_id UUID PRIMARY KEY REFERENCES namespaces(id),
+    seq          BIGINT NOT NULL DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_event_log_ns_time ON event_log (namespace_id, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_event_log_ns_seq  ON event_log (namespace_id, event_seq);
 CREATE INDEX IF NOT EXISTS idx_event_log_parent  ON event_log (parent_event_id) WHERE parent_event_id IS NOT NULL;
@@ -586,31 +593,25 @@ BEGIN
     END IF;
 END $$;
 
--- Trigger-based FK: parent_event_id → event_log(id, occurred_at)
--- (cannot use declarative FK because event_log is partitioned with composite PK)
-CREATE OR REPLACE FUNCTION trg_event_log_parent_fk()
-RETURNS TRIGGER AS $$
+DO $$
 BEGIN
-    IF NEW.parent_event_id IS NOT NULL THEN
-        PERFORM 1 FROM event_log
-        WHERE id = NEW.parent_event_id
-        LIMIT 1;
-        IF NOT FOUND THEN
-            RAISE EXCEPTION 'event_log.parent_event_id=%% does not reference an existing event', NEW.parent_event_id;
-        END IF;
+    REVOKE ALL ON event_sequences FROM PUBLIC;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
+        GRANT INSERT, SELECT, UPDATE ON event_sequences TO trimcp_app;
+    ELSE
+        RAISE NOTICE 'trimcp_app role not found — event_sequences GRANTs skipped (create role or run migrations)';
     END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+END $$;
 
--- On parent delete, nullify child references
-CREATE OR REPLACE FUNCTION trg_event_log_parent_set_null()
-RETURNS TRIGGER AS $$
-BEGIN
-    UPDATE event_log SET parent_event_id = NULL WHERE parent_event_id = OLD.id;
-    RETURN OLD;
-END;
-$$ LANGUAGE plpgsql;
+-- FIX-064 / FIX-065: parent_event_id triggers validate or UPDATE without a partition key,
+-- causing partition merge-appends; SET NULL path is also incompatible with WORM.
+-- Partition-safe policy is deferred (FIX-067); Merkle chain provides integrity.
+DROP TRIGGER IF EXISTS trg_event_log_parent_fk ON event_log;
+DROP TRIGGER IF EXISTS trg_event_log_parent_fk_insupd ON event_log;
+DROP TRIGGER IF EXISTS trg_event_log_parent_fk_del ON event_log;
+DROP TRIGGER IF EXISTS trg_event_log_parent_set_null ON event_log;
+DROP FUNCTION IF EXISTS trg_event_log_parent_fk();
+DROP FUNCTION IF EXISTS trg_event_log_parent_set_null();
 
 -- WORM immutability: reject any UPDATE or DELETE on event_log.
 CREATE OR REPLACE FUNCTION prevent_mutation()
@@ -645,15 +646,7 @@ $$ LANGUAGE plpgsql STABLE;
 
 DO $$
 BEGIN
-    -- Drop the old partition-scan trigger that causes Full Table Scan DoS
-    IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_event_log_parent_fk_insupd') THEN
-        DROP TRIGGER trg_event_log_parent_fk_insupd ON event_log;
-    END IF;
-    -- Drop the AFTER DELETE trigger since DELETE is now forbidden by WORM
-    IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_event_log_parent_fk_del') THEN
-        DROP TRIGGER trg_event_log_parent_fk_del ON event_log;
-    END IF;
-    -- Install WORM immutability trigger
+    -- Install WORM immutability trigger (legacy parent-FK triggers dropped above).
     IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_event_log_worm') THEN
         CREATE TRIGGER trg_event_log_worm
             BEFORE UPDATE OR DELETE ON event_log
@@ -724,7 +717,11 @@ BEGIN
 END $$;
 
 -- --- Phase 3.2: Multi-namespace resource quotas ---
--- Counters are incremented atomically on the hot path (single TX, small UPDATE set).
+-- ``used_amount`` is the last flushed value in PostgreSQL. When
+-- ``TRIMCP_QUOTA_REDIS_COUNTERS`` is enabled, the hot path increments a Redis
+-- mirror (see trimcp.quotas) and a background task periodically runs
+-- ``flush_quota_counters_to_postgres`` to persist counters without serializing
+-- writers on this table.
 -- Namespace-wide rows use agent_id IS NULL; per-agent rows set agent_id.
 -- Enforcement applies only where matching rows exist (no row => no limit for that scope).
 CREATE TABLE IF NOT EXISTS resource_quotas (

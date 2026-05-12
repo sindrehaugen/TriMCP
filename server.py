@@ -97,11 +97,14 @@ async def _consume_quota_for_mcp_tool(
     pg_pool,
     tool_name: str,
     arguments: dict[str, Any],
+    redis_client,
 ) -> None:
     from trimcp import quotas as _quotas
 
     try:
-        await _quotas.consume_for_tool(pg_pool, tool_name, arguments)
+        await _quotas.consume_for_tool(
+            pg_pool, tool_name, arguments, redis_client=redis_client
+        )
     except _quotas.QuotaExceededError as exc:
         raise ValueError(f"{MCP_QUOTA_EXCEEDED_PREFIX}: {exc}") from exc
 
@@ -1435,7 +1438,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
             # Quota is incremented only on cache miss, immediately before the tool runs.
             # Never increment on cache hit — see FIX-020.
-            await _consume_quota_for_mcp_tool(engine.pg_pool, name, arguments)
+            await _consume_quota_for_mcp_tool(
+                engine.pg_pool, name, arguments, engine.redis_client
+            )
 
             # --- Tool dispatch ---
             try:
@@ -1839,6 +1844,14 @@ async def main():
     gc_task = await create_tracked_task(run_gc_loop(), name="gc_loop")
     log.info("GC background task started.")
 
+    from trimcp import quotas as _quotas
+
+    quota_flush_task = await create_tracked_task(
+        _quotas.quota_redis_flush_loop(engine.redis_client, engine.pg_pool),
+        name="quota_redis_flush_loop",
+    )
+    log.info("Quota Redis flush background task started.")
+
     from trimcp.re_embedder import start_re_embedder
 
     start_re_embedder(engine.pg_pool, engine.mongo_client)
@@ -1852,8 +1865,13 @@ async def main():
             )
     finally:
         gc_task.cancel()
+        quota_flush_task.cancel()
         try:
             await gc_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await quota_flush_task
         except asyncio.CancelledError:
             pass
         await engine.disconnect()

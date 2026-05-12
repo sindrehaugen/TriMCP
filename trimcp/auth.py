@@ -35,6 +35,7 @@ Notes:
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import hashlib
 import hmac as _hmac
@@ -229,6 +230,28 @@ def verify_admin_password(
         return True, upgraded
 
     return True, None
+
+
+async def hash_admin_password_async(
+    password: str, iterations: int | None = None
+) -> str:
+    """Async wrapper: runs :func:`hash_admin_password` in a worker thread."""
+    return await asyncio.to_thread(hash_admin_password, password, iterations)
+
+
+async def verify_admin_password_async(
+    password: str,
+    stored_hash: str,
+    *,
+    auto_upgrade: bool = True,
+) -> tuple[bool, str | None]:
+    """Async wrapper: runs :func:`verify_admin_password` in a worker thread."""
+    return await asyncio.to_thread(
+        verify_admin_password,
+        password,
+        stored_hash,
+        auto_upgrade=auto_upgrade,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1318,9 +1341,12 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         except (ValueError, BinasciiError, UnicodeDecodeError):
             return self._challenge()
 
+        valid_pw, _ = await verify_admin_password_async(
+            password, self._password, auto_upgrade=False
+        )
         if not (
             secrets.compare_digest(username, self._username)
-            and verify_admin_password(password, self._password, auto_upgrade=False)[0]
+            and valid_pw
         ):
             return self._challenge()
 

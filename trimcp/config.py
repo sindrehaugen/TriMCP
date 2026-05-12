@@ -346,6 +346,13 @@ class _Config:
     TRIMCP_QUOTA_TOKEN_ESTIMATE_DIVISOR: int = int(
         os.getenv("TRIMCP_QUOTA_TOKEN_ESTIMATE_DIVISOR", "4")
     )
+    # Hot-path quota increments via Redis (avoids row-level UPDATE serialization).
+    TRIMCP_QUOTA_REDIS_COUNTERS: bool = (
+        os.getenv("TRIMCP_QUOTA_REDIS_COUNTERS", "true").lower() == "true"
+    )
+    TRIMCP_QUOTA_REDIS_FLUSH_INTERVAL_S: float = float(
+        os.getenv("TRIMCP_QUOTA_REDIS_FLUSH_INTERVAL_S", "60")
+    )
 
     # --- Consolidation ---
     CONSOLIDATION_DECAY_SOURCES: bool = (

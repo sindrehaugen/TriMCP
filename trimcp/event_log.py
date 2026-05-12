@@ -17,10 +17,10 @@ Atomicity with Saga
     transaction.
 
 Gap-free per-namespace sequence numbers
-    ``event_seq`` is monotonically increasing per ``namespace_id`` with no gaps.
-    Allocation is serialised via a transaction-scoped advisory lock keyed to the
-    namespace UUID (``pg_advisory_xact_lock``).  The lock is released
-    automatically on transaction commit/rollback — no manual cleanup needed.
+    ``event_seq`` is monotonically increasing per ``namespace_id`` within a single
+    transaction (rolled-back allocations are not consumed).  Allocation is atomic
+    via ``event_sequences``: ``INSERT … ON CONFLICT DO UPDATE``
+    keyed by ``namespace_id`` (single-row upsert → row-level exclusion, no advisory lock).
 
 Signature over DB-provided timestamp
     ``occurred_at`` is always set by the DB (``clock_timestamp()`` fetched in a
@@ -67,11 +67,6 @@ from trimcp.signing import SigningError, get_active_key, sign_fields
 
 log = logging.getLogger(__name__)
 
-# Advisory lock domain tag — XOR'd with a hash of the namespace UUID so that
-# event_log sequence locks are distinct from any other advisory locks the app
-# may acquire.  Value chosen to be memorable (ASCII "trimcpev").
-_ADVISORY_DOMAIN: Final[int] = 0x7472696D63706576
-
 # Maximum length of agent_id (per spec D4 + auth.py convention).
 _AGENT_ID_MAX_LEN: Final[int] = 128
 
@@ -106,8 +101,8 @@ class EventLogSequenceError(EventLogError):
     """
     Raised when sequence allocation fails unexpectedly.
 
-    Under correct usage (advisory lock held, single-TX model) this should
-    never occur.  If it does it indicates a concurrency bug or DB
+    Under correct usage (``event_sequences`` upsert inside the Saga TX) this should
+    be rare — most often indicates a conflicting ``event_seq`` on INSERT or DB
     misconfiguration.
     """
 
@@ -308,26 +303,6 @@ class AppendResult:
 # ---------------------------------------------------------------------------
 
 
-def _advisory_lock_key(namespace_id: uuid.UUID) -> int:
-    """
-    Derive a signed int64 advisory lock key for *namespace_id*.
-
-    Combines a domain tag with the first 8 bytes of
-    SHA-256(domain || namespace_bytes) to distribute lock keys across the
-    full int64 space and avoid collisions with other advisory lock users.
-
-    Returns a *signed* int64 as required by ``pg_advisory_xact_lock(int8)``.
-    """
-    digest = hashlib.sha256(
-        _ADVISORY_DOMAIN.to_bytes(8, "big") + namespace_id.bytes
-    ).digest()
-    raw = int.from_bytes(digest[:8], "big")
-    # Wrap to signed int64 range.
-    if raw >= (1 << 63):
-        raw -= 1 << 64
-    return raw
-
-
 def _build_signing_fields(
     *,
     event_id: uuid.UUID,
@@ -489,40 +464,39 @@ async def _fetch_previous_chain_hash(
 
 async def _acquire_seq_lock(conn: asyncpg.Connection, namespace_id: uuid.UUID) -> None:
     """
-    Acquire a transaction-scoped advisory lock for namespace sequence allocation.
+    Reserved hook for historical per-namespace ``pg_advisory_xact_lock`` serialization.
 
-    ``pg_advisory_xact_lock`` blocks until the lock is available and releases
-    it automatically when the enclosing transaction ends.  This guarantees that
-    only one writer at a time allocates an ``event_seq`` for a given namespace,
-    producing a gap-free sequence even under concurrent load.
+    Obsoleted by the atomic ``event_sequences`` counter (FIX-068 / FIX-069): the row-level
+    ``ON CONFLICT DO UPDATE`` acquires and releases exclusion for the upsert only — it does
+    not hold a lock for the remainder of the Saga transaction.
     """
-    lock_key = _advisory_lock_key(namespace_id)
-    await conn.execute("SELECT pg_advisory_xact_lock($1)", lock_key)
-    log.debug(
-        "Advisory seq lock acquired (namespace_id=%s, lock_key=%d).",
-        namespace_id,
-        lock_key,
-    )
+    pass  # Obsoleted by atomic event_sequences counter (FIX-068)
 
 
 async def _next_event_seq(conn: asyncpg.Connection, namespace_id: uuid.UUID) -> int:
     """
-    Return ``max(event_seq) + 1`` for *namespace_id*, or ``1`` if no rows exist.
+    Atomically allocate the next ``event_seq`` for *namespace_id*.
 
-    Must be called AFTER ``_acquire_seq_lock`` and INSIDE a transaction.
-    The advisory lock prevents concurrent callers from reading the same max
-    before either has inserted, which would cause a duplicate-seq collision.
+    Implemented as a single-row upsert into ``event_sequences`` (partition-free)
+    rather than ``MAX(event_seq)`` across ``event_log`` partitions.
+
+    Requires an active transaction (same Saga coordinator contract as callers).
     """
     row = await conn.fetchrow(
         """
-        SELECT COALESCE(MAX(event_seq), 0) + 1 AS next_seq
-        FROM   event_log
-        WHERE  namespace_id = $1
+        INSERT INTO event_sequences (namespace_id, seq)
+        VALUES ($1, 1)
+        ON CONFLICT (namespace_id)
+        DO UPDATE SET seq = event_sequences.seq + 1
+        RETURNING seq
         """,
         namespace_id,
     )
-    # COALESCE means row is never None.
-    return int(row["next_seq"])  # type: ignore[index]
+    if row is None or row["seq"] is None:
+        raise EventLogSequenceError(
+            f"event_sequences upsert returned no seq for namespace {namespace_id}"
+        )
+    return int(row["seq"])
 
 
 async def _fetch_db_clock(conn: asyncpg.Connection) -> datetime:
@@ -680,7 +654,7 @@ async def _insert_event(
     except asyncpg.UniqueViolationError as exc:
         raise EventLogSequenceError(
             f"Unique violation on (namespace_id, event_seq)=({namespace_id}, {event_seq}).  "
-            "Advisory lock did not prevent a concurrent allocation — this is a bug."
+            "Possible stale event_sequences counter or concurrent insert anomaly."
         ) from exc
 
     if row is None:
@@ -724,7 +698,7 @@ async def append_event(
     1. Validate ``event_type`` and ``agent_id`` (``_validate_event_payload``).
     2. Apply D8 defence-in-depth check on ``params``.
     3. Fetch the DB clock for signing.
-    4. Acquire per-namespace advisory lock and allocate ``event_seq``.
+    4. Allocate ``event_seq`` via atomic ``event_sequences`` upsert.
     5. Generate a fresh ``event_id``.
     6. Load signing key, build canonical fields, and HMAC-sign (``_sign_event``).
     7. Compute Merkle chain hash — SHA-256(content_hash || previous_chain_hash).
@@ -744,17 +718,11 @@ async def append_event(
     # 1. Validate event_type and agent_id
     agent_id = _validate_event_payload(event_type, agent_id)
 
-    # 1b. Validate parent_event_id exists in the same namespace
+    # 1b.
     if parent_event_id is not None:
-        parent_row = await conn.fetchrow(
-            "SELECT 1 FROM event_log WHERE id = $1 AND namespace_id = $2",
-            parent_event_id,
-            namespace_id,
-        )
-        if parent_row is None:
-            raise EventLogError(
-                f"parent_event_id {parent_event_id} does not exist in namespace {namespace_id}"
-            )
+        # Partition-safe lookup requires parent_occurred_at; deferred to retrieval tier.
+        # Do not add back without providing occurred_at as a query parameter.
+        pass
 
     # 2. D8 defence-in-depth: reject backdated timestamps in params
     _validate_params_no_backdated_timestamp(params)
@@ -763,10 +731,11 @@ async def append_event(
     occurred_at: datetime = await _fetch_db_clock(conn)
     occurred_at_iso: str = occurred_at.isoformat()
 
-    # 4. Acquire per-namespace advisory lock + allocate event_seq
-    await _acquire_seq_lock(conn, namespace_id)
+    # 4. Allocate event_seq (atomic event_sequences upsert)
     try:
         event_seq: int = await _next_event_seq(conn, namespace_id)
+    except EventLogSequenceError:
+        raise
     except asyncpg.PostgresError:
         raise
     except Exception as exc:

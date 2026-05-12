@@ -179,6 +179,7 @@ class TriStackEngine:
         self.namespace: NamespaceOrchestrator | None = None
         self.cognitive: CognitiveOrchestrator | None = None
         self.migration: MigrationOrchestrator | None = None  # trimcp.orchestrators.migration
+        self._init_lock = asyncio.Lock()
 
     async def connect(self):
         cfg.validate()
@@ -325,6 +326,89 @@ class TriStackEngine:
             "Call connect() before using the engine for production use.",
             method_name,
         )
+
+    async def _ensure_namespace(self, method_name: str) -> None:
+        if self.namespace is not None:
+            return
+        async with self._init_lock:
+            if self.namespace is not None:
+                return
+            self._warn_connect_not_called(method_name)
+            from trimcp.orchestrators.namespace import NamespaceOrchestrator
+
+            self.namespace = NamespaceOrchestrator(
+                self.pg_pool,
+                redis_client=self.redis_client,
+            )
+
+    async def _ensure_memory(self) -> None:
+        if self.memory is not None:
+            return
+        async with self._init_lock:
+            if self.memory is not None:
+                return
+            from trimcp.orchestrators.memory import MemoryOrchestrator
+
+            self.memory = MemoryOrchestrator(
+                self.pg_pool,
+                self.mongo_client,
+                self.redis_client,
+                self.minio_client,
+                pg_read_pool=self.pg_read_pool,
+            )
+
+    async def _ensure_graph(self, method_name: str) -> None:
+        if self.graph is not None:
+            return
+        async with self._init_lock:
+            if self.graph is not None:
+                return
+            self._warn_connect_not_called(method_name)
+            from trimcp.orchestrators.graph import GraphOrchestrator
+
+            self.graph = GraphOrchestrator(
+                self.pg_pool,
+                self.mongo_client,
+                self._graph_traverser,
+                self._generate_embedding,
+            )
+
+    async def _ensure_temporal(self, method_name: str) -> None:
+        if self.temporal is not None:
+            return
+        async with self._init_lock:
+            if self.temporal is not None:
+                return
+            self._warn_connect_not_called(method_name)
+            from trimcp.orchestrators.temporal import TemporalOrchestrator
+
+            self.temporal = TemporalOrchestrator(
+                self.pg_pool, self.mongo_client, self
+            )
+
+    async def _ensure_migration(self, method_name: str) -> None:
+        if self.migration is not None:
+            return
+        async with self._init_lock:
+            if self.migration is not None:
+                return
+            self._warn_connect_not_called(method_name)
+            from trimcp.orchestrators.migration import MigrationOrchestrator
+
+            self.migration = MigrationOrchestrator(
+                self.pg_pool, self.redis_client, self.redis_sync_client
+            )
+
+    async def _ensure_cognitive(self, method_name: str) -> None:
+        if self.cognitive is not None:
+            return
+        async with self._init_lock:
+            if self.cognitive is not None:
+                return
+            self._warn_connect_not_called(method_name)
+            from trimcp.orchestrators.cognitive import CognitiveOrchestrator
+
+            self.cognitive = CognitiveOrchestrator(self.pg_pool)
 
     def _redis_cache_key(
         self, namespace_id: str | UUID | None, user_id: str | None, filepath: str
@@ -514,14 +598,7 @@ class TriStackEngine:
         admin_identity: str | None = None,
     ) -> dict:
         """[Phase 0.1] Namespace management — delegating to NamespaceOrchestrator."""
-        if self.namespace is None:
-            self._warn_connect_not_called("manage_namespace")
-            from trimcp.orchestrators.namespace import NamespaceOrchestrator
-
-            self.namespace = NamespaceOrchestrator(
-                self.pg_pool,
-                redis_client=self.redis_client,
-            )
+        await self._ensure_namespace("manage_namespace")
         return await self.namespace.manage_namespace(
             payload,
             admin_identity=admin_identity,
@@ -533,12 +610,7 @@ class TriStackEngine:
         self, memory_id: str, as_of: datetime | None = None
     ) -> dict:
         """[Phase 0.2] Delegate to MemoryOrchestrator."""
-        if self.memory is None:
-            from trimcp.orchestrators.memory import MemoryOrchestrator
-
-            self.memory = MemoryOrchestrator(
-                self.pg_pool, self.mongo_client, self.redis_client, self.minio_client
-            )
+        await self._ensure_memory()
         return await self.memory.verify_memory(memory_id, as_of)
 
     # --- Phase 1.2: Consolidation Tools ---
@@ -547,20 +619,12 @@ class TriStackEngine:
         self, namespace_id: str, since_timestamp: datetime | None = None
     ):
         """[Phase 1.2] Trigger consolidation — delegating to TemporalOrchestrator."""
-        if self.temporal is None:
-            self._warn_connect_not_called("trigger_consolidation")
-            from trimcp.orchestrators.temporal import TemporalOrchestrator
-
-            self.temporal = TemporalOrchestrator(self.pg_pool, self.mongo_client, self)
+        await self._ensure_temporal("trigger_consolidation")
         return await self.temporal.trigger_consolidation(namespace_id, since_timestamp)
 
     async def consolidation_status(self, run_id: str) -> dict:
         """[Phase 1.2] Consolidation status — delegating to TemporalOrchestrator."""
-        if self.temporal is None:
-            self._warn_connect_not_called("consolidation_status")
-            from trimcp.orchestrators.temporal import TemporalOrchestrator
-
-            self.temporal = TemporalOrchestrator(self.pg_pool, self.mongo_client, self)
+        await self._ensure_temporal("consolidation_status")
         return await self.temporal.consolidation_status(run_id)
 
     # --- Code Indexing ---
@@ -572,40 +636,19 @@ class TriStackEngine:
 
         *priority* routes to queue lane: >0 = high_priority, 0 = batch_processing.
         """
-        if self.migration is None:
-            self._warn_connect_not_called("index_code_file")
-            from trimcp.orchestrators.migration import MigrationOrchestrator
-
-            self.migration = MigrationOrchestrator(
-                self.pg_pool, self.redis_client, self.redis_sync_client
-            )
+        await self._ensure_migration("index_code_file")
         return await self.migration.index_code_file(payload, priority=priority)
 
     async def get_job_status(self, job_id: str) -> dict:
         """RQ job status — delegating to MigrationOrchestrator."""
-        if self.migration is None:
-            self._warn_connect_not_called("get_job_status")
-            from trimcp.orchestrators.migration import MigrationOrchestrator
-
-            self.migration = MigrationOrchestrator(
-                self.pg_pool, self.redis_client, self.redis_sync_client
-            )
+        await self._ensure_migration("get_job_status")
         return await self.migration.get_job_status(job_id)
 
     # --- Graph Search ---
 
     async def graph_search(self, payload: GraphSearchRequest) -> dict:
         """[Phase 2.2] GraphRAG traversal — delegating to GraphOrchestrator."""
-        if self.graph is None:
-            self._warn_connect_not_called("graph_search")
-            from trimcp.orchestrators.graph import GraphOrchestrator
-
-            self.graph = GraphOrchestrator(
-                self.pg_pool,
-                self.mongo_client,
-                self._graph_traverser,
-                self._generate_embedding,
-            )
+        await self._ensure_graph("graph_search")
         return await self.graph.graph_search(payload)
 
     # --- Codebase Search ---
@@ -621,16 +664,7 @@ class TriStackEngine:
         private: bool = False,
     ) -> list[dict]:
         """Codebase hybrid search — delegating to GraphOrchestrator."""
-        if self.graph is None:
-            self._warn_connect_not_called("search_codebase")
-            from trimcp.orchestrators.graph import GraphOrchestrator
-
-            self.graph = GraphOrchestrator(
-                self.pg_pool,
-                self.mongo_client,
-                self._graph_traverser,
-                self._generate_embedding,
-            )
+        await self._ensure_graph("search_codebase")
         return await self.graph.search_codebase(
             query,
             namespace_id,
@@ -642,35 +676,18 @@ class TriStackEngine:
 
     async def manage_quotas(self, payload: ManageQuotasRequest) -> dict:
         """[Phase 3.2] Quota management — delegating to NamespaceOrchestrator."""
-        if self.namespace is None:
-            self._warn_connect_not_called("manage_quotas")
-            from trimcp.orchestrators.namespace import NamespaceOrchestrator
-
-            self.namespace = NamespaceOrchestrator(
-                self.pg_pool,
-                redis_client=self.redis_client,
-            )
+        await self._ensure_namespace("manage_quotas")
         return await self.namespace.manage_quotas(payload)
 
     # --- Core Saga: store_memory ---
     async def store_memory(self, payload: StoreMemoryRequest) -> dict:
         """Delegate to MemoryOrchestrator (lazy-init for test compatibility)."""
-        if self.memory is None:
-            from trimcp.orchestrators.memory import MemoryOrchestrator
-
-            self.memory = MemoryOrchestrator(
-                self.pg_pool, self.mongo_client, self.redis_client, self.minio_client
-            )
+        await self._ensure_memory()
         return await self.memory.store_memory(payload)
 
     async def store_media(self, payload: MediaPayload) -> str:
         """Delegate to MemoryOrchestrator."""
-        if self.memory is None:
-            from trimcp.orchestrators.memory import MemoryOrchestrator
-
-            self.memory = MemoryOrchestrator(
-                self.pg_pool, self.mongo_client, self.redis_client, self.minio_client
-            )
+        await self._ensure_memory()
         return await self.memory.store_media(payload)
 
     async def force_gc(self) -> dict:
@@ -743,14 +760,21 @@ class TriStackEngine:
         except Exception:
             health["status"] = "degraded"
 
-        # 4. RQ queues — all three lanes
+        # 4. RQ queues — all three lanes (sync Redis I/O → thread pool)
         try:
             if self.redis_sync_client:
                 from rq import Queue
 
-                for queue_name in ("default", "high_priority", "batch_processing"):
-                    q = Queue(queue_name, connection=self.redis_sync_client)
-                    health["queues"][queue_name] = f"{len(q)} pending jobs"
+                def _get_queue_lengths():
+                    lengths = {}
+                    for name in ("default", "high_priority", "batch_processing"):
+                        q = Queue(name, connection=self.redis_sync_client)
+                        lengths[name] = len(q)
+                    return lengths
+
+                lengths = await asyncio.to_thread(_get_queue_lengths)
+                for queue_name, qlen in lengths.items():
+                    health["queues"][queue_name] = f"{qlen} pending jobs"
         except Exception:
             pass
 
@@ -784,12 +808,7 @@ class TriStackEngine:
 
     async def recall_memory(self, namespace_id, user_id, session_id, as_of=None):
         """Legacy single-result recall — delegate to MemoryOrchestrator."""
-        if self.memory is None:
-            from trimcp.orchestrators.memory import MemoryOrchestrator
-
-            self.memory = MemoryOrchestrator(
-                self.pg_pool, self.mongo_client, self.redis_client, self.minio_client
-            )
+        await self._ensure_memory()
         return await self.memory.recall_memory(namespace_id, user_id, session_id, as_of)
 
     async def recall_recent(
@@ -803,12 +822,7 @@ class TriStackEngine:
         offset=0,
     ):
         """[Phase 2.2] Delegate to MemoryOrchestrator."""
-        if self.memory is None:
-            from trimcp.orchestrators.memory import MemoryOrchestrator
-
-            self.memory = MemoryOrchestrator(
-                self.pg_pool, self.mongo_client, self.redis_client, self.minio_client
-            )
+        await self._ensure_memory()
         return await self.memory.recall_recent(
             namespace_id, agent_id, limit, as_of, user_id, session_id, offset
         )
@@ -825,24 +839,14 @@ class TriStackEngine:
         as_of=None,
     ):
         """Delegate to MemoryOrchestrator."""
-        if self.memory is None:
-            from trimcp.orchestrators.memory import MemoryOrchestrator
-
-            self.memory = MemoryOrchestrator(
-                self.pg_pool, self.mongo_client, self.redis_client, self.minio_client
-            )
+        await self._ensure_memory()
         return await self.memory.semantic_search(
             query, namespace_id, agent_id, limit, offset, as_of
         )
 
     async def unredact_memory(self, memory_id, namespace_id, agent_id):
         """[Phase 0.3] Delegate to MemoryOrchestrator."""
-        if self.memory is None:
-            from trimcp.orchestrators.memory import MemoryOrchestrator
-
-            self.memory = MemoryOrchestrator(
-                self.pg_pool, self.mongo_client, self.redis_client, self.minio_client
-            )
+        await self._ensure_memory()
         return await self.memory.unredact_memory(memory_id, namespace_id, agent_id)
 
     # --- Phase 1.1: Cognitive Layer (Salience) ---
@@ -851,11 +855,7 @@ class TriStackEngine:
         self, memory_id: str, agent_id: str, namespace_id: str, factor: float = 0.2
     ) -> dict:
         """[Phase 1.1] Boost memory — delegating to CognitiveOrchestrator."""
-        if self.cognitive is None:
-            self._warn_connect_not_called("boost_memory")
-            from trimcp.orchestrators.cognitive import CognitiveOrchestrator
-
-            self.cognitive = CognitiveOrchestrator(self.pg_pool)
+        await self._ensure_cognitive("boost_memory")
         return await self.cognitive.boost_memory(
             memory_id, agent_id, namespace_id, factor
         )
@@ -864,11 +864,7 @@ class TriStackEngine:
         self, memory_id: str, agent_id: str, namespace_id: str
     ) -> dict:
         """[Phase 1.1] Forget memory — delegating to CognitiveOrchestrator."""
-        if self.cognitive is None:
-            self._warn_connect_not_called("forget_memory")
-            from trimcp.orchestrators.cognitive import CognitiveOrchestrator
-
-            self.cognitive = CognitiveOrchestrator(self.pg_pool)
+        await self._ensure_cognitive("forget_memory")
         return await self.cognitive.forget_memory(memory_id, agent_id, namespace_id)
 
     # --- Phase 1.3: Contradictions ---
@@ -880,11 +876,7 @@ class TriStackEngine:
         agent_id: str | None = None,
     ) -> list[dict]:
         """[Phase 1.3] List contradictions — delegating to CognitiveOrchestrator."""
-        if self.cognitive is None:
-            self._warn_connect_not_called("list_contradictions")
-            from trimcp.orchestrators.cognitive import CognitiveOrchestrator
-
-            self.cognitive = CognitiveOrchestrator(self.pg_pool)
+        await self._ensure_cognitive("list_contradictions")
         return await self.cognitive.list_contradictions(
             namespace_id, resolution, agent_id
         )
@@ -898,11 +890,7 @@ class TriStackEngine:
         note: str | None = None,
     ) -> dict:
         """[Phase 1.3] Resolve contradiction — RLS-enforced, delegating to CognitiveOrchestrator."""
-        if self.cognitive is None:
-            self._warn_connect_not_called("resolve_contradiction")
-            from trimcp.orchestrators.cognitive import CognitiveOrchestrator
-
-            self.cognitive = CognitiveOrchestrator(self.pg_pool)
+        await self._ensure_cognitive("resolve_contradiction")
         return await self.cognitive.resolve_contradiction(
             contradiction_id, namespace_id, resolution, resolved_by, note
         )
@@ -911,29 +899,17 @@ class TriStackEngine:
 
     async def create_snapshot(self, payload: CreateSnapshotRequest) -> SnapshotRecord:
         """[Phase 2.2] Create snapshot — delegating to TemporalOrchestrator."""
-        if self.temporal is None:
-            self._warn_connect_not_called("create_snapshot")
-            from trimcp.orchestrators.temporal import TemporalOrchestrator
-
-            self.temporal = TemporalOrchestrator(self.pg_pool, self.mongo_client, self)
+        await self._ensure_temporal("create_snapshot")
         return await self.temporal.create_snapshot(payload)
 
     async def list_snapshots(self, namespace_id: str) -> list[SnapshotRecord]:
         """[Phase 2.2] List snapshots — delegating to TemporalOrchestrator."""
-        if self.temporal is None:
-            self._warn_connect_not_called("list_snapshots")
-            from trimcp.orchestrators.temporal import TemporalOrchestrator
-
-            self.temporal = TemporalOrchestrator(self.pg_pool, self.mongo_client, self)
+        await self._ensure_temporal("list_snapshots")
         return await self.temporal.list_snapshots(namespace_id)
 
     async def delete_snapshot(self, snapshot_id: str, namespace_id: str) -> DeleteSnapshotResult:
         """[Phase 2.2] Delete snapshot — delegating to TemporalOrchestrator."""
-        if self.temporal is None:
-            self._warn_connect_not_called("delete_snapshot")
-            from trimcp.orchestrators.temporal import TemporalOrchestrator
-
-            self.temporal = TemporalOrchestrator(self.pg_pool, self.mongo_client, self)
+        await self._ensure_temporal("delete_snapshot")
         return await self.temporal.delete_snapshot(snapshot_id, namespace_id)
 
     async def _fetch_memories_valid_at(
@@ -944,77 +920,39 @@ class TriStackEngine:
         as_of: datetime,
     ) -> dict[str, Any]:
         """[Phase 2.2] Fetch memory rows valid at a point in time — delegating."""
-        if self.temporal is None:
-            self._warn_connect_not_called("_fetch_memories_valid_at")
-            from trimcp.orchestrators.temporal import TemporalOrchestrator
-
-            self.temporal = TemporalOrchestrator(self.pg_pool, self.mongo_client, self)
+        await self._ensure_temporal("_fetch_memories_valid_at")
         return await self.temporal._fetch_memories_valid_at(
             conn, namespace_id, memory_ids, as_of
         )
 
     async def compare_states(self, payload: CompareStatesRequest) -> StateDiffResult:
         """[Phase 2.2] Compare states — delegating to TemporalOrchestrator."""
-        if self.temporal is None:
-            self._warn_connect_not_called("compare_states")
-            from trimcp.orchestrators.temporal import TemporalOrchestrator
-
-            self.temporal = TemporalOrchestrator(self.pg_pool, self.mongo_client, self)
+        await self._ensure_temporal("compare_states")
         return await self.temporal.compare_states(payload)
 
     # --- Phase 2.1: Re-embedding Migrations ---
 
     async def start_migration(self, target_model_id: str) -> dict:
         """[Phase 2.1] Start migration — delegating to MigrationOrchestrator."""
-        if self.migration is None:
-            self._warn_connect_not_called("start_migration")
-            from trimcp.orchestrators.migration import MigrationOrchestrator
-
-            self.migration = MigrationOrchestrator(
-                self.pg_pool, self.redis_client, self.redis_sync_client
-            )
+        await self._ensure_migration("start_migration")
         return await self.migration.start_migration(target_model_id)
 
     async def migration_status(self, migration_id: str) -> dict:
         """[Phase 2.1] Migration status — delegating to MigrationOrchestrator."""
-        if self.migration is None:
-            self._warn_connect_not_called("migration_status")
-            from trimcp.orchestrators.migration import MigrationOrchestrator
-
-            self.migration = MigrationOrchestrator(
-                self.pg_pool, self.redis_client, self.redis_sync_client
-            )
+        await self._ensure_migration("migration_status")
         return await self.migration.migration_status(migration_id)
 
     async def validate_migration(self, migration_id: str) -> dict:
         """[Phase 2.1] Validate migration — delegating to MigrationOrchestrator."""
-        if self.migration is None:
-            self._warn_connect_not_called("validate_migration")
-            from trimcp.orchestrators.migration import MigrationOrchestrator
-
-            self.migration = MigrationOrchestrator(
-                self.pg_pool, self.redis_client, self.redis_sync_client
-            )
+        await self._ensure_migration("validate_migration")
         return await self.migration.validate_migration(migration_id)
 
     async def commit_migration(self, migration_id: str) -> dict:
         """[Phase 2.1] Commit migration — delegating to MigrationOrchestrator."""
-        if self.migration is None:
-            self._warn_connect_not_called("commit_migration")
-            from trimcp.orchestrators.migration import MigrationOrchestrator
-
-            self.migration = MigrationOrchestrator(
-                self.pg_pool, self.redis_client, self.redis_sync_client
-            )
+        await self._ensure_migration("commit_migration")
         return await self.migration.commit_migration(migration_id)
 
     async def abort_migration(self, migration_id: str) -> dict:
         """[Phase 2.1] Abort migration — delegating to MigrationOrchestrator."""
-        if self.migration is None:
-            self._warn_connect_not_called("abort_migration")
-            from trimcp.orchestrators.migration import MigrationOrchestrator
-
-            self.migration = MigrationOrchestrator(
-                self.pg_pool, self.redis_client, self.redis_sync_client
-            )
+        await self._ensure_migration("abort_migration")
         return await self.migration.abort_migration(migration_id)

@@ -234,7 +234,7 @@ resource "aws_ecs_service" "orchestrator" {
   }
 
   deployment_minimum_healthy_percent = 100
-  deployment_maximum_percent         = 100
+  deployment_maximum_percent         = 200
 }
 
 resource "aws_ecs_service" "worker" {
@@ -251,7 +251,7 @@ resource "aws_ecs_service" "worker" {
   }
 
   deployment_minimum_healthy_percent = 100
-  deployment_maximum_percent         = 100
+  deployment_maximum_percent         = 200
 }
 
 # ---------------------------------------------------------------------------

@@ -873,7 +873,7 @@ async def test_mcp_call_tool_surfaces_quota_as_32013(
     eng.semantic_search = AsyncMock(return_value=[])
     monkeypatch.setattr(srv, "engine", eng)
 
-    async def _boom(pool, tool, args):
+    async def _boom(*_a, **_k):
         raise QuotaExceededError("no capacity")
 
     monkeypatch.setattr("trimcp.quotas.consume_for_tool", _boom)

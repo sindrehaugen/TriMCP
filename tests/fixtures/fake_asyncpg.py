@@ -54,7 +54,7 @@ class _FakeAcquireContext:
 
 class RecordingFakeConnection:
     """
-    Records INSERT payloads and honours per-namespace MAX(event_seq)+1 sequencing.
+    Records INSERT payloads and honours per-namespace event_sequences-style sequencing.
 
     asyncpg Compatibility
     ---------------------
@@ -89,9 +89,6 @@ class RecordingFakeConnection:
         raise AssertionError(f"Unexpected fetchval query: {query!r}")
 
     async def execute(self, query: str, *args: Any) -> str:
-        if "pg_advisory_xact_lock" in query:
-            _ = args[0]
-            return "SELECT 1"
         raise AssertionError(f"Unexpected execute query: {query!r}")
 
     async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
@@ -115,11 +112,17 @@ class RecordingFakeConnection:
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         q = "".join(query.split()).lower()
 
-        if "coalesce(max(event_seq)" in q and "fromevent_log" in q.replace(" ", ""):
+        if "intoevent_sequences" in q.replace(" ", "") and "onconflict" in q.replace(
+            " ", ""
+        ):
             namespace_id = args[0]
-            assert isinstance(namespace_id, UUID)
-            nxt = self._seq_max[namespace_id] + 1
-            return {"next_seq": nxt}
+            ns_key = (
+                namespace_id
+                if isinstance(namespace_id, UUID)
+                else UUID(str(namespace_id))
+            )
+            nxt = self._seq_max[ns_key] + 1
+            return {"seq": nxt}
 
         # _fetch_previous_chain_hash: SELECT chain_hash FROM event_log
         # WHERE namespace_id = $1 ORDER BY event_seq DESC LIMIT 1

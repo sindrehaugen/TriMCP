@@ -15,6 +15,7 @@ Uncle Bob SRP refactoring (2026-05-08):
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -79,7 +80,7 @@ async def handle_semantic_search(
         offset=req.offset,
         as_of=req.as_of,
     )
-    return _serialize(results)
+    return await asyncio.to_thread(_serialize, results)
 
 
 @mcp_handler
@@ -88,14 +89,17 @@ async def handle_get_recent_context(
 ) -> str:
     """Retrieve the most recent cached context for a user/session from Redis."""
     req = GetRecentContextRequest(**arguments)
-    context = await engine.recall_recent(
-        namespace_id=str(req.namespace_id),
-        agent_id=req.user_id or "default",
-        limit=req.limit,
-        as_of=req.as_of,
-        offset=req.offset,
+    context = await asyncio.wait_for(
+        engine.recall_recent(
+            namespace_id=str(req.namespace_id),
+            agent_id=req.user_id or "default",
+            limit=req.limit,
+            as_of=req.as_of,
+            offset=req.offset,
+        ),
+        timeout=5.0,
     )
-    return _serialize({"context": context})
+    return await asyncio.to_thread(_serialize, {"context": context})
 
 
 @mcp_handler

@@ -1,12 +1,17 @@
 """
-Phase 3.2 — Namespace / agent resource quotas (asyncpg, hot-path friendly).
+Phase 3.2 — Namespace / agent resource quotas (asyncpg + optional Redis hot path).
 
 Only namespaces (and optional per-agent rows) that have rows in ``resource_quotas``
-are enforced. One short transaction batches all counter updates for a tool call.
+are enforced. When ``TRIMCP_QUOTA_REDIS_COUNTERS`` is true and a Redis client is
+passed, increments use atomic Redis operations to avoid serializing writers on
+``resource_quotas``; PostgreSQL ``used_amount`` is updated periodically via
+:func:`flush_quota_counters_to_postgres`.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,9 +22,55 @@ from asyncpg.exceptions import IntegrityConstraintViolationError
 
 from trimcp.config import cfg
 
+log = logging.getLogger("trimcp.quotas")
+
 RESOURCE_LLM_TOKENS = "llm_tokens"
 RESOURCE_STORAGE_BYTES = "storage_bytes"
 RESOURCE_MEMORY_COUNT = "memory_count"
+
+# Redis mirror for per-row used counters (namespace_id + quota row id in key — RLS-safe flush).
+QUOTA_REDIS_KEY_PREFIX = "trimcp:quota:used:"
+
+_QUOTA_INCR_LUA = """
+local cur = redis.call('GET', KEYS[1])
+local base = tonumber(ARGV[1])
+local delta = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+local v
+if cur == false then
+  v = base
+else
+  v = tonumber(cur)
+end
+local newv = v + delta
+if newv > limit then
+  return '-1'
+end
+redis.call('SET', KEYS[1], newv)
+return tostring(newv)
+"""
+
+
+def quota_redis_key(namespace_id: UUID, quota_row_id: UUID) -> str:
+    return f"{QUOTA_REDIS_KEY_PREFIX}{namespace_id}:{quota_row_id}"
+
+
+def _parse_quota_redis_key(key: str) -> tuple[UUID, UUID] | None:
+    if not key.startswith(QUOTA_REDIS_KEY_PREFIX):
+        return None
+    rest = key[len(QUOTA_REDIS_KEY_PREFIX) :]
+    try:
+        ns_str, qid_str = rest.rsplit(":", 1)
+        return UUID(ns_str), UUID(qid_str)
+    except ValueError:
+        return None
+
+
+def _quota_incr_failed(result: Any) -> bool:
+    if result is None:
+        return True
+    s = result.decode() if isinstance(result, bytes) else str(result)
+    return s == "-1"
 
 
 class QuotaExceededError(ValueError):
@@ -31,6 +82,8 @@ class QuotaReservation:
     """Tracks applied increments for best-effort rollback on downstream failure."""
 
     pool: asyncpg.Pool | None
+    redis_client: Any | None = None
+    namespace_id: UUID | None = None
     steps: list[tuple[UUID, int]] = field(default_factory=list)
 
     @property
@@ -38,6 +91,13 @@ class QuotaReservation:
         return not self.steps
 
     async def rollback(self) -> None:
+        if self.redis_client is not None and self.namespace_id is not None and self.steps:
+            for qid, delta in reversed(self.steps):
+                await self.redis_client.decrby(
+                    quota_redis_key(self.namespace_id, qid), delta
+                )
+            self.steps.clear()
+            return
         if not self.steps or self.pool is None:
             self.steps.clear()
             return
@@ -58,7 +118,7 @@ class QuotaReservation:
 
 
 def null_reservation() -> QuotaReservation:
-    return QuotaReservation(pool=None, steps=[])
+    return QuotaReservation(pool=None, redis_client=None, namespace_id=None, steps=[])
 
 
 def estimate_llm_tokens(*texts: str | None) -> int:
@@ -71,12 +131,90 @@ def estimate_storage_bytes(*texts: str | None) -> int:
     return sum(len((t or "").encode("utf-8")) for t in texts)
 
 
+async def _consume_resources_redis(
+    pool: asyncpg.Pool,
+    redis_client: Any,
+    *,
+    namespace_id: UUID,
+    agent_id: str | None,
+    amounts: Mapping[str, int],
+) -> QuotaReservation:
+    reservation = QuotaReservation(
+        pool=pool,
+        redis_client=redis_client,
+        namespace_id=namespace_id,
+    )
+    deltas = {k: int(v) for k, v in amounts.items() if int(v) > 0}
+    applied: list[tuple[UUID, int]] = []
+
+    async def _rollback_partial() -> None:
+        for qid, delta in reversed(applied):
+            await redis_client.decrby(quota_redis_key(namespace_id, qid), delta)
+
+    try:
+        async with pool.acquire(timeout=10.0) as conn:
+            for resource_type, delta in sorted(deltas.items()):
+                rows = await conn.fetch(
+                    """
+                    SELECT id, agent_id, used_amount, limit_amount
+                    FROM resource_quotas
+                    WHERE namespace_id = $1
+                      AND resource_type = $2
+                      AND (reset_at IS NULL OR reset_at > now())
+                      AND (
+                          agent_id IS NULL
+                          OR ($3::text IS NOT NULL AND agent_id = $3)
+                      )
+                    ORDER BY (agent_id IS NULL) DESC
+                    """,
+                    namespace_id,
+                    resource_type,
+                    agent_id,
+                )
+                if not rows:
+                    continue
+                for row in rows:
+                    qid = row["id"]
+                    pg_used = int(row["used_amount"])
+                    lim = int(row["limit_amount"])
+                    key = quota_redis_key(namespace_id, qid)
+                    res = await redis_client.eval(
+                        _QUOTA_INCR_LUA,
+                        1,
+                        key,
+                        str(pg_used),
+                        str(delta),
+                        str(lim),
+                    )
+                    if _quota_incr_failed(res):
+                        await _rollback_partial()
+                        applied.clear()
+                        reservation.steps.clear()
+                        scope = "namespace" if row["agent_id"] is None else "agent"
+                        raise QuotaExceededError(
+                            f"Quota exceeded for namespace={namespace_id} "
+                            f"resource={resource_type!r} ({scope} limit)"
+                        )
+                    applied.append((qid, delta))
+                    reservation.steps.append((qid, delta))
+    except QuotaExceededError:
+        raise
+    except Exception:
+        await _rollback_partial()
+        applied.clear()
+        reservation.steps.clear()
+        raise
+
+    return reservation
+
+
 async def consume_resources(
     pool: asyncpg.Pool,
     *,
     namespace_id: UUID,
     agent_id: str | None,
     amounts: Mapping[str, int],
+    redis_client: Any | None = None,
 ) -> QuotaReservation:
     """
     Atomically increment counters for each (resource_type -> delta).
@@ -87,11 +225,23 @@ async def consume_resources(
     if not cfg.TRIMCP_QUOTAS_ENABLED:
         return null_reservation()
 
-    reservation = QuotaReservation(pool=pool)
     deltas = {k: int(v) for k, v in amounts.items() if int(v) > 0}
     if not deltas:
-        return reservation
+        return QuotaReservation(pool=pool, steps=[])
 
+    use_redis = bool(
+        cfg.TRIMCP_QUOTA_REDIS_COUNTERS and redis_client is not None
+    )
+    if use_redis:
+        return await _consume_resources_redis(
+            pool,
+            redis_client,
+            namespace_id=namespace_id,
+            agent_id=agent_id,
+            amounts=amounts,
+        )
+
+    reservation = QuotaReservation(pool=pool)
     async with pool.acquire(timeout=10.0) as conn:
         async with conn.transaction():
             try:
@@ -130,7 +280,9 @@ async def consume_resources(
                             row["id"],
                         )
                         if upd is None:
-                            scope = "namespace" if row["agent_id"] is None else "agent"
+                            scope = (
+                                "namespace" if row["agent_id"] is None else "agent"
+                            )
                             raise QuotaExceededError(
                                 f"Quota exceeded for namespace={namespace_id} "
                                 f"resource={resource_type!r} ({scope} limit)"
@@ -142,6 +294,76 @@ async def consume_resources(
                 ) from e
 
     return reservation
+
+
+async def flush_quota_counters_to_postgres(
+    redis_client: Any, pool: asyncpg.Pool
+) -> int:
+    """Scan Redis quota keys and persist ``used_amount`` under RLS-scoped sessions."""
+    if redis_client is None:
+        return 0
+    from trimcp.db_utils import scoped_pg_session
+
+    flushed = 0
+    async for key_b in redis_client.scan_iter(match=f"{QUOTA_REDIS_KEY_PREFIX}*"):
+        key = key_b.decode() if isinstance(key_b, bytes) else key_b
+        parsed = _parse_quota_redis_key(key)
+        if parsed is None:
+            continue
+        ns_id, qid = parsed
+        raw = await redis_client.get(key_b)
+        if raw is None:
+            continue
+        used_s = raw.decode() if isinstance(raw, bytes) else raw
+        try:
+            used = int(used_s)
+        except ValueError:
+            continue
+        try:
+            async with scoped_pg_session(pool, ns_id) as conn:
+                await conn.execute(
+                    """
+                    UPDATE resource_quotas
+                    SET used_amount = $1, updated_at = now()
+                    WHERE id = $2
+                    """,
+                    used,
+                    qid,
+                )
+            flushed += 1
+        except Exception:
+            log.exception(
+                "flush_quota_counters_to_postgres failed for ns=%s quota_id=%s",
+                ns_id,
+                qid,
+            )
+    return flushed
+
+
+async def quota_redis_flush_loop(redis_client: Any, pool: asyncpg.Pool) -> None:
+    """Background task: periodically sync Redis quota mirrors to PostgreSQL."""
+    while True:
+        try:
+            await asyncio.sleep(cfg.TRIMCP_QUOTA_REDIS_FLUSH_INTERVAL_S)
+            if (
+                cfg.TRIMCP_QUOTAS_ENABLED
+                and cfg.TRIMCP_QUOTA_REDIS_COUNTERS
+                and redis_client is not None
+            ):
+                await flush_quota_counters_to_postgres(redis_client, pool)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            log.exception("quota_redis_flush_loop iteration failed")
+
+
+async def delete_quota_redis_counter(
+    redis_client: Any, namespace_id: UUID, quota_row_id: UUID
+) -> None:
+    """Remove Redis mirror for a quota row (e.g. after admin reset)."""
+    if redis_client is None:
+        return
+    await redis_client.delete(quota_redis_key(namespace_id, quota_row_id))
 
 
 def tool_quota_plan(
@@ -220,6 +442,7 @@ async def consume_for_tool(
     pool: asyncpg.Pool,
     tool_name: str,
     arguments: dict[str, Any],
+    redis_client: Any | None = None,
 ) -> QuotaReservation:
     if not cfg.TRIMCP_QUOTAS_ENABLED:
         return null_reservation()
@@ -228,5 +451,9 @@ async def consume_for_tool(
         return null_reservation()
     ns, agent, amounts = plan
     return await consume_resources(
-        pool, namespace_id=ns, agent_id=agent, amounts=amounts
+        pool,
+        namespace_id=ns,
+        agent_id=agent,
+        amounts=amounts,
+        redis_client=redis_client,
     )

@@ -255,6 +255,53 @@ The index is never bypassed — RLS filters candidates after the HNSW proximity 
 
 ---
 
+## 7.1 GraphRAG hydration pipeline
+
+`semantic_search` does not stop at the vector ANN hit list. It continues through a three-stage pipeline that enriches each result with its knowledge-graph neighbourhood and the full payload from MongoDB.
+
+```mermaid
+flowchart TD
+  A["Client: semantic_search(query, top_k, as_of?)"] --> B
+
+  subgraph PG["PostgreSQL — asyncpg"]
+    B["Embed query\ntrimcp/embeddings"]
+    B --> C["pgvector ANN scan\nmemories.embedding <=> query_vec\nWHERE created_at <= as_of\nLIMIT top_k × 4 candidates"]
+    C --> D["RLS filter\nnamespace_id = current_setting(trimcp.namespace_id)"]
+    D --> E["Top-k rows\n(id, mongo_ref_id, confidence)"]
+  end
+
+  E --> F
+
+  subgraph KG["Knowledge Graph BFS — graph_query.py"]
+    F["GraphRAGTraverser.traverse(anchor_labels)"]
+    F --> G["WITH RECURSIVE traversal\npath text[] — cycle guard FIX-038\ndepth < 50 cap\nkg_edges JOIN traversal"]
+    G --> H["Subgraph: nodes + edges\nup to 3 BFS hops"]
+  end
+
+  H --> I
+
+  subgraph MG["MongoDB — Motor"]
+    I["Batch payload fetch\nfind({'_id': {'\$in': mongo_ref_ids}})\nN+1 prevention FIX-024"]
+    I --> J["Hydrated documents\n{content, metadata, ...}"]
+  end
+
+  J --> K["Merge: semantic hits + KG subgraph + payloads"]
+  K --> L["Return SearchResult[] to client"]
+```
+
+**Key design decisions**:
+
+| Decision | Detail |
+|---|---|
+| `top_k × 4` over-fetch | Compensates for RLS post-filtering on small namespaces (§7 above). The final list is re-ranked to `top_k` after hydration. |
+| BFS cycle guard | `path text[]` accumulator prevents infinite loops on cyclic KG graphs. Hard cap at depth 50 bounds worst-case query time (FIX-038). |
+| Mongo batch fetch | Single `find({'_id': {'$in': [...]}})` instead of one `find_one` per memory row. Prevents O(n) round-trips on large result sets (FIX-024). |
+| Temporal isolation | `WHERE created_at <= as_of` in the ANN scan ensures KG and payload results also respect the time-travel anchor — nodes added after `as_of` are never returned. |
+
+**Code location**: `trimcp/graph_query.py` (`GraphRAGTraverser`), `trimcp/orchestrators/memory.py` (`semantic_search`).
+
+---
+
 ## 8. Database partitioning vs declarative referential integrity
 
 **Design tradeoff — Partitioning on composite keys (`id, created_at`):**

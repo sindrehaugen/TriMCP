@@ -153,7 +153,10 @@ async def api_search(request):
 
     try:
         q_res = await _quotas.consume_for_tool(
-            engine.pg_pool, "api_semantic_search", body
+            engine.pg_pool,
+            "api_semantic_search",
+            body,
+            redis_client=engine.redis_client,
         )
     except _quotas.QuotaExceededError as exc:
         return JSONResponse({"error": str(exc)}, status_code=429)

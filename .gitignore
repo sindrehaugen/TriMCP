@@ -34,3 +34,17 @@ htmlcov/
 
 # Local agent runner prompts/scripts — keep out of remote repo
 phase6-runners/
+
+# Scratch / temp / session artifacts
+scratch/
+tmp_chars.txt
+last\ work\ done\ *.txt
+last-work-done-*.md
+.commit_msg
+
+# Duplicate / working copies
+TriMCP\ (1)/
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/

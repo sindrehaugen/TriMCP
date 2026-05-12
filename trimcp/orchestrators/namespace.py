@@ -369,17 +369,25 @@ class NamespaceOrchestrator:
                 }
 
             if payload.command == ManageQuotasCommand.reset:
-                await conn.execute(
+                rows = await conn.fetch(
                     """
                     UPDATE resource_quotas 
                     SET used_amount = 0, updated_at = now()
                     WHERE namespace_id = $1 AND resource_type = $2 
                       AND (agent_id IS NOT DISTINCT FROM $3)
+                    RETURNING id, namespace_id
                     """,
                     payload.namespace_id,
                     payload.resource_type,
                     payload.agent_id,
                 )
+                if self._redis is not None and rows:
+                    from trimcp import quotas as quotas_mod
+
+                    for r in rows:
+                        await quotas_mod.delete_quota_redis_counter(
+                            self._redis, r["namespace_id"], r["id"]
+                        )
                 return {
                     "status": "ok",
                     "message": f"Usage reset for {payload.resource_type}",
