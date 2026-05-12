@@ -31,3 +31,6 @@ Thumbs.db
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Local agent runner prompts/scripts — keep out of remote repo
+phase6-runners/
