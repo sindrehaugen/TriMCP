@@ -48,3 +48,19 @@ TriMCP\ (1)/
 # Tool caches
 .mypy_cache/
 .ruff_cache/
+
+# Planning, to-dos, roadmaps, and audit docs — internal only
+to-do-*.md
+*REMEDIATION_PLAN.md
+*DEPLOYMENT_PHASE*.md
+Phase6*.md
+phase6-*.md
+*Audit*.md
+audit_report.md
+GAPS.md
+Concept_*.md
+TriMCP\ Architectural\ Audit*.md
+TriMCP\ Enterprise\ Deployment\ Plan.md
+TriMCP_Innovation_Roadmap*.md
+TriMCP\ CodebaseVSRoadmap.md
+last-work-done-*.md
