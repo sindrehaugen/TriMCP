@@ -23,6 +23,8 @@ func main() {
 	ctx, stop := notifyRootContext()
 	defer stop()
 
+	// SIGTERM forwarding to MCP child processes is handled inside
+	// github.com/trimcp/tri-stack/launch.Run — behaviour is not verifiable from this repository alone (FIX-046).
 	n := launch.NewPlatformNotifier(log)
 	if err := launch.Run(ctx, n, log); err != nil {
 		if errors.Is(err, context.Canceled) {

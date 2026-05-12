@@ -49,7 +49,7 @@ def _engine_pool_context(conn: object | None = None) -> MagicMock:
     conn = conn or AsyncMock()
     engine = MagicMock()
     engine.pg_pool = MagicMock()
-    engine.pg_pool.acquire = MagicMock(side_effect=lambda: _FakeAcquire(conn))
+    engine.pg_pool.acquire = MagicMock(side_effect=lambda *_a, **_k: _FakeAcquire(conn))
     engine.semantic_search = AsyncMock(return_value=[])
     return engine
 

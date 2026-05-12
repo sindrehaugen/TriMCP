@@ -45,7 +45,7 @@ async def _acquire_gc_lock() -> bool:
         return bool(acquired)
     except Exception as exc:
         log.error("GC lock acquisition failed: %s", exc)
-        return True  # fail-open: run without lock rather than skip entirely
+        return False  # fail-closed: abort the job on Redis outage to prevent concurrency bugs
 
 log = logging.getLogger("tri-stack-gc")
 
@@ -105,35 +105,42 @@ async def _connect_with_retry() -> tuple[AsyncIOMotorClient, asyncpg.Pool]:
 # --- Paginated PG reference set builder ---
 
 
+async def _fetch_pg_ref_batch(conn: asyncpg.Connection, table: str, last_seen_id: UUID, limit: int) -> list[asyncpg.Record]:
+    """Fetch a batch of payload_refs using keyset pagination."""
+    # Keyset pagination — table name is from a hardcoded tuple, not user input
+    return await conn.fetch(
+        f"SELECT id, payload_ref FROM {table} "  # noqa: S608 — table is not user-controlled
+        f"WHERE payload_ref IS NOT NULL AND id > $1 "
+        f"ORDER BY id LIMIT $2",
+        last_seen_id,
+        limit,
+    )
+
+
 async def _fetch_pg_refs(pg_pool: asyncpg.Pool, namespaces: list[UUID]) -> set[str]:
     """
-    Build the set of all known mongo_ref_ids in PG using cursor-based pagination.
+    Build the set of all known mongo_ref_ids in PG using keyset-based pagination.
     Iterates over all namespaces and sets RLS context for each so FORCE ROW LEVEL
     SECURITY does not silently return zero rows.
     """
     pg_refs: set[str] = set()
+    ZERO_UUID = UUID(int=0)
 
     for ns_id in namespaces:
-        async with pg_pool.acquire() as conn:
-            await set_namespace_context(conn, ns_id)
-            for table in ("memories",):
-                offset = 0
-                while True:
-                    # Parameterised LIMIT/OFFSET — table name is from a hardcoded tuple, not user input
-                    rows = await conn.fetch(
-                        f"SELECT payload_ref FROM {table} "  # noqa: S608 — table is not user-controlled
-                        f"WHERE payload_ref IS NOT NULL "
-                        f"LIMIT $1 OFFSET $2",
-                        PAGE_SIZE,
-                        offset,
-                    )
-                    if not rows:
-                        break
-                    pg_refs.update(row["payload_ref"] for row in rows)
-                    offset += PAGE_SIZE
+        async with pg_pool.acquire(timeout=10.0) as conn:
+            async with conn.transaction():
+                await set_namespace_context(conn, ns_id)
+                for table in ("memories",):
+                    last_seen_id = ZERO_UUID
+                    while True:
+                        rows = await _fetch_pg_ref_batch(conn, table, last_seen_id, PAGE_SIZE)
+                        if not rows:
+                            break
+                        pg_refs.update(row["payload_ref"] for row in rows)
+                        last_seen_id = rows[-1]["id"]
 
-                    if len(rows) < PAGE_SIZE:
-                        break  # last page
+                        if len(rows) < PAGE_SIZE:
+                            break  # last page
 
     return pg_refs
 
@@ -145,7 +152,7 @@ async def _fetch_pg_refs(pg_pool: asyncpg.Pool, namespaces: list[UUID]) -> set[s
 
 async def _fetch_all_namespaces(pg_pool: asyncpg.Pool) -> list[UUID]:
     """Fetch all namespace UUIDs from the namespaces table."""
-    async with pg_pool.acquire() as conn:
+    async with pg_pool.acquire(timeout=10.0) as conn:
         rows = await conn.fetch("SELECT id FROM namespaces")
         return [row["id"] for row in rows]
 
@@ -176,10 +183,11 @@ async def _clean_orphaned_cascade(
 
     while True:
         try:
-            async with pg_pool.acquire() as conn:
-                await set_namespace_context(conn, namespace_id)
-                row = await conn.fetchrow(
-                    """
+            async with pg_pool.acquire(timeout=10.0) as conn:
+                async with conn.transaction():
+                    await set_namespace_context(conn, namespace_id)
+                    row = await conn.fetchrow(
+                        """
                     WITH existing_memories AS (
                         SELECT id FROM memories
                         WHERE namespace_id = $1::uuid
@@ -231,20 +239,20 @@ async def _clean_orphaned_cascade(
                         (SELECT count(*) FROM deleted_salience)      AS salience_count,
                         (SELECT count(*) FROM deleted_contradictions) AS contradictions_count
                     """,
-                    namespace_id,
-                    CHUNK_DELETE_SIZE,
-                )
-                if row is None:
-                    break
-                chunk_salience = int(row["salience_count"])
-                chunk_contradictions = int(row["contradictions_count"])
-                if (
-                    chunk_salience == 0
-                    and chunk_contradictions == 0
-                ):
-                    break
-                totals["salience"] += chunk_salience
-                totals["contradictions"] += chunk_contradictions
+                        namespace_id,
+                        CHUNK_DELETE_SIZE,
+                    )
+                    if row is None:
+                        break
+                    chunk_salience = int(row["salience_count"])
+                    chunk_contradictions = int(row["contradictions_count"])
+                    if (
+                        chunk_salience == 0
+                        and chunk_contradictions == 0
+                    ):
+                        break
+                    totals["salience"] += chunk_salience
+                    totals["contradictions"] += chunk_contradictions
         except Exception as exc:
             log.error("GC: cascade cleanup failed for ns=%s: %s", namespace_id, exc)
             break

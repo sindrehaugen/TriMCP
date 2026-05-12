@@ -34,7 +34,7 @@ if sys.version_info >= (3, 11):
     from enum import StrEnum
 else:
     from strenum import StrEnum  # type: ignore[import-untyped]
-from typing import TypeVar
+from typing import Any, TypeVar
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -238,7 +238,7 @@ class MessageRole(StrEnum):
 class Message(BaseModel):
     """A single turn in a multi-turn conversation sent to an LLM."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     role: MessageRole
     content: str
@@ -335,6 +335,36 @@ class LLMBadRequestError(LLMProviderError):
     """Raised on 400 — malformed request (do NOT retry)."""
 
 
+class LLMCircuitOpenError(LLMProviderError):
+    """Raised when the circuit breaker is open and the request is rejected (fail-fast)."""
+
+
+class LLMRetriesExhaustedError(LLMProviderError):
+    """Raised when transient errors persisted beyond the configured retry budget.
+
+    The originating failure (e.g. :class:`LLMRateLimitError`) is preserved as
+    ``last_error`` and as ``__cause__`` for orchestrator logging and metrics.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str = "unknown",
+        last_error: Exception,
+        attempts: int,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(message, provider=provider, **kwargs)
+        self.last_error = last_error
+        self.attempts = attempts
+        if isinstance(last_error, LLMProviderError):
+            if self.status_code is None and last_error.status_code is not None:
+                self.status_code = last_error.status_code
+            if self.upstream_message is None and last_error.upstream_message:
+                self.upstream_message = last_error.upstream_message
+
+
 # ---------------------------------------------------------------------------
 # Retry policy  —  exponential backoff with full-jitter
 # ---------------------------------------------------------------------------
@@ -342,6 +372,15 @@ class LLMBadRequestError(LLMProviderError):
 import asyncio  # noqa: E402 — placed here to avoid circular import via LLMProvider
 import random  # noqa: E402
 import time  # noqa: E402
+
+from tenacity import (  # noqa: E402
+    AsyncRetrying,
+    RetryError,
+    retry_if_exception,
+    stop_after_attempt,
+    stop_after_delay,
+)
+from tenacity.before_sleep import before_sleep_log  # noqa: E402
 
 
 class RetryPolicy:
@@ -381,17 +420,26 @@ class RetryPolicy:
             return True
         return False
 
-    def delay_for_attempt(self, attempt: int) -> int:
-        """Compute exponential backoff delay *with full jitter* in milliseconds.
+    def backoff_cap_ms(self, attempt: int) -> int:
+        """Exponential delay upper bound (milliseconds), capped by ``max_delay_ms``.
 
-        Returns ``random.uniform(0, capped_exponential)`` so concurrent
-        callers spread out rather than hammering the upstream in lockstep.
+        Used together with :meth:`delay_for_attempt` and the LLM execution harness so
+        full jitter and optional ``Retry-After`` headers share one backoff ladder.
         """
-        cap = min(
+        return min(
             int(self.base_delay_ms * (self.backoff_factor ** (attempt - 1))),
             self.max_delay_ms,
         )
-        return random.randint(1, max(1, cap))
+
+    def delay_for_attempt(self, attempt: int) -> int:
+        """Compute exponential backoff delay *with full jitter* in milliseconds.
+
+        Uses ``random.uniform(0, cap)`` (AWS full-jitter) so concurrent callers
+        spread out rather than hammering the upstream in lockstep.  The delay is
+        at least 1 ms so ``asyncio.sleep`` never receives a busy-spin zero.
+        """
+        cap = self.backoff_cap_ms(attempt)
+        return max(1, int(random.uniform(0, max(1, cap))))
 
 
 # Default retry policy — 3 retries, 60 s max total
@@ -512,10 +560,6 @@ class CircuitBreaker:
         )
 
 
-# Default circuit breaker — 5 failures, 30 s recovery
-DEFAULT_CIRCUIT_BREAKER = CircuitBreaker()
-
-
 # ---------------------------------------------------------------------------
 # Abstract provider interface
 # ---------------------------------------------------------------------------
@@ -547,7 +591,8 @@ class LLMProvider(ABC):
     Retry & circuit breaker
     -----------------------
     Every provider automatically gets an ``execute_with_retry()`` wrapper
-    that applies exponential-backoff (with full jitter) and a state-machine
+    that applies exponential-backoff with *full jitter* (via :mod:`tenacity`
+    delegating to :meth:`RetryPolicy.delay_for_attempt`) and a state-machine
     circuit breaker.  Subclasses should call ``await self.execute_with_retry(...)``
     in their ``complete()`` implementation rather than issuing the HTTP call
     directly.  Override ``_retry_policy`` or ``_circuit_breaker`` on the
@@ -576,7 +621,8 @@ class LLMProvider(ABC):
         try:
             return self.__circuit_breaker  # type: ignore[has-type]
         except AttributeError:
-            self.__circuit_breaker = DEFAULT_CIRCUIT_BREAKER  # type: ignore[has-type]
+            # FIX-032: isolate breaker state per provider instance (no module singleton).
+            self.__circuit_breaker = CircuitBreaker()  # type: ignore[has-type]
             return self.__circuit_breaker  # type: ignore[has-type]
 
     @_circuit_breaker.setter
@@ -612,16 +658,39 @@ class LLMProvider(ABC):
 
         Raises
         ------
-        LLMProviderError
+        LLMCircuitOpenError
             If the circuit breaker is open and refuses the request.
-        LLMTimeoutError, LLMRateLimitError, LLMUpstreamError
-            Propagated from *operation* after all retries exhausted.
+        LLMRetriesExhaustedError
+            After *retry_policy* attempts are exhausted for a retryable failure.
+        LLMAuthenticationError, LLMBadRequestError, LLMValidationError
+            Propagated immediately (not retried).
         """
         rp = retry_policy or self._retry_policy
         cb = circuit_breaker or self._circuit_breaker
 
-        for attempt in range(1, rp.max_retries + 2):  # +1 for the initial call
-            # --- circuit-breaker guard ---
+        def wait_policy(retry_state):  # type: ignore[no-untyped-def]
+            attempt = retry_state.attempt_number
+            cap_ms = rp.backoff_cap_ms(attempt)
+            exc: BaseException | None = None
+            if retry_state.outcome is not None and retry_state.outcome.failed:
+                exc = retry_state.outcome.exception()
+            # Honour Retry-After from rate-limit responses (P2/FIX-058): widen jitter ceiling,
+            # still capped by max_delay_ms so MCP callers cannot stall indefinitely.
+            if isinstance(exc, LLMRateLimitError) and exc.retry_after is not None and exc.retry_after > 0:
+                hint_ms = min(rp.max_delay_ms, int(exc.retry_after * 1000))
+                cap_ms = max(cap_ms, hint_ms)
+            # Full jitter in [0, cap_ms] spreads retries across workers (vs fixed backoff).
+            delay_ms = max(1, int(random.uniform(0, max(1, cap_ms))))
+            return delay_ms / 1000.0
+
+        stop = stop_after_attempt(rp.max_retries + 1) | stop_after_delay(
+            rp.max_total_ms / 1000.0
+        )
+        retry_predicate = retry_if_exception(
+            lambda exc: isinstance(exc, Exception) and rp.is_retryable(exc)
+        )
+
+        async def _run_once() -> object:
             allowed = await cb.check()
             if not allowed:
                 msg = (
@@ -629,53 +698,61 @@ class LLMProvider(ABC):
                     f"failing fast. Retry after recovery_timeout={cb.recovery_timeout:.0f}s."
                 )
                 log.warning("%s", msg)
-                raise LLMProviderError(
+                raise LLMCircuitOpenError(
                     msg,
                     provider=self.model_identifier(),
-                    status_code=503,  # service unavailable
+                    status_code=503,
                 )
-
-            # --- execute ---
             try:
                 result = await operation()
                 await cb.record_success()
                 return result
-            except (LLMTimeoutError, LLMRateLimitError, LLMUpstreamError) as exc:
+            except (LLMTimeoutError, LLMRateLimitError, LLMUpstreamError):
                 await cb.record_failure()
-
-                if not rp.is_retryable(exc):
-                    raise
-
-                if attempt > rp.max_retries:
-                    log.warning(
-                        "%s: retries exhausted after %d attempts — last error: %s",
-                        self.model_identifier(),
-                        rp.max_retries,
-                        exc,
-                    )
-                    raise
-
-                delay_ms = rp.delay_for_attempt(attempt)
-                log.info(
-                    "%s: attempt %d/%d failed (%s), retrying in %dms (jittered)",
-                    self.model_identifier(),
-                    attempt,
-                    rp.max_retries,
-                    exc,
-                    delay_ms,
-                )
-                await asyncio.sleep(delay_ms / 1000.0)
-
+                raise
             except (LLMAuthenticationError, LLMBadRequestError, LLMValidationError):
-                # Non-retryable — record the failure but do NOT retry
                 await cb.record_failure()
                 raise
 
-        # Guard: should never reach here
-        raise LLMProviderError(
-            f"{self.model_identifier()}: unexpected exit from retry loop",
-            provider=self.model_identifier(),
-        )
+        try:
+            return await AsyncRetrying(
+                stop=stop,
+                wait=wait_policy,
+                retry=retry_predicate,
+                before_sleep=before_sleep_log(log, logging.INFO),
+                reraise=False,
+            )(_run_once)
+        except RetryError as re:
+            last_exc = re.last_attempt.exception()
+            if last_exc is None:
+                raise LLMRetriesExhaustedError(
+                    f"{self.model_identifier()}: retries exhausted without captured exception",
+                    provider=self.model_identifier(),
+                    last_error=RuntimeError("retry exhausted without captured exception"),
+                    attempts=re.last_attempt.attempt_number,
+                ) from None
+            if not isinstance(last_exc, Exception):
+                raise last_exc
+            attempts = re.last_attempt.attempt_number
+            if rp.max_retries == 0 and attempts == 1:
+                log.warning(
+                    "%s: request failed (retries disabled): %s",
+                    self.model_identifier(),
+                    last_exc,
+                )
+                raise last_exc
+            log.warning(
+                "%s: retries exhausted after %d attempt(s) — last error: %s",
+                self.model_identifier(),
+                attempts,
+                last_exc,
+            )
+            raise LLMRetriesExhaustedError(
+                f"{self.model_identifier()}: retries exhausted after {attempts} attempt(s): {last_exc}",
+                provider=self.model_identifier(),
+                last_error=last_exc,
+                attempts=attempts,
+            ) from last_exc
 
     @abstractmethod
     async def complete(

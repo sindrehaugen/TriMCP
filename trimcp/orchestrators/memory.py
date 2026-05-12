@@ -27,6 +27,7 @@ from trimcp import embeddings as _embeddings
 from trimcp.auth import set_namespace_context
 from trimcp.config import cfg
 from trimcp.db_utils import scoped_pg_session
+from trimcp.mongo_bulk import fetch_episodes_raw_by_ref, normalize_payload_ref
 from trimcp.models import (
     _SAFE_ID_RE,
     AssertionType,
@@ -351,31 +352,32 @@ class MemoryOrchestrator:
         self, saga_type: str, payload: StoreMemoryRequest
     ) -> str:
         """Insert a 'started' saga row on an independent connection."""
-        async with self.pg_pool.acquire() as conn:
-            await set_namespace_context(conn, payload.namespace_id)
-            row = await conn.fetchrow(
-                """
-                INSERT INTO saga_execution_log (saga_type, namespace_id, agent_id, state, payload)
-                VALUES ($1, $2::uuid, $3, 'started', $4)
-                RETURNING id
-                """,
-                saga_type,
-                str(payload.namespace_id),
-                payload.agent_id,
-                {
-                    "memory_type": payload.memory_type.value,
-                    "assertion_type": payload.assertion_type.value,
-                    "summary": payload.summary,
-                    "metadata": payload.metadata,
-                },
-            )
+        async with self.pg_pool.acquire(timeout=10.0) as conn:
+            async with conn.transaction():
+                await set_namespace_context(conn, payload.namespace_id)
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO saga_execution_log (saga_type, namespace_id, agent_id, state, payload)
+                    VALUES ($1, $2::uuid, $3, 'started', $4)
+                    RETURNING id
+                    """,
+                    saga_type,
+                    str(payload.namespace_id),
+                    payload.agent_id,
+                    {
+                        "memory_type": payload.memory_type.value,
+                        "assertion_type": payload.assertion_type.value,
+                        "summary": payload.summary,
+                        "metadata": payload.metadata,
+                    },
+                )
         return str(row["id"])
 
     async def _saga_log_transition(
         self, saga_id: str, state: SagaState, payload_patch: dict | None = None
     ) -> None:
         """Update saga state on an independent connection, optionally merging payload."""
-        async with self.pg_pool.acquire() as conn:
+        async with self.pg_pool.acquire(timeout=10.0) as conn:
             if payload_patch:
                 await conn.execute(
                     """
@@ -438,41 +440,43 @@ class MemoryOrchestrator:
                 inserted_mongo_id,
             )
             try:
-                async with self.pg_pool.acquire() as conn:
-                    await conn.execute(
-                        "DELETE FROM memory_embeddings WHERE memory_id = $1", memory_id
-                    )
-                    await conn.execute(
-                        "DELETE FROM pii_redactions WHERE memory_id = $1", memory_id
-                    )
-                    await conn.execute(
-                        "DELETE FROM kg_node_embeddings "
-                        "WHERE node_id IN (SELECT id FROM kg_nodes WHERE payload_ref = $1)",
-                        inserted_mongo_id,
-                    )
-                    await conn.execute(
-                        "DELETE FROM kg_edges WHERE payload_ref = $1", inserted_mongo_id
-                    )
-                    await conn.execute(
-                        "DELETE FROM kg_nodes WHERE payload_ref = $1", inserted_mongo_id
-                    )
-                    from trimcp.event_log import append_event
+                async with self.pg_pool.acquire(timeout=10.0) as conn:
+                    async with conn.transaction():
+                        await set_namespace_context(conn, payload.namespace_id)
+                        await conn.execute(
+                            "DELETE FROM memory_embeddings WHERE memory_id = $1", memory_id
+                        )
+                        await conn.execute(
+                            "DELETE FROM pii_redactions WHERE memory_id = $1", memory_id
+                        )
+                        await conn.execute(
+                            "DELETE FROM kg_node_embeddings "
+                            "WHERE node_id IN (SELECT id FROM kg_nodes WHERE payload_ref = $1)",
+                            inserted_mongo_id,
+                        )
+                        await conn.execute(
+                            "DELETE FROM kg_edges WHERE payload_ref = $1", inserted_mongo_id
+                        )
+                        await conn.execute(
+                            "DELETE FROM kg_nodes WHERE payload_ref = $1", inserted_mongo_id
+                        )
+                        from trimcp.event_log import append_event
 
-                    await append_event(
-                        conn=conn,
-                        namespace_id=payload.namespace_id,
-                        agent_id=payload.agent_id,
-                        event_type="store_memory_rolled_back",
-                        params={
-                            "memory_id": str(memory_id),
-                            "reason": str(e)[:256],
-                            "payload_ref": inserted_mongo_id,
-                        },
-                    )
-                    await conn.execute(
-                        "UPDATE memories SET valid_to = now() WHERE id = $1 AND valid_to IS NULL",
-                        memory_id,
-                    )
+                        await append_event(
+                            conn=conn,
+                            namespace_id=payload.namespace_id,
+                            agent_id=payload.agent_id,
+                            event_type="store_memory_rolled_back",
+                            params={
+                                "memory_id": str(memory_id),
+                                "reason": str(e)[:256],
+                                "payload_ref": inserted_mongo_id,
+                            },
+                        )
+                        await conn.execute(
+                            "UPDATE memories SET valid_to = now() WHERE id = $1 AND valid_to IS NULL",
+                            memory_id,
+                        )
                 log.info("[ROLLBACK] PG artifacts removed for memory_id=%s", memory_id)
             except Exception as pg_exc:
                 log.error("[ROLLBACK] PG cleanup failed (GC will reap): %s", pg_exc)
@@ -484,17 +488,18 @@ class MemoryOrchestrator:
                 inserted_mongo_id,
             )
             try:
-                async with self.pg_pool.acquire() as conn:
-                    await conn.execute(
-                        "DELETE FROM kg_edges WHERE payload_ref = $1", inserted_mongo_id
-                    )
-                    await conn.execute(
-                        "DELETE FROM kg_nodes WHERE payload_ref = $1", inserted_mongo_id
-                    )
-                    await conn.execute(
-                        "UPDATE memories SET valid_to = now() WHERE payload_ref = $1 AND valid_to IS NULL",
-                        inserted_mongo_id,
-                    )
+                async with self.pg_pool.acquire(timeout=10.0) as conn:
+                    async with conn.transaction():
+                        await conn.execute(
+                            "DELETE FROM kg_edges WHERE payload_ref = $1", inserted_mongo_id
+                        )
+                        await conn.execute(
+                            "DELETE FROM kg_nodes WHERE payload_ref = $1", inserted_mongo_id
+                        )
+                        await conn.execute(
+                            "UPDATE memories SET valid_to = now() WHERE payload_ref = $1 AND valid_to IS NULL",
+                            inserted_mongo_id,
+                        )
             except Exception as pg_exc:
                 log.error(
                     "[ROLLBACK] PG safety cleanup failed (GC will reap): %s", pg_exc
@@ -650,19 +655,18 @@ class MemoryOrchestrator:
                         from trimcp.contradictions import detect_contradictions
 
                         try:
-                            async with self.pg_pool.acquire() as conn:
-                                contradiction_result = await detect_contradictions(
-                                    conn=conn,
-                                    mongo_client=self.mongo_client,
-                                    namespace_id=str(payload.namespace_id),
-                                    memory_id=str(memory_id),
-                                    memory_text=sanitized_summary,
-                                    assertion_type=payload.assertion_type.value,
-                                    embedding=vector,
-                                    agent_id=payload.agent_id,
-                                    triplets=triplets,
-                                    detection_path="sync",
-                                )
+                            contradiction_result = await detect_contradictions(
+                                self.pg_pool,
+                                self.mongo_client,
+                                str(payload.namespace_id),
+                                str(memory_id),
+                                sanitized_summary,
+                                payload.assertion_type.value,
+                                vector,
+                                payload.agent_id,
+                                triplets,
+                                detection_path="sync",
+                            )
                         except Exception as e:
                             log.error("Contradiction detection failed: %s", e)
 
@@ -695,9 +699,11 @@ class MemoryOrchestrator:
         with tracer.start_as_current_span("orchestrator.store_media") as span:
             span.set_attribute("trimcp.media_type", payload.media_type)
             with SagaMetrics("store_media"):
-                if not os.path.exists(payload.file_path_on_disk):
+                safe_path = os.path.basename(payload.file_path_on_disk)
+
+                if not os.path.exists(safe_path):
                     raise FileNotFoundError(
-                        f"Media file not found: {payload.file_path_on_disk}"
+                        f"Media file not found: {safe_path}"
                     )
 
                 if self.minio_client is None:
@@ -706,14 +712,14 @@ class MemoryOrchestrator:
                     )
 
                 bucket_name = f"mcp-{payload.media_type}"
-                file_ext = os.path.splitext(payload.file_path_on_disk)[1]
+                file_ext = os.path.splitext(safe_path)[1]
                 object_name = f"{payload.session_id}_{uuid.uuid4().hex}{file_ext}"
 
                 await asyncio.to_thread(
                     self.minio_client.fput_object,
                     bucket_name,
                     object_name,
-                    payload.file_path_on_disk,
+                    safe_path,
                 )
                 log.info(
                     "[MinIO] Uploaded %s to %s/%s",
@@ -789,7 +795,7 @@ class MemoryOrchestrator:
             verify_fields,
         )
 
-        async with self._db_pool(read_only=True).acquire() as conn:
+        async with self._db_pool(read_only=True).acquire(timeout=10.0) as conn:
             if as_of:
                 row = await conn.fetchrow(
                     """
@@ -870,9 +876,11 @@ class MemoryOrchestrator:
         self, memory_id: str, namespace_id: str, agent_id: str
     ) -> dict:
         """[Phase 0.3] Reverse pseudonymisation for a given memory (admin-only)."""
+        from trimcp.event_log import append_event
         from trimcp.signing import decrypt_signing_key, require_master_key
 
-        async with self.pg_pool.acquire() as conn:
+        # Phase 1 — RLS-scoped PG read (FIX-025: never raw pool.acquire for tenant paths).
+        async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
             ns_row = await conn.fetchrow(
                 "SELECT metadata FROM namespaces WHERE id = $1", namespace_id
             )
@@ -901,29 +909,36 @@ class MemoryOrchestrator:
             if not vault_rows:
                 return {"status": "no_vault_entries"}
 
-            db = self.mongo_client.memory_archive
-            doc = await db.episodes.find_one({"_id": ObjectId(mem_row["payload_ref"])})
-            if not doc:
-                raise ValueError("MongoDB payload missing.")
+            payload_ref = mem_row["payload_ref"]
+            vault_list = [
+                {"token": r["token"], "encrypted_value": r["encrypted_value"]}
+                for r in vault_rows
+            ]
 
-            raw_data = doc.get("raw_data", "")
-            if not isinstance(raw_data, str):
-                return {"status": "raw_data_not_string"}
+        # Phase 2 — Mongo + local crypto (no DB connection held).
+        db = self.mongo_client.memory_archive
+        doc = await db.episodes.find_one({"_id": ObjectId(payload_ref)})
+        if not doc:
+            raise ValueError("MongoDB payload missing.")
 
-            with require_master_key() as mk:
-                for v_row in vault_rows:
-                    token = v_row["token"]
-                    encrypted_val = v_row["encrypted_value"]
-                    try:
-                        original_val = decrypt_signing_key(encrypted_val, mk).decode(
-                            "utf-8"
-                        )
-                        raw_data = raw_data.replace(token, original_val)
-                    except Exception as e:
-                        log.warning("Failed to decrypt token %s: %s", token, e)
+        raw_data = doc.get("raw_data", "")
+        if not isinstance(raw_data, str):
+            return {"status": "raw_data_not_string"}
 
-            from trimcp.event_log import append_event
+        with require_master_key() as mk:
+            for v_row in vault_list:
+                token = v_row["token"]
+                encrypted_val = v_row["encrypted_value"]
+                try:
+                    original_val = decrypt_signing_key(encrypted_val, mk).decode(
+                        "utf-8"
+                    )
+                    raw_data = raw_data.replace(token, original_val)
+                except Exception as e:
+                    log.warning("Failed to decrypt token %s: %s", token, e)
 
+        # Phase 3 — append audit event under RLS.
+        async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
             await append_event(
                 conn=conn,
                 namespace_id=UUID(namespace_id),
@@ -932,11 +947,11 @@ class MemoryOrchestrator:
                 params={"memory_id": memory_id},
                 result_summary={
                     "status": "success",
-                    "tokens_unredacted": len(vault_rows),
+                    "tokens_unredacted": len(vault_list),
                 },
             )
 
-            return {"status": "success", "unredacted_text": raw_data}
+        return {"status": "success", "unredacted_text": raw_data}
 
     # ------------------------------------------------------------------
     # recall_memory / recall_recent
@@ -1030,11 +1045,15 @@ class MemoryOrchestrator:
             return []
 
         db = self.mongo_client.memory_archive
+        keys = [normalize_payload_ref(r["payload_ref"]) for r in rows]
+        raw_by_ref = await fetch_episodes_raw_by_ref(db, keys)
+
         results = []
         for row in rows:
-            doc = await db.episodes.find_one({"_id": ObjectId(row["payload_ref"])})
-            if doc:
-                results.append(str(doc.get("raw_data", "")))
+            key = normalize_payload_ref(row["payload_ref"])
+            txt = raw_by_ref.get(key, "")
+            if txt:
+                results.append(str(txt))
 
         if (
             not as_of

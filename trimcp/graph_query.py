@@ -287,8 +287,9 @@ class GraphRAGTraverser:
 
         if conn is not None:
             return await _run_find_anchor(conn)
-        async with self.pg_pool.acquire() as c:
-            return await _run_find_anchor(c)
+        async with self.pg_pool.acquire(timeout=10.0) as c:
+            async with c.transaction():
+                return await _run_find_anchor(c)
 
     # --- Step 2: BFS edge traversal (single PostgreSQL recursive CTE) ---
 
@@ -527,8 +528,9 @@ class GraphRAGTraverser:
 
         if conn is not None:
             return await _run_bfs(conn)
-        async with self.pg_pool.acquire() as c:
-            return await _run_bfs(c)
+        async with self.pg_pool.acquire(timeout=10.0) as c:
+            async with c.transaction():
+                return await _run_bfs(c)
 
     # --- Step 3: Hydrate source documents from MongoDB (batch) ---
 
@@ -684,100 +686,101 @@ class GraphRAGTraverser:
         if edge_limit is not None and edge_limit < 1:
             raise ValueError("edge_limit must be >= 1 when provided")
         async with self._search_semaphore:
-            async with self.pg_pool.acquire() as conn:
-                if namespace_id:
-                    from trimcp.auth import set_namespace_context
+            async with self.pg_pool.acquire(timeout=10.0) as conn:
+                async with conn.transaction():
+                    if namespace_id:
+                        from trimcp.auth import set_namespace_context
 
-                    await set_namespace_context(conn, UUID(str(namespace_id)))
+                        await set_namespace_context(conn, UUID(str(namespace_id)))
 
-                anchors = await self._find_anchor(
-                    query,
-                    namespace_id=namespace_id,
-                    top_k=anchor_top_k,
-                    as_of=as_of,
-                    _allow_global_sweep=_allow_global_sweep,
-                    conn=conn,
-                )
-                if not anchors:
-                    log.info("No anchor node found in knowledge graph.")
-                    return Subgraph(anchor="<none>")
+                    anchors = await self._find_anchor(
+                        query,
+                        namespace_id=namespace_id,
+                        top_k=anchor_top_k,
+                        as_of=as_of,
+                        _allow_global_sweep=_allow_global_sweep,
+                        conn=conn,
+                    )
+                    if not anchors:
+                        log.info("No anchor node found in knowledge graph.")
+                        return Subgraph(anchor="<none>")
 
-                anchor = anchors[0]
-                log.info("Anchor: '%s' (distance=%.4f)", anchor.label, anchor.distance)
+                    anchor = anchors[0]
+                    log.info("Anchor: '%s' (distance=%.4f)", anchor.label, anchor.distance)
 
-                visited_labels, edges = await self._bfs(
-                    anchor.label,
-                    max_depth=max_depth,
-                    namespace_id=namespace_id,
-                    as_of=as_of,
-                    _allow_global_sweep=_allow_global_sweep,
-                    max_edges_per_node=per_node,
-                    conn=conn,
-                )
+                    visited_labels, edges = await self._bfs(
+                        anchor.label,
+                        max_depth=max_depth,
+                        namespace_id=namespace_id,
+                        as_of=as_of,
+                        _allow_global_sweep=_allow_global_sweep,
+                        max_edges_per_node=per_node,
+                        conn=conn,
+                    )
 
-                # Fetch full node metadata for all visited labels
-                if as_of and namespace_id:
-                    rows = await conn.fetch(
-                        """
-                        WITH ns AS (
-                            SELECT id, parent_id, (metadata->'fork_config'->>'forked_from_as_of')::timestamptz AS forked_as_of
-                            FROM namespaces WHERE id = $2::uuid
-                        ),
-                        memory_events AS (
-                            SELECT DISTINCT ON ((params->>'memory_id')::uuid)
-                                (params->>'memory_id')::uuid AS memory_id,
-                                event_type,
-                                params->'entities' AS entities,
-                                id AS event_id
-                            FROM event_log
-                            CROSS JOIN ns
-                            WHERE (
-                                (namespace_id = ns.id AND occurred_at <= $3)
-                                OR 
-                                (namespace_id = ns.parent_id AND occurred_at <= LEAST($3, ns.forked_as_of))
+                    # Fetch full node metadata for all visited labels
+                    if as_of and namespace_id:
+                        rows = await conn.fetch(
+                            """
+                            WITH ns AS (
+                                SELECT id, parent_id, (metadata->'fork_config'->>'forked_from_as_of')::timestamptz AS forked_as_of
+                                FROM namespaces WHERE id = $2::uuid
+                            ),
+                            memory_events AS (
+                                SELECT DISTINCT ON ((params->>'memory_id')::uuid)
+                                    (params->>'memory_id')::uuid AS memory_id,
+                                    event_type,
+                                    params->'entities' AS entities,
+                                    id AS event_id
+                                FROM event_log
+                                CROSS JOIN ns
+                                WHERE (
+                                    (namespace_id = ns.id AND occurred_at <= $3)
+                                    OR 
+                                    (namespace_id = ns.parent_id AND occurred_at <= LEAST($3, ns.forked_as_of))
+                                )
+                                  AND event_type IN ('store_memory', 'forget_memory')
+                                ORDER BY (params->>'memory_id')::uuid, occurred_at DESC, event_seq DESC
+                            ),
+                            active_memories AS (
+                                SELECT memory_id, entities, event_id
+                                FROM memory_events 
+                                WHERE event_type = 'store_memory'
+                            ),
+                            historical_nodes AS (
+                                SELECT DISTINCT ON (label)
+                                    jsonb_array_elements(entities)->>'label' AS label,
+                                    jsonb_array_elements(entities)->>'entity_type' AS entity_type,
+                                    memory_id,
+                                    event_id
+                                FROM active_memories
                             )
-                              AND event_type IN ('store_memory', 'forget_memory')
-                            ORDER BY (params->>'memory_id')::uuid, occurred_at DESC, event_seq DESC
-                        ),
-                        active_memories AS (
-                            SELECT memory_id, entities, event_id
-                            FROM memory_events 
-                            WHERE event_type = 'store_memory'
-                        ),
-                        historical_nodes AS (
-                            SELECT DISTINCT ON (label)
-                                jsonb_array_elements(entities)->>'label' AS label,
-                                jsonb_array_elements(entities)->>'entity_type' AS entity_type,
-                                memory_id,
-                                event_id
-                            FROM active_memories
+                            SELECT n.label, n.entity_type, m.payload_ref, n.event_id
+                            FROM historical_nodes n
+                            JOIN memories m ON n.memory_id = m.id
+                            WHERE n.label = ANY($1::text[])
+                            """,
+                            list(visited_labels),
+                            namespace_id,
+                            as_of,
                         )
-                        SELECT n.label, n.entity_type, m.payload_ref, n.event_id
-                        FROM historical_nodes n
-                        JOIN memories m ON n.memory_id = m.id
-                        WHERE n.label = ANY($1::text[])
-                        """,
-                        list(visited_labels),
-                        namespace_id,
-                        as_of,
-                    )
-                    # Verify signatures on event_log rows that contributed to node metadata.
-                    event_ids = [str(r["event_id"]) for r in rows if r.get("event_id")]
-                    await self._verify_time_travel_event_signatures(conn, event_ids)
-                else:
-                    rows = await conn.fetch(
-                        "SELECT label, entity_type, payload_ref FROM kg_nodes WHERE label = ANY($1::text[])",
-                        list(visited_labels),
-                    )
-                nodes = [
-                    GraphNode(
-                        label=r["label"],
-                        entity_type=r["entity_type"],
-                        payload_ref=r["payload_ref"],
-                        distance=anchor.distance if r["label"] == anchor.label else 0.0,
-                    )
-                    for r in rows
-                ]
+                        # Verify signatures on event_log rows that contributed to node metadata.
+                        event_ids = [str(r["event_id"]) for r in rows if r.get("event_id")]
+                        await self._verify_time_travel_event_signatures(conn, event_ids)
+                    else:
+                        rows = await conn.fetch(
+                            "SELECT label, entity_type, payload_ref FROM kg_nodes WHERE label = ANY($1::text[])",
+                            list(visited_labels),
+                        )
+                    nodes = [
+                        GraphNode(
+                            label=r["label"],
+                            entity_type=r["entity_type"],
+                            payload_ref=r["payload_ref"],
+                            distance=anchor.distance if r["label"] == anchor.label else 0.0,
+                        )
+                        for r in rows
+                    ]
 
             # Deduplicate edges (BFS can traverse same edge from both directions)
             seen_edges: set[tuple] = set()

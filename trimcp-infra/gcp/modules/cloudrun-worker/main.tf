@@ -15,6 +15,8 @@ resource "google_cloud_run_v2_service" "worker" {
       max_instance_count = 4
     }
 
+    max_instance_request_concurrency = 10
+
     vpc_access {
       connector = var.vpc_connector_id
       egress    = "ALL_TRAFFIC"

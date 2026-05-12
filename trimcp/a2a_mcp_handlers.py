@@ -60,7 +60,7 @@ async def handle_a2a_create_grant(
     caller_ctx = _build_caller_context(arguments)
     grant_request = _build_grant_request(arguments)
 
-    async with engine.pg_pool.acquire() as conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
         response: A2AGrantResponse = await create_grant(conn, caller_ctx, grant_request)
 
     return json.dumps(
@@ -79,7 +79,7 @@ async def handle_a2a_revoke_grant(
     """Revoke an active A2A sharing grant."""
     caller_ctx = _build_caller_context(arguments)
 
-    async with engine.pg_pool.acquire() as conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
         revoked = await revoke_grant(conn, uuid.UUID(arguments["grant_id"]), caller_ctx)
 
     return json.dumps({"revoked": revoked})
@@ -93,7 +93,7 @@ async def handle_a2a_list_grants(
     caller_ctx = _build_caller_context(arguments)
     include_inactive = bool(arguments.get("include_inactive", False))
 
-    async with engine.pg_pool.acquire() as conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
         grants = await list_grants(conn, caller_ctx, include_inactive=include_inactive)
 
     return json.dumps(grants)
@@ -106,13 +106,14 @@ async def handle_a2a_query_shared(
     """Execute a semantic search against another agent's memories using an A2A token."""
     consumer_ctx = _build_caller_context(arguments)
 
-    async with engine.pg_pool.acquire() as conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
         verified = await verify_token(conn, arguments["sharing_token"], consumer_ctx)
 
     enforce_scope(
         verified.scopes,
         arguments.get("resource_type", "namespace"),
         arguments.get("resource_id") or str(verified.owner_namespace_id),
+        str(verified.owner_namespace_id),
     )
 
     results = await engine.semantic_search(

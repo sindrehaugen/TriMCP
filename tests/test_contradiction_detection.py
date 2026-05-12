@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -10,6 +12,34 @@ import pytest
 
 from trimcp.contradictions import ContradictionResult, detect_contradictions
 from trimcp.models import KGEdge
+
+
+def _mock_pg_pool(conn: AsyncMock) -> MagicMock:
+    pool = MagicMock()
+
+    @asynccontextmanager
+    async def _acquire(*_args, **_kwargs):
+        yield conn
+
+    pool.acquire = _acquire
+    return pool
+
+
+def _mock_pg_conn(**attrs: Any) -> AsyncMock:
+    """AsyncPG stub with ``transaction()`` for detect_contradictions / scoped_pg_session."""
+    conn = AsyncMock(**attrs)
+    tx = AsyncMock()
+    tx.__aenter__.return_value = None
+    tx.__aexit__.return_value = False
+    conn.transaction = MagicMock(return_value=tx)
+    return conn
+
+
+def _assert_no_contradiction_writes(conn: AsyncMock) -> None:
+    """RLS uses ``execute`` for set_config; forbid contradiction/outbox INSERTs."""
+    for call in conn.execute.await_args_list:
+        sql = str(call.args[0]).upper() if call.args else ""
+        assert "INSERT INTO" not in sql
 
 
 @pytest.fixture(autouse=True)
@@ -20,6 +50,13 @@ def mock_nli(monkeypatch: pytest.MonkeyPatch):
 
 
 _VALID_OID = "507f1f77bcf86cd799439011"
+
+
+def _patch_episode_hydrate(monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+    monkeypatch.setattr(
+        "trimcp.contradictions.fetch_episodes_raw_by_ref",
+        AsyncMock(return_value={_VALID_OID: text}),
+    )
 
 
 class StubContradictionLLM:
@@ -35,12 +72,12 @@ class StubContradictionLLM:
 
 
 def test_detect_skips_non_fact_assertions():
-    conn = AsyncMock()
+    conn = _mock_pg_conn()
     mongo = MagicMock()
 
     async def _run():
         return await detect_contradictions(
-            conn,
+            _mock_pg_pool(conn),
             mongo,
             str(uuid4()),
             str(uuid4()),
@@ -57,13 +94,13 @@ def test_detect_skips_non_fact_assertions():
 
 
 def test_detect_returns_none_when_no_similar_candidates():
-    conn = AsyncMock()
+    conn = _mock_pg_conn()
     conn.fetch = AsyncMock(return_value=[])
     mongo = MagicMock()
 
     async def _run():
         return await detect_contradictions(
-            conn,
+            _mock_pg_pool(conn),
             mongo,
             str(uuid4()),
             str(uuid4()),
@@ -86,23 +123,18 @@ def test_detect_records_contradiction_when_llm_confident(
     ns = str(uuid4())
     new_mid = str(uuid4())
 
-    conn = AsyncMock()
+    conn = _mock_pg_conn()
     conn.fetch = AsyncMock(
         return_value=[
             {"id": cand_id, "payload_ref": _VALID_OID, "similarity": 0.92},
         ]
     )
-    conn.fetchrow = AsyncMock(
-        side_effect=[
-            None,
-            {"metadata": {}},
-        ]
-    )
+    conn.fetchrow = AsyncMock(side_effect=[{"metadata": {}}, None])
     conn.execute = AsyncMock(return_value="INSERT 1")
 
     mongo = MagicMock()
-    mongo.memory_archive.episodes.find_one = AsyncMock(
-        return_value={"raw_data": "The API timeout is configured to 30 seconds."}
+    _patch_episode_hydrate(
+        monkeypatch, "The API timeout is configured to 30 seconds."
     )
 
     llm = StubContradictionLLM(
@@ -127,7 +159,7 @@ def test_detect_records_contradiction_when_llm_confident(
 
     async def _run():
         return await detect_contradictions(
-            conn,
+            _mock_pg_pool(conn),
             mongo,
             ns,
             new_mid,
@@ -154,17 +186,15 @@ def test_detect_no_insert_when_llm_rejects_contradiction(
     ns = str(uuid4())
     new_mid = str(uuid4())
 
-    conn = AsyncMock()
+    conn = _mock_pg_conn()
     conn.fetch = AsyncMock(
         return_value=[{"id": cand_id, "payload_ref": _VALID_OID, "similarity": 0.86}]
     )
-    conn.fetchrow = AsyncMock(side_effect=[None, {"metadata": {}}])
+    conn.fetchrow = AsyncMock(return_value={"metadata": {}})
     conn.execute = AsyncMock(return_value="INSERT 1")
 
     mongo = MagicMock()
-    mongo.memory_archive.episodes.find_one = AsyncMock(
-        return_value={"raw_data": "Servers run in region eu-west-1."}
-    )
+    _patch_episode_hydrate(monkeypatch, "Servers run in region eu-west-1.")
 
     llm = StubContradictionLLM(
         ContradictionResult(
@@ -175,7 +205,7 @@ def test_detect_no_insert_when_llm_rejects_contradiction(
 
     async def _run():
         return await detect_contradictions(
-            conn,
+            _mock_pg_pool(conn),
             mongo,
             ns,
             new_mid,
@@ -189,7 +219,7 @@ def test_detect_no_insert_when_llm_rejects_contradiction(
     out = asyncio.run(_run())
 
     assert out is None
-    conn.execute.assert_not_called()
+    _assert_no_contradiction_writes(conn)
 
 
 def test_detect_inserts_on_kg_when_llm_raises(monkeypatch: pytest.MonkeyPatch):
@@ -198,7 +228,7 @@ def test_detect_inserts_on_kg_when_llm_raises(monkeypatch: pytest.MonkeyPatch):
     ns = str(uuid4())
     new_mid = str(uuid4())
 
-    conn = AsyncMock()
+    conn = _mock_pg_conn()
     conn.fetch = AsyncMock(
         return_value=[{"id": cand_id, "payload_ref": _VALID_OID, "similarity": 0.9}]
     )
@@ -215,9 +245,7 @@ def test_detect_inserts_on_kg_when_llm_raises(monkeypatch: pytest.MonkeyPatch):
     conn.execute = AsyncMock(return_value="INSERT 1")
 
     mongo = MagicMock()
-    mongo.memory_archive.episodes.find_one = AsyncMock(
-        return_value={"raw_data": "legacy doc"}
-    )
+    _patch_episode_hydrate(monkeypatch, "legacy doc")
 
     class BoomLLM:
         async def complete(self, messages: list, response_model: type):  # noqa: ANN401
@@ -232,7 +260,7 @@ def test_detect_inserts_on_kg_when_llm_raises(monkeypatch: pytest.MonkeyPatch):
 
     async def _run():
         return await detect_contradictions(
-            conn,
+            _mock_pg_pool(conn),
             mongo,
             ns,
             new_mid,
@@ -350,22 +378,19 @@ def test_detect_contradictions_returns_none_on_llm_timeout(
     ns = str(uuid4())
     new_mid = str(uuid4())
 
-    conn = AsyncMock()
+    conn = _mock_pg_conn()
     conn.fetch = AsyncMock(
         return_value=[{"id": cand_id, "payload_ref": _VALID_OID, "similarity": 0.92}]
     )
     conn.fetchrow = AsyncMock(
         side_effect=[
-            None,  # _check_kg_contradiction: no conflict
             {"metadata": {"consolidation": {"llm_provider": "stub/timeout"}}},
         ]
     )
     conn.execute = AsyncMock(return_value="INSERT 1")
 
     mongo = MagicMock()
-    mongo.memory_archive.episodes.find_one = AsyncMock(
-        return_value={"raw_data": "The API timeout is 30 seconds."}
-    )
+    _patch_episode_hydrate(monkeypatch, "The API timeout is 30 seconds.")
 
     # NLI returns strong contradiction → triggers LLM tiebreaker
     monkeypatch.setattr(
@@ -379,7 +404,7 @@ def test_detect_contradictions_returns_none_on_llm_timeout(
 
     async def _run():
         return await detect_contradictions(
-            conn,
+            _mock_pg_pool(conn),
             mongo,
             ns,
             new_mid,
@@ -409,22 +434,19 @@ def test_detect_contradictions_returns_none_on_parse_failure(
     ns = str(uuid4())
     new_mid = str(uuid4())
 
-    conn = AsyncMock()
+    conn = _mock_pg_conn()
     conn.fetch = AsyncMock(
         return_value=[{"id": cand_id, "payload_ref": _VALID_OID, "similarity": 0.92}]
     )
     conn.fetchrow = AsyncMock(
         side_effect=[
-            None,
             {"metadata": {"consolidation": {"llm_provider": "stub/bad-json"}}},
         ]
     )
     conn.execute = AsyncMock(return_value="INSERT 1")
 
     mongo = MagicMock()
-    mongo.memory_archive.episodes.find_one = AsyncMock(
-        return_value={"raw_data": "The API timeout is 30 seconds."}
-    )
+    _patch_episode_hydrate(monkeypatch, "The API timeout is 30 seconds.")
 
     monkeypatch.setattr(
         "trimcp.contradictions.check_nli_contradiction",
@@ -437,7 +459,7 @@ def test_detect_contradictions_returns_none_on_parse_failure(
 
     async def _run():
         return await detect_contradictions(
-            conn,
+            _mock_pg_pool(conn),
             mongo,
             ns,
             new_mid,
@@ -467,20 +489,21 @@ def test_detect_contradictions_returns_none_on_mongo_failure(
     ns = str(uuid4())
     new_mid = str(uuid4())
 
-    conn = AsyncMock()
+    conn = _mock_pg_conn()
     conn.fetch = AsyncMock(
         return_value=[{"id": cand_id, "payload_ref": _VALID_OID, "similarity": 0.92}]
     )
     conn.fetchrow = AsyncMock(return_value=None)
 
     mongo = MagicMock()
-    mongo.memory_archive.episodes.find_one = AsyncMock(
-        side_effect=ConnectionError("Mongo unreachable")
+    monkeypatch.setattr(
+        "trimcp.contradictions.fetch_episodes_raw_by_ref",
+        AsyncMock(side_effect=ConnectionError("Mongo unreachable")),
     )
 
     async def _run():
         return await detect_contradictions(
-            conn,
+            _mock_pg_pool(conn),
             mongo,
             ns,
             new_mid,
@@ -500,14 +523,14 @@ def test_detect_contradictions_returns_none_on_postgres_select_failure():
     ns = str(uuid4())
     new_mid = str(uuid4())
 
-    conn = AsyncMock()
+    conn = _mock_pg_conn()
     conn.fetch = AsyncMock(side_effect=ConnectionError("Postgres unreachable"))
 
     mongo = MagicMock()
 
     async def _run():
         return await detect_contradictions(
-            conn,
+            _mock_pg_pool(conn),
             mongo,
             ns,
             new_mid,
@@ -531,7 +554,7 @@ def test_detect_contradictions_still_records_on_kg_signal_with_llm_timeout(
     ns = str(uuid4())
     new_mid = str(uuid4())
 
-    conn = AsyncMock()
+    conn = _mock_pg_conn()
     conn.fetch = AsyncMock(
         return_value=[{"id": cand_id, "payload_ref": _VALID_OID, "similarity": 0.9}]
     )
@@ -548,9 +571,7 @@ def test_detect_contradictions_still_records_on_kg_signal_with_llm_timeout(
     conn.execute = AsyncMock(return_value="INSERT 1")
 
     mongo = MagicMock()
-    mongo.memory_archive.episodes.find_one = AsyncMock(
-        return_value={"raw_data": "legacy doc"}
-    )
+    _patch_episode_hydrate(monkeypatch, "legacy doc")
 
     monkeypatch.setattr(
         "trimcp.contradictions.check_nli_contradiction",
@@ -565,7 +586,7 @@ def test_detect_contradictions_still_records_on_kg_signal_with_llm_timeout(
 
     async def _run():
         return await detect_contradictions(
-            conn,
+            _mock_pg_pool(conn),
             mongo,
             ns,
             new_mid,
@@ -593,22 +614,19 @@ def test_detect_contradictions_returns_none_when_no_signals_and_llm_fails(
     ns = str(uuid4())
     new_mid = str(uuid4())
 
-    conn = AsyncMock()
+    conn = _mock_pg_conn()
     conn.fetch = AsyncMock(
         return_value=[{"id": cand_id, "payload_ref": _VALID_OID, "similarity": 0.86}]
     )
     conn.fetchrow = AsyncMock(
         side_effect=[
-            None,  # no KG conflict
             {"metadata": {"consolidation": {"llm_provider": "stub/boom"}}},
         ]
     )
     conn.execute = AsyncMock(return_value="INSERT 1")
 
     mongo = MagicMock()
-    mongo.memory_archive.episodes.find_one = AsyncMock(
-        return_value={"raw_data": "compatible text"}
-    )
+    _patch_episode_hydrate(monkeypatch, "compatible text")
 
     # NLI returns low contradiction score (no signal) → triggers LLM tiebreaker
     monkeypatch.setattr(
@@ -622,7 +640,7 @@ def test_detect_contradictions_returns_none_when_no_signals_and_llm_fails(
 
     async def _run():
         return await detect_contradictions(
-            conn,
+            _mock_pg_pool(conn),
             mongo,
             ns,
             new_mid,
@@ -637,18 +655,15 @@ def test_detect_contradictions_returns_none_when_no_signals_and_llm_fails(
 
     # No signals, LLM failed → should return None (graceful degradation)
     assert out is None
-    conn.execute.assert_not_called()
+    _assert_no_contradiction_writes(conn)
 
 
-def test_check_nli_contradiction_mongo_failure_returns_safe_defaults():
-    """_check_nli_contradiction returns (0.0, '', False, []) on Mongo error."""
+def test_check_nli_contradiction_empty_candidate_returns_safe_defaults():
+    """Empty candidate body skips NLI and returns neutral defaults."""
     from trimcp.contradictions import _check_nli_contradiction
 
-    db = MagicMock()
-    db.episodes.find_one = AsyncMock(side_effect=ConnectionError("Mongo down"))
-
     async def _run():
-        return await _check_nli_contradiction(db, _VALID_OID, "some text")
+        return await _check_nli_contradiction("", "some text")
 
     score, text, hit, signals = asyncio.run(_run())
     assert score == 0.0

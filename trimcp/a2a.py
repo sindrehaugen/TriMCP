@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover
     _CRYPTOGRAPHY_AVAILABLE = False
 
 import asyncpg
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from trimcp.auth import NamespaceContext
 
@@ -48,6 +48,8 @@ A2A_CODE_BAD_REQUEST = -32012  # missing / invalid parameters
 class A2AScope(BaseModel):
     """Defines the resource type and permissions granted in an A2A share."""
 
+    model_config = ConfigDict(extra="forbid")
+
     resource_type: Literal["namespace", "memory", "kg_node", "subgraph"] = Field(
         ..., description="Type of resource being shared"
     )
@@ -60,6 +62,8 @@ class A2AScope(BaseModel):
 
 class A2AGrantRequest(BaseModel):
     """Request payload to create a new A2A sharing grant."""
+
+    model_config = ConfigDict(extra="forbid")
 
     target_namespace_id: UUID | None = Field(
         None,
@@ -77,6 +81,8 @@ class A2AGrantRequest(BaseModel):
 class A2AGrantResponse(BaseModel):
     """Response payload containing the secure sharing token."""
 
+    model_config = ConfigDict(extra="forbid")
+
     grant_id: UUID
     sharing_token: str
     expires_at: datetime
@@ -84,6 +90,8 @@ class A2AGrantResponse(BaseModel):
 
 class VerifiedGrant(BaseModel):
     """Result of a successful token verification — includes owner identity and scopes."""
+
+    model_config = ConfigDict(extra="forbid")
 
     grant_id: UUID
     owner_namespace_id: UUID
@@ -794,6 +802,7 @@ def enforce_scope(
     scopes: list[A2AScope],
     resource_type: str,
     resource_id: str,
+    resource_namespace_id: str,
 ) -> None:
     """
     Enforce that at least one granted scope covers the requested resource.
@@ -814,14 +823,11 @@ def enforce_scope(
             return
 
         # Namespace wildcard: a namespace grant covers memories and KG nodes within it
-        if scope.resource_type == "namespace" and resource_type in (
+        if scope.resource_type == "namespace" and scope.resource_id == str(resource_namespace_id) and resource_type in (
             "memory",
             "kg_node",
             "subgraph",
         ):
-            # The resource_id is expected to be prefixed with namespace_id or
-            # matched via the owner_namespace_id already — the namespace grant
-            # itself is the authorisation; the RLS context enforces the boundary.
             return
 
     raise A2AScopeViolationError(

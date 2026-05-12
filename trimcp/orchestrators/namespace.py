@@ -9,10 +9,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
 import asyncpg
+
+from trimcp.db_utils import scoped_pg_session
 
 log = logging.getLogger("tri-stack-orchestrator.namespace")
 
@@ -62,26 +65,11 @@ class NamespaceOrchestrator:
             return val
         return UUID(str(val))
 
-    def scoped_session(self, namespace_id: str | UUID):
-        from contextlib import asynccontextmanager
-
-        @asynccontextmanager
-        async def _session(ns_id: str | UUID):
-            if not ns_id:
-                raise ValueError("namespace_id is required")
-            ns_uuid = UUID(str(ns_id))
-            async with self.pg_pool.acquire() as conn:
-                from trimcp.auth import set_namespace_context
-
-                await set_namespace_context(conn, ns_uuid)
-                try:
-                    yield conn
-                finally:
-                    from trimcp.auth import _reset_rls_context
-
-                    await _reset_rls_context(conn)
-
-        return _session(namespace_id)
+    @asynccontextmanager
+    async def scoped_session(self, namespace_id: str | UUID):
+        """Tenant-isolated PostgreSQL session (RLS + transaction-scoped SET LOCAL)."""
+        async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
+            yield conn
 
     # ------------------------------------------------------------------
     # Namespace management
@@ -101,7 +89,7 @@ class NamespaceOrchestrator:
 
         Admin bypass note: list / create / grant / revoke operate
         cross-namespace by design and intentionally use raw
-        ``pg_pool.acquire()``.  ``update_metadata`` targets a single
+        ``pg_pool.acquire(timeout=10.0)``.  ``update_metadata`` targets a single
         namespace and uses ``scoped_session()`` for RLS consistency.
         """
         from trimcp.models import ManageNamespaceCommand
@@ -109,7 +97,7 @@ class NamespaceOrchestrator:
         _agent_id = admin_identity or "admin"
 
         if payload.command == ManageNamespaceCommand.create:
-            async with self.pg_pool.acquire() as conn:
+            async with self.pg_pool.acquire(timeout=10.0) as conn:
                 async with conn.transaction():
                     row = await conn.fetchrow(
                         """
@@ -140,7 +128,7 @@ class NamespaceOrchestrator:
                 return dict(row)
 
         if payload.command == ManageNamespaceCommand.list:
-            async with self.pg_pool.acquire() as conn:
+            async with self.pg_pool.acquire(timeout=10.0) as conn:
                 rows = await conn.fetch(
                     "SELECT * FROM namespaces ORDER BY created_at DESC"
                 )
@@ -183,7 +171,7 @@ class NamespaceOrchestrator:
                 return {"status": "ok", "metadata": validated.model_dump()}
 
         if payload.command == ManageNamespaceCommand.grant:
-            async with self.pg_pool.acquire() as conn:
+            async with self.pg_pool.acquire(timeout=10.0) as conn:
                 async with conn.transaction():
                     await conn.execute(
                         "UPDATE namespaces SET parent_id = $1 WHERE id = $2",
@@ -208,7 +196,7 @@ class NamespaceOrchestrator:
                 }
 
         if payload.command == ManageNamespaceCommand.revoke:
-            async with self.pg_pool.acquire() as conn:
+            async with self.pg_pool.acquire(timeout=10.0) as conn:
                 async with conn.transaction():
                     await conn.execute(
                         "UPDATE namespaces SET parent_id = NULL WHERE id = $1 AND parent_id = $2",
@@ -236,6 +224,26 @@ class NamespaceOrchestrator:
             if not payload.namespace_id:
                 raise ValueError("namespace_id required for delete")
 
+            async with self.pg_pool.acquire(timeout=10.0) as evt_chk:
+                audit_rows = await evt_chk.fetchval(
+                    """
+                    SELECT COUNT(*)::bigint FROM event_log WHERE namespace_id = $1
+                    """,
+                    payload.namespace_id,
+                )
+            # FIX-026: event_log is WORM-immutable — DELETE forbidden; FK blocks namespace drop while rows exist.
+            if audit_rows and audit_rows > 0:
+                msg = (
+                    f"Cannot delete namespace {payload.namespace_id}: event_log retains "
+                    f"{audit_rows} immutable audit row(s) (references namespaces via FK)."
+                )
+                if payload.allow_audit_destruction:
+                    msg += (
+                        " allow_audit_destruction documents operator intent only; "
+                        "this server does not purge WORM partitions."
+                    )
+                raise PermissionError(msg)
+
             # Purge MCP cache entries for this namespace BEFORE deletion.
             if self._redis is not None:
                 from trimcp.mcp_args import purge_namespace_cache
@@ -249,10 +257,11 @@ class NamespaceOrchestrator:
                         exc,
                     )
 
-            async with self.pg_pool.acquire() as conn:
+            async with self.pg_pool.acquire(timeout=10.0) as conn:
                 async with conn.transaction():
                     # Large tables — chunked to limit per-statement lock duration.
-                    for table in ("event_log", "memories", "memory_salience", "kg_nodes"):
+                    # NB: omit event_log (WORM + FK); audited tenants are rejected above.
+                    for table in ("memories", "memory_salience", "kg_nodes"):
                         await _delete_namespace_rows_chunked(conn, table, payload.namespace_id)
 
                     # KG edges span two namespace columns; use a direct DELETE.
@@ -279,23 +288,13 @@ class NamespaceOrchestrator:
                             f"DELETE FROM {table} WHERE namespace_id = $1",
                             payload.namespace_id,
                         )
-                    # Finally delete the namespace record itself.
                     result = await conn.execute(
                         "DELETE FROM namespaces WHERE id = $1",
                         payload.namespace_id,
                     )
 
-                    from trimcp.event_log import append_event
-
-                    await append_event(
-                        conn=conn,
-                        namespace_id=payload.namespace_id,
-                        agent_id=_agent_id,
-                        event_type="namespace_deleted",
-                        params={"namespace_id": str(payload.namespace_id)},
-                    )
-
             if result == "DELETE 0":
+                raise ValueError(f"Namespace {payload.namespace_id} not found")
                 raise ValueError(f"Namespace {payload.namespace_id} not found")
 
             # Bump global cache generation as a secondary invalidation signal.

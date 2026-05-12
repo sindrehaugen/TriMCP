@@ -22,12 +22,12 @@ class TestAcquireCronLockNoRedis:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_returns_true_on_redis_exception(self):
+    async def test_returns_false_on_redis_exception(self):
         with patch("trimcp.cron_lock.cfg") as mock_cfg:
             mock_cfg.REDIS_URL = "redis://localhost:6379"
             with patch("redis.asyncio.Redis.from_url", side_effect=ConnectionError("down")):
                 result = await _acquire_cron_lock("test_job", 300)
-        assert result is True  # fail-open
+        assert result is False  # fail-closed on Redis outage
 
 
 class TestAcquireCronLockAcquired:

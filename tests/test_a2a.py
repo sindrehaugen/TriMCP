@@ -66,20 +66,22 @@ class TestEnforceScopeMultiAgent:
     def test_memory_not_covered_when_grant_is_different_memory(self) -> None:
         mem_a = str(uuid.uuid4())
         mem_b = str(uuid.uuid4())
+        ns = str(uuid.uuid4())
         scopes = [
             A2AScope(resource_type="memory", resource_id=mem_a, permissions=["read"])
         ]
         with pytest.raises(A2AScopeViolationError):
-            enforce_scope(scopes, "memory", mem_b)
+            enforce_scope(scopes, "memory", mem_b, ns)
 
     def test_memory_not_covered_when_grant_is_only_kg_node(self) -> None:
         node = str(uuid.uuid4())
         mem = str(uuid.uuid4())
+        ns = str(uuid.uuid4())
         scopes = [
             A2AScope(resource_type="kg_node", resource_id=node, permissions=["read"])
         ]
         with pytest.raises(A2AScopeViolationError):
-            enforce_scope(scopes, "memory", mem)
+            enforce_scope(scopes, "memory", mem, ns)
 
     def test_namespace_grant_allows_typed_memory_reads(self) -> None:
         """Namespace-shaped grant authorises memory / kg_node / subgraph resource_type checks."""
@@ -87,15 +89,16 @@ class TestEnforceScopeMultiAgent:
         scopes = [
             A2AScope(resource_type="namespace", resource_id=ns, permissions=["read"])
         ]
-        enforce_scope(scopes, "memory", str(uuid.uuid4()))
-        enforce_scope(scopes, "kg_node", str(uuid.uuid4()))
+        enforce_scope(scopes, "memory", str(uuid.uuid4()), ns)
+        enforce_scope(scopes, "kg_node", str(uuid.uuid4()), ns)
 
     def test_exact_memory_grant_allows_that_memory(self) -> None:
         mem = str(uuid.uuid4())
+        ns = str(uuid.uuid4())
         scopes = [
             A2AScope(resource_type="memory", resource_id=mem, permissions=["read"])
         ]
-        enforce_scope(scopes, "memory", mem)
+        enforce_scope(scopes, "memory", mem, ns)
 
 
 class TestVerifyTokenIsolation:

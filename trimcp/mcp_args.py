@@ -185,7 +185,7 @@ def build_cache_key(
 ) -> str:
     """Build a namespace-scoped MCP cache Redis key.
 
-    Key format: ``mcp_cache:v{gen}:{ns}:{tool}:{args_md5}``
+    Key format: ``mcp_cache:v{gen}:{ns}:{tool}:{args_sha256}``
 
     When *namespace_id* is ``None`` (e.g. admin tools that operate globally),
     the key omits the namespace component: ``mcp_cache:v{gen}:global:{tool}:{args_md5}``.
@@ -199,7 +199,7 @@ def build_cache_key(
         namespace_id = extract_namespace_id(arguments) or "global"
 
     args_str = json.dumps(arguments, sort_keys=True)
-    args_hash = hashlib.md5(args_str.encode()).hexdigest()
+    args_hash = hashlib.sha256(args_str.encode()).hexdigest()
     return f"{_MCP_CACHE_PREFIX}:v{generation}:{namespace_id}:{tool_name}:{args_hash}"
 
 

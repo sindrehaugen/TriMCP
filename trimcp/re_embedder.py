@@ -8,6 +8,7 @@ import asyncpg
 from bson import ObjectId
 
 from trimcp import embeddings as _embeddings
+from trimcp.background_task_manager import create_tracked_task
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
     """
     while True:
         try:
-            async with pg_pool.acquire() as conn:
+            async with pg_pool.acquire(timeout=10.0) as conn:
                 # Find a running migration
                 migration = await conn.fetchrow("""
                     SELECT m.id, m.target_model_id, m.last_memory_id, m.last_node_id, e.name as model_name
@@ -261,4 +262,10 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
 
 
 def start_re_embedder(pg_pool, mongo_client):
-    asyncio.create_task(run_re_embedding_worker(pg_pool, mongo_client))
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(create_tracked_task(run_re_embedding_worker(pg_pool, mongo_client), name="re_embedding_worker"))
+    except RuntimeError:
+        # No running loop; this is called at startup in synchronous context
+        # Schedule it for execution when the loop is running
+        asyncio.create_task(create_tracked_task(run_re_embedding_worker(pg_pool, mongo_client), name="re_embedding_worker"))

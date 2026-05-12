@@ -64,7 +64,7 @@ resource "aws_elasticache_replication_group" "this" {
   automatic_failover_enabled = var.environment == "prod"
   num_cache_clusters         = var.environment == "prod" ? 2 : 1
 
-  apply_immediately = true
+  apply_immediately = var.environment != "prod"
 
   tags = { Name = local.id }
 }

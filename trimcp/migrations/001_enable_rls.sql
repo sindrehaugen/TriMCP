@@ -26,6 +26,11 @@ $$ LANGUAGE sql STABLE;
 -- architecture (labels are deduplicated across namespaces). Access control 
 -- to their source is handled via the 'memories' table link.
 
+-- 2.5 Ensure namespace_id columns exist in all isolated tables
+ALTER TABLE bridge_subscriptions ADD COLUMN IF NOT EXISTS namespace_id UUID REFERENCES namespaces(id);
+ALTER TABLE dead_letter_queue ADD COLUMN IF NOT EXISTS namespace_id UUID REFERENCES namespaces(id);
+ALTER TABLE embedding_migrations ADD COLUMN IF NOT EXISTS namespace_id UUID REFERENCES namespaces(id);
+
 DO $$
 DECLARE
     t text;
@@ -34,12 +39,13 @@ DECLARE
         'pii_redactions', 
         'memory_salience', 
         'contradictions', 
-        'memory_embeddings', 
-        'kg_node_embeddings', 
         'consolidation_runs', 
         'event_log', 
         'a2a_grants', 
-        'resource_quotas'
+        'resource_quotas',
+        'bridge_subscriptions',
+        'dead_letter_queue',
+        'embedding_migrations'
     ];
 BEGIN
     FOREACH t IN ARRAY tables_to_isolate
@@ -93,12 +99,13 @@ DECLARE
         'pii_redactions',
         'memory_salience',
         'contradictions',
-        'memory_embeddings',
-        'kg_node_embeddings',
         'consolidation_runs',
         'event_log',
         'a2a_grants',
-        'resource_quotas'
+        'resource_quotas',
+        'bridge_subscriptions',
+        'dead_letter_queue',
+        'embedding_migrations'
     ];
     row_count bigint;
 BEGIN
@@ -110,5 +117,16 @@ BEGIN
 END $$;
 COMMIT;
 
--- 6. Ensure admin roles (like 'postgres') bypass RLS for system tasks (GC, etc.)
-ALTER ROLE postgres SET row_security = off;
+-- 6. Hardened Admin Role Isolation (FIX-017)
+-- Reset postgres superuser row_security setting so FORCE ROW LEVEL SECURITY functions correctly if enabled.
+ALTER ROLE postgres RESET row_security;
+
+-- Create dedicated trimcp_gc background role with BYPASSRLS
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_gc') THEN
+        CREATE ROLE trimcp_gc BYPASSRLS;
+    ELSE
+        ALTER ROLE trimcp_gc BYPASSRLS;
+    END IF;
+END $$;

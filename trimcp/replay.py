@@ -257,7 +257,7 @@ async def get_run_status(
     run_id: uuid.UUID,
 ) -> dict[str, Any]:
     """Return a JSON-safe dict for the given ``replay_run_id``."""
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=10.0) as conn:
         row = await conn.fetchrow(
             """
             SELECT id, source_namespace_id, target_namespace_id,
@@ -330,6 +330,27 @@ def _build_event_query(
         ORDER BY event_seq ASC
     """
     return sql, args
+
+
+async def _fetch_event_log_snapshot(
+    pool: asyncpg.Pool,
+    *,
+    source_namespace_id: uuid.UUID,
+    start_seq: int,
+    end_seq: int | None,
+    agent_id_filter: str | None,
+):
+    """Snapshot event rows inside a short REPEATABLE READ txn (FIX-041)."""
+    sql, args = _build_event_query(
+        source_namespace_id=source_namespace_id,
+        start_seq=start_seq,
+        end_seq=end_seq,
+        agent_id_filter=agent_id_filter,
+    )
+    async with pool.acquire(timeout=10.0) as conn:
+        async with conn.transaction(isolation="repeatable_read"):
+            rows = await conn.fetch(sql, *args)
+            return list(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -956,7 +977,7 @@ class ObservationalReplay:
         run_id: uuid.UUID | None = None
         events_streamed = 0
 
-        async with self.pool.acquire() as meta_conn:
+        async with self.pool.acquire(timeout=10.0) as meta_conn:
             run_id = await _create_run(
                 meta_conn,
                 source_namespace_id=source_namespace_id,
@@ -979,7 +1000,7 @@ class ObservationalReplay:
         try:
             # A separate long-lived connection for the server-side cursor.
             # The transaction keeps the cursor alive across yield boundaries.
-            async with self.pool.acquire() as cursor_conn:
+            async with self.pool.acquire(timeout=10.0) as cursor_conn:
                 async with cursor_conn.transaction(isolation="repeatable_read"):
                     async for record in cursor_conn.cursor(
                         sql, *args, prefetch=_CURSOR_PREFETCH
@@ -992,7 +1013,7 @@ class ObservationalReplay:
                                 "run_id": str(run_id),
                                 "message": str(exc),
                             }
-                            async with self.pool.acquire() as finish_conn:
+                            async with self.pool.acquire(timeout=10.0) as finish_conn:
                                 await _finish_run(
                                     finish_conn,
                                     run_id,
@@ -1009,7 +1030,7 @@ class ObservationalReplay:
                         if events_streamed % _PROGRESS_INTERVAL == 0:
                             # Progress update uses a *different* connection to avoid
                             # nesting statements on the cursor connection.
-                            async with self.pool.acquire() as prog_conn:
+                            async with self.pool.acquire(timeout=10.0) as prog_conn:
                                 await _update_run_progress(
                                     prog_conn, run_id, events_streamed
                                 )
@@ -1019,7 +1040,7 @@ class ObservationalReplay:
                                 "events_streamed": events_streamed,
                             }
 
-            async with self.pool.acquire() as finish_conn:
+            async with self.pool.acquire(timeout=10.0) as finish_conn:
                 await _finish_run(
                     finish_conn,
                     run_id,
@@ -1040,7 +1061,7 @@ class ObservationalReplay:
                 run_id,
             )
             if run_id is not None:
-                async with self.pool.acquire() as err_conn:
+                async with self.pool.acquire(timeout=10.0) as err_conn:
                     await _finish_run(
                         err_conn,
                         run_id,
@@ -1221,7 +1242,7 @@ class ForkedReplay:
         if _existing_run_id is not None:
             run_id = _existing_run_id
         else:
-            async with self.pool.acquire() as meta_conn:
+            async with self.pool.acquire(timeout=10.0) as meta_conn:
                 run_id = await _create_run(
                     meta_conn,
                     source_namespace_id=source_namespace_id,
@@ -1237,7 +1258,7 @@ class ForkedReplay:
         # ------------------------------------------------------------------
         # 2.  Check for prior progress (idempotency on resume)
         # ------------------------------------------------------------------
-        async with self.pool.acquire() as chk_conn:
+        async with self.pool.acquire(timeout=10.0) as chk_conn:
             prior = await chk_conn.fetchval(
                 """
                 SELECT COALESCE(MAX(event_seq), 0)
@@ -1258,92 +1279,87 @@ class ForkedReplay:
             start_seq = resume_from_seq
 
         # ------------------------------------------------------------------
-        # 3.  Stream source events + apply each one
+        # 3.  Stream source events + apply each one (FIX-041: RR snapshot only).
         # ------------------------------------------------------------------
-        sql, args = _build_event_query(
-            source_namespace_id=source_namespace_id,
-            start_seq=start_seq,
-            end_seq=fork_seq,
-            agent_id_filter=agent_id_filter,
-        )
-
         try:
-            async with self.pool.acquire() as cursor_conn:
-                async with cursor_conn.transaction(isolation="repeatable_read"):
-                    async for record in cursor_conn.cursor(
-                        sql, *args, prefetch=_CURSOR_PREFETCH
-                    ):
-                        try:
-                            await verify_event_signature(cursor_conn, record)
-                        except DataIntegrityError as exc:
-                            yield {
-                                "type": "error",
-                                "run_id": str(run_id),
-                                "message": str(exc),
-                            }
-                            async with self.pool.acquire() as err_conn:
-                                await _finish_run(
-                                    err_conn,
-                                    run_id,
-                                    status="failed",
-                                    events_applied=events_applied,
-                                    error=str(exc),
-                                )
-                            raise
+            records = await _fetch_event_log_snapshot(
+                self.pool,
+                source_namespace_id=source_namespace_id,
+                start_seq=start_seq,
+                end_seq=fork_seq,
+                agent_id_filter=agent_id_filter,
+            )
+            for record in records:
+                try:
+                    async with self.pool.acquire(timeout=10.0) as sig_conn:
+                        await verify_event_signature(sig_conn, record)
+                except DataIntegrityError as exc:
+                    yield {
+                        "type": "error",
+                        "run_id": str(run_id),
+                        "message": str(exc),
+                    }
+                    async with self.pool.acquire(timeout=10.0) as err_conn:
+                        await _finish_run(
+                            err_conn,
+                            run_id,
+                            status="failed",
+                            events_applied=events_applied,
+                            error=str(exc),
+                        )
+                    raise
 
-                        src = _record_to_event_row(record)
+                src = _record_to_event_row(record)
 
-                        # -- Resolve LLM payload outside the write transaction --
-                        llm_payload, fork_uri, fork_hash = await _resolve_llm_payload(
-                            src,
-                            replay_mode=replay_mode,
-                            config_overrides=config_overrides,
+                # -- Resolve LLM payload outside RR / crypto verification connections --
+                llm_payload, fork_uri, fork_hash = await _resolve_llm_payload(
+                    src,
+                    replay_mode=replay_mode,
+                    config_overrides=config_overrides,
+                    target_namespace_id=target_namespace_id,
+                    source_namespace_id=source_namespace_id,
+                )
+
+                # -- Apply event in its own Saga transaction on a new conn --
+                async with self.pool.acquire(timeout=10.0) as write_conn:
+                    async with write_conn.transaction():
+                        result_summary, fork_event = await self._dispatch_and_apply(
+                            write_conn,
+                            src=src,
                             target_namespace_id=target_namespace_id,
+                            llm_payload=llm_payload,
+                            config_overrides=config_overrides,
+                            run_id=run_id,
                             source_namespace_id=source_namespace_id,
+                            fork_uri=fork_uri,
+                            fork_hash=fork_hash,
                         )
 
-                        # -- Apply event in its own Saga transaction on a new conn --
-                        async with self.pool.acquire() as write_conn:
-                            async with write_conn.transaction():
-                                result_summary, fork_event = (
-                                    await self._dispatch_and_apply(
-                                        write_conn,
-                                        src=src,
-                                        target_namespace_id=target_namespace_id,
-                                        llm_payload=llm_payload,
-                                        config_overrides=config_overrides,
-                                        run_id=run_id,
-                                        source_namespace_id=source_namespace_id,
-                                        fork_uri=fork_uri,
-                                        fork_hash=fork_hash,
-                                    )
-                                )
+                events_applied += 1
+                skipped = result_summary.get("skipped", False)
+                yield_type = "skipped" if skipped else "applied"
 
-                        events_applied += 1
-                        skipped = result_summary.get("skipped", False)
-                        yield_type = "skipped" if skipped else "applied"
+                yield {
+                    "type": yield_type,
+                    "event_seq": src.event_seq,
+                    "event_type": src.event_type,
+                    "fork_event_id": str(fork_event.event_id),  # type: ignore[attr-defined]
+                    "fork_event_seq": fork_event.event_seq,  # type: ignore[attr-defined]
+                    "result": result_summary,
+                }
 
-                        yield {
-                            "type": yield_type,
-                            "event_seq": src.event_seq,
-                            "event_type": src.event_type,
-                            "fork_event_id": str(fork_event.event_id),  # type: ignore[attr-defined]
-                            "fork_event_seq": fork_event.event_seq,  # type: ignore[attr-defined]
-                            "result": result_summary,
-                        }
+                if events_applied % _PROGRESS_INTERVAL == 0:
+                    async with self.pool.acquire(timeout=10.0) as prog_conn:
+                        await _update_run_progress(
+                            prog_conn, run_id, events_applied
+                        )
+                    yield {
+                        "type": "progress",
+                        "run_id": str(run_id),
+                        "events_applied": events_applied,
+                    }
 
-                        if events_applied % _PROGRESS_INTERVAL == 0:
-                            async with self.pool.acquire() as prog_conn:
-                                await _update_run_progress(
-                                    prog_conn, run_id, events_applied
-                                )
-                            yield {
-                                "type": "progress",
-                                "run_id": str(run_id),
-                                "events_applied": events_applied,
-                            }
-
-            async with self.pool.acquire() as finish_conn:
+            async with self.pool.acquire(timeout=10.0) as finish_conn:
                 await _finish_run(
                     finish_conn,
                     run_id,
@@ -1364,7 +1380,7 @@ class ForkedReplay:
                 "ForkedReplay failed at event %d run_id=%s", events_applied, run_id
             )
             if run_id is not None:
-                async with self.pool.acquire() as err_conn:
+                async with self.pool.acquire(timeout=10.0) as err_conn:
                     await _finish_run(
                         err_conn,
                         run_id,
@@ -1456,7 +1472,7 @@ class ReconstructiveReplay:
         if _existing_run_id is not None:
             run_id = _existing_run_id
         else:
-            async with self.pool.acquire() as meta_conn:
+            async with self.pool.acquire(timeout=10.0) as meta_conn:
                 run_id = await _create_run(
                     meta_conn,
                     source_namespace_id=source_namespace_id,
@@ -1470,7 +1486,7 @@ class ReconstructiveReplay:
                 )
 
         # 2. Check for prior progress (idempotent resume)
-        async with self.pool.acquire() as chk_conn:
+        async with self.pool.acquire(timeout=10.0) as chk_conn:
             prior = await chk_conn.fetchval(
                 """
                 SELECT COALESCE(MAX(event_seq), 0)
@@ -1500,7 +1516,7 @@ class ReconstructiveReplay:
         )
 
         try:
-            async with self.pool.acquire() as cursor_conn:
+            async with self.pool.acquire(timeout=10.0) as cursor_conn:
                 async with cursor_conn.transaction(isolation="repeatable_read"):
                     async for record in cursor_conn.cursor(
                         sql, *args, prefetch=_CURSOR_PREFETCH
@@ -1513,7 +1529,7 @@ class ReconstructiveReplay:
                                 "run_id": str(run_id),
                                 "message": str(exc),
                             }
-                            async with self.pool.acquire() as err_conn:
+                            async with self.pool.acquire(timeout=10.0) as err_conn:
                                 await _finish_run(
                                     err_conn,
                                     run_id,
@@ -1526,7 +1542,7 @@ class ReconstructiveReplay:
                         src = _record_to_event_row(record)
 
                         # Apply event in its own Saga transaction
-                        async with self.pool.acquire() as write_conn:
+                        async with self.pool.acquire(timeout=10.0) as write_conn:
                             async with write_conn.transaction():
                                 handler = _HANDLER_REGISTRY.get(src.event_type)
                                 if handler is None:
@@ -1572,7 +1588,7 @@ class ReconstructiveReplay:
                         }
 
                         if events_applied % _PROGRESS_INTERVAL == 0:
-                            async with self.pool.acquire() as prog_conn:
+                            async with self.pool.acquire(timeout=10.0) as prog_conn:
                                 await _update_run_progress(
                                     prog_conn, run_id, events_applied
                                 )
@@ -1582,7 +1598,7 @@ class ReconstructiveReplay:
                                 "events_applied": events_applied,
                             }
 
-            async with self.pool.acquire() as finish_conn:
+            async with self.pool.acquire(timeout=10.0) as finish_conn:
                 await _finish_run(
                     finish_conn,
                     run_id,
@@ -1605,7 +1621,7 @@ class ReconstructiveReplay:
                 run_id,
             )
             if run_id is not None:
-                async with self.pool.acquire() as err_conn:
+                async with self.pool.acquire(timeout=10.0) as err_conn:
                     await _finish_run(
                         err_conn,
                         run_id,
@@ -1636,7 +1652,7 @@ async def get_event_provenance(
 
     Returns a dict with ``chain`` (list, root-first) and ``memory_id``.
     """
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=10.0) as conn:
         # Find the event_log row that created this memory.
         root = await conn.fetchrow(
             """

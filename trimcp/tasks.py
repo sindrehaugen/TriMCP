@@ -24,6 +24,7 @@ from trimcp import embeddings as _embeddings
 from trimcp.ast_parser import parse_file
 from trimcp.config import cfg
 from trimcp.dead_letter_queue import _clear_attempt, _track_attempt, store_dead_letter
+from trimcp.db_utils import unmanaged_pg_connection
 from trimcp.orchestrator import TriStackEngine
 
 log = logging.getLogger("tri-stack-tasks")
@@ -185,7 +186,7 @@ def process_code_indexing(
             async with (
                 engine.scoped_session(namespace_id)
                 if namespace_id
-                else engine.pg_pool.acquire()
+                else unmanaged_pg_connection(engine.pg_pool)
             ) as conn:
                 async with conn.transaction():
                     await conn.execute(

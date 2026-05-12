@@ -18,9 +18,10 @@ _CRON_LOCK_PREFIX = "trimcp:cron:lock"
 async def acquire_cron_lock(job_id: str, ttl_seconds: int) -> bool:
     """Try to acquire a Redis distributed lock for a singleton cron job.
 
-    Returns True if the lock was acquired (safe to run) or if Redis is
-    unavailable (fail-open).  Returns False when another instance holds
-    the lock — the caller should skip the run.
+    Returns True if the lock was acquired (safe to run). Returns True when
+    ``REDIS_URL`` is unset (distributed locking disabled). Returns False when
+    another instance holds the lock or when Redis cannot be reached
+    (fail-closed: skip the run to avoid overlapping singleton jobs).
     """
     if not cfg.REDIS_URL:
         log.warning("REDIS_URL not set — cron distributed lock disabled for %s", job_id)
@@ -36,4 +37,4 @@ async def acquire_cron_lock(job_id: str, ttl_seconds: int) -> bool:
         return bool(acquired)
     except Exception as exc:
         log.error("Cron lock acquisition failed for %s: %s", job_id, exc)
-        return True  # fail-open: prefer running twice over never
+        return False  # fail-closed: abort the job on Redis outage to prevent concurrency bugs

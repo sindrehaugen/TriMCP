@@ -45,11 +45,16 @@ async def _renewal_tick(pool: asyncpg.Pool) -> None:
         log.exception("bridge renewal tick failed unexpectedly")
 
 
-async def _consolidation_tick(pool: asyncpg.Pool) -> None:
+async def _consolidation_tick(
+    pool: asyncpg.Pool, mongo_client: Any | None = None
+) -> None:
     """
     Run sleep consolidation for each namespace with metadata.consolidation.enabled=true.
 
     Sequential per-namespace runs; failures are logged and do not stop other namespaces.
+
+    Mongo is optional for tests / degraded runs; when set, episodic payloads are hydrated
+    in bulk before consolidation LLM calls.
     """
     ttl = min(cfg.CONSOLIDATION_CRON_INTERVAL_MINUTES * 60, 7200) + 60
     if not await _acquire_cron_lock("sleep_consolidation", ttl):
@@ -74,7 +79,7 @@ async def _consolidation_tick(pool: asyncpg.Pool) -> None:
                 meta = json.loads(raw_meta)
             try:
                 provider = get_provider(meta or {})
-                worker = ConsolidationWorker(pool, provider)
+                worker = ConsolidationWorker(pool, provider, mongo_client=mongo_client)
                 await worker.run_consolidation(ns_id)
                 log.info("consolidation tick completed for namespace %s", ns_id)
             except Exception:
@@ -92,7 +97,7 @@ async def _partition_maintenance_tick(pool: asyncpg.Pool) -> None:
         log.debug("Skipping event_log_partition_maintenance — lock held by another instance")
         return
     try:
-        async with pool.acquire() as conn:
+        async with pool.acquire(timeout=10.0) as conn:
             await conn.execute("SELECT trimcp_ensure_event_log_monthly_partitions(3)")
             # Update Prometheus gauge with how many future partitions exist
             row = await conn.fetchrow(
@@ -151,48 +156,49 @@ async def _saga_recovery_tick(pool: asyncpg.Pool) -> None:
                 memory_id,
             )
             try:
-                async with pool.acquire() as conn:
-                    await set_namespace_context(conn, UUID(ns_id))
-                    await conn.execute(
-                        """
-                        UPDATE saga_execution_log
-                        SET state = 'recovery_needed', updated_at = NOW()
-                        WHERE id = $1::uuid
-                        """,
-                        saga_id,
-                    )
-                    if memory_id:
-                        # Soft-close memory
+                async with pool.acquire(timeout=10.0) as conn:
+                    async with conn.transaction():
+                        await set_namespace_context(conn, UUID(ns_id))
                         await conn.execute(
                             """
-                            UPDATE memories
-                            SET valid_to = NOW()
-                            WHERE id = $1::uuid AND namespace_id = $2::uuid AND valid_to IS NULL
+                            UPDATE saga_execution_log
+                            SET state = 'recovery_needed', updated_at = NOW()
+                            WHERE id = $1::uuid
                             """,
-                            memory_id,
-                            ns_id,
+                            saga_id,
                         )
-                        # Compensating event
-                        await append_event(
-                            conn=conn,
-                            namespace_id=UUID(ns_id),
-                            agent_id=agent_id,
-                            event_type="store_memory_rolled_back",
-                            params={
-                                "memory_id": memory_id,
-                                "reason": "saga_recovery_cron",
-                                "saga_id": saga_id,
-                            },
+                        if memory_id:
+                            # Soft-close memory
+                            await conn.execute(
+                                """
+                                UPDATE memories
+                                SET valid_to = NOW()
+                                WHERE id = $1::uuid AND namespace_id = $2::uuid AND valid_to IS NULL
+                                """,
+                                memory_id,
+                                ns_id,
+                            )
+                            # Compensating event
+                            await append_event(
+                                conn=conn,
+                                namespace_id=UUID(ns_id),
+                                agent_id=agent_id,
+                                event_type="store_memory_rolled_back",
+                                params={
+                                    "memory_id": memory_id,
+                                    "reason": "saga_recovery_cron",
+                                    "saga_id": saga_id,
+                                },
+                            )
+                        # Mark rolled_back
+                        await conn.execute(
+                            """
+                            UPDATE saga_execution_log
+                            SET state = 'rolled_back', updated_at = NOW()
+                            WHERE id = $1::uuid
+                            """,
+                            saga_id,
                         )
-                    # Mark rolled_back
-                    await conn.execute(
-                        """
-                        UPDATE saga_execution_log
-                        SET state = 'rolled_back', updated_at = NOW()
-                        WHERE id = $1::uuid
-                        """,
-                        saga_id,
-                    )
                 log.info("[SAGA-RECOVERY] Rolled back saga=%s", saga_id)
             except Exception:
                 log.exception("[SAGA-RECOVERY] Failed to recover saga=%s", saga_id)
@@ -281,7 +287,7 @@ async def async_main() -> None:
     scheduler.add_job(
         _consolidation_tick,
         IntervalTrigger(minutes=consolidation_minutes),
-        args=[pool],
+        args=[pool, mongo_client],
         id="sleep_consolidation",
         coalesce=True,
         max_instances=1,
@@ -327,7 +333,7 @@ async def async_main() -> None:
     # Fire maintenance jobs immediately on startup so the first interval is not wasted.
     await _renewal_tick(pool)
     await _reembedding_tick(pool, mongo_client)
-    await _consolidation_tick(pool)
+    await _consolidation_tick(pool, mongo_client)
     await _partition_maintenance_tick(pool)
     await _saga_recovery_tick(pool)
 

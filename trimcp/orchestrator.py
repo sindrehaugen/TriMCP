@@ -27,7 +27,7 @@ import asyncpg
 import redis.asyncio as redis
 from minio import Minio
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from trimcp import embeddings as _embeddings
 from trimcp.config import cfg
@@ -128,6 +128,8 @@ def _lineage_source_id(row: Mapping[str, Any]) -> str | None:
 
 
 class CodeChunk(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     filepath: str
     language: str
     node_type: str = Field(description="'function' or 'class'")
@@ -138,6 +140,8 @@ class CodeChunk(BaseModel):
 
 
 class VectorRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     user_id: str | None = None
     session_id: str | None = None
     embedding: list[float]
@@ -145,6 +149,8 @@ class VectorRecord(BaseModel):
 
 
 class MongoDocument(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     user_id: str | None = None
     session_id: str | None = None
     type: str
@@ -375,7 +381,7 @@ class TriStackEngine:
 
         schema_path = Path(__file__).resolve().parent / "schema.sql"
         ddl = schema_path.read_text(encoding="utf-8")
-        async with self.pg_pool.acquire() as conn:
+        async with self.pg_pool.acquire(timeout=10.0) as conn:
             await conn.execute(ddl)
         log.debug("[PG] schema.sql applied from %s", schema_path)
 
@@ -390,7 +396,7 @@ class TriStackEngine:
         """
         from trimcp.event_log import _WORM_TABLES, verify_worm_on_table
 
-        async with self.pg_pool.acquire() as conn:
+        async with self.pg_pool.acquire(timeout=10.0) as conn:
             for table in _WORM_TABLES:
                 await verify_worm_on_table(conn, table)
 
@@ -406,7 +412,7 @@ class TriStackEngine:
         """
         from trimcp.event_log import _RLS_TABLES, verify_rls_enforcement
 
-        async with self.pg_pool.acquire() as conn:
+        async with self.pg_pool.acquire(timeout=10.0) as conn:
             for table in _RLS_TABLES:
                 await verify_rls_enforcement(conn, table)
 
@@ -419,7 +425,7 @@ class TriStackEngine:
         namespaces to reduce the cross-tenant attack surface.
         """
         try:
-            async with self.pg_pool.acquire() as conn:
+            async with self.pg_pool.acquire(timeout=10.0) as conn:
                 row = await conn.fetchrow(
                     "SELECT id, created_at FROM namespaces WHERE slug = '_global_legacy'"
                 )
@@ -442,7 +448,7 @@ class TriStackEngine:
         age_days = (now_dt - created_dt).days if created_dt else 0
 
         try:
-            async with self.pg_pool.acquire() as conn:
+            async with self.pg_pool.acquire(timeout=10.0) as conn:
                 count = await conn.fetchval(
                     "SELECT count(*) FROM kg_nodes WHERE namespace_id = $1::uuid",
                     ns_id,
@@ -723,7 +729,7 @@ class TriStackEngine:
         # 2. Postgres (actual probe, not hard-coded)
         try:
             if self.pg_pool:
-                async with self.pg_pool.acquire() as conn:
+                async with self.pg_pool.acquire(timeout=10.0) as conn:
                     await conn.execute("SELECT 1")
                 health["databases"]["postgres"] = "up"
         except Exception:

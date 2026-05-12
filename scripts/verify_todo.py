@@ -280,7 +280,6 @@ _KNOWN_PATTERNS: dict[str, str] = {
     "EventType": "EventType",
     "SagaFailureContext": "SagaFailureContext",
     "SagaState.DEFERRED": "SagaState.DEFERRED",
-    "ConnectionProvider": "ConnectionProvider",
     "audited_session": "audited_session",
     "deleted_at": "deleted_at",
     "ingested_at": "ingested_at",

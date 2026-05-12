@@ -5,12 +5,15 @@ import math
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Any
+from uuid import UUID
 
 import asyncpg
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from trimcp.config import cfg
+from trimcp.db_utils import scoped_pg_session
 from trimcp.models import KGEdge
+from trimcp.mongo_bulk import fetch_episodes_raw_by_ref, normalize_payload_ref
 from trimcp.observability import SAGA_FAILURES
 from trimcp.providers.base import LLMTimeoutError, LLMValidationError, Message
 from trimcp.providers.factory import get_provider
@@ -85,11 +88,15 @@ async def check_nli_contradiction(premise: str, hypothesis: str) -> float:
 
 
 class ContradictionSignal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     source: str
     confidence: float
 
 
 class ContradictionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     is_contradiction: bool
     confidence: float
     explanation: str
@@ -115,6 +122,20 @@ def _build_contradiction_messages(existing_text: str, new_text: str) -> list[Mes
             f"<existing_memory>\n{sanitized_existing}\n</existing_memory>\n<new_memory>\n{sanitized_new}\n</new_memory>"
         ),
     ]
+
+
+def _namespace_provider_metadata(ns_row: Any) -> dict[str, Any]:
+    """Build merge metadata dict for ``get_provider`` from a namespaces.metadata row."""
+    ns_meta: dict[str, Any] = {}
+    if ns_row is not None and ns_row.get("metadata"):
+        md = ns_row["metadata"]
+        ns_meta = md if isinstance(md, dict) else {}
+    consolidation = dict(ns_meta.get("consolidation") or {})
+    if not consolidation.get("llm_provider"):
+        consolidation["llm_provider"] = "google_gemini"
+    ns_for_factory = dict(ns_meta)
+    ns_for_factory["consolidation"] = consolidation
+    return ns_for_factory
 
 
 async def _select_candidates(
@@ -147,51 +168,46 @@ async def _check_kg_contradiction(
     triplets: list[KGEdge],
     cand_id: str,
 ) -> bool:
-    """Check if any triplet conflicts with the candidate's KG edges."""
-    for t in triplets:
-        conflict_edge = await conn.fetchrow(
-            """
-            SELECT e.payload_ref
-            FROM kg_edges e
-            JOIN memories m ON e.payload_ref = m.payload_ref
-            WHERE e.subject_label = $1
-              AND e.predicate = $2
-              AND e.object_label != $3
-              AND m.id = $4
+    """Return True when any triplet implies a KG edge collision on *cand_id*.
+
+    Uses one round-trip instead of ``len(triplets)`` ``fetchrow`` calls.
+    Equivalent to OR-ing the legacy per-triplet predicates; batched via
+    ``unnest`` (parallel arrays — same asymptotics as ``text[][]`` + ``ANY``).
+    """
+    if not triplets:
+        return False
+    subs = [t.subject_label for t in triplets]
+    preds = [t.predicate for t in triplets]
+    objs = [t.object_label for t in triplets]
+    row = await conn.fetchrow(
+        """
+        SELECT TRUE AS conflict
+        FROM kg_edges e
+        JOIN memories m ON e.payload_ref = m.payload_ref
+        WHERE m.id = $1::uuid
+          AND EXISTS (
+            SELECT 1
+            FROM unnest($2::text[], $3::text[], $4::text[]) AS q(sl, pr, ob_expected)
+            WHERE e.subject_label = q.sl
+              AND e.predicate = q.pr
+              AND e.object_label IS DISTINCT FROM q.ob_expected
             LIMIT 1
-            """,
-            t.subject_label,
-            t.predicate,
-            t.object_label,
-            cand_id,
-        )
-        if conflict_edge:
-            return True
-    return False
+          )
+        LIMIT 1
+        """,
+        cand_id,
+        subs,
+        preds,
+        objs,
+    )
+    return row is not None
 
 
 async def _check_nli_contradiction(
-    db: Any,
-    cand_payload_ref: str,
+    cand_text: str,
     memory_text: str,
 ) -> tuple[float, str, bool, list]:
-    """Fetch candidate text from Mongo, run NLI, return (score, text, hit, signals_partial)."""
-    from bson import ObjectId
-
-    try:
-        doc = await db.episodes.find_one({"_id": ObjectId(cand_payload_ref)})
-    except Exception as e:
-        log.warning(
-            "Mongo fetch failed during NLI contradiction check (payload_ref=%s): %s",
-            cand_payload_ref,
-            e,
-        )
-        return 0.0, "", False, []
-
-    if not doc:
-        return 0.0, "", False, []
-
-    cand_text = doc.get("raw_data", "")
+    """Run NLI on *cand_text* vs *memory_text*. *cand_text* must already be resolved."""
     if not cand_text:
         return 0.0, "", False, []
 
@@ -208,7 +224,7 @@ async def _check_nli_contradiction(
 
 
 async def _resolve_with_llm(
-    conn: asyncpg.Connection,
+    ns_for_factory: dict[str, Any],
     namespace_id: str,
     cand_text: str,
     memory_text: str,
@@ -234,18 +250,12 @@ async def _resolve_with_llm(
         final_explanation = f"Detected via {', '.join(s['source'] for s in signals)}."
         return final_confidence, final_explanation, True
 
-    # LLM tiebreaker path
-    ns_row = await conn.fetchrow(
-        "SELECT metadata FROM namespaces WHERE id = $1", namespace_id
-    )
-    provider_name = "google/gemini-1.5-pro"
-    if ns_row and "consolidation" in ns_row["metadata"]:
-        provider_name = ns_row["metadata"]["consolidation"].get(
-            "llm_provider", provider_name
-        )
+    consolidation = dict(ns_for_factory.get("consolidation") or {})
+    provider_label = consolidation.get("llm_provider", "?")
 
     try:
-        provider = get_provider(provider_name)  # type: ignore[arg-type]
+        provider = get_provider(ns_for_factory)
+
         messages = _build_contradiction_messages(cand_text, memory_text)
         llm_result = await provider.complete(messages, ContradictionResult)
 
@@ -271,7 +281,7 @@ async def _resolve_with_llm(
         log.warning(
             "Contradiction LLM tiebreaker timed out (provider=%s, namespace=%s). "
             "Degrading to signal-only detection.",
-            provider_name,
+            provider_label,
             namespace_id,
         )
         if not signals:
@@ -285,7 +295,7 @@ async def _resolve_with_llm(
         log.warning(
             "Contradiction LLM tiebreaker returned unparseable response (provider=%s): %s. "
             "Degrading to signal-only detection.",
-            provider_name,
+            provider_label,
             e,
         )
         if not signals:
@@ -299,7 +309,7 @@ async def _resolve_with_llm(
         log.warning(
             "Contradiction LLM tiebreaker failed (provider=%s, namespace=%s): %s. "
             "Degrading to signal-only detection.",
-            provider_name,
+            provider_label,
             namespace_id,
             e,
         )
@@ -347,7 +357,7 @@ async def enqueue_contradiction_check(
 
 
 async def detect_contradictions(
-    conn: asyncpg.Connection,
+    pg_pool: asyncpg.Pool,
     mongo_client: Any,
     namespace_id: str,
     memory_id: str,
@@ -356,6 +366,8 @@ async def detect_contradictions(
     embedding: list[float],
     agent_id: str,
     triplets: list[KGEdge],
+    *,
+    enqueue_conn: asyncpg.Connection | None = None,
     detection_path: str = "sync",
 ) -> dict | None:
     """
@@ -364,7 +376,8 @@ async def detect_contradictions(
 
     * ``detection_path="sync"``  — runs contradiction checks inline (default).
     * ``detection_path="deferred"`` — enqueues to the transactional outbox for
-      background processing; returns ``{"deferred": True}``.
+      background processing; returns ``{"deferred": True}``.  Requires
+      *enqueue_conn*: the same transactional connection as the Saga outbox insert.
 
     All exceptions are caught and logged — contradiction detection is a
     best-effort cognitive layer.  System availability trumps cognitive
@@ -372,13 +385,29 @@ async def detect_contradictions(
     """
     try:
         if detection_path == "deferred":
-            await enqueue_contradiction_check(
-                conn, namespace_id, memory_id, memory_text,
-                assertion_type, embedding, agent_id, triplets,
-            )
+            if enqueue_conn is None:
+                raise ValueError(
+                    "detection_path='deferred' requires enqueue_conn "
+                    "(same transaction as the coordinating saga)"
+                )
+            from trimcp.auth import set_namespace_context
+
+            async with enqueue_conn.transaction():
+                await set_namespace_context(enqueue_conn, UUID(namespace_id))
+                await enqueue_contradiction_check(
+                    enqueue_conn,
+                    namespace_id,
+                    memory_id,
+                    memory_text,
+                    assertion_type,
+                    embedding,
+                    agent_id,
+                    triplets,
+                )
             return {"deferred": True}
+
         return await _detect_contradictions_impl(
-            conn,
+            pg_pool,
             mongo_client,
             namespace_id,
             memory_id,
@@ -401,7 +430,7 @@ async def detect_contradictions(
 
 
 async def _detect_contradictions_impl(
-    conn: asyncpg.Connection,
+    pg_pool: asyncpg.Pool,
     mongo_client: Any,
     namespace_id: str,
     memory_id: str,
@@ -416,34 +445,46 @@ async def _detect_contradictions_impl(
     if assertion_type != "fact":
         return None
 
-    # Step 1: Candidate Selection
-    candidates = await _select_candidates(conn, embedding, namespace_id, memory_id)
+    async with scoped_pg_session(pg_pool, namespace_id) as conn:
+        candidates = await _select_candidates(conn, embedding, namespace_id, memory_id)
     if not candidates:
         return None
 
+    async with scoped_pg_session(pg_pool, namespace_id) as conn:
+        ns_row = await conn.fetchrow(
+            "SELECT metadata FROM namespaces WHERE id = $1", namespace_id
+        )
+    ns_for_factory = _namespace_provider_metadata(ns_row)
+
     db = mongo_client.memory_archive
+
+    raw_by_ref = await fetch_episodes_raw_by_ref(
+        db,
+        [c["payload_ref"] for c in candidates],
+    )
 
     for candidate in candidates:
         cand_id = str(candidate["id"])
-        cand_payload_ref = candidate["payload_ref"]
+        key = normalize_payload_ref(candidate["payload_ref"])
+        cand_text_prefetch = raw_by_ref.get(key, "")
 
-        # Step 2: KG Check
-        kg_hit = await _check_kg_contradiction(conn, triplets, cand_id)
+        async with scoped_pg_session(pg_pool, namespace_id) as conn:
+            kg_hit = await _check_kg_contradiction(conn, triplets, cand_id)
+
         signals: list = []
         if kg_hit:
             signals.append({"source": "kg", "confidence": 0.95})
 
-        # Step 3: NLI Check
         nli_score, cand_text, nli_hit, nli_signals = await _check_nli_contradiction(
-            db, cand_payload_ref, memory_text
+            cand_text_prefetch,
+            memory_text,
         )
         if not cand_text:
             continue
         signals.extend(nli_signals)
 
-        # Step 4: LLM Tiebreaker
         final_confidence, final_explanation, should_record = await _resolve_with_llm(
-            conn,
+            ns_for_factory,
             namespace_id,
             cand_text,
             memory_text,
@@ -456,22 +497,23 @@ async def _detect_contradictions_impl(
         if not should_record:
             continue
 
-        await conn.execute(
-            """
-            INSERT INTO contradictions (
-                namespace_id, memory_a_id, memory_b_id, agent_id,
-                detection_path, signals, confidence, resolution
+        async with scoped_pg_session(pg_pool, namespace_id) as conn:
+            await conn.execute(
+                """
+                INSERT INTO contradictions (
+                    namespace_id, memory_a_id, memory_b_id, agent_id,
+                    detection_path, signals, confidence, resolution
+                )
+                VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::jsonb, $7, 'unresolved')
+                """,
+                namespace_id,
+                cand_id,
+                memory_id,
+                agent_id,
+                detection_path,
+                json.dumps(signals),
+                final_confidence,
             )
-            VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::jsonb, $7, 'unresolved')
-            """,
-            namespace_id,
-            cand_id,
-            memory_id,
-            agent_id,
-            detection_path,
-            json.dumps(signals),
-            final_confidence,
-        )
 
         return {
             "memory_a_id": cand_id,

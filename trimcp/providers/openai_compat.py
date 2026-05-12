@@ -36,6 +36,7 @@ from trimcp.providers._http_utils import post_with_error_handling
 from trimcp.providers.base import (
     LLMProvider,
     LLMProviderError,
+    LLMRetriesExhaustedError,
     Message,
     ResponseModelT,
     _redact_api_key,
@@ -128,6 +129,8 @@ class OpenAICompatProvider(LLMProvider):
                     lambda b=body: self._post(b),
                 )
             except LLMProviderError as exc:
+                if isinstance(exc, LLMRetriesExhaustedError):
+                    raise
                 if (
                     attempt == 0
                     and strict

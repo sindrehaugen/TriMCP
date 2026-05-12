@@ -198,8 +198,8 @@ class _Config:
 
     # --- MinIO Object Storage ---
     MINIO_ENDPOINT: str = os.getenv("MINIO_ENDPOINT", "localhost:9000")
-    MINIO_ACCESS_KEY: str = os.getenv("MINIO_ACCESS_KEY", "mcp_admin")
-    MINIO_SECRET_KEY: str = os.getenv("MINIO_SECRET_KEY", "super_secure_minio_password")
+    MINIO_ACCESS_KEY: str = os.getenv("MINIO_ACCESS_KEY", "")
+    MINIO_SECRET_KEY: str = os.getenv("MINIO_SECRET_KEY", "")
     MINIO_SECURE: bool = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
     # --- Phase 0.1 / 0.2: Auth + Signing ---
@@ -436,6 +436,23 @@ class _Config:
     TASK_DLQ_REDIS_TTL: int = int(os.getenv("TASK_DLQ_REDIS_TTL", "86400"))
 
     @classmethod
+    def validate_minio_credentials(cls) -> None:
+        """Validate that MinIO credentials are set via environment.
+
+        No hardcoded defaults are permitted — FIX-013 requires explicit env vars.
+        """
+        if not cls.MINIO_ACCESS_KEY:
+            raise ValueError(
+                "MINIO_ACCESS_KEY must be set via the MINIO_ACCESS_KEY environment variable. "
+                "No default is permitted in production."
+            )
+        if not cls.MINIO_SECRET_KEY:
+            raise ValueError(
+                "MINIO_SECRET_KEY must be set via the MINIO_SECRET_KEY environment variable. "
+                "No default is permitted in production."
+            )
+
+    @classmethod
     def validate(cls) -> None:
         """
         Validates environment configuration.
@@ -443,6 +460,9 @@ class _Config:
         """
         # P0: Master Key (Required for signing/encryption)
         _fail_unless_trimcp_master_key_ok(cls.TRIMCP_MASTER_KEY)
+
+        # P0: MinIO Credentials (FIX-013)
+        cls.validate_minio_credentials()
 
         # P0: Database connections
         missing_conns = [

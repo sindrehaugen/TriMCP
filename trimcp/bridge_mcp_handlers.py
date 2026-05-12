@@ -239,7 +239,7 @@ async def connect_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -> s
     client_state = secrets.token_urlsafe(32)
     row_id = uuid.uuid4()
 
-    async with engine.pg_pool.acquire() as conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
         await bridge_repo.insert_subscription(
             conn,
             user_id=user_id,
@@ -351,7 +351,7 @@ async def complete_bridge_auth(
             "gdrive Google resourceId or folder Id as configured, dropbox account id (dbid:...)"
         )
 
-    async with engine.pg_pool.acquire() as conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
         row = await bridge_repo.get_by_id(conn, bridge_id)
         if not row or str(row["user_id"]) != str(user_id):
             raise ValueError("bridge not found for user")
@@ -396,7 +396,7 @@ async def complete_bridge_auth(
                 resource_id=final_resource_id,
             )
 
-    async with engine.pg_pool.acquire() as conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
         await conn.execute(
             """
             UPDATE bridge_subscriptions
@@ -435,7 +435,7 @@ async def list_bridges(engine: TriStackEngine, arguments: dict[str, Any]) -> str
     user_id = arguments["user_id"]
     include_disconnected = bool(arguments.get("include_disconnected", False))
 
-    async with engine.pg_pool.acquire() as conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
         rows = await bridge_repo.list_for_user(
             conn, user_id, include_disconnected=include_disconnected
         )
@@ -447,7 +447,7 @@ async def list_bridges(engine: TriStackEngine, arguments: dict[str, Any]) -> str
 async def disconnect_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     user_id = arguments["user_id"]
     bridge_id = uuid.UUID(arguments["bridge_id"])
-    async with engine.pg_pool.acquire() as conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
         row = await bridge_repo.get_by_id(conn, bridge_id)
         if not row or str(row["user_id"]) != user_id:
             raise ValueError("bridge not found for user")
@@ -463,7 +463,7 @@ async def disconnect_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -
 
     token_payload: dict[str, Any] | None = None
     if not token:
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             token_payload = await bridge_repo.get_token(conn, bridge_id)
         if token_payload:
             token = token_payload.get("access_token", "")
@@ -493,7 +493,7 @@ async def disconnect_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -
             if r.status_code not in (200, 204):
                 log.warning("Drive channel stop: %s %s", r.status_code, r.text[:200])
 
-    async with engine.pg_pool.acquire() as conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
         await conn.execute(
             """
             UPDATE bridge_subscriptions
@@ -514,7 +514,7 @@ async def disconnect_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -
 async def force_resync_bridge(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     user_id = arguments["user_id"]
     bridge_id = uuid.UUID(arguments["bridge_id"])
-    async with engine.pg_pool.acquire() as conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
         row = await bridge_repo.get_by_id(conn, bridge_id)
         if not row or str(row["user_id"]) != user_id:
             raise ValueError("bridge not found for user")
@@ -595,7 +595,7 @@ def bridge_redis() -> Redis:
 async def bridge_status(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     user_id = arguments["user_id"]
     bridge_id = uuid.UUID(arguments["bridge_id"])
-    async with engine.pg_pool.acquire() as conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
         row = await bridge_repo.get_by_id(conn, bridge_id)
         if not row or str(row["user_id"]) != user_id:
             raise ValueError("bridge not found for user")

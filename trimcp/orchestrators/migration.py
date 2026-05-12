@@ -135,33 +135,45 @@ class MigrationOrchestrator:
     # Embedding migration lifecycle
     # ------------------------------------------------------------------
 
-    async def start_migration(self, target_model_id: str) -> dict:
-        async with self.pg_pool.acquire() as conn:
-            model = await conn.fetchrow(
-                "SELECT id FROM embedding_models WHERE id = $1::uuid", target_model_id
-            )
-            if not model:
-                raise ValueError("Target model not found")
+    async def start_migration(self, target_model_id: str) -> dict | None:
+        """Atomically create a new migration only if none is currently running.
+        
+        Returns dict with migration_id, or None if a migration is already active.
+        This is a single SQL statement — no TOCTOU race.
+        """
+        async with self.pg_pool.acquire(timeout=10.0) as conn:
+            async with conn.transaction():
+                model = await conn.fetchrow(
+                    "SELECT id FROM embedding_models WHERE id = $1::uuid", target_model_id
+                )
+                if not model:
+                    raise ValueError("Target model not found")
 
-            active = await conn.fetchrow(
-                "SELECT id FROM embedding_migrations WHERE status IN ('running', 'validating')"
-            )
-            if active:
-                raise ValueError(f"Migration {active['id']} is already in progress")
+                mig_id = await conn.fetchval(
+                    """
+                    INSERT INTO embedding_migrations (target_model_id)
+                    SELECT $1::uuid
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM embedding_migrations
+                        WHERE status IN ('running', 'validating')
+                    )
+                    RETURNING id
+                    """,
+                    target_model_id,
+                )
+                
+                if not mig_id:
+                    return None
 
-            await conn.execute(
-                "UPDATE embedding_models SET status = 'migrating' WHERE id = $1::uuid",
-                target_model_id,
-            )
+                await conn.execute(
+                    "UPDATE embedding_models SET status = 'migrating' WHERE id = $1::uuid",
+                    target_model_id,
+                )
 
-            mig_id = await conn.fetchval(
-                "INSERT INTO embedding_migrations (target_model_id) VALUES ($1::uuid) RETURNING id",
-                target_model_id,
-            )
-            return {"migration_id": str(mig_id), "status": "running"}
+                return {"migration_id": str(mig_id), "status": "running"}
 
     async def migration_status(self, migration_id: str) -> dict:
-        async with self.pg_pool.acquire() as conn:
+        async with self.pg_pool.acquire(timeout=10.0) as conn:
             row = await conn.fetchrow(
                 "SELECT id, target_model_id, status, last_memory_id, last_node_id, "
                 "started_at, completed_at FROM embedding_migrations WHERE id = $1::uuid",
@@ -178,7 +190,7 @@ class MigrationOrchestrator:
         ``{"status": "failed", "reason": ...}`` — API vocabulary only; the
         ``embedding_migrations.status`` column remains the DB state machine.
         """
-        async with self.pg_pool.acquire() as conn:
+        async with self.pg_pool.acquire(timeout=10.0) as conn:
             row = await conn.fetchrow(
                 "SELECT status, target_model_id FROM embedding_migrations WHERE id = $1::uuid",
                 migration_id,
@@ -220,7 +232,7 @@ class MigrationOrchestrator:
             }
 
     async def commit_migration(self, migration_id: str) -> dict:
-        async with self.pg_pool.acquire() as conn:
+        async with self.pg_pool.acquire(timeout=10.0) as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
                     "SELECT status, target_model_id FROM embedding_migrations WHERE id = $1::uuid",
@@ -245,7 +257,7 @@ class MigrationOrchestrator:
                 return {"status": "committed", "active_model_id": str(target_model_id)}
 
     async def abort_migration(self, migration_id: str) -> dict:
-        async with self.pg_pool.acquire() as conn:
+        async with self.pg_pool.acquire(timeout=10.0) as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
                     "SELECT target_model_id FROM embedding_migrations WHERE id = $1::uuid",

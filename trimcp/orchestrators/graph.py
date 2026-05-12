@@ -10,10 +10,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+from contextlib import asynccontextmanager
 from uuid import UUID
 
 import asyncpg
 from motor.motor_asyncio import AsyncIOMotorClient
+
+from trimcp.db_utils import scoped_pg_session
+from trimcp.mongo_bulk import fetch_code_files_raw_by_ref, normalize_payload_ref
 
 log = logging.getLogger("tri-stack-orchestrator.graph")
 
@@ -49,27 +53,11 @@ class GraphOrchestrator:
             return raw
         return UUID(str(raw))
 
-    def scoped_session(self, namespace_id: str | UUID):
-        """Tenant-isolated PostgreSQL session with RLS context."""
-        from contextlib import asynccontextmanager
-
-        @asynccontextmanager
-        async def _session(ns_id: str | UUID):
-            if not ns_id:
-                raise ValueError("namespace_id is required")
-            ns_uuid = UUID(str(ns_id))
-            async with self.pg_pool.acquire() as conn:
-                from trimcp.auth import set_namespace_context
-
-                await set_namespace_context(conn, ns_uuid)
-                try:
-                    yield conn
-                finally:
-                    from trimcp.auth import _reset_rls_context
-
-                    await _reset_rls_context(conn)
-
-        return _session(namespace_id)
+    @asynccontextmanager
+    async def scoped_session(self, namespace_id: str | UUID):
+        """Tenant-isolated PostgreSQL session (RLS + transaction-scoped SET LOCAL)."""
+        async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
+            yield conn
 
     @property
     def _mongo_db(self):
@@ -198,8 +186,12 @@ class GraphOrchestrator:
                 memory_ids,
             )
 
+            code_docs = await fetch_code_files_raw_by_ref(
+                self._mongo_db,
+                [normalize_payload_ref(r["payload_ref"]) for r in rows],
+            )
+
             results = []
-            from bson import ObjectId
 
             for row in rows:
                 mid = str(row["id"])
@@ -219,15 +211,9 @@ class GraphOrchestrator:
                 start_line = meta.get("start_line", 0)
                 end_line = meta.get("end_line", 0)
 
-                # Hydrate code snippet from MongoDB
-                excerpt = ""
-                try:
-                    oid = ObjectId(row["payload_ref"])
-                    doc = await self._mongo_db.code_files.find_one({"_id": oid})
-                    if doc:
-                        excerpt = str(doc.get("raw_code", ""))[:600]
-                except Exception:
-                    pass
+                ref_key = normalize_payload_ref(row["payload_ref"])
+                raw_code = code_docs.get(ref_key, "")
+                excerpt = str(raw_code)[:600] if raw_code else ""
 
                 results.append(
                     {

@@ -248,7 +248,7 @@ def _build_multi_conn_pool(
     # ``pool.acquire()`` must return synchronously (not a coroutine) —
     # ``async with pool.acquire() as conn:`` calls ``__aenter__`` on the
     # return value directly.
-    def _acquire() -> MagicMock:
+    def _acquire(*_args: object, **_kwargs: object) -> MagicMock:
         acq = MagicMock()
         acq.__aenter__ = AsyncMock(return_value=_make_conn())
         acq.__aexit__ = AsyncMock(return_value=None)
@@ -430,7 +430,7 @@ async def test_concurrent_multi_conn_namespace_and_agent_quotas(
         tx.__aexit__.return_value = None
         return conn
 
-    def _acquire() -> MagicMock:
+    def _acquire(*_args: object, **_kwargs: object) -> MagicMock:
         acq = MagicMock()
         acq.__aenter__ = AsyncMock(return_value=_make_conn())
         acq.__aexit__ = AsyncMock(return_value=None)

@@ -2,11 +2,33 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from email.message import EmailMessage
 
 import httpx
 
 log = logging.getLogger("trimcp-notifications")
+
+
+def _build_smtp_config() -> dict:
+    """Read and validate SMTP configuration from environment variables.
+
+    Separates configuration reading (outer-layer concern) from message sending
+    (use-case concern). Enforces that hardcoded defaults are not permitted.
+    """
+    smtp_from = os.environ.get("TRIMCP_SMTP_FROM", "").strip()
+    smtp_to = os.environ.get("TRIMCP_SMTP_TO", "").strip()
+
+    if not smtp_from or not smtp_to:
+        raise ValueError(
+            "TRIMCP_SMTP_FROM and TRIMCP_SMTP_TO must be set. "
+            "No example.com defaults permitted."
+        )
+
+    return {
+        "from": smtp_from,
+        "to": smtp_to,
+    }
 
 
 class NotificationDispatcher:
@@ -79,12 +101,22 @@ class NotificationDispatcher:
             )
             return
         try:
+            smtp_config = _build_smtp_config()
             msg = EmailMessage()
             msg.set_content(message)
             msg["Subject"] = title
-            msg["From"] = "trimcp-alerts@example.com"
-            msg["To"] = "admin@example.com"
-            await aiosmtplib.send(msg, hostname=self.smtp_host, port=25, timeout=5)
+            msg["From"] = smtp_config["from"]
+            msg["To"] = smtp_config["to"]
+            # FIX-052: Port 587 with STARTTLS for secure SMTP.
+            # Never use port 25 unencrypted in production.
+            await aiosmtplib.send(
+                msg,
+                hostname=self.smtp_host,
+                port=587,
+                use_tls=False,
+                start_tls=True,
+                timeout=5,
+            )
         except Exception as e:
             log.error("Failed to send Email notification: %s", e)
 

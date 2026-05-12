@@ -135,7 +135,7 @@ async def store_dead_letter(
     dlq_id = str(UUID(int=0))  # placeholder — real UUID from DB
 
     try:
-        async with pg_pool.acquire() as conn:
+        async with pg_pool.acquire(timeout=10.0) as conn:
             dlq_id = str(
                 await conn.fetchval(
                     """
@@ -180,7 +180,7 @@ async def store_dead_letter(
 async def _refresh_backlog_gauge(pg_pool: Any, task_name: str | None = None) -> None:
     """Update the TASK_DLQ_BACKLOG gauge(s) from the current DB state."""
     try:
-        async with pg_pool.acquire() as conn:
+        async with pg_pool.acquire(timeout=10.0) as conn:
             if task_name:
                 count = await conn.fetchval(
                     "SELECT count(*) FROM dead_letter_queue WHERE task_name = $1 AND status = 'pending'",
@@ -238,7 +238,7 @@ async def list_dead_letters(
         LIMIT ${limit_idx} OFFSET ${offset_idx}
     """
 
-    async with pg_pool.acquire() as conn:
+    async with pg_pool.acquire(timeout=10.0) as conn:
         rows = await conn.fetch(query, *params)
 
     return [
@@ -271,7 +271,7 @@ async def replay_dead_letter(
 
     Raises ValueError if the entry is not in ``pending`` status.
     """
-    async with pg_pool.acquire() as conn:
+    async with pg_pool.acquire(timeout=10.0) as conn:
         async with conn.transaction():
             row = await conn.fetchrow(
                 """
@@ -316,7 +316,7 @@ async def purge_dead_letter(
 
     Raises ValueError if the entry does not exist.
     """
-    async with pg_pool.acquire() as conn:
+    async with pg_pool.acquire(timeout=10.0) as conn:
         async with conn.transaction():
             result = await conn.execute(
                 """

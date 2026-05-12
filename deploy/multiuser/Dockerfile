@@ -27,8 +27,8 @@ COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt --no-index --find-links=/wheels \
     && rm -rf /wheels \
-    # Download spaCy model required for Graphify (Phase 2)
-    && python -m spacy download en_core_web_sm \
+    # Download spaCy model required for Graphify (Phase 2) with pinned version
+    && python -m spacy download en_core_web_sm==3.7.1 \
     # Create non-root user
     && useradd --system --uid 10001 --no-create-home trimcp
 

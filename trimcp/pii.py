@@ -204,12 +204,14 @@ async def process(text: str, config: NamespacePIIConfig) -> PIIProcessResult:
     # Redact or Pseudonymise
     sanitized_text = text
     vault_entries = []
-    mk = require_master_key() if config.reversible else None
     pseudonym_key: bytes | None = None
     if config.policy == PIIPolicy.pseudonymise:
         pseudonym_key = _pseudonym_hmac_key_material(config)
 
-    try:
+    from contextlib import nullcontext
+    cm = require_master_key() if config.reversible else nullcontext()
+    
+    with cm as mk:
         for entity in entities:
             if config.policy == PIIPolicy.pseudonymise:
                 digest = _pseudonym_token_suffix(
@@ -245,9 +247,6 @@ async def process(text: str, config: NamespacePIIConfig) -> PIIProcessResult:
 
             # Clear the raw PII value now that it has been consumed
             entity.clear_raw_value()
-    finally:
-        if mk is not None:
-            mk.zero()
 
     return PIIProcessResult(
         sanitized_text=sanitized_text,

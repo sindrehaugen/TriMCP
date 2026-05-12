@@ -380,7 +380,7 @@ class TestExecuteWithRetry:
                 provider="test/fake",
             )
 
-        with pytest.raises(trimcp.providers.base.LLMTimeoutError):
+        with pytest.raises(trimcp.providers.base.LLMRetriesExhaustedError) as excinfo:
             await provider.execute_with_retry(
                 always_fails,
                 retry_policy=trimcp.providers.base.RetryPolicy(
@@ -388,6 +388,7 @@ class TestExecuteWithRetry:
                     base_delay_ms=1,
                 ),
             )
+        assert isinstance(excinfo.value.last_error, trimcp.providers.base.LLMTimeoutError)
 
     @pytest.mark.asyncio
     async def test_non_retryable_error_not_retried(self):
@@ -427,7 +428,7 @@ class TestExecuteWithRetry:
             )
 
         # Exhaust retries — circuit breaker records failures
-        with pytest.raises(trimcp.providers.base.LLMUpstreamError):
+        with pytest.raises(trimcp.providers.base.LLMRetriesExhaustedError) as excinfo:
             await provider.execute_with_retry(
                 failing_op,
                 retry_policy=trimcp.providers.base.RetryPolicy(
@@ -436,12 +437,13 @@ class TestExecuteWithRetry:
                 ),
                 circuit_breaker=cb,
             )
+        assert isinstance(excinfo.value.last_error, trimcp.providers.base.LLMUpstreamError)
 
         # Circuit should now be open
         assert cb.state == trimcp.providers.base.CircuitBreakerState.OPEN
 
         # Next call should fail fast with "circuit breaker open"
-        with pytest.raises(trimcp.providers.base.LLMProviderError) as excinfo:
+        with pytest.raises(trimcp.providers.base.LLMCircuitOpenError) as excinfo:
             await provider.execute_with_retry(
                 failing_op,
                 retry_policy=trimcp.providers.base.RetryPolicy(

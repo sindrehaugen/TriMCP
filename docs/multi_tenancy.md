@@ -27,6 +27,47 @@ FOR ALL TO trimcp_app
 USING (namespace_id = current_setting('trimcp.namespace_id')::uuid);
 ```
 
+#### Connection & Transaction Lifecycle Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Application Layer
+    participant Manager as scoped_pg_session Context
+    participant Pool as pg_pool (asyncpg)
+    participant Conn as Connection Session
+    participant DB as PostgreSQL Database
+
+    App->>Manager: async with scoped_pg_session(pool, namespace_id)
+    Note over Manager: Check namespace_id has UUID format
+    Manager->>Pool: acquire(timeout=10.0s)
+    Pool-->>Manager: Connection instance
+    Manager->>Conn: transaction()
+    Conn->>DB: BEGIN TRANSACTION
+    Manager->>Conn: set_namespace_context(conn, namespace_id)
+    Conn->>DB: SELECT set_config('trimcp.namespace_id', namespace_id, true)
+    Note over DB: namespace_id is now local to transaction context
+    Manager-->>App: yield Connection
+    
+    rect rgb(240, 240, 250)
+        Note over App, DB: Application executes RLS-scoped queries
+        App->>Conn: fetch("SELECT * FROM memories")
+        Conn->>DB: Query filtered by tenant_isolation_policy
+        DB-->>App: Return results (filtered)
+    end
+
+    App->>Manager: Exit context block (success / exception)
+    Manager->>Conn: _reset_rls_context(conn)
+    Conn->>DB: SELECT set_config('trimcp.namespace_id', '', true)
+    Manager->>Conn: Exit transaction context
+    alt Success
+        Conn->>DB: COMMIT
+    else Exception
+        Conn->>DB: ROLLBACK
+    end
+    Manager->>Pool: Release Connection
+```
+
 ## Resource Quotas
 
 TriMCP protects its infrastructure from over-consumption or "noisy neighbor" effects via the Quota Engine (Phase 3.2).

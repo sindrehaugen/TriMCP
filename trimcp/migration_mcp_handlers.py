@@ -73,7 +73,7 @@ async def _audit_migration_action(
     if extra_params:
         params.update(extra_params)
 
-    async with pg_pool.acquire() as audit_conn:
+    async with pg_pool.acquire(timeout=10.0) as audit_conn:
         async with audit_conn.transaction():
             result = await append_event(
                 conn=audit_conn,

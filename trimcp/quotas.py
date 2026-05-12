@@ -41,7 +41,7 @@ class QuotaReservation:
         if not self.steps or self.pool is None:
             self.steps.clear()
             return
-        async with self.pool.acquire() as conn:
+        async with self.pool.acquire(timeout=10.0) as conn:
             async with conn.transaction():
                 for qid, delta in self.steps:
                     await conn.execute(
@@ -92,7 +92,7 @@ async def consume_resources(
     if not deltas:
         return reservation
 
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=10.0) as conn:
         async with conn.transaction():
             try:
                 for resource_type, delta in sorted(deltas.items()):

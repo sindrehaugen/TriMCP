@@ -89,11 +89,19 @@ class _Acquire:
         return None
 
 
+class _FakeTransaction:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
 class FakePool:
     def __init__(self, conn: TemporalGraphFakeConn) -> None:
         self._conn = conn
 
-    def acquire(self) -> _Acquire:
+    def acquire(self, *, timeout: float | None = None) -> _Acquire:
         return _Acquire(self._conn)
 
 
@@ -102,6 +110,9 @@ class TemporalGraphFakeConn:
     Handles the three ``fetch`` shapes used when ``as_of`` and ``namespace_id``
     are set in ``GraphRAGTraverser``.
     """
+
+    def transaction(self) -> _FakeTransaction:
+        return _FakeTransaction()
 
     def __init__(
         self,

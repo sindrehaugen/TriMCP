@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -26,6 +25,7 @@ from trimcp.auth import (
     HMACAuthMiddleware,
     optional_hmac_nonce_store,
 )
+from trimcp.background_task_manager import create_tracked_task
 from trimcp.config import cfg
 from trimcp.event_log import verify_merkle_chain
 from trimcp.mtls import MTLSAuthMiddleware
@@ -54,7 +54,7 @@ async def lifespan(app):
     try:
         from trimcp.observability import EVENT_LOG_PARTITION_MONTHS_AHEAD
 
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             await conn.execute("SELECT trimcp_ensure_event_log_monthly_partitions(3)")
             row = await conn.fetchrow(
                 """
@@ -415,7 +415,7 @@ async def api_replay_fork(request):
         from trimcp.replay import ForkedReplay, _create_run
 
         # Pre-create the row so run_id is available before the background task runs.
-        async with engine.pg_pool.acquire() as pre_conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as pre_conn:
             fork_run_id = await _create_run(
                 pre_conn,
                 source_namespace_id=frozen_config.source_namespace_id,
@@ -442,7 +442,7 @@ async def api_replay_fork(request):
                     "Background ForkedReplay failed run_id=%s", fork_run_id
                 )
 
-        asyncio.create_task(_run_fork(), name=f"fork-{fork_run_id}")
+        await create_tracked_task(_run_fork(), name=f"fork-{fork_run_id}")
         return JSONResponse(
             {
                 "status": "started",
@@ -571,7 +571,7 @@ async def api_a2a_create_grant(request):
         )
 
     try:
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             resp = await create_grant(conn, caller_ctx, req)
     except Exception as exc:
         logger.exception("api_a2a_create_grant failed ns=%s", ns_id)
@@ -625,7 +625,7 @@ async def api_a2a_revoke_grant(request):
         )
 
     try:
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             revoked = await revoke_grant(conn, grant_id, caller_ctx)
     except Exception as exc:
         logger.exception("api_a2a_revoke_grant failed grant=%s", grant_id)
@@ -674,7 +674,7 @@ async def api_a2a_list_grants(request):
     caller_ctx = NamespaceContext(namespace_id=ns_id, agent_id=agent_id_val)
 
     try:
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             grants = await list_grants(
                 conn, caller_ctx, include_inactive=include_inactive
             )
@@ -778,7 +778,7 @@ async def api_admin_events(request):
     """
 
     try:
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             count_row = await conn.fetchrow(count_sql, *args)
             rows = await conn.fetch(items_sql, *args, limit, offset)
     except Exception as exc:
@@ -845,7 +845,7 @@ async def api_admin_events_summary(request):
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
 
     try:
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             total_row = await conn.fetchrow(
                 f"SELECT COUNT(*)::bigint AS total, MAX(occurred_at) AS latest FROM event_log {where_sql}",
                 *args,
@@ -902,7 +902,7 @@ async def api_admin_verify_chain(request):
         return JSONResponse({"error": "namespace_id required"}, status_code=422)
 
     try:
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             result = await verify_merkle_chain(conn, namespace_id=namespace_id)
     except Exception as exc:
         logger.exception("api_admin_verify_chain failed")
@@ -983,7 +983,7 @@ async def api_admin_a2a_grants(request):
     """
 
     try:
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             count_row = await conn.fetchrow(count_sql, *args)
             rows = await conn.fetch(items_sql, *args, limit, offset)
     except Exception as exc:
@@ -1045,7 +1045,7 @@ async def api_admin_a2a_grants_summary(request):
     )
 
     try:
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             rows = await conn.fetch(
                 f"SELECT status, COUNT(*)::bigint AS c FROM a2a_grants {where_sql} GROUP BY status",
                 *args,
@@ -1109,7 +1109,7 @@ async def api_admin_quotas(request):
         cutoff = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     try:
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             rows = await conn.fetch(
                 f"""
                 SELECT namespace_id, agent_id, resource_type, limit_amount, used_amount, reset_at, updated_at
@@ -1188,7 +1188,7 @@ async def api_admin_quotas_summary(request):
     args: list[object] = [namespace_id] if namespace_id else []
 
     try:
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             top_rows = await conn.fetch(
                 f"""
                 SELECT namespace_id, resource_type, used_amount, limit_amount
@@ -1276,7 +1276,7 @@ async def api_admin_embedding_models(request):
     if not engine:
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
     try:
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             rows = await conn.fetch("""
                 SELECT id, name, dimension, status, created_at, retired_at
                 FROM embedding_models
@@ -1625,7 +1625,21 @@ app = Starlette(
     ],
 )
 
+def _assert_admin_override_not_in_production() -> None:
+    """Raise at startup if TRIMCP_ADMIN_OVERRIDE is active in production.
+
+    This guard prevents a development shortcut from silently bypassing
+    authentication in production deployments. See FIX-039.
+    """
+    if os.getenv("TRIMCP_ADMIN_OVERRIDE") and os.getenv("ENVIRONMENT", "dev") == "prod":
+        raise RuntimeError(
+            "TRIMCP_ADMIN_OVERRIDE must not be set when ENVIRONMENT=prod. "
+            "Remove this environment variable from the production configuration."
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
 
+    _assert_admin_override_not_in_production()
     uvicorn.run(app, host="0.0.0.0", port=8003)

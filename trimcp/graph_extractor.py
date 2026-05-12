@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
+from functools import lru_cache
 
 from trimcp.models import KGEdge, KGNode
 
@@ -34,15 +35,20 @@ log = logging.getLogger("tri-stack-graphify")
 # --- spaCy backend ---
 
 
+@lru_cache(maxsize=1)
+def _get_spacy_model(model_name: str = "en_core_web_sm"):
+    """Load and cache the spaCy model. Called once per process lifetime."""
+    import spacy  # noqa: PLC0415
+    return spacy.load(model_name)
+
+
 def _spacy_extract(text: str) -> tuple[list[KGNode], list[KGEdge]]:
     """
     Uses spaCy en_core_web_sm NER + dependency parse.
     Returns (nodes, edges). Raises ImportError if spaCy unavailable.
     """
-    import spacy  # noqa: PLC0415
-
     try:
-        nlp = spacy.load("en_core_web_sm")
+        nlp = _get_spacy_model()
     except OSError:
         raise ImportError(
             "spaCy model 'en_core_web_sm' not installed. Run: python -m spacy download en_core_web_sm"

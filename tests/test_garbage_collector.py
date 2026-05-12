@@ -28,13 +28,17 @@ def mock_pg_pool(sample_namespaces):
     """Create a mock pg_pool that returns sample namespaces."""
     pool = MagicMock()
     conn = AsyncMock()
-    # AsyncMock.__aenter__ returns a new mock by default; wire it to return itself
-    conn.__aenter__.return_value = conn
-    conn.__aexit__.return_value = False
     # fetch returns rows with 'id' field
     conn.fetch = AsyncMock(return_value=[{"id": ns} for ns in sample_namespaces])
     conn.execute = AsyncMock(return_value="DELETE 3")
-    pool.acquire = MagicMock(return_value=conn)
+    tx = AsyncMock()
+    tx.__aenter__.return_value = None
+    tx.__aexit__.return_value = False
+    conn.transaction = MagicMock(return_value=tx)
+    acq = AsyncMock()
+    acq.__aenter__.return_value = conn
+    acq.__aexit__.return_value = None
+    pool.acquire = MagicMock(return_value=acq)
     return pool
 
 
@@ -57,10 +61,11 @@ async def test_fetch_all_namespaces_empty():
 
     pool = MagicMock()
     conn = AsyncMock()
-    conn.__aenter__.return_value = conn
-    conn.__aexit__.return_value = False
     conn.fetch = AsyncMock(return_value=[])
-    pool.acquire = MagicMock(return_value=conn)
+    acq = AsyncMock()
+    acq.__aenter__.return_value = conn
+    acq.__aexit__.return_value = None
+    pool.acquire = MagicMock(return_value=acq)
     result = await _fetch_all_namespaces(pool)
     assert result == []
 
@@ -187,10 +192,15 @@ async def test_fetch_pg_refs_sets_context_per_namespace():
 
     pool = MagicMock()
     conn = AsyncMock()
-    conn.__aenter__.return_value = conn
-    conn.__aexit__.return_value = False
     conn.fetch = AsyncMock(return_value=[])  # empty result — no refs
-    pool.acquire = MagicMock(return_value=conn)
+    tx = AsyncMock()
+    tx.__aenter__.return_value = None
+    tx.__aexit__.return_value = False
+    conn.transaction = MagicMock(return_value=tx)
+    acq = AsyncMock()
+    acq.__aenter__.return_value = conn
+    acq.__aexit__.return_value = None
+    pool.acquire = MagicMock(return_value=acq)
 
     with patch(
         "trimcp.garbage_collector.set_namespace_context", new_callable=AsyncMock
@@ -290,10 +300,11 @@ async def test_collect_orphans_handles_no_namespaces():
 
     pool = MagicMock()
     conn = AsyncMock()
-    conn.__aenter__.return_value = conn
-    conn.__aexit__.return_value = False
     conn.fetch = AsyncMock(return_value=[])  # empty namespaces table
-    pool.acquire = MagicMock(return_value=conn)
+    acq = AsyncMock()
+    acq.__aenter__.return_value = conn
+    acq.__aexit__.return_value = None
+    pool.acquire = MagicMock(return_value=acq)
 
     async def _async_cursor(docs):
         for d in docs:

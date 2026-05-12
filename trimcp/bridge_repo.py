@@ -350,8 +350,8 @@ async def get_token(
     )
     if not row or not row["oauth_access_token_enc"]:
         return None
-    mk = require_master_key()
-    plaintext = decrypt_signing_key(bytes(row["oauth_access_token_enc"]), mk).decode(
-        "utf-8"
-    )
+    with require_master_key() as mk:
+        plaintext = decrypt_signing_key(bytes(row["oauth_access_token_enc"]), mk).decode(
+            "utf-8"
+        )
     return json.loads(plaintext)

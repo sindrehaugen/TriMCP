@@ -35,6 +35,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
+from functools import lru_cache
 from typing import Any
 
 from trimcp.providers.base import LLMProvider, LLMProviderError
@@ -69,12 +70,18 @@ def get_provider(namespace_metadata: dict[str, Any] | None = None) -> LLMProvide
     cred_ref = consolidation_cfg.get("llm_credentials") or None
 
     log.debug("Resolving LLM provider: label=%r model=%r", provider_label, model)
-    return _build_provider(provider_label, model=model, cred_ref=cred_ref)
+    return _cached_build_provider(provider_label, model, cred_ref)
 
 
-# ---------------------------------------------------------------------------
-# Internal builder
-# ---------------------------------------------------------------------------
+@lru_cache(maxsize=128)
+def _cached_build_provider(
+    label: str,
+    model: str | None,
+    cred_ref: str | None,
+) -> LLMProvider:
+    """Memoize concrete providers — prevents repeated TLS/HTTP stack setup (FIX-033)."""
+
+    return _build_provider(label, model=model, cred_ref=cred_ref)
 
 
 # Deferred factory functions to avoid loading unused heavy dependencies at module load.

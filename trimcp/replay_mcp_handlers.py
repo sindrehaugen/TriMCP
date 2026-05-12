@@ -9,12 +9,12 @@ concern — handlers focus purely on domain logic.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
 from typing import Any
 
+from trimcp.background_task_manager import create_tracked_task
 from trimcp.mcp_errors import mcp_handler
 from trimcp.orchestrator import TriStackEngine
 
@@ -75,7 +75,7 @@ async def handle_replay_fork(engine: TriStackEngine, arguments: dict[str, Any]) 
     # ── Build the frozen execution config (immutable after this point) ──
     frozen_config = FrozenForkConfig.from_request(fork_req)
 
-    async with engine.pg_pool.acquire() as pre_conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as pre_conn:
         fork_run_id = await _create_run(
             pre_conn,
             source_namespace_id=frozen_config.source_namespace_id,
@@ -100,7 +100,7 @@ async def handle_replay_fork(engine: TriStackEngine, arguments: dict[str, Any]) 
         except Exception:
             log.exception("Replay failed")
 
-    asyncio.create_task(_run_fork())
+    await create_tracked_task(_run_fork(), name=f"fork-{fork_run_id}")
     return json.dumps({"status": "started", "run_id": str(fork_run_id)})
 
 
@@ -117,7 +117,7 @@ async def handle_replay_reconstruct(
     start_seq = int(arguments.get("start_seq", 1))
     agent_filter = arguments.get("agent_id_filter")
 
-    async with engine.pg_pool.acquire() as pre_conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as pre_conn:
         run_id = await _create_run(
             pre_conn,
             source_namespace_id=src_ns,
@@ -146,7 +146,7 @@ async def handle_replay_reconstruct(
         except Exception:
             log.exception("Reconstructive replay failed")
 
-    asyncio.create_task(_run())
+    await create_tracked_task(_run(), name=f"reconstruct-{run_id}")
     return json.dumps({"status": "started", "run_id": str(run_id)})
 
 

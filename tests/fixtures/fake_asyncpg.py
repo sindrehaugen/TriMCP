@@ -77,6 +77,9 @@ class RecordingFakeConnection:
         self.event_inserts: list[dict[str, Any]] = []
         self.unique_violation = simulate_unique_violation_on_insert
 
+    def is_in_transaction(self) -> bool:
+        return self._tx_depth > 0
+
     def transaction(self) -> _FakeTransaction:
         return _FakeTransaction(self)
 
@@ -210,7 +213,8 @@ class RecordingFakePool:
         self._closed = False
         self._outstanding = 0
 
-    def acquire(self) -> _FakeAcquireContext:
+    def acquire(self, *, timeout: float | None = None) -> _FakeAcquireContext:
+        _ = timeout  # asyncpg API parity — fake checkout is immediate.
         if self._closed:
             raise RuntimeError("RecordingFakePool: pool is closed")
         return _FakeAcquireContext(self)

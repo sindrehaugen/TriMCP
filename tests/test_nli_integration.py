@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 
 from trimcp.contradictions import ContradictionResult, detect_contradictions
+
+
+def _mock_pg_pool(conn: AsyncMock) -> MagicMock:
+    pool = MagicMock()
+
+    @asynccontextmanager
+    async def _acquire(*_args, **_kwargs):
+        yield conn
+
+    pool.acquire = _acquire
+    return pool
 
 _VALID_OID = "507f1f77bcf86cd799439011"
 
@@ -30,19 +42,27 @@ async def test_detect_uses_nli_and_skips_llm_on_strong_agreement():
     conn.fetch = AsyncMock(
         return_value=[{"id": cand_id, "payload_ref": _VALID_OID, "similarity": 0.92}]
     )
-    conn.fetchrow = AsyncMock(side_effect=[None, {"metadata": {}}])
+    conn.fetchrow = AsyncMock(side_effect=[{"metadata": {}}])
     conn.execute = AsyncMock()
+    tx = AsyncMock()
+    tx.__aenter__.return_value = None
+    tx.__aexit__.return_value = False
+    conn.transaction = MagicMock(return_value=tx)
 
     mongo = MagicMock()
-    mongo.memory_archive.episodes.find_one = AsyncMock(
-        return_value={"raw_data": "Existing memory text."}
-    )
 
     # Mock NLI to return high contradiction score
-    with patch(
-        "trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock
-    ) as mock_nli:
+    with (
+        patch(
+            "trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock
+        ) as mock_nli,
+        patch(
+            "trimcp.contradictions.fetch_episodes_raw_by_ref",
+            new_callable=AsyncMock,
+        ) as fetch_ep,
+    ):
         mock_nli.return_value = 0.9
+        fetch_ep.return_value = {_VALID_OID: "Existing memory text."}
 
         # Mock LLM provider (should NOT be called if we don't trigger tiebreaker)
         # Actually, in my implementation:
@@ -58,7 +78,7 @@ async def test_detect_uses_nli_and_skips_llm_on_strong_agreement():
         )
         with patch("trimcp.contradictions.get_provider", return_value=llm):
             out = await detect_contradictions(
-                conn,
+                _mock_pg_pool(conn),
                 mongo,
                 ns,
                 new_mid,
@@ -85,19 +105,27 @@ async def test_detect_llm_tiebreaker_prefers_llm_decision():
     conn.fetch = AsyncMock(
         return_value=[{"id": cand_id, "payload_ref": _VALID_OID, "similarity": 0.92}]
     )
-    conn.fetchrow = AsyncMock(side_effect=[None, {"metadata": {}}])
+    conn.fetchrow = AsyncMock(side_effect=[{"metadata": {}}])
     conn.execute = AsyncMock()
+    tx = AsyncMock()
+    tx.__aenter__.return_value = None
+    tx.__aexit__.return_value = False
+    conn.transaction = MagicMock(return_value=tx)
 
     mongo = MagicMock()
-    mongo.memory_archive.episodes.find_one = AsyncMock(
-        return_value={"raw_data": "Existing memory text."}
-    )
 
     # Mock NLI to return high contradiction score (hit)
-    with patch(
-        "trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock
-    ) as mock_nli:
+    with (
+        patch(
+            "trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock
+        ) as mock_nli,
+        patch(
+            "trimcp.contradictions.fetch_episodes_raw_by_ref",
+            new_callable=AsyncMock,
+        ) as fetch_ep,
+    ):
         mock_nli.return_value = 0.9  # NLI hit
+        fetch_ep.return_value = {_VALID_OID: "Existing memory text."}
 
         # Mock LLM to say NO contradiction
         llm = StubLLM(
@@ -110,7 +138,7 @@ async def test_detect_llm_tiebreaker_prefers_llm_decision():
         with patch("trimcp.contradictions.get_provider", return_value=llm):
             # KG says NO (empty triplets)
             out = await detect_contradictions(
-                conn,
+                _mock_pg_pool(conn),
                 mongo,
                 ns,
                 new_mid,

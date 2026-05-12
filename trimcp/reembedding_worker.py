@@ -402,7 +402,7 @@ class ReembeddingWorker:
     async def _embed(self, pool: asyncpg.Pool, texts: list[str]) -> list[list[float]]:
         # Use Postgres advisory lock to prevent concurrent embedding fan-out across workers
         lock_key = 0x7265656D626564  # 'reembed' in hex
-        async with pool.acquire() as conn:
+        async with pool.acquire(timeout=10.0) as conn:
             await conn.execute("SELECT pg_advisory_lock($1)", lock_key)
             try:
                 return await _embeddings.embed_batch(texts)
@@ -414,7 +414,7 @@ class ReembeddingWorker:
         pool: asyncpg.Pool,
         model_uuid: uuid.UUID,
     ) -> uuid.UUID:
-        async with pool.acquire() as conn:
+        async with pool.acquire(timeout=10.0) as conn:
             await _ensure_schema(conn)
             run_id: uuid.UUID = await conn.fetchval(
                 """
@@ -436,7 +436,7 @@ class ReembeddingWorker:
         kg_nodes_done: int,
         error: str | None = None,
     ) -> None:
-        async with pool.acquire() as conn:
+        async with pool.acquire(timeout=10.0) as conn:
             await conn.execute(
                 """
                 UPDATE reembedding_runs
@@ -479,7 +479,7 @@ class ReembeddingWorker:
                 )
                 break
 
-            async with pool.acquire() as conn:
+            async with pool.acquire(timeout=10.0) as conn:
                 async with conn.transaction():
                     rows = await _fetch_memories_batch(
                         conn,
@@ -522,7 +522,7 @@ class ReembeddingWorker:
                     for (mem_id, created_at), vec in zip(selected, vectors)
                 ]
 
-                async with pool.acquire() as conn:
+                async with pool.acquire(timeout=10.0) as conn:
                     await _update_memories_batch(conn, update_batch, model_uuid)
 
                 memories_done += len(update_batch)
@@ -532,7 +532,7 @@ class ReembeddingWorker:
             cursor_created_at = last["created_at"]
             cursor_id = last["id"]
 
-            async with pool.acquire() as conn:
+            async with pool.acquire(timeout=10.0) as conn:
                 await _checkpoint(
                     conn,
                     run_id,
@@ -568,7 +568,7 @@ class ReembeddingWorker:
         kg_nodes_done = 0
 
         while True:
-            async with pool.acquire() as conn:
+            async with pool.acquire(timeout=10.0) as conn:
                 async with conn.transaction():
                     rows = await _fetch_kg_nodes_batch(
                         conn, model_uuid, self.batch_size, kg_cursor_id
@@ -582,13 +582,13 @@ class ReembeddingWorker:
 
             batch = [(row["id"], vec) for row, vec in zip(rows, vectors)]
 
-            async with pool.acquire() as conn:
+            async with pool.acquire(timeout=10.0) as conn:
                 await _update_kg_nodes_batch(conn, batch, model_uuid)
 
             kg_nodes_done += len(batch)
             kg_cursor_id = rows[-1]["id"]
 
-            async with pool.acquire() as conn:
+            async with pool.acquire(timeout=10.0) as conn:
                 await _checkpoint(
                     conn,
                     run_id,

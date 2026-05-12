@@ -53,6 +53,58 @@ log = logging.getLogger("tri-stack-mcp")
 # MCP / JSON-RPC client-visible prefix when ``consume_for_tool`` hits a hard limit.
 MCP_QUOTA_EXCEEDED_PREFIX = "Resource quota exceeded (-32013)"
 
+# Tools whose JSON-RPC payloads are keyed in Redis — quota must NOT run on cache hit (FIX-020).
+_MCP_TOOL_RESPONSE_CACHE_TOOLS = frozenset(
+    {"semantic_search", "search_codebase", "graph_search"}
+)
+
+
+async def _try_cached_mcp_tool_response(
+    eng: TriStackEngine,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> tuple[list[TextContent] | None, str | None]:
+    """Return cached MCP tool payloads before quota runs; misses return (None, redis_key).
+
+    Naming note: callers treat a non-empty first element as cache hit."""
+    from trimcp.mcp_args import build_cache_key
+
+    if tool_name not in _MCP_TOOL_RESPONSE_CACHE_TOOLS:
+        return None, None
+
+    gen_raw = await eng.redis_client.get("mcp_cache_generation")
+    gen_val = gen_raw.decode() if gen_raw else "0"
+    ns_id = arguments.get("namespace_id")
+    cache_key = build_cache_key(
+        tool_name=tool_name,
+        arguments=arguments,
+        generation=gen_val,
+        namespace_id=ns_id,
+    )
+    cached_raw = await eng.redis_client.get(cache_key)
+    if not cached_raw:
+        return None, cache_key
+
+    ns_for_log = str(ns_id)[:8] if ns_id is not None else "global"
+    log.info("API Cache hit for tool %s (ns=%s)", tool_name, ns_for_log)
+    return (
+        [TextContent(type="text", text=cached_raw.decode())],
+        cache_key,
+    )
+
+
+async def _consume_quota_for_mcp_tool(
+    pg_pool,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> None:
+    from trimcp import quotas as _quotas
+
+    try:
+        await _quotas.consume_for_tool(pg_pool, tool_name, arguments)
+    except _quotas.QuotaExceededError as exc:
+        raise ValueError(f"{MCP_QUOTA_EXCEEDED_PREFIX}: {exc}") from exc
+
 
 # --- Global engine instance (lifecycle managed by lifespan) ---
 engine: TriStackEngine | None = None
@@ -1320,8 +1372,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
     async with instrument_tool_call(name):
         try:
-            # --- API Cache Layer ---
-            CACHEABLE_TOOLS = {"semantic_search", "search_codebase", "graph_search"}
             _base_mutation_tools = {
                 "store_memory",
                 "store_media",
@@ -1376,38 +1426,16 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                                 exc,
                             )
 
-            # --- Quota check (MOVED BEFORE cache — Prompt 24 fix) ---
-            from trimcp import quotas as _quotas
+            # --- API response cache (before quota — FIX-020) ---
+            cached_payload, cache_key = await _try_cached_mcp_tool_response(
+                engine, name, arguments
+            )
+            if cached_payload is not None:
+                return cached_payload
 
-            try:
-                q_res = await _quotas.consume_for_tool(engine.pg_pool, name, arguments)
-            except _quotas.QuotaExceededError as exc:
-                raise ValueError(f"{MCP_QUOTA_EXCEEDED_PREFIX}: {exc}") from exc
-
-            # --- API Cache Layer ---
-            CACHEABLE_TOOLS = {"semantic_search", "search_codebase", "graph_search"}
-
-            from trimcp.mcp_args import build_cache_key
-
-            cache_key = None
-            if name in CACHEABLE_TOOLS:
-                gen = await engine.redis_client.get("mcp_cache_generation")
-                gen_val = gen.decode() if gen else "0"
-                ns_id = arguments.get("namespace_id")
-                cache_key = build_cache_key(
-                    tool_name=name,
-                    arguments=arguments,
-                    generation=gen_val,
-                    namespace_id=ns_id,
-                )
-                cached_val = await engine.redis_client.get(cache_key)
-                if cached_val:
-                    log.info(
-                        "API Cache hit for tool %s (ns=%s)",
-                        name,
-                        (ns_id or "global")[:8],
-                    )
-                    return [TextContent(type="text", text=cached_val.decode())]
+            # Quota is incremented only on cache miss, immediately before the tool runs.
+            # Never increment on cache hit — see FIX-020.
+            await _consume_quota_for_mcp_tool(engine.pg_pool, name, arguments)
 
             # --- Tool dispatch ---
             try:
@@ -1775,8 +1803,22 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 # --- Startup / Shutdown ---
 
 
+def _assert_admin_override_not_in_production() -> None:
+    """Raise at startup if TRIMCP_ADMIN_OVERRIDE is active in production.
+
+    This guard prevents a development shortcut from silently bypassing
+    authentication in production deployments. See FIX-039.
+    """
+    if os.getenv("TRIMCP_ADMIN_OVERRIDE") and os.getenv("ENVIRONMENT", "dev") == "prod":
+        raise RuntimeError(
+            "TRIMCP_ADMIN_OVERRIDE must not be set when ENVIRONMENT=prod. "
+            "Remove this environment variable from the production configuration."
+        )
+
+
 async def main():
     global engine
+    _assert_admin_override_not_in_production()
     engine = TriStackEngine()
 
     from trimcp.observability import init_observability
@@ -1792,7 +1834,9 @@ async def main():
 
     log.info("TriStackEngine connected to all database layers.")
 
-    gc_task = asyncio.create_task(run_gc_loop())
+    from trimcp.background_task_manager import create_tracked_task
+
+    gc_task = await create_tracked_task(run_gc_loop(), name="gc_loop")
     log.info("GC background task started.")
 
     from trimcp.re_embedder import start_re_embedder

@@ -4,12 +4,14 @@ import asyncio
 import json
 import logging
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 import asyncpg
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from trimcp.config import cfg
+from trimcp.mongo_bulk import fetch_episodes_raw_by_ref, normalize_payload_ref
 from trimcp.providers import LLMProvider, Message
 from trimcp.sanitize import sanitize_llm_payload
 from trimcp.signing import get_active_key, sign_fields
@@ -45,6 +47,8 @@ class ConsolidatedAbstraction(BaseModel):
     confidence:
         Float 0.0–1.0.  Runs with confidence < 0.3 are discarded (TEST-1.2-05).
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     abstraction: str
     key_entities: list[str]
@@ -85,40 +89,19 @@ def _build_consolidation_messages(memory_cluster_json: str) -> list[Message]:
 
 
 class ConsolidationWorker:
-    def __init__(self, pool: asyncpg.Pool, provider: LLMProvider):
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        provider: LLMProvider,
+        mongo_client: Any | None = None,
+    ):
         self.pool = pool
         self.provider = provider
+        self.mongo_client = mongo_client
 
     # ------------------------------------------------------------------
     # Private helpers (extracted from run_consolidation per Clean Code)
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _cluster_memories(memories: list) -> tuple[list, dict]:
-        """Parse embeddings + HDBSCAN clustering. Returns (valid_memories, clusters)."""
-        import numpy as np
-        from sklearn.cluster import HDBSCAN
-
-        valid_memories = []
-        embeddings = []
-        for m in memories:
-            if m["embedding"]:
-                emb_list = json.loads(m["embedding"])
-                embeddings.append(emb_list)
-                valid_memories.append(m)
-
-        if len(embeddings) < 2:
-            return [], {}
-
-        X = np.array(embeddings)
-        clusterer = HDBSCAN(min_cluster_size=2)
-        (
-            asyncio.run(clusterer.fit_predict(X))
-            if not callable(getattr(asyncio, "to_thread", None))
-            else None
-        )
-        # We'll use to_thread in the caller — keep this sync-safe
-        return valid_memories, {}  # caller handles threading
 
     async def _cluster_memories_async(self, memories: list) -> tuple[list, dict]:
         """Async wrapper: parse embeddings + HDBSCAN clustering (offloaded to thread)."""
@@ -150,6 +133,30 @@ class ConsolidationWorker:
 
         return valid_memories, clusters
 
+    async def _build_cluster_llm_documents(self, cluster_mems: list) -> list[dict]:
+        """Resolve Mongo episode bodies in one ``$in`` query; fallback without Mongo."""
+        refs = [m["payload_ref"] for m in cluster_mems]
+        by_ref: dict[str, str] = {}
+        if self.mongo_client is not None and refs:
+            db = self.mongo_client.memory_archive
+            by_ref = await fetch_episodes_raw_by_ref(db, refs)
+
+        docs: list[dict] = []
+        for m in cluster_mems:
+            key = normalize_payload_ref(m["payload_ref"])
+            content = by_ref.get(key, "")
+            if not content and self.mongo_client is None:
+                # Tests / Mongo-less runs: preserve prior behaviour (ref string only).
+                content = key or str(m["payload_ref"])
+            docs.append(
+                {
+                    "memory_id": str(m["id"]),
+                    "payload_ref": key,
+                    "content": content,
+                }
+            )
+        return docs
+
     async def _call_consolidation_llm(
         self,
         cluster_mems: list,
@@ -157,8 +164,8 @@ class ConsolidationWorker:
         label: int,
     ) -> ConsolidatedAbstraction | None:
         """Call LLM, validate abstraction, return None on any failure."""
-        payloads = [m["payload_ref"] for m in cluster_mems]
-        messages = _build_consolidation_messages(json.dumps(payloads))
+        llm_documents = await self._build_cluster_llm_documents(cluster_mems)
+        messages = _build_consolidation_messages(json.dumps(llm_documents))
 
         try:
             abstraction: ConsolidatedAbstraction = await self.provider.complete(
@@ -340,7 +347,7 @@ class ConsolidationWorker:
         )
 
         # 1. Create run record + fetch memories
-        async with self.pool.acquire() as conn:
+        async with self.pool.acquire(timeout=10.0) as conn:
             run_id = await conn.fetchval(
                 "INSERT INTO consolidation_runs (namespace_id) VALUES ($1) RETURNING id",
                 namespace_id,
@@ -364,7 +371,7 @@ class ConsolidationWorker:
 
         if not memories:
             log.info("No memories found to consolidate.")
-            async with self.pool.acquire() as conn:
+            async with self.pool.acquire(timeout=10.0) as conn:
                 await conn.execute(
                     "UPDATE consolidation_runs SET status = 'completed', completed_at = now() WHERE id = $1",
                     run_id,
@@ -377,7 +384,7 @@ class ConsolidationWorker:
 
             if not clusters:
                 log.info("Not enough embeddings to cluster.")
-                async with self.pool.acquire() as conn:
+                async with self.pool.acquire(timeout=10.0) as conn:
                     await conn.execute(
                         "UPDATE consolidation_runs SET status = 'completed', completed_at = now() WHERE id = $1",
                         run_id,
@@ -397,7 +404,7 @@ class ConsolidationWorker:
                     continue
 
                 try:
-                    async with self.pool.acquire() as conn:
+                    async with self.pool.acquire(timeout=10.0) as conn:
                         async with conn.transaction():
                             await self._store_consolidated_memory(
                                 conn,
@@ -417,7 +424,7 @@ class ConsolidationWorker:
                     continue
 
             # 4. Update run status
-            async with self.pool.acquire() as conn:
+            async with self.pool.acquire(timeout=10.0) as conn:
                 await conn.execute(
                     """
                     UPDATE consolidation_runs
@@ -432,7 +439,7 @@ class ConsolidationWorker:
 
         except Exception as e:
             log.exception("Consolidation failed")
-            async with self.pool.acquire() as conn:
+            async with self.pool.acquire(timeout=10.0) as conn:
                 await conn.execute(
                     "UPDATE consolidation_runs SET status = 'failed', error_message = $2, completed_at = now() WHERE id = $1",
                     run_id,

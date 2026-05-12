@@ -14,22 +14,20 @@ async def test_semantic_search_temporal_parameters_prevent_sql_injection():
 
     mock_pool = MagicMock()
     mock_conn = AsyncMock()
-    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+    tx = AsyncMock()
+    tx.__aenter__.return_value = None
+    tx.__aexit__.return_value = False
+    mock_conn.transaction = MagicMock(return_value=tx)
+    mock_conn.execute = AsyncMock()
+    acq = AsyncMock()
+    acq.__aenter__.return_value = mock_conn
+    acq.__aexit__.return_value = None
+    mock_pool.acquire = MagicMock(return_value=acq)
     engine.pg_pool = mock_pool
 
     # MemoryOrchestrator lazy-init needs mongo_client
     engine.mongo_client = MagicMock()
     engine.mongo_client.memory_archive = MagicMock()
-
-    # Mock scoped_session to yield mock_conn
-    class ScopedSessionMock:
-        async def __aenter__(self):
-            return mock_conn
-
-        async def __aexit__(self, exc_type, exc_val, exc_tb):
-            pass
-
-    engine.scoped_session = MagicMock(return_value=ScopedSessionMock())
 
     # Mock fetchrow for namespace metadata
     mock_conn.fetchrow = AsyncMock(

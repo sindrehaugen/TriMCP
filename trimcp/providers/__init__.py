@@ -24,12 +24,13 @@ Quick start::
 
 from trimcp.providers.anthropic_provider import AnthropicProvider
 from trimcp.providers.base import (
-    DEFAULT_CIRCUIT_BREAKER,
     DEFAULT_RETRY_POLICY,
     CircuitBreaker,
+    LLMCircuitOpenError,
     LLMProvider,
     LLMProviderError,
     LLMRateLimitError,
+    LLMRetriesExhaustedError,
     LLMTimeoutError,
     LLMUpstreamError,
     LLMValidationError,
@@ -47,7 +48,9 @@ __all__ = [
     # Interface
     "LLMProvider",
     "LLMProviderError",
+    "LLMCircuitOpenError",
     "LLMRateLimitError",
+    "LLMRetriesExhaustedError",
     "LLMTimeoutError",
     "LLMUpstreamError",
     "LLMValidationError",
@@ -58,7 +61,6 @@ __all__ = [
     "RetryPolicy",
     "DEFAULT_RETRY_POLICY",
     "CircuitBreaker",
-    "DEFAULT_CIRCUIT_BREAKER",
     # Factory
     "get_provider",
     # Concrete providers (for direct instantiation in tests / custom wiring)

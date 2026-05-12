@@ -139,7 +139,7 @@ async def _step_consolidation() -> None:
         cfg.PG_DSN, min_size=1, max_size=2, command_timeout=120
     )
     try:
-        async with pool.acquire() as conn:
+        async with pool.acquire(timeout=10.0) as conn:
             ns_id = await conn.fetchval(
                 "SELECT id FROM namespaces WHERE slug = $1",
                 VERIFY_NS_SLUG,
@@ -151,7 +151,7 @@ async def _step_consolidation() -> None:
                 )
         worker = ConsolidationWorker(pool, _NoopLLM())
         await worker.run_consolidation(UUID(str(ns_id)))
-        async with pool.acquire() as conn:
+        async with pool.acquire(timeout=10.0) as conn:
             row = await conn.fetchrow(
                 """
                 SELECT status

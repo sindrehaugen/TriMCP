@@ -22,7 +22,7 @@ async def poll_outbox(
     delivering them.  Production wiring will iterate, deliver to
     downstream consumers, and UPDATE published_at.
     """
-    async with pg_pool.acquire() as conn:
+    async with pg_pool.acquire(timeout=10.0) as conn:
         rows = await conn.fetch(
             """
             SELECT id, aggregate_type, aggregate_id, event_type, payload, headers, created_at

@@ -117,9 +117,9 @@ async def _process_row(
         payload = _coerce_to_json_dict(raw_blob)
 
     # Re-encrypt via canonical format
-    mk = require_master_key()
     canonical_json = json.dumps(payload, sort_keys=True).encode("utf-8")
-    new_blob = encrypt_signing_key(canonical_json, mk)
+    with require_master_key() as mk:
+        new_blob = encrypt_signing_key(canonical_json, mk)
 
     await conn.execute(
         """
@@ -189,3 +189,4 @@ async def _main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(asyncio.run(_main()))
+)))

@@ -15,6 +15,9 @@ log = logging.getLogger("tri-stack-ast")
 
 SUPPORTED_LANGUAGES = ("python", "javascript", "typescript", "go", "rust")
 
+# Protects against RecursionError on deeply nested auto-generated code (FIX-051)
+_MAX_AST_DEPTH = 200
+
 
 @dataclass
 class CodeChunk:
@@ -99,7 +102,13 @@ def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | Non
                 return child.text.decode()
         return "<anonymous>"
 
-    def _walk(node):
+    def _walk(node, depth: int = 0) -> None:
+        if depth > _MAX_AST_DEPTH:
+            log.warning(
+                "Tree-sitter walk exceeded depth=%d — skipping deeper nodes",
+                _MAX_AST_DEPTH,
+            )
+            return
         if node.type in targets:
             start = node.start_point[0]  # 0-indexed
             end = node.end_point[0]
@@ -115,7 +124,7 @@ def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | Non
                 )
             )
         for child in node.children:
-            _walk(child)
+            _walk(child, depth + 1)
 
     _walk(tree.root_node)
     return chunks if chunks else None

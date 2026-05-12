@@ -1117,6 +1117,7 @@ class A2AGrantRequest(BaseModel):
 class A2AGrantResponse(BaseModel):
     """Response payload containing the secure sharing token."""
 
+    model_config = ConfigDict(extra="forbid")
     grant_id: UUID4
     sharing_token: str
     expires_at: datetime
@@ -1125,6 +1126,7 @@ class A2AGrantResponse(BaseModel):
 class VerifiedGrant(BaseModel):
     """Result of a successful token verification."""
 
+    model_config = ConfigDict(extra="forbid")
     grant_id: UUID4
     owner_namespace_id: UUID4
     owner_agent_id: str
@@ -1176,6 +1178,14 @@ class ManageNamespaceRequest(BaseModel):
     grantee_namespace_id: UUID4 | None = Field(
         default=None,
         description="Child namespace that gains/loses read access in grant/revoke",
+    )
+    allow_audit_destruction: bool = Field(
+        default=False,
+        description=(
+            "Reserved for destructive admin flows only. Namespace delete stays blocked "
+            "while event_log rows reference the tenant (WORM + FK); this flag carries "
+            "no automated purge."
+        ),
     )
 
     @model_validator(mode="after")

@@ -11,11 +11,15 @@ Export output is loaded at runtime by `OpenVINONPUBackend` via `TRIMCP_OPENVINO_
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 log = logging.getLogger("tri-stack-openvino-export")
 
 DEFAULT_MODEL_ID = "jinaai/jina-embeddings-v2-base-code"
+
+# Model revision pin for trust_remote_code safety (FIX-053)
+OPENVINO_MODEL_REVISION = os.environ.get("TRIMCP_OPENVINO_MODEL_REVISION", "")
 
 
 def export_jina_to_openvino_npu(
@@ -93,10 +97,19 @@ def export_jina_to_openvino_npu(
     try:
         from transformers import AutoTokenizer
 
+        # FIX-053: warn if trust_remote_code is set without revision pinning
+        if not OPENVINO_MODEL_REVISION:
+            log.warning(
+                "trust_remote_code=True is set but TRIMCP_OPENVINO_MODEL_REVISION is not pinned. "
+                "This allows arbitrary code execution from the Hub model repo. "
+                "Set TRIMCP_OPENVINO_MODEL_REVISION to a commit SHA to pin the model."
+            )
+
         tok = AutoTokenizer.from_pretrained(
             model_id_or_path,
             local_files_only=local_files_only,
             trust_remote_code=True,
+            revision=OPENVINO_MODEL_REVISION or None,
         )
         tok.save_pretrained(output_dir)
     except Exception as e:

@@ -123,7 +123,7 @@ async def stream_snapshot_export(
     if snapshot_id:
         try:
             snap_uuid = uuid.UUID(snapshot_id)
-            async with engine.pg_pool.acquire() as conn:
+            async with engine.pg_pool.acquire(timeout=10.0) as conn:
                 snap_row = await conn.fetchrow(
                     "SELECT snapshot_at FROM snapshots WHERE id = $1 AND namespace_id = $2",
                     snap_uuid,
@@ -176,7 +176,7 @@ async def stream_snapshot_export(
     # ── Stream memories via server-side cursor ───────────────────────────
     total = 0
     try:
-        async with engine.pg_pool.acquire() as conn:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
             # Count total rows first (lightweight)
             count_row = await conn.fetchrow(
                 """

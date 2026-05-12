@@ -740,7 +740,9 @@ class TestAssumeNamespace:
     @pytest.fixture
     def caller_conn(self) -> AsyncMock:
         """The connection owned by the caller (where SET LOCAL will run)."""
-        return AsyncMock()
+        conn = AsyncMock()
+        conn.is_in_transaction = MagicMock(return_value=True)
+        return conn
 
     @pytest.fixture
     def audit_conn(self) -> AsyncMock:
@@ -990,9 +992,14 @@ class TestAuditedSession:
     @pytest.fixture
     def session_conn(self) -> AsyncMock:
         """The scoped connection yielded to the caller."""
+        tx = AsyncMock()
+        tx.__aenter__.return_value = tx
+        tx.__aexit__.return_value = False
+
         conn = AsyncMock()
         conn.__aenter__.return_value = conn
         conn.__aexit__.return_value = False
+        conn.transaction = MagicMock(return_value=tx)
         return conn
 
     @pytest.fixture
@@ -1000,7 +1007,7 @@ class TestAuditedSession:
         """Pool that yields audit_conn first, then session_conn on second acquire."""
         acquire_count = [0]
 
-        def acquire_side_effect():
+        def acquire_side_effect(*_args, **_kwargs):
             acquire_count[0] += 1
             if acquire_count[0] == 1:
                 # First acquire: audit connection

@@ -367,13 +367,16 @@ async def tasks_send(request: Request) -> JSONResponse:
         try:
             # --- Cross-agent scope validation (A2A sharing token path) ---
             if sharing_token is not None:
-                async with _engine.pg_pool.acquire() as conn:
+                async with _engine.pg_pool.acquire(timeout=10.0) as conn:
                     verified = await verify_token(conn, sharing_token, caller_ctx)
 
                 # Enforce the namespace scope covers the requested namespace_id
                 params.get("namespace_id") or ""
                 enforce_scope(
-                    verified.scopes, "namespace", str(verified.owner_namespace_id)
+                    verified.scopes,
+                    "namespace",
+                    str(verified.owner_namespace_id),
+                    str(verified.owner_namespace_id),
                 )
 
                 # Override the params to operate in the owner's namespace

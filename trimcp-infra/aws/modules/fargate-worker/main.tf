@@ -174,7 +174,7 @@ resource "aws_ecs_task_definition" "orchestrator" {
       name         = "orchestrator"
       image        = var.container_image
       essential    = true
-      command      = ["tail", "-f", "/dev/null"]
+      command      = ["python", "server.py"]
       stopTimeout  = 35
       logConfiguration = {
         logDriver = "awslogs"
@@ -202,7 +202,7 @@ resource "aws_ecs_task_definition" "worker" {
       name        = "worker"
       image       = var.worker_container_image
       essential   = true
-      command     = ["tail", "-f", "/dev/null"]
+      command     = ["python", "start_worker.py"]
       stopTimeout = 35
       logConfiguration = {
         logDriver = "awslogs"
@@ -233,7 +233,7 @@ resource "aws_ecs_service" "orchestrator" {
     assign_public_ip = false
   }
 
-  deployment_minimum_healthy_percent = 0
+  deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 100
 }
 
@@ -250,8 +250,99 @@ resource "aws_ecs_service" "worker" {
     assign_public_ip = false
   }
 
-  deployment_minimum_healthy_percent = 0
+  deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 100
+}
+
+# ---------------------------------------------------------------------------
+# Autoscaling (Worker)
+# ---------------------------------------------------------------------------
+
+locals {
+  worker_min_capacity     = 1
+  worker_max_capacity     = 10
+  scale_out_cpu_threshold = 70
+  scale_in_cpu_threshold  = 30
+}
+
+resource "aws_appautoscaling_target" "worker" {
+  max_capacity       = local.worker_max_capacity
+  min_capacity       = local.worker_min_capacity
+  resource_id        = "service/${aws_ecs_cluster.this.name}/${aws_ecs_service.worker.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+}
+
+resource "aws_appautoscaling_policy" "worker_scale_out" {
+  name               = "${aws_ecs_service.worker.name}-scale-out"
+  policy_type        = "StepScaling"
+  resource_id        = aws_appautoscaling_target.worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.worker.service_namespace
+
+  step_scaling_policy_configuration {
+    adjustment_type         = "ChangeInCapacity"
+    cooldown                = 60
+    metric_aggregation_type = "Average"
+    step_adjustment {
+      scaling_adjustment          = 2
+      metric_interval_lower_bound = 0
+    }
+  }
+}
+
+resource "aws_appautoscaling_policy" "worker_scale_in" {
+  name               = "${aws_ecs_service.worker.name}-scale-in"
+  policy_type        = "StepScaling"
+  resource_id        = aws_appautoscaling_target.worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.worker.service_namespace
+
+  step_scaling_policy_configuration {
+    adjustment_type         = "ChangeInCapacity"
+    cooldown                = 300
+    metric_aggregation_type = "Average"
+    step_adjustment {
+      scaling_adjustment          = -1
+      metric_interval_upper_bound = 0
+    }
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "worker_cpu_high" {
+  alarm_name          = "${aws_ecs_service.worker.name}-cpu-high"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/ECS"
+  period              = "60"
+  statistic           = "Average"
+  threshold           = local.scale_out_cpu_threshold
+  alarm_description   = "Scale out when CPU > ${local.scale_out_cpu_threshold}%"
+  alarm_actions       = [aws_appautoscaling_policy.worker_scale_out.arn]
+
+  dimensions = {
+    ClusterName = aws_ecs_cluster.this.name
+    ServiceName = aws_ecs_service.worker.name
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "worker_cpu_low" {
+  alarm_name          = "${aws_ecs_service.worker.name}-cpu-low"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/ECS"
+  period              = "60"
+  statistic           = "Average"
+  threshold           = local.scale_in_cpu_threshold
+  alarm_description   = "Scale in when CPU < ${local.scale_in_cpu_threshold}%"
+  alarm_actions       = [aws_appautoscaling_policy.worker_scale_in.arn]
+
+  dimensions = {
+    ClusterName = aws_ecs_cluster.this.name
+    ServiceName = aws_ecs_service.worker.name
+  }
 }
 
 # ---------------------------------------------------------------------------

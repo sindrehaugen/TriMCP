@@ -17,6 +17,7 @@ from typing import Any, TypeVar
 log = logging.getLogger("trimcp.observability")
 
 try:
+    from opentelemetry import context as otel_context
     from opentelemetry import propagate, trace
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.resources import Resource
@@ -448,7 +449,7 @@ def extract_trace_from_headers(
         ctx = propagate.extract(headers)
         trace.get_current_span()  # ensure tracer provider is set
         # Activate the extracted context so child spans are correctly parented
-        token = trace.get_tracer_provider()._otel_context.attach(ctx)  # type: ignore[union-attr]
+        token = otel_context.attach(ctx)
         # Note: we deliberately do NOT keep the token — the context is active
         # for the duration of the current async task.  In an ASGI middleware
         # this matches the request lifecycle naturally.
@@ -503,11 +504,11 @@ class OpenTelemetryTraceMiddleware:
             if "traceparent" in headers:
                 ctx = propagate.extract(headers)
                 # Set the extracted context as the active context for this request
-                token = trace.get_tracer_provider()._otel_context.attach(ctx)  # type: ignore[union-attr]
+                token = otel_context.attach(ctx)
                 try:
                     await self.app(scope, receive, send)
                 finally:
-                    trace.get_tracer_provider()._otel_context.detach(token)  # type: ignore[union-attr]
+                    otel_context.detach(token)
                 return
 
         await self.app(scope, receive, send)

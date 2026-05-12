@@ -49,12 +49,13 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from trimcp.config import cfg
+from trimcp.db_utils import POOL_ACQUIRE_TIMEOUT
 
 log = logging.getLogger("trimcp.auth")
 
@@ -539,7 +540,7 @@ class HMACAuthContext(BaseModel):
     Immutable after construction (model_config frozen=True).
     """
 
-    model_config = {"frozen": True}
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     timestamp: int = Field(
         ..., description="Unix epoch seconds (from X-TriMCP-Timestamp)"
@@ -574,7 +575,7 @@ class NamespaceContext(BaseModel):
     Used by the orchestrator write path to carry the resolved identity.
     """
 
-    model_config = {"frozen": True}
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     namespace_id: UUID | None = Field(
         default=None, description="Namespace UUID (from X-TriMCP-Namespace-ID)"
@@ -740,7 +741,7 @@ async def _write_audit_event(
     from trimcp.event_log import append_event
 
     try:
-        async with pg_pool.acquire() as audit_conn:
+        async with pg_pool.acquire(timeout=POOL_ACQUIRE_TIMEOUT) as audit_conn:
             async with audit_conn.transaction():
                 await append_event(
                     conn=audit_conn,
@@ -836,20 +837,21 @@ async def audited_session(
         result_summary={"status": "audited_session_begin"},
     )
 
-    # --- Step 2: Yield a fresh RLS-scoped connection ---
-    async with pg_pool.acquire() as conn:
-        await set_namespace_context(conn, namespace_id)
-        log.info(
-            "audited_session: agent=%r ns=%s event_type=%r reason=%r",
-            agent_id,
-            namespace_id,
-            event_type,
-            reason[:64],
-        )
-        try:
-            yield conn
-        finally:
-            await _reset_rls_context(conn)
+    # --- Step 2: Yield a fresh RLS-scoped connection (SET LOCAL requires TX) ---
+    async with pg_pool.acquire(timeout=POOL_ACQUIRE_TIMEOUT) as conn:
+        async with conn.transaction():
+            await set_namespace_context(conn, namespace_id)
+            log.info(
+                "audited_session: agent=%r ns=%s event_type=%r reason=%r",
+                agent_id,
+                namespace_id,
+                event_type,
+                reason[:64],
+            )
+            try:
+                yield conn
+            finally:
+                await _reset_rls_context(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -921,6 +923,12 @@ async def assume_namespace(
     )
 
     # --- Step 2: Only after audit is committed, set the session variable ---
+    _in_tx_checker = getattr(conn, "is_in_transaction", None)
+    if callable(_in_tx_checker) and not _in_tx_checker():
+        raise RuntimeError(
+            "assume_namespace requires an active PostgreSQL transaction on *conn* "
+            "so SET LOCAL trimcp.namespace_id persists for subsequent queries."
+        )
     await set_namespace_context(conn, namespace_id)
     log.info(
         "assume_namespace: agent=%r assumed namespace=%s reason=%r",

@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
 import asyncpg
 from motor.motor_asyncio import AsyncIOMotorClient
+
+from trimcp.db_utils import scoped_pg_session
 
 log = logging.getLogger("tri-stack-orchestrator.temporal")
 
@@ -101,26 +104,11 @@ class TemporalOrchestrator:
             return val
         return UUID(str(val))
 
-    def scoped_session(self, namespace_id: str | UUID):
-        from contextlib import asynccontextmanager
-
-        @asynccontextmanager
-        async def _session(ns_id: str | UUID):
-            if not ns_id:
-                raise ValueError("namespace_id is required")
-            ns_uuid = UUID(str(ns_id))
-            async with self.pg_pool.acquire() as conn:
-                from trimcp.auth import set_namespace_context
-
-                await set_namespace_context(conn, ns_uuid)
-                try:
-                    yield conn
-                finally:
-                    from trimcp.auth import _reset_rls_context
-
-                    await _reset_rls_context(conn)
-
-        return _session(namespace_id)
+    @asynccontextmanager
+    async def scoped_session(self, namespace_id: str | UUID):
+        """Tenant-isolated PostgreSQL session (RLS + transaction-scoped SET LOCAL)."""
+        async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
+            yield conn
 
     @property
     def _mongo_db(self):
@@ -166,7 +154,7 @@ class TemporalOrchestrator:
         from trimcp.consolidation import ConsolidationWorker
         from trimcp.providers import get_provider
 
-        async with self.pg_pool.acquire() as conn:
+        async with self.pg_pool.acquire(timeout=10.0) as conn:
             ns_row = await conn.fetchrow(
                 "SELECT metadata FROM namespaces WHERE id = $1", UUID(namespace_id)
             )
@@ -175,7 +163,11 @@ class TemporalOrchestrator:
 
         metadata = json.loads(ns_row["metadata"])
         provider = get_provider(metadata)
-        worker = ConsolidationWorker(self.pg_pool, provider)
+        worker = ConsolidationWorker(
+            self.pg_pool,
+            provider,
+            mongo_client=self.mongo_client,
+        )
 
         import asyncio
 
@@ -192,7 +184,7 @@ class TemporalOrchestrator:
 
     async def consolidation_status(self, run_id: str) -> dict:
         """[Phase 1.2] Check status of a consolidation run. Admin bypass by design."""
-        async with self.pg_pool.acquire() as conn:
+        async with self.pg_pool.acquire(timeout=10.0) as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM consolidation_runs WHERE id = $1", UUID(run_id)
             )

@@ -42,7 +42,7 @@ def resolve_stored_oauth_access_token(
         engine = TriStackEngine()
         await engine.connect()
         try:
-            async with engine.pg_pool.acquire() as conn:
+            async with engine.pg_pool.acquire(timeout=10.0) as conn:
                 row = await bridge_repo.fetch_active_subscription(
                     conn,
                     provider,

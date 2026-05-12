@@ -53,9 +53,12 @@ async def post_with_error_handling(
             provider=model_id,
         ) from exc
     except httpx.RequestError as exc:
-        raise LLMProviderError(
+        # Transient TCP/TLS/DNS failures — classified as upstream so
+        # LLMProvider.execute_with_retry can apply backoff + jitter.
+        raise LLMUpstreamError(
             f"{error_prefix}: {exc}",
             provider=model_id,
+            status_code=None,
         ) from exc
 
     if not resp.is_success:

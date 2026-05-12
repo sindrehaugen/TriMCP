@@ -113,7 +113,7 @@ async def handle_rotate_signing_key(
     """[ADMIN] Generate a new active signing key and retire the current one."""
     from trimcp.signing import rotate_key
 
-    async with engine.pg_pool.acquire() as conn:
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
         new_key_id = await rotate_key(conn)
     return json.dumps({"status": "ok", "new_key_id": new_key_id})
 
