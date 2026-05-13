@@ -98,11 +98,11 @@ async def _consume_quota_for_mcp_tool(
     tool_name: str,
     arguments: dict[str, Any],
     redis_client,
-) -> None:
+) -> Any:
     from trimcp import quotas as _quotas
 
     try:
-        await _quotas.consume_for_tool(
+        return await _quotas.consume_for_tool(
             pg_pool, tool_name, arguments, redis_client=redis_client
         )
     except _quotas.QuotaExceededError as exc:
@@ -1372,6 +1372,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         )
 
     from trimcp.observability import instrument_tool_call
+    from trimcp.quotas import null_reservation
+
+    q_res = null_reservation()
 
     async with instrument_tool_call(name):
         try:
@@ -1438,7 +1441,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
             # Quota is incremented only on cache miss, immediately before the tool runs.
             # Never increment on cache hit — see FIX-020.
-            await _consume_quota_for_mcp_tool(
+            q_res = await _consume_quota_for_mcp_tool(
                 engine.pg_pool, name, arguments, engine.redis_client
             )
 

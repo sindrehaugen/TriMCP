@@ -1681,6 +1681,293 @@ async def api_admin_connectors_status(request):
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
+def update_dotenv(updates: dict) -> None:
+    """Updates key-value pairs in the .env file, creating/replacing lines as needed."""
+    dotenv_path = ".env"
+    import os
+    if not os.path.exists(dotenv_path):
+        with open(dotenv_path, "w", encoding="utf-8") as f:
+            pass
+
+    with open(dotenv_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    new_lines = []
+    keys_updated = set()
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in line:
+            parts = stripped.split("=", 1)
+            k = parts[0].strip()
+            if k in updates:
+                new_lines.append(f"{k}={updates[k]}\n")
+                keys_updated.add(k)
+                continue
+        new_lines.append(line)
+
+    for k, v in updates.items():
+        if k not in keys_updated:
+            new_lines.append(f"{k}={v}\n")
+
+    with open(dotenv_path, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+
+
+async def api_admin_connectors_save(request):
+    """POST /api/admin/connectors/save"""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+
+    updates = {}
+
+    def reconstruct_secret(new_val: str, old_val: str) -> str:
+        if new_val == "••••••••":
+            return old_val
+        return new_val
+
+    # Google Drive
+    gd = body.get("google_drive", {})
+    if "client_id" in gd:
+        cfg.GDRIVE_OAUTH_CLIENT_ID = gd["client_id"]
+        updates["GDRIVE_OAUTH_CLIENT_ID"] = gd["client_id"]
+    if "client_secret" in gd:
+        val = reconstruct_secret(gd["client_secret"], cfg.GDRIVE_OAUTH_CLIENT_SECRET)
+        cfg.GDRIVE_OAUTH_CLIENT_SECRET = val
+        updates["GDRIVE_OAUTH_CLIENT_SECRET"] = val
+    if "token" in gd:
+        val = reconstruct_secret(gd["token"], cfg.GDRIVE_BRIDGE_TOKEN)
+        cfg.GDRIVE_BRIDGE_TOKEN = val
+        updates["GDRIVE_BRIDGE_TOKEN"] = val
+
+    # Dropbox
+    dbx = body.get("dropbox", {})
+    if "client_id" in dbx:
+        cfg.DROPBOX_OAUTH_CLIENT_ID = dbx["client_id"]
+        updates["DROPBOX_OAUTH_CLIENT_ID"] = dbx["client_id"]
+    if "token" in dbx:
+        val = reconstruct_secret(dbx["token"], cfg.DROPBOX_BRIDGE_TOKEN)
+        cfg.DROPBOX_BRIDGE_TOKEN = val
+        updates["DROPBOX_BRIDGE_TOKEN"] = val
+
+    # OneDrive
+    od = body.get("onedrive", {})
+    if "client_id" in od:
+        cfg.AZURE_CLIENT_ID = od["client_id"]
+        updates["AZURE_CLIENT_ID"] = od["client_id"]
+    if "client_secret" in od:
+        val = reconstruct_secret(od["client_secret"], cfg.AZURE_CLIENT_SECRET)
+        cfg.AZURE_CLIENT_SECRET = val
+        updates["AZURE_CLIENT_SECRET"] = val
+    if "tenant_id" in od:
+        cfg.AZURE_TENANT_ID = od["tenant_id"]
+        updates["AZURE_TENANT_ID"] = od["tenant_id"]
+    if "token" in od:
+        val = reconstruct_secret(od["token"], cfg.GRAPH_BRIDGE_TOKEN)
+        cfg.GRAPH_BRIDGE_TOKEN = val
+        updates["GRAPH_BRIDGE_TOKEN"] = val
+
+    # Common
+    common = body.get("common", {})
+    if "cron_interval_mins" in common:
+        try:
+            val = int(common["cron_interval_mins"])
+            cfg.BRIDGE_CRON_INTERVAL_MINUTES = val
+            updates["BRIDGE_CRON_INTERVAL_MINUTES"] = str(val)
+        except ValueError:
+            pass
+
+    try:
+        update_dotenv(updates)
+    except Exception as exc:
+        logger.exception("Failed to write connectors configuration to .env")
+        return JSONResponse({"error": "Failed to persist configurations to .env", "detail": str(exc)}, status_code=500)
+
+    return JSONResponse({"status": "success", "message": "Connector configurations successfully updated."})
+
+
+def mask_uri_password(uri: str) -> str:
+    """Mask the password field of a standard connection URI with dots."""
+    if not uri:
+        return ""
+    from urllib.parse import urlparse, urlunparse
+    try:
+        parsed = urlparse(uri)
+        if parsed.password:
+            netloc = parsed.hostname or ""
+            if parsed.port:
+                netloc = f"{netloc}:{parsed.port}"
+            if parsed.username:
+                netloc = f"{parsed.username}:••••••••@{netloc}"
+            else:
+                netloc = f":••••••••@{netloc}"
+            return urlunparse(parsed._replace(netloc=netloc))
+        return uri
+    except Exception:
+        return uri
+
+
+async def api_admin_datastores_status(request):
+    """GET /api/admin/datastores/status
+    Retrieves masked connection credentials and pools config for active datastores.
+    """
+    try:
+        postgres = {
+            "pg_dsn": mask_uri_password(cfg.PG_DSN),
+            "db_read_url": mask_uri_password(cfg.DB_READ_URL),
+            "db_write_url": mask_uri_password(cfg.DB_WRITE_URL),
+            "pg_min_pool": cfg.PG_MIN_POOL,
+            "pg_max_pool": cfg.PG_MAX_POOL,
+        }
+        mongodb = {
+            "mongo_uri": mask_uri_password(cfg.MONGO_URI),
+        }
+        redis = {
+            "redis_url": mask_uri_password(cfg.REDIS_URL),
+            "redis_ttl": cfg.REDIS_TTL,
+            "redis_max_connections": cfg.REDIS_MAX_CONNECTIONS,
+        }
+        minio = {
+            "minio_endpoint": cfg.MINIO_ENDPOINT,
+            "minio_access_key": cfg.MINIO_ACCESS_KEY,
+            "has_secret_key": bool(cfg.MINIO_SECRET_KEY),
+            "minio_secure": cfg.MINIO_SECURE,
+        }
+        return JSONResponse({
+            "postgres": postgres,
+            "mongodb": mongodb,
+            "redis": redis,
+            "minio": minio,
+        })
+    except Exception as exc:
+        logger.exception("api_admin_datastores_status failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_admin_datastores_save(request):
+    """POST /api/admin/datastores/save
+    Saves edited connection params back to disk (.env) and applies them dynamically to process config,
+    preventing any masked fields from overwriting active production credentials.
+    """
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+
+    from urllib.parse import urlparse, urlunparse
+
+    def reconstruct_uri(new_uri: str, old_uri: str) -> str:
+        if not new_uri:
+            return ""
+        if "••••••••" not in new_uri:
+            return new_uri
+        try:
+            old_parsed = urlparse(old_uri)
+            old_password = old_parsed.password or ""
+            new_parsed = urlparse(new_uri)
+            netloc = new_parsed.hostname or ""
+            if new_parsed.port:
+                netloc = f"{netloc}:{new_parsed.port}"
+            if new_parsed.username:
+                netloc = f"{new_parsed.username}:{old_password}@{netloc}"
+            else:
+                netloc = f":{old_password}@{netloc}"
+            return urlunparse(new_parsed._replace(netloc=netloc))
+        except Exception:
+            return new_uri
+
+    updates = {}
+
+    # 1. PostgreSQL
+    pg = body.get("postgres", {})
+    if "pg_dsn" in pg and pg["pg_dsn"]:
+        reconstructed = reconstruct_uri(pg["pg_dsn"], cfg.PG_DSN)
+        cfg.PG_DSN = reconstructed
+        updates["PG_DSN"] = reconstructed
+    if "db_read_url" in pg and pg["db_read_url"]:
+        reconstructed = reconstruct_uri(pg["db_read_url"], cfg.DB_READ_URL)
+        cfg.DB_READ_URL = reconstructed
+        updates["DB_READ_URL"] = reconstructed
+    if "db_write_url" in pg and pg["db_write_url"]:
+        reconstructed = reconstruct_uri(pg["db_write_url"], cfg.DB_WRITE_URL)
+        cfg.DB_WRITE_URL = reconstructed
+        updates["DB_WRITE_URL"] = reconstructed
+    if "pg_min_pool" in pg:
+        try:
+            val = int(pg["pg_min_pool"])
+            cfg.PG_MIN_POOL = val
+            updates["PG_MIN_POOL"] = str(val)
+        except ValueError:
+            pass
+    if "pg_max_pool" in pg:
+        try:
+            val = int(pg["pg_max_pool"])
+            cfg.PG_MAX_POOL = val
+            updates["PG_MAX_POOL"] = str(val)
+        except ValueError:
+            pass
+
+    # 2. MongoDB
+    mongo = body.get("mongodb", {})
+    if "mongo_uri" in mongo and mongo["mongo_uri"]:
+        reconstructed = reconstruct_uri(mongo["mongo_uri"], cfg.MONGO_URI)
+        cfg.MONGO_URI = reconstructed
+        updates["MONGO_URI"] = reconstructed
+
+    # 3. Redis
+    redis_data = body.get("redis", {})
+    if "redis_url" in redis_data and redis_data["redis_url"]:
+        reconstructed = reconstruct_uri(redis_data["redis_url"], cfg.REDIS_URL)
+        cfg.REDIS_URL = reconstructed
+        updates["REDIS_URL"] = reconstructed
+    if "redis_ttl" in redis_data:
+        try:
+            val = int(redis_data["redis_ttl"])
+            cfg.REDIS_TTL = val
+            updates["REDIS_TTL"] = str(val)
+        except ValueError:
+            pass
+    if "redis_max_connections" in redis_data:
+        try:
+            val = int(redis_data["redis_max_connections"])
+            cfg.REDIS_MAX_CONNECTIONS = val
+            updates["REDIS_MAX_CONNECTIONS"] = str(val)
+        except ValueError:
+            pass
+
+    # 4. MinIO S3
+    minio = body.get("minio", {})
+    if "minio_endpoint" in minio:
+        cfg.MINIO_ENDPOINT = minio["minio_endpoint"]
+        updates["MINIO_ENDPOINT"] = minio["minio_endpoint"]
+    if "minio_access_key" in minio:
+        cfg.MINIO_ACCESS_KEY = minio["minio_access_key"]
+        updates["MINIO_ACCESS_KEY"] = minio["minio_access_key"]
+    if "minio_secret_key" in minio:
+        secret = minio["minio_secret_key"]
+        if secret and secret != "••••••••":
+            cfg.MINIO_SECRET_KEY = secret
+            updates["MINIO_SECRET_KEY"] = secret
+    if "minio_secure" in minio:
+        secure_val = bool(minio["minio_secure"])
+        cfg.MINIO_SECURE = secure_val
+        updates["MINIO_SECURE"] = "true" if secure_val else "false"
+
+    # Save updates back to active .env file on disk
+    try:
+        update_dotenv(updates)
+    except Exception as exc:
+        logger.exception("Failed to write datastores configuration to .env")
+        return JSONResponse({"error": "Failed to persist configurations to .env", "detail": str(exc)}, status_code=500)
+
+    return JSONResponse({"status": "success", "message": "Datastores config successfully updated."})
+
+
 app = Starlette(
     debug=False,
     lifespan=lifespan,
@@ -1848,6 +2135,21 @@ app = Starlette(
             "/api/admin/connectors/status",
             endpoint=api_admin_connectors_status,
             methods=["GET"],
+        ),
+        Route(
+            "/api/admin/connectors/save",
+            endpoint=api_admin_connectors_save,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/datastores/status",
+            endpoint=api_admin_datastores_status,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/datastores/save",
+            endpoint=api_admin_datastores_save,
+            methods=["POST"],
         ),
     ],
 )

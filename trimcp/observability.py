@@ -348,12 +348,10 @@ class SagaMetrics:
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        if not cfg.TRIMCP_OBSERVABILITY_ENABLED:
-            return
-
-        result = "success" if exc_type is None else "failure"
-        duration = time.perf_counter() - self.start_time
-        SAGA_DURATION.labels(operation=self.operation, result=result).observe(duration)
+        if cfg.TRIMCP_OBSERVABILITY_ENABLED:
+            result = "success" if exc_type is None else "failure"
+            duration = time.perf_counter() - self.start_time
+            SAGA_DURATION.labels(operation=self.operation, result=result).observe(duration)
 
         if exc_type is not None and self._on_failure is not None:
             try:

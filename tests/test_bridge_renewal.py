@@ -186,6 +186,9 @@ async def test_perform_oauth_refresh_sharepoint(
     class MockResponse:
         def __init__(self) -> None:
             self.status_code = 200
+            self.is_success = True
+            self.headers: dict[str, str] = {}
+            self.text = ""
 
         def raise_for_status(self) -> None:
             pass
@@ -216,6 +219,9 @@ async def test_perform_oauth_refresh_gdrive(monkeypatch: pytest.MonkeyPatch) -> 
     class MockResponse:
         def __init__(self) -> None:
             self.status_code = 200
+            self.is_success = True
+            self.headers: dict[str, str] = {}
+            self.text = ""
 
         def raise_for_status(self) -> None:
             pass
@@ -245,6 +251,9 @@ async def test_perform_oauth_refresh_dropbox(monkeypatch: pytest.MonkeyPatch) ->
     class MockResponse:
         def __init__(self) -> None:
             self.status_code = 200
+            self.is_success = True
+            self.headers: dict[str, str] = {}
+            self.text = ""
 
         def raise_for_status(self) -> None:
             pass

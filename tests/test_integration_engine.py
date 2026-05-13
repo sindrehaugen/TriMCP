@@ -112,7 +112,10 @@ class TestSagaMetricsOnFailure:
 
     def test_on_saga_failure_missing_step_name_uses_default(self, monkeypatch):
         """When step_name is absent the metric stage defaults to 'unknown'."""
+        from trimcp.config import cfg
         from trimcp.observability import SAGA_FAILURES, SagaMetrics
+
+        monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
 
         def _fake_inc():
             # We need to capture the labels tuple; monkeypatch the .inc() method
@@ -139,7 +142,10 @@ class TestSagaMetricsOnFailure:
 
     def test_on_saga_failure_with_step_name(self, monkeypatch):
         """When step_name is provided it is forwarded as the metric stage."""
+        from trimcp.config import cfg
         from trimcp.observability import SAGA_FAILURES, SagaMetrics
+
+        monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
 
         stages: list[str] = []
         original_labels = SAGA_FAILURES.labels

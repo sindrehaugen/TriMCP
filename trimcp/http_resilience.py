@@ -202,7 +202,7 @@ def classify_httpx_response(
 ) -> None:
     """Raise typed API errors for a finished ``httpx`` response (no network I/O)."""
     status = resp.status_code
-    tail = (error_detail or resp.text[:500]).strip()
+    tail = (error_detail or getattr(resp, "text", "")[:500]).strip()
 
     if status == 429:
         retry_after_s: int | None = None

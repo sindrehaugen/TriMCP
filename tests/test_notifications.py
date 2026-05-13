@@ -41,8 +41,10 @@ async def test_teams_dispatch(dispatcher):
 
 
 @pytest.mark.asyncio
-async def test_email_dispatch(dispatcher):
+async def test_email_dispatch(dispatcher, monkeypatch):
     """Verify SMTP emails are constructed and sent correctly."""
+    monkeypatch.setenv("TRIMCP_SMTP_FROM", "trimcp-alerts@example.com")
+    monkeypatch.setenv("TRIMCP_SMTP_TO", "admin@example.com")
     fake = MagicMock()
     fake.send = AsyncMock()
     with patch.dict(sys.modules, {"aiosmtplib": fake}):

@@ -9,6 +9,7 @@ concern — handlers focus purely on domain logic.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid

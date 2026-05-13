@@ -1,0 +1,80 @@
+@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,100..900;1,100..900&family=Poppins:ital,wght@0,100..900;1,100..900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-surface: #FFFFFF;
+  --color-surface-elevated: #F8FAFC;
+  --color-surface-border: #E2E8F0;
+
+  --color-bravo-navy: #F1F5F9;
+  --color-bravo-card: #FFFFFF;
+  --color-bravo-primary: #0F172A;
+  --color-bravo-green: #059669;
+  --color-bravo-green_sm: #10B981;
+  --color-bravo-pink: #E11D48;
+  --color-bravo-pink300: #BE123C;
+  --color-bravo-pink200: #FCE7F3;
+  --color-bravo-pink100: #FDF2F8;
+  --color-bravo-blue: #2563EB;
+  --color-bravo-blue300: #1D4ED8;
+  --color-bravo-yellow: #D97706;
+  --color-bravo-yellow300: #B45309;
+  --color-bravo-ui500: #0F172A;
+  --color-bravo-ui400: #475569;
+  --color-bravo-ui300: #94A3B8;
+  --color-bravo-ui200: #F8FAFC;
+
+  --font-sans: 'Poppins', sans-serif;
+  --font-hanken: '"Hanken Grotesk"', sans-serif;
+}
+
+body {
+  font-family: 'Poppins', sans-serif;
+  background-color: #F8FAFC !important; /* Premium light slate background */
+}
+
+h1, h2, h3, h4, .font-hanken, .brand-header {
+  font-family: 'Hanken Grotesk', sans-serif !important;
+}
+
+/* Predefined Bravo Gradients optimized for light mode layouts */
+.bg-bravo-gradient-1 {
+  background: linear-gradient(135deg, #EFF6FF 0%, #FCE7F3 100%);
+}
+.bg-bravo-gradient-2 {
+  background: linear-gradient(135deg, #FEF3C7 0%, #FCE7F3 100%);
+}
+.bg-bravo-gradient-3 {
+  background: linear-gradient(135deg, #ECFDF5 0%, #EFF6FF 100%);
+}
+.bg-bravo-gradient-4 {
+  background: linear-gradient(135deg, #FFF1FA 0%, #FCE7F3 100%);
+}
+.bg-bravo-gradient-5 {
+  background: linear-gradient(135deg, #FFF1FA 0%, #DBEAFE 100%);
+}
+
+/* Micro-interactions & animations */
+.animate-bounce-slow {
+  animation: bounce 3s infinite;
+}
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+/* Interactive components and scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #F8FAFC;
+}
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #E11D48;
+}
