@@ -141,6 +141,8 @@ CREATE INDEX IF NOT EXISTS idx_memories_user_session ON memories (user_id, sessi
 CREATE INDEX IF NOT EXISTS idx_memories_filepath ON memories (filepath);
 CREATE INDEX IF NOT EXISTS idx_memories_user_path ON memories (user_id, filepath);
 CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw ON memories USING hnsw (embedding vector_cosine_ops);
+-- Fleet admin: COUNT(*) / lookups by tenant without scanning all time partitions
+CREATE INDEX IF NOT EXISTS idx_memories_namespace_id ON memories (namespace_id);
 
 -- payload_ref CHECK constraint — enforce MongoDB ObjectId hex format (24 hex chars)
 DO $$
@@ -372,6 +374,9 @@ CREATE TABLE IF NOT EXISTS memory_salience_1 PARTITION OF memory_salience FOR VA
 CREATE TABLE IF NOT EXISTS memory_salience_2 PARTITION OF memory_salience FOR VALUES WITH (MODULUS 4, REMAINDER 2);
 CREATE TABLE IF NOT EXISTS memory_salience_3 PARTITION OF memory_salience FOR VALUES WITH (MODULUS 4, REMAINDER 3);
 
+-- Fleet admin: salience-map + fleet rollup subqueries scoped by namespace_id
+CREATE INDEX IF NOT EXISTS idx_memory_salience_namespace_id ON memory_salience (namespace_id);
+
 -- --- Phase 1.3: Contradictions ---
 CREATE TABLE IF NOT EXISTS contradictions (
     id             UUID        NOT NULL DEFAULT gen_random_uuid(),
@@ -390,6 +395,9 @@ CREATE TABLE IF NOT EXISTS contradictions (
 ) PARTITION BY RANGE (detected_at);
 
 CREATE TABLE IF NOT EXISTS contradictions_default PARTITION OF contradictions DEFAULT;
+
+-- Fleet admin: open contradiction counts per namespace
+CREATE INDEX IF NOT EXISTS idx_contradictions_namespace_id ON contradictions (namespace_id);
 
 -- --- Phase 2.1: Embedding Models & Migrations ---
 CREATE TABLE IF NOT EXISTS embedding_models (
@@ -461,6 +469,8 @@ CREATE TABLE IF NOT EXISTS bridge_subscriptions (
 
 CREATE INDEX IF NOT EXISTS idx_bridge_subs_user_provider ON bridge_subscriptions (user_id, provider);
 CREATE INDEX IF NOT EXISTS idx_bridge_subs_expires_active ON bridge_subscriptions (expires_at) WHERE status = 'ACTIVE';
+-- Fleet admin: per-namespace ACTIVE counts / next expiry resolution
+CREATE INDEX IF NOT EXISTS idx_bridge_subscriptions_namespace_id ON bridge_subscriptions (namespace_id);
 
 ALTER TABLE bridge_subscriptions ADD COLUMN IF NOT EXISTS oauth_access_token_enc BYTEA;
 ALTER TABLE bridge_subscriptions ADD COLUMN IF NOT EXISTS namespace_id UUID REFERENCES namespaces(id);
@@ -524,6 +534,9 @@ BEGIN
             CHECK (status IN ('running', 'completed', 'failed'));
     END IF;
 END $$;
+
+-- Fleet admin: latest consolidation_run per namespace
+CREATE INDEX IF NOT EXISTS idx_consolidation_runs_namespace_id ON consolidation_runs (namespace_id);
 
 CREATE TABLE IF NOT EXISTS event_log (
     id               UUID DEFAULT gen_random_uuid(),

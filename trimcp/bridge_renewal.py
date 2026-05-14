@@ -573,6 +573,12 @@ async def renew_expiring_subscriptions(pool: asyncpg.Pool) -> dict[str, int]:
             lookahead,
         )
 
+    log.info(
+        "audit bridge_subscription_renewal_tick candidates=%s lookahead_hours=%s",
+        len(rows),
+        cfg.BRIDGE_RENEWAL_LOOKAHEAD_HOURS,
+    )
+
     for row in rows:
         prov = row["provider"]
         try:

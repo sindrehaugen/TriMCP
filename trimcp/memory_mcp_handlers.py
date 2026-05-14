@@ -21,6 +21,7 @@ from typing import Any
 
 from trimcp.mcp_errors import mcp_handler
 from trimcp.models import (
+    ArtifactPayload,
     BoostMemoryRequest,
     ForgetMemoryRequest,
     GetRecentContextRequest,
@@ -59,11 +60,19 @@ async def handle_store_memory(engine: TriStackEngine, arguments: dict[str, Any])
 
 
 @mcp_handler
-async def handle_store_media(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
-    """Ingest large media (audio/video/image) into the Quad-Stack."""
-    payload = MediaPayload(**arguments)
-    mongo_id = await engine.store_media(payload)
+async def handle_store_artifact(
+    engine: TriStackEngine, arguments: dict[str, Any]
+) -> str:
+    """Ingest large artifacts (media, PDF, log, etc.) into the Quad-Stack."""
+    payload = ArtifactPayload(**arguments)
+    mongo_id = await engine.store_artifact(payload)
     return _ok_response(mongo_id, storage="minio")
+
+
+@mcp_handler
+async def handle_store_media(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+    """[DEPRECATED] Alias for store_artifact."""
+    return await handle_store_artifact(engine, arguments)
 
 
 @mcp_handler

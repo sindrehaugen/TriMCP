@@ -643,6 +643,10 @@ class MediaPayload(BaseModel):
         return v
 
 
+# Backward-compat alias for MediaPayload (Phase 1.2 -> Phase 1.3 Transition)
+ArtifactPayload = MediaPayload
+
+
 class GetHealthResponse(BaseModel):
     """Output for the get_health MCP tool."""
 

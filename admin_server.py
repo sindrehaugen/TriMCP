@@ -24,6 +24,7 @@ from trimcp.auth import (
     BasicAuthMiddleware,
     HMACAuthMiddleware,
     optional_hmac_nonce_store,
+    set_namespace_context,
 )
 from trimcp.background_task_manager import create_tracked_task
 from trimcp.config import cfg
@@ -32,6 +33,31 @@ from trimcp.mtls import MTLSAuthMiddleware
 from trimcp.notifications import dispatcher
 from trimcp.observability import MERKLE_CHAIN_VALID, OpenTelemetryTraceMiddleware
 from trimcp.orchestrator import TriStackEngine
+from trimcp.admin_routes import (
+    ADMIN_MAX_LIST_LIMIT,
+    ADMIN_MAX_ROWS_SKIP,
+    ADMIN_NAMESPACES_DEFAULT_LIMIT,
+    clamp_bounded_int,
+    fetch_event_llm_payload_uri,
+    fetch_fleet_overview_page,
+    fetch_namespace_bridge_subscriptions,
+    fetch_pg_rls_snapshot,
+    fetch_recent_open_contradictions,
+    fetch_salience_map_points,
+    offset_from_page_limit,
+    parse_optional_bigint_bounds,
+    parse_optional_half_life_days,
+    parse_optional_uuid,
+    parse_page_limit_common,
+    parse_salience_top_k,
+    sanitize_event_type_filter,
+    sanitize_optional_agent_filter,
+    sanitize_resource_type_filter,
+    sanitize_slug_prefix_filter,
+    sanitize_task_name_filter,
+    validate_dlq_status,
+)
+from trimcp.signing import admin_signing_keys_status
 from trimcp.temporal import parse_as_of
 
 logging.basicConfig(level=logging.INFO)
@@ -184,6 +210,14 @@ async def serve_index(request):
     if os.path.exists(index_path):
         return FileResponse(index_path)
     return HTMLResponse("Admin UI not found", status_code=404)
+
+
+async def serve_styles(request):
+    """GET /styles.css — serve the admin dashboard stylesheet."""
+    styles_path = os.path.join(os.path.dirname(__file__), "admin", "styles.css")
+    if os.path.exists(styles_path):
+        return FileResponse(styles_path, media_type="text/css")
+    return HTMLResponse("styles.css not found", status_code=404)
 
 
 # ---------------------------------------------------------------------------
@@ -695,19 +729,6 @@ async def api_a2a_list_grants(request):
 # ---------------------------------------------------------------------------
 
 
-def _parse_uuid_opt(raw: str | None) -> uuid.UUID | None:
-    if raw is None or raw == "":
-        return None
-    return uuid.UUID(raw)
-
-
-def _parse_int(raw: str | None, default: int, min_value: int, max_value: int) -> int:
-    if raw is None or raw == "":
-        return default
-    value = int(raw)
-    return max(min_value, min(max_value, value))
-
-
 def _serialize_pg_row(row: Any) -> dict:
     d = row if isinstance(row, dict) else dict(row)
     out: dict[str, Any] = {}
@@ -725,25 +746,39 @@ async def api_admin_events(request):
     """GET /api/admin/events
 
     Query params:
-      namespace_id?, event_type?, agent_id?, from?, to?, page=1, limit=50
+      namespace_id?, event_type?, agent_id?, from?, to?,
+      event_seq_gte?, event_seq_lte?,
+      include_details=1 (optional: params, result_summary, llm_payload_uri),
+      page=1, limit=50
     """
     if not engine:
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
 
     try:
-        namespace_id = _parse_uuid_opt(request.query_params.get("namespace_id"))
-        event_type = request.query_params.get("event_type")
-        agent_id = request.query_params.get("agent_id")
-        from_dt = parse_as_of(request.query_params.get("from"))
-        to_dt = parse_as_of(request.query_params.get("to"))
-        page = _parse_int(
-            request.query_params.get("page"), default=1, min_value=1, max_value=10_000
+        qp = request.query_params
+        namespace_id = parse_optional_uuid(qp.get("namespace_id"))
+        event_type_raw, et_err = sanitize_event_type_filter(qp.get("event_type"))
+        if et_err:
+            return JSONResponse({"error": et_err}, status_code=422)
+        agent_id = qp.get("agent_id")
+        from_dt = parse_as_of(qp.get("from"))
+        to_dt = parse_as_of(qp.get("to"))
+        seq_gte, sg_err = parse_optional_bigint_bounds(
+            qp.get("event_seq_gte"), label="event_seq_gte"
         )
-        limit = _parse_int(
-            request.query_params.get("limit"), default=50, min_value=1, max_value=200
+        if sg_err:
+            return JSONResponse({"error": sg_err}, status_code=422)
+        seq_lte, sl_err = parse_optional_bigint_bounds(
+            qp.get("event_seq_lte"), label="event_seq_lte"
         )
+        if sl_err:
+            return JSONResponse({"error": sl_err}, status_code=422)
+        page, limit = parse_page_limit_common(qp)
+        offset = offset_from_page_limit(page, limit)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=422)
+
+    event_type = event_type_raw
 
     where = []
     args: list[object] = []
@@ -768,12 +803,29 @@ async def api_admin_events(request):
         where.append(f"occurred_at <= ${i}")
         args.append(to_dt)
         i += 1
+    if seq_gte is not None:
+        where.append(f"event_seq >= ${i}")
+        args.append(seq_gte)
+        i += 1
+    if seq_lte is not None:
+        where.append(f"event_seq <= ${i}")
+        args.append(seq_lte)
+        i += 1
 
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-    offset = (page - 1) * limit
     count_sql = f"SELECT COUNT(*)::bigint AS total FROM event_log {where_sql}"
+    include_details = (qp.get("include_details") or "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    extra_cols = ""
+    if include_details:
+        extra_cols = ", params, result_summary, llm_payload_uri"
+
     items_sql = f"""
         SELECT id, namespace_id, agent_id, event_type, event_seq, occurred_at, parent_event_id
+        {extra_cols}
         FROM event_log
         {where_sql}
         ORDER BY occurred_at DESC
@@ -790,8 +842,21 @@ async def api_admin_events(request):
             {"error": "Failed to query events", "detail": str(exc)}, status_code=500
         )
 
-    items = [
-        {
+    def _jsonish(val: Any) -> Any:
+        if val is None:
+            return None
+        if isinstance(val, (dict, list)):
+            return val
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except Exception:
+                return val
+        return val
+
+    items = []
+    for r in rows:
+        row_dict: dict[str, Any] = {
             "id": str(r["id"]),
             "namespace_id": str(r["namespace_id"]),
             "agent_id": r["agent_id"],
@@ -802,8 +867,12 @@ async def api_admin_events(request):
                 str(r["parent_event_id"]) if r["parent_event_id"] else None
             ),
         }
-        for r in rows
-    ]
+        if include_details:
+            row_dict["params"] = _jsonish(r["params"])
+            row_dict["result_summary"] = _jsonish(r["result_summary"])
+            uri = r["llm_payload_uri"]
+            row_dict["llm_payload_uri"] = str(uri) if uri else None
+        items.append(row_dict)
     return JSONResponse(
         {
             "items": items,
@@ -824,7 +893,7 @@ async def api_admin_events_summary(request):
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
 
     try:
-        namespace_id = _parse_uuid_opt(request.query_params.get("namespace_id"))
+        namespace_id = parse_optional_uuid(request.query_params.get("namespace_id"))
         from_dt = parse_as_of(request.query_params.get("from"))
         to_dt = parse_as_of(request.query_params.get("to"))
     except ValueError as exc:
@@ -937,10 +1006,10 @@ async def api_admin_a2a_grants(request):
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
 
     try:
-        owner_namespace_id = _parse_uuid_opt(
+        owner_namespace_id = parse_optional_uuid(
             request.query_params.get("owner_namespace_id")
         )
-        target_namespace_id = _parse_uuid_opt(
+        target_namespace_id = parse_optional_uuid(
             request.query_params.get("target_namespace_id")
         )
         status = request.query_params.get("status")
@@ -948,12 +1017,9 @@ async def api_admin_a2a_grants(request):
             return JSONResponse(
                 {"error": "status must be active|revoked|expired"}, status_code=422
             )
-        page = _parse_int(
-            request.query_params.get("page"), default=1, min_value=1, max_value=10_000
-        )
-        limit = _parse_int(
-            request.query_params.get("limit"), default=50, min_value=1, max_value=200
-        )
+        qp = request.query_params
+        page, limit = parse_page_limit_common(qp)
+        offset = offset_from_page_limit(page, limit)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=422)
 
@@ -1033,7 +1099,7 @@ async def api_admin_a2a_grants_summary(request):
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
 
     try:
-        owner_namespace_id = _parse_uuid_opt(
+        owner_namespace_id = parse_optional_uuid(
             request.query_params.get("owner_namespace_id")
         )
     except ValueError as exc:
@@ -1087,22 +1153,45 @@ async def api_admin_quotas(request):
     """GET /api/admin/quotas
 
     Query params:
-      namespace_id?, window=day
+      namespace_id?, resource_type?, window=day,
+      page=1, limit=50
     """
     if not engine:
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
 
+    qp = request.query_params
     try:
-        namespace_id = _parse_uuid_opt(request.query_params.get("namespace_id"))
+        namespace_id = parse_optional_uuid(qp.get("namespace_id"))
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=422)
 
-    window = request.query_params.get("window", "day")
+    res_type_raw, rt_err = sanitize_resource_type_filter(qp.get("resource_type"))
+    if rt_err:
+        return JSONResponse({"error": rt_err}, status_code=422)
+
+    try:
+        page, limit = parse_page_limit_common(qp)
+        offset = offset_from_page_limit(page, limit)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+
+    window = qp.get("window", "day")
     if window not in ("hour", "day", "month"):
         return JSONResponse({"error": "window must be hour|day|month"}, status_code=422)
 
-    where_sql = "WHERE namespace_id = $1" if namespace_id else ""
-    args: list[object] = [namespace_id] if namespace_id else []
+    where_fragments: list[str] = []
+    args: list[object] = []
+    idx = 1
+    if namespace_id:
+        where_fragments.append(f"namespace_id = ${idx}")
+        args.append(namespace_id)
+        idx += 1
+    if res_type_raw:
+        where_fragments.append(f"resource_type = ${idx}")
+        args.append(res_type_raw)
+        idx += 1
+    where_sql = f"WHERE {' AND '.join(where_fragments)}" if where_fragments else ""
+
     now = datetime.now(UTC)
     if window == "hour":
         cutoff = now.replace(minute=0, second=0, microsecond=0)
@@ -1111,31 +1200,39 @@ async def api_admin_quotas(request):
     else:
         cutoff = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
+    count_sql = f"SELECT COUNT(*)::bigint AS total FROM resource_quotas {where_sql}"
+    sums_sql = f"""
+        SELECT COALESCE(SUM(used_amount), 0)::bigint AS used_sum,
+               COALESCE(SUM(limit_amount), 0)::bigint AS limit_sum
+        FROM resource_quotas
+        {where_sql}
+    """
+    items_sql = f"""
+        SELECT namespace_id, agent_id, resource_type, limit_amount, used_amount, reset_at, updated_at
+        FROM resource_quotas
+        {where_sql}
+        ORDER BY namespace_id, agent_id NULLS FIRST, resource_type
+        LIMIT ${idx} OFFSET ${idx + 1}
+    """
+
     try:
         async with engine.pg_pool.acquire(timeout=10.0) as conn:
-            rows = await conn.fetch(
-                f"""
-                SELECT namespace_id, agent_id, resource_type, limit_amount, used_amount, reset_at, updated_at
-                FROM resource_quotas
-                {where_sql}
-                ORDER BY namespace_id, agent_id NULLS FIRST, resource_type
-                """,
-                *args,
-            )
+            count_row = await conn.fetchrow(count_sql, *args)
+            sums_row = await conn.fetchrow(sums_sql, *args)
+            rows = await conn.fetch(items_sql, *args, limit, offset)
     except Exception as exc:
         logger.exception("api_admin_quotas failed")
         return JSONResponse(
             {"error": "Failed to query quotas", "detail": str(exc)}, status_code=500
         )
 
+    total_used = int(sums_row["used_sum"]) if sums_row else 0
+    total_limit = int(sums_row["limit_sum"]) if sums_row else 0
+
     tools = []
-    total_used = 0
-    total_limit = 0
     for r in rows:
         used = int(r["used_amount"])
         limit_amount = int(r["limit_amount"])
-        total_used += used
-        total_limit += limit_amount
         remaining = max(0, limit_amount - used)
         tools.append(
             {
@@ -1160,6 +1257,9 @@ async def api_admin_quotas(request):
     return JSONResponse(
         {
             "tools": tools,
+            "page": page,
+            "limit": limit,
+            "total": int(count_row["total"]) if count_row else 0,
             "totals": {
                 "used": total_used,
                 "limit": total_limit,
@@ -1183,7 +1283,7 @@ async def api_admin_quotas_summary(request):
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
 
     try:
-        namespace_id = _parse_uuid_opt(request.query_params.get("namespace_id"))
+        namespace_id = parse_optional_uuid(request.query_params.get("namespace_id"))
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=422)
 
@@ -1257,14 +1357,16 @@ async def api_admin_graph_explore(request):
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=422)
 
+    from trimcp.models import GraphSearchRequest
+
     try:
-        result = await engine.graph_search(
-            query=body["query"],
+        payload = GraphSearchRequest(
             namespace_id=namespace_id,
+            query=body["query"],
             max_depth=max_depth,
-            top_k_anchors=anchor_top_k,
             as_of=as_of_dt,
         )
+        result = await engine.graph_search(payload)
     except Exception as exc:
         logger.exception("api_admin_graph_explore failed ns=%s", namespace_id)
         return JSONResponse(
@@ -1421,29 +1523,71 @@ async def api_admin_schema(request):
 async def api_admin_dlq_list(request):
     """GET /api/admin/dlq
 
-    Query params: task_name?, status?, limit=50, offset=0
+    Query params: task_name?, status?, page?, limit?,
+    or legacy: limit=50, offset=0 (used when ``page`` is omitted).
     """
     if not engine:
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
 
-    from trimcp.dead_letter_queue import list_dead_letters
+    from trimcp.dead_letter_queue import count_dead_letters, list_dead_letters
 
-    task_name = request.query_params.get("task_name") or None
-    status = request.query_params.get("status") or None
+    qp = request.query_params
+    task_name, tn_err = sanitize_task_name_filter(qp.get("task_name"))
+    if tn_err:
+        return JSONResponse({"error": tn_err}, status_code=422)
+    dlq_status, st_err = validate_dlq_status(qp.get("status"))
+    if st_err:
+        return JSONResponse({"error": st_err}, status_code=422)
+
+    page: int
+    offset: int
     try:
-        limit = int(request.query_params.get("limit", "50"))
-        offset = int(request.query_params.get("offset", "0"))
-    except ValueError:
-        return JSONResponse({"error": "limit and offset must be integers"}, status_code=422)
+        if qp.get("page") not in (None, ""):
+            page, limit = parse_page_limit_common(qp)
+            offset = offset_from_page_limit(page, limit)
+        else:
+            limit = clamp_bounded_int(
+                qp.get("limit"),
+                default=50,
+                min_value=1,
+                max_value=ADMIN_MAX_LIST_LIMIT,
+            )
+            offset = clamp_bounded_int(
+                qp.get("offset"),
+                default=0,
+                min_value=0,
+                max_value=ADMIN_MAX_ROWS_SKIP,
+            )
+            page = (offset // limit) + 1 if limit > 0 else 1
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
 
     try:
+        total = await count_dead_letters(
+            engine.pg_pool,
+            task_name=task_name,
+            status=dlq_status,
+        )
         entries = await list_dead_letters(
-            engine.pg_pool, task_name=task_name, status=status, limit=limit, offset=offset
+            engine.pg_pool,
+            task_name=task_name,
+            status=dlq_status,
+            limit=limit,
+            offset=offset,
         )
     except Exception as exc:
         logger.exception("api_admin_dlq_list failed")
         return JSONResponse({"error": str(exc)}, status_code=500)
-    return JSONResponse({"entries": entries, "count": len(entries)})
+    return JSONResponse(
+        {
+            "entries": entries,
+            "count": len(entries),
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "offset": offset,
+        }
+    )
 
 
 async def api_admin_dlq_replay(request):
@@ -1968,6 +2112,720 @@ async def api_admin_datastores_save(request):
     return JSONResponse({"status": "success", "message": "Datastores config successfully updated."})
 
 
+async def api_admin_signing_status(request):
+    """GET /api/admin/signing/status — non-secret signing key rotation summary."""
+    if not engine or not engine.pg_pool:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    try:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            payload = await admin_signing_keys_status(conn)
+    except Exception as exc:
+        logger.exception("api_admin_signing_status failed")
+        return JSONResponse(
+            {"error": "Failed to load signing keys status", "detail": str(exc)},
+            status_code=500,
+        )
+    return JSONResponse(payload)
+
+
+async def api_admin_pii_redactions_list(request):
+    """GET /api/admin/pii-redactions — paginated vault rows (no ciphertext)."""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    qp = request.query_params
+    try:
+        namespace_id = parse_optional_uuid(qp.get("namespace_id"))
+        page, limit = parse_page_limit_common(qp)
+        offset = offset_from_page_limit(page, limit)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+
+    where = "WHERE ($1::uuid IS NULL OR namespace_id = $1)"
+    args: list[object] = [namespace_id]
+    count_sql = f"SELECT COUNT(*)::bigint AS total FROM pii_redactions {where}"
+    items_sql = f"""
+        SELECT memory_id, namespace_id, entity_type, token, created_at
+        FROM pii_redactions
+        {where}
+        ORDER BY created_at DESC
+        LIMIT $2 OFFSET $3
+    """
+
+    try:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            total_row = await conn.fetchrow(count_sql, namespace_id)
+            rows = await conn.fetch(items_sql, namespace_id, limit, offset)
+    except Exception as exc:
+        logger.exception("api_admin_pii_redactions_list failed")
+        return JSONResponse(
+            {"error": "Failed to list PII redactions", "detail": str(exc)},
+            status_code=500,
+        )
+
+    items = [
+        {
+            "memory_id": str(r["memory_id"]),
+            "namespace_id": str(r["namespace_id"]),
+            "entity_type": r["entity_type"],
+            "token": r["token"][:16] + "…" if len(r["token"]) > 16 else r["token"],
+            "created_at": r["created_at"].astimezone(UTC).isoformat(),
+        }
+        for r in rows
+    ]
+    return JSONResponse(
+        {
+            "items": items,
+            "page": page,
+            "limit": limit,
+            "total": int(total_row["total"]) if total_row else 0,
+        }
+    )
+
+
+async def api_admin_security_event_seq_gaps(request):
+    """GET /api/admin/security/event-seq-gaps/{namespace_id}"""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    raw_ns = request.path_params.get("namespace_id")
+    try:
+        namespace_id = uuid.UUID(raw_ns) if raw_ns else None
+    except ValueError:
+        return JSONResponse({"error": "Invalid namespace_id"}, status_code=422)
+    if namespace_id is None:
+        return JSONResponse({"error": "namespace_id required"}, status_code=422)
+
+    gap_sql = """
+        WITH s AS (
+            SELECT event_seq,
+                   LAG(event_seq) OVER (ORDER BY event_seq) AS prev
+            FROM event_log
+            WHERE namespace_id = $1
+        )
+        SELECT prev::bigint AS after_seq, event_seq::bigint AS before_seq
+        FROM s
+        WHERE prev IS NOT NULL AND event_seq > prev + 1
+        ORDER BY event_seq
+        LIMIT 200
+    """
+
+    try:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            min_seq = await conn.fetchval(
+                "SELECT MIN(event_seq)::bigint FROM event_log WHERE namespace_id = $1",
+                namespace_id,
+            )
+            max_seq = await conn.fetchval(
+                "SELECT MAX(event_seq)::bigint FROM event_log WHERE namespace_id = $1",
+                namespace_id,
+            )
+            gap_rows = await conn.fetch(gap_sql, namespace_id)
+    except Exception as exc:
+        logger.exception("api_admin_security_event_seq_gaps failed")
+        return JSONResponse(
+            {"error": "Failed to compute sequence gaps", "detail": str(exc)},
+            status_code=500,
+        )
+
+    gaps: list[dict[str, int]] = []
+    if min_seq is not None and min_seq > 1:
+        gaps.append({"after_seq": 0, "before_seq": int(min_seq)})
+    for r in gap_rows:
+        gaps.append(
+            {"after_seq": int(r["after_seq"]), "before_seq": int(r["before_seq"])}
+        )
+
+    return JSONResponse(
+        {
+            "namespace_id": str(namespace_id),
+            "min_seq": int(min_seq) if min_seq is not None else None,
+            "max_seq": int(max_seq) if max_seq is not None else None,
+            "gaps": gaps,
+        }
+    )
+
+
+async def api_admin_security_verify_memory_sample(request):
+    """POST /api/admin/security/verify-memory-sample
+
+    Body: {"namespace_id"?: uuid, "sample_size"?: int 1–30}
+    """
+    if not engine or engine.memory is None:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        namespace_id = parse_optional_uuid(body.get("namespace_id"))
+        raw_sz = body.get("sample_size")
+        sample_size = clamp_bounded_int(
+            None if raw_sz is None or raw_sz == "" else str(raw_sz),
+            default=10,
+            min_value=1,
+            max_value=30,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+
+    sample_sql = """
+        SELECT id FROM memories
+        WHERE valid_to IS NULL
+          AND ($1::uuid IS NULL OR namespace_id = $1)
+        ORDER BY random()
+        LIMIT $2
+    """
+
+    try:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            mem_rows = await conn.fetch(sample_sql, namespace_id, sample_size)
+    except Exception as exc:
+        logger.exception("api_admin_security_verify_memory_sample fetch failed")
+        return JSONResponse(
+            {"error": "Failed to sample memories", "detail": str(exc)},
+            status_code=500,
+        )
+
+    results: list[dict[str, object]] = []
+    invalid_count = 0
+    for r in mem_rows:
+        mid = str(r["id"])
+        try:
+            vr = await engine.memory.verify_memory(mid)
+        except Exception as exc:
+            results.append(
+                {"memory_id": mid, "valid": False, "reason": str(exc), "key_id": None}
+            )
+            invalid_count += 1
+            continue
+        ok = bool(vr.get("valid"))
+        if not ok:
+            invalid_count += 1
+        results.append(
+            {
+                "memory_id": mid,
+                "valid": ok,
+                "reason": vr.get("reason"),
+                "key_id": vr.get("key_id"),
+            }
+        )
+
+    return JSONResponse(
+        {
+            "sampled": len(results),
+            "invalid_count": invalid_count,
+            "namespace_filter": str(namespace_id) if namespace_id else None,
+            "results": results,
+        }
+    )
+
+
+async def api_admin_security_test_rls_isolation(request):
+    """POST /api/admin/security/test-rls-isolation
+
+    Body: {"namespace_id": uuid, "probe_namespace_id": uuid}
+    Sets SET LOCAL trimcp.namespace_id to *namespace_id* and counts rows in
+    *probe_namespace_id* — should be 0 when RLS enforces tenant isolation.
+    """
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        ns_a = uuid.UUID(str(body["namespace_id"]))
+        ns_b = uuid.UUID(str(body["probe_namespace_id"]))
+    except (KeyError, ValueError):
+        return JSONResponse(
+            {"error": "namespace_id and probe_namespace_id (UUID) required"},
+            status_code=422,
+        )
+
+    steps: list[str] = [
+        "BEGIN;",
+        f"SELECT set_config('trimcp.namespace_id', '{ns_a}', true);",
+        f"-- COUNT(*) FROM memories WHERE namespace_id = '{ns_b}' (cross-tenant probe)",
+        f"-- COUNT(*) FROM memories WHERE namespace_id = '{ns_a}' (same-tenant check)",
+        "COMMIT;",
+    ]
+
+    try:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            async with conn.transaction():
+                await set_namespace_context(conn, ns_a)
+                cross_count = await conn.fetchval(
+                    "SELECT COUNT(*)::bigint FROM memories WHERE namespace_id = $1",
+                    ns_b,
+                )
+                own_count = await conn.fetchval(
+                    "SELECT COUNT(*)::bigint FROM memories WHERE namespace_id = $1",
+                    ns_a,
+                )
+    except Exception as exc:
+        logger.exception("api_admin_security_test_rls_isolation failed")
+        return JSONResponse(
+            {
+                "error": "RLS isolation probe failed",
+                "detail": str(exc),
+                "steps": steps,
+            },
+            status_code=500,
+        )
+
+    isolation_ok = cross_count == 0
+    return JSONResponse(
+        {
+            "scoped_namespace_id": str(ns_a),
+            "probe_namespace_id": str(ns_b),
+            "cross_tenant_rows_visible": int(cross_count or 0),
+            "same_tenant_rows_visible": int(own_count or 0),
+            "isolation_ok": isolation_ok,
+            "policy_name": "namespace_isolation_policy",
+            "steps": steps,
+        }
+    )
+
+
+async def api_admin_namespaces_list(request):
+    """GET /api/admin/namespaces
+
+    Query params: slug_prefix?, page=1, limit=500
+
+    Always includes ``namespaces`` (compat with admin UI).
+    Pagination metadata: ``page``, ``limit``, ``total``, ``items`` (same slice as ``namespaces``).
+    """
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    qp = request.query_params
+    prefix, pref_err = sanitize_slug_prefix_filter(qp.get("slug_prefix"))
+    if pref_err:
+        return JSONResponse({"error": pref_err}, status_code=422)
+
+    try:
+        page, limit = parse_page_limit_common(
+            qp,
+            default_limit=ADMIN_NAMESPACES_DEFAULT_LIMIT,
+            max_limit=500,
+        )
+        offset = offset_from_page_limit(page, limit)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+
+    clauses: list[str] = []
+    args: list[object] = []
+    bind = 1
+    if prefix is not None:
+        clauses.append(f"slug ILIKE ${bind}")
+        args.append(prefix + "%")
+        bind += 1
+    where_sql = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+
+    count_sql = f"SELECT COUNT(*)::bigint AS total FROM namespaces {where_sql}"
+    items_sql = f"""
+        SELECT id, slug, parent_id, created_at, metadata
+        FROM namespaces
+        {where_sql}
+        ORDER BY slug
+        LIMIT ${bind} OFFSET ${bind + 1}
+    """
+
+    try:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            total_row = await conn.fetchrow(count_sql, *args)
+            rows = await conn.fetch(items_sql, *args, limit, offset)
+        namespaces: list[dict] = []
+        for r in rows:
+            namespaces.append(
+                {
+                    "id": str(r["id"]),
+                    "slug": r["slug"],
+                    "parent_id": str(r["parent_id"]) if r["parent_id"] else None,
+                    "created_at": (
+                        r["created_at"].astimezone(UTC).isoformat()
+                        if r["created_at"]
+                        else None
+                    ),
+                    "metadata": json.loads(r["metadata"]) if r["metadata"] else {},
+                }
+            )
+        total = int(total_row["total"]) if total_row else 0
+        return JSONResponse(
+            {
+                "namespaces": namespaces,
+                "items": namespaces,
+                "page": page,
+                "limit": limit,
+                "total": total,
+            }
+        )
+    except Exception as exc:
+        logger.exception("api_admin_namespaces_list failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_admin_namespaces_get(request):
+    """GET /api/admin/namespaces/{namespace_id}
+    Retrieves metadata and info for a specific namespace.
+    """
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    try:
+        ns_id = uuid.UUID(request.path_params["namespace_id"])
+    except ValueError:
+        return JSONResponse({"error": "Invalid namespace_id UUID"}, status_code=400)
+
+    try:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            row = await conn.fetchrow(
+                "SELECT id, slug, parent_id, created_at, metadata FROM namespaces WHERE id = $1",
+                ns_id
+            )
+        if not row:
+            return JSONResponse({"error": "Namespace not found"}, status_code=404)
+        return JSONResponse({
+            "id": str(row["id"]),
+            "slug": row["slug"],
+            "parent_id": str(row["parent_id"]) if row["parent_id"] else None,
+            "created_at": row["created_at"].astimezone(UTC).isoformat() if row["created_at"] else None,
+            "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+        })
+    except Exception as exc:
+        logger.exception("api_admin_namespaces_get failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_admin_namespaces_update_metadata(request):
+    """POST /api/admin/namespaces/{namespace_id}/metadata
+    Saves/updates a namespace's metadata, routing through engine.manage_namespace.
+    """
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    try:
+        ns_id = uuid.UUID(request.path_params["namespace_id"])
+    except ValueError:
+        return JSONResponse({"error": "Invalid namespace_id UUID"}, status_code=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Request body must be valid JSON"}, status_code=400)
+
+    try:
+        from pydantic import ValidationError
+        from trimcp.models import ManageNamespaceRequest, NamespaceMetadataPatch
+
+        patch = NamespaceMetadataPatch.model_validate(body)
+        payload = ManageNamespaceRequest(
+            command="update_metadata",
+            namespace_id=ns_id,
+            metadata_patch=patch
+        )
+
+        res = await engine.manage_namespace(payload, admin_identity="admin_webportal")
+        return JSONResponse(res)
+    except ValidationError as exc:
+        return JSONResponse({"error": "Validation failed", "detail": exc.errors()}, status_code=422)
+    except Exception as exc:
+        logger.exception("api_admin_namespaces_update_metadata failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_admin_memory_boost(request):
+    """POST /api/admin/memory/boost — salience reinforce via CognitiveOrchestrator."""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    try:
+        ns = parse_optional_uuid(body.get("namespace_id"))
+        mem = parse_optional_uuid(body.get("memory_id"))
+    except ValueError:
+        return JSONResponse({"error": "Invalid UUID"}, status_code=400)
+
+    if ns is None or mem is None:
+        return JSONResponse(
+            {"error": "namespace_id and memory_id are required"}, status_code=422
+        )
+
+    agent_raw = body.get("agent_id")
+    agent_id = (str(agent_raw).strip() if agent_raw else "") or "default"
+
+    try:
+        factor = float(body.get("factor")) if body.get("factor") is not None else 0.2
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "factor must be a number"}, status_code=422)
+
+    try:
+        res = await engine.boost_memory(
+            memory_id=str(mem),
+            agent_id=agent_id,
+            namespace_id=str(ns),
+            factor=factor,
+        )
+    except Exception as exc:
+        logger.exception("api_admin_memory_boost failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    return JSONResponse(res)
+
+
+async def api_admin_salience_map(request):
+    """GET /api/admin/salience-map
+
+    Query params: ``namespace_id`` (required), ``agent_id?``, ``top_k?``, ``half_life_days?``
+    """
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    qp = request.query_params
+    try:
+        ns = parse_optional_uuid(qp.get("namespace_id"))
+        if ns is None:
+            return JSONResponse({"error": "namespace_id is required"}, status_code=422)
+    except ValueError:
+        return JSONResponse({"error": "Invalid namespace_id UUID"}, status_code=400)
+
+    top_k, tk_err = parse_salience_top_k(qp.get("top_k"))
+    if tk_err:
+        return JSONResponse({"error": tk_err}, status_code=422)
+    agent_filter, ag_err = sanitize_optional_agent_filter(qp.get("agent_id"))
+    if ag_err:
+        return JSONResponse({"error": ag_err}, status_code=422)
+
+    hl_default = float(cfg.CONSOLIDATION_HALF_LIFE_DAYS)
+    half_life, hl_err = parse_optional_half_life_days(
+        qp.get("half_life_days"), default=hl_default
+    )
+    if hl_err:
+        return JSONResponse({"error": hl_err}, status_code=422)
+
+    try:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            points = await fetch_salience_map_points(
+                conn,
+                namespace_id=ns,
+                agent_id=agent_filter,
+                top_k=top_k,
+                half_life_days=half_life,
+            )
+    except Exception as exc:
+        logger.exception("api_admin_salience_map failed ns=%s", ns)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    return JSONResponse(
+        {
+            "namespace_id": str(ns),
+            "half_life_days": half_life,
+            "top_k": top_k,
+            "points": points,
+            "total_returned": len(points),
+        }
+    )
+
+
+async def api_admin_llm_payload(request):
+    """GET /api/admin/llm-payload
+
+    Query params: ``namespace_id``, ``event_id`` — fetches consolidated LLM artifact JSON from MinIO.
+    """
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    qp = request.query_params
+    try:
+        ns = parse_optional_uuid(qp.get("namespace_id"))
+        evt_raw = qp.get("event_id")
+        evt = uuid.UUID(evt_raw) if evt_raw else None
+    except ValueError:
+        return JSONResponse({"error": "Invalid UUID in namespace_id/event_id"}, status_code=400)
+
+    if ns is None or evt is None:
+        return JSONResponse(
+            {"error": "namespace_id and event_id are required"}, status_code=422
+        )
+
+    try:
+        from trimcp import salience as _salience
+
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            uri, uri_err = await fetch_event_llm_payload_uri(
+                conn, namespace_id=ns, event_id=evt
+            )
+        if uri_err:
+            return JSONResponse({"error": uri_err}, status_code=404)
+        assert uri is not None
+        payload = await _salience.fetch_llm_payload(uri)
+    except Exception as exc:
+        logger.exception("api_admin_llm_payload failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    return JSONResponse({"llm_payload_uri": uri, "payload": payload})
+
+
+async def api_admin_fleet_overview(request):
+    """GET /api/admin/fleet-overview — namespace-scoped rollup for fleet monitoring."""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    qp = request.query_params
+    prefix, pref_err = sanitize_slug_prefix_filter(qp.get("slug_prefix"))
+    if pref_err:
+        return JSONResponse({"error": pref_err}, status_code=422)
+
+    try:
+        page, limit = parse_page_limit_common(qp)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+
+    hl_default = float(cfg.CONSOLIDATION_HALF_LIFE_DAYS)
+    half_life, hl_err = parse_optional_half_life_days(
+        qp.get("half_life_days"), default=hl_default
+    )
+    if hl_err:
+        return JSONResponse({"error": hl_err}, status_code=422)
+
+    try:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            rls = await fetch_pg_rls_snapshot(conn)
+            items, total = await fetch_fleet_overview_page(
+                conn,
+                slug_prefix=prefix,
+                page=page,
+                limit=limit,
+                half_life_days=half_life,
+            )
+    except Exception as exc:
+        logger.exception("api_admin_fleet_overview failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    return JSONResponse(
+        {
+            "items": items,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "half_life_days": half_life,
+            "rls_tenant_tables": rls,
+        }
+    )
+
+
+async def api_admin_contradictions_recent(request):
+    """GET /api/admin/contradictions/recent — Fleet contradiction feed."""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    try:
+        limit = int(request.query_params.get("limit") or "5")
+    except ValueError:
+        return JSONResponse({"error": "Invalid limit"}, status_code=422)
+    limit = max(1, min(limit, 50))
+    try:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            items = await fetch_recent_open_contradictions(conn, limit=limit)
+    except Exception as exc:
+        logger.exception("api_admin_contradictions_recent failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse({"items": items, "limit": limit})
+
+
+async def api_admin_namespace_bridges(request):
+    """GET /api/admin/namespaces/{namespace_id}/bridges — integration cards."""
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+    try:
+        ns_uuid = uuid.UUID(request.path_params["namespace_id"])
+    except ValueError:
+        return JSONResponse({"error": "Invalid namespace_id UUID"}, status_code=400)
+    try:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            items = await fetch_namespace_bridge_subscriptions(conn, ns_uuid)
+    except Exception as exc:
+        logger.exception("api_admin_namespace_bridges failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse({"items": items, "namespace_id": str(ns_uuid)})
+
+
+async def api_admin_bridge_renew(request):
+    """POST /api/admin/bridges/{bridge_id}/renew
+
+    Forces a webhook subscription refresh for SharePoint/Google Drive integrations.
+    Optional query ``namespace_id`` scopes the call when the caller wants an extra guardrail.
+    """
+    if not engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    try:
+        bridge_uuid = uuid.UUID(request.path_params["bridge_id"])
+    except ValueError:
+        return JSONResponse({"error": "Invalid bridge_id UUID"}, status_code=400)
+
+    try:
+        ns_guard = parse_optional_uuid(request.query_params.get("namespace_id"))
+    except ValueError:
+        return JSONResponse({"error": "Invalid namespace_id UUID"}, status_code=400)
+
+    from trimcp.bridge_renewal import renew_dropbox, renew_gdrive, renew_sharepoint
+
+    try:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM bridge_subscriptions WHERE id = $1",
+                bridge_uuid,
+            )
+        if row is None:
+            return JSONResponse({"error": "bridge subscription not found"}, status_code=404)
+        if (
+            ns_guard is not None
+            and row["namespace_id"] is not None
+            and row["namespace_id"] != ns_guard
+        ):
+            return JSONResponse({"error": "namespace_id does not own this bridge"}, status_code=403)
+    except Exception as exc:
+        logger.exception("api_admin_bridge_renew prefetch failed bridge_id=%s", bridge_uuid)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    prov = row["provider"]
+    logger.info(
+        "audit bridge_admin_renew_requested bridge_id=%s provider=%s namespace_id=%s",
+        bridge_uuid,
+        prov,
+        row["namespace_id"],
+    )
+
+    try:
+        if prov == "sharepoint":
+            await renew_sharepoint(engine.pg_pool, row)
+            action = "renewed_sharepoint"
+        elif prov == "gdrive":
+            await renew_gdrive(engine.pg_pool, row)
+            action = "renewed_gdrive"
+        elif prov == "dropbox":
+            await renew_dropbox(engine.pg_pool, row)
+            action = "noop_dropbox"
+        else:
+            return JSONResponse(
+                {"error": f"Unsupported provider for renewal: {prov}"}, status_code=422
+            )
+    except Exception as exc:
+        logger.exception("audit bridge_admin_renew_failed bridge_id=%s", bridge_uuid)
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    logger.info(
+        "audit bridge_admin_renew_succeeded bridge_id=%s provider=%s action=%s",
+        bridge_uuid,
+        prov,
+        action,
+    )
+    return JSONResponse({"status": "ok", "action": action, "bridge_id": str(bridge_uuid)})
+
+
+
+
 app = Starlette(
     debug=False,
     lifespan=lifespan,
@@ -2001,6 +2859,7 @@ app = Starlette(
     ],
     routes=[
         Route("/", endpoint=serve_index),
+        Route("/styles.css", endpoint=serve_styles),
         Route("/api/health", endpoint=get_health, methods=["GET"]),
         Route("/api/health/v1", endpoint=get_health_v1, methods=["GET"]),
         Route("/api/gc/trigger", endpoint=trigger_gc, methods=["POST"]),
@@ -2047,6 +2906,31 @@ app = Starlette(
             methods=["POST"],
         ),
         Route("/api/admin/quotas", endpoint=api_admin_quotas, methods=["GET"]),
+        Route(
+            "/api/admin/signing/status",
+            endpoint=api_admin_signing_status,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/pii-redactions",
+            endpoint=api_admin_pii_redactions_list,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/security/event-seq-gaps/{namespace_id}",
+            endpoint=api_admin_security_event_seq_gaps,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/security/verify-memory-sample",
+            endpoint=api_admin_security_verify_memory_sample,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/security/test-rls-isolation",
+            endpoint=api_admin_security_test_rls_isolation,
+            methods=["POST"],
+        ),
         Route(
             "/api/admin/quotas/summary",
             endpoint=api_admin_quotas_summary,
@@ -2149,6 +3033,56 @@ app = Starlette(
         Route(
             "/api/admin/datastores/save",
             endpoint=api_admin_datastores_save,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/namespaces",
+            endpoint=api_admin_namespaces_list,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/namespaces/{namespace_id}",
+            endpoint=api_admin_namespaces_get,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/namespaces/{namespace_id}/metadata",
+            endpoint=api_admin_namespaces_update_metadata,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/memory/boost",
+            endpoint=api_admin_memory_boost,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/salience-map",
+            endpoint=api_admin_salience_map,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/llm-payload",
+            endpoint=api_admin_llm_payload,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/fleet-overview",
+            endpoint=api_admin_fleet_overview,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/contradictions/recent",
+            endpoint=api_admin_contradictions_recent,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/namespaces/{namespace_id}/bridges",
+            endpoint=api_admin_namespace_bridges,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/bridges/{bridge_id}/renew",
+            endpoint=api_admin_bridge_renew,
             methods=["POST"],
         ),
     ],

@@ -393,6 +393,10 @@ async def _fetch_llm_payload(uri: str) -> dict[str, Any]:
     return json.loads(raw.decode("utf-8"))
 
 
+# Public alias for admin / tooling (replay module remains the canonical MinIO accessor).
+fetch_llm_payload = _fetch_llm_payload
+
+
 async def _put_llm_payload(uri: str, payload: dict[str, Any]) -> bytes:
     """
     PUT ``{prompt, response}`` to MinIO and return ``sha256(JCS(payload))``.

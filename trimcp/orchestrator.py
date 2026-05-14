@@ -39,6 +39,7 @@ from trimcp.models import (
     IndexCodeFileRequest,
     ManageNamespaceRequest,
     ManageQuotasRequest,
+    ArtifactPayload,
     MediaPayload,
     SnapshotRecord,
     StateDiffResult,
@@ -685,10 +686,13 @@ class TriStackEngine:
         await self._ensure_memory()
         return await self.memory.store_memory(payload)
 
+    async def store_artifact(self, payload: ArtifactPayload) -> str:
+        """[Phase 1.3] High-performance artifact storage (replaces store_media)."""
+        return await self.memory.store_artifact(payload)
+
     async def store_media(self, payload: MediaPayload) -> str:
-        """Delegate to MemoryOrchestrator."""
-        await self._ensure_memory()
-        return await self.memory.store_media(payload)
+        """[DEPRECATED] Use store_artifact instead."""
+        return await self.store_artifact(payload)
 
     async def force_gc(self) -> dict:
         """Manually trigger a GC pass."""

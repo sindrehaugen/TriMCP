@@ -198,6 +198,35 @@ async def _refresh_backlog_gauge(pg_pool: Any, task_name: str | None = None) -> 
         log.debug("[DLQ] Could not refresh backlog gauge — DB may not be ready.")
 
 
+async def count_dead_letters(
+    pg_pool: Any,
+    task_name: str | None = None,
+    status: str | None = None,
+) -> int:
+    """Return matching DLQ rows (same filters as ``list_dead_letters``)."""
+
+    clauses: list[str] = ["1=1"]
+    params: list[Any] = []
+
+    if task_name:
+        params.append(task_name)
+        clauses.append(f"task_name = ${len(params)}")
+    if status:
+        params.append(status)
+        clauses.append(f"status = ${len(params)}")
+
+    query = f"""
+        SELECT COUNT(*)::bigint AS cnt
+        FROM dead_letter_queue
+        WHERE {' AND '.join(clauses)}
+    """
+
+    async with pg_pool.acquire(timeout=10.0) as conn:
+        cnt = await conn.fetchval(query, *params)
+
+    return int(cnt or 0)
+
+
 async def list_dead_letters(
     pg_pool: Any,
     task_name: str | None = None,

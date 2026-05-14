@@ -206,10 +206,44 @@ TOOLS = [
         },
     ),
     Tool(
+        name="store_artifact",
+        description=(
+            "Ingest large artifacts (media, PDF, log, diagnostics) into the Quad-Stack. "
+            "Uploads raw file to MinIO and indexes its metadata into the Tri-Stack."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {"type": "string"},
+                "user_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "media_type": {
+                    "type": "string",
+                    "enum": ["audio", "video", "image", "pdf", "log", "other"],
+                },
+                "file_path_on_disk": {
+                    "type": "string",
+                    "description": "Local path to the artifact file",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "AI-generated or manual summary of the artifact",
+                },
+            },
+            "required": [
+                "namespace_id",
+                "user_id",
+                "session_id",
+                "media_type",
+                "file_path_on_disk",
+                "summary",
+            ],
+        },
+    ),
+    Tool(
         name="store_media",
         description=(
-            "Ingest large media (audio/video/image) into the Quad-Stack. "
-            "Uploads raw file to MinIO and indexes the summary into the Tri-Stack."
+            "[DEPRECATED] Alias for store_artifact. Ingest large media into the Quad-Stack."
         ),
         inputSchema={
             "type": "object",
@@ -218,14 +252,8 @@ TOOLS = [
                 "user_id": {"type": "string"},
                 "session_id": {"type": "string"},
                 "media_type": {"type": "string", "enum": ["audio", "video", "image"]},
-                "file_path_on_disk": {
-                    "type": "string",
-                    "description": "Local path to the media file",
-                },
-                "summary": {
-                    "type": "string",
-                    "description": "AI-generated summary of the media content",
-                },
+                "file_path_on_disk": {"type": "string"},
+                "summary": {"type": "string"},
             },
             "required": [
                 "namespace_id",
@@ -1380,6 +1408,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         try:
             _base_mutation_tools = {
                 "store_memory",
+                "store_artifact",
                 "store_media",
                 "index_code_file",
                 "connect_bridge",
@@ -1449,6 +1478,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             try:
                 if name == "store_memory":
                     result_text = await memory_mcp_handlers.handle_store_memory(
+                        engine, arguments
+                    )
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "store_artifact":
+                    result_text = await memory_mcp_handlers.handle_store_artifact(
                         engine, arguments
                     )
                     return [TextContent(type="text", text=result_text)]

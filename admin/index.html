@@ -5,61 +5,58 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TriMCP Admin Console</title>
   <link rel="stylesheet" href="styles.css">
+  <style>[x-cloak]{display:none!important}</style>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js"></script>
 </head>
-<body class="text-slate-800 min-h-screen antialiased flex flex-col justify-between bg-[#F8FAFC]" x-data="adminShell" x-init="init()">
+<body class="text-slate-800 min-h-screen antialiased flex flex-col bg-[#F8FAFC]" x-data="adminShell" x-init="init()" @keydown.escape.window="sidebarOpen = false">
 
-  <!-- Top bar (Header block) -->
-  <header class="sticky top-0 z-40 border-b border-slate-200/80 bg-white/95 backdrop-blur-md shadow-sm">
-    <div class="max-w-7xl mx-auto px-4 py-3 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-      <div class="flex items-center justify-between sm:justify-start gap-4">
-        <!-- TriMCP Memory Engine Logo Element -->
-        <div class="flex items-center gap-3">
-          <svg class="w-8 h-8 text-bravo-pink drop-shadow-[0_0_8px_rgba(37,99,235,0.15)]" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="16" cy="16" r="15" fill="#FFFFFF" stroke="#2563EB" stroke-width="1.5" />
-            <!-- Three interconnected storage/memory nodes (tri-channel) -->
-            <circle cx="16" cy="11" r="3.5" fill="#2563EB" />
-            <circle cx="11" cy="20" r="3.5" fill="#E11D48" />
-            <circle cx="21" cy="20" r="3.5" fill="#10B981" />
-            <!-- Connecting paths -->
-            <path d="M16 11L11 20M11 20H21M21 20L16 11" stroke="#475569" stroke-width="1" stroke-dasharray="2 1" class="opacity-70" />
-            <!-- Center nucleus -->
-            <circle cx="16" cy="17" r="1.5" fill="#475569" class="animate-pulse" />
-          </svg>
-          <div class="flex flex-col">
-            <div class="flex items-center gap-1.5">
-              <span class="text-xl font-extrabold tracking-tight font-hanken text-slate-900">TriMCP<span class="text-bravo-pink">.</span></span>
-              <span class="text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 uppercase tracking-wider font-semibold">Console</span>
+  <!-- Top bar: brand + credentials; primary nav lives in sticky sidebar -->
+  <header class="sticky top-0 z-50 border-b border-slate-200/80 bg-white/95 backdrop-blur-md shadow-sm shrink-0">
+    <div class="max-w-[100vw] mx-auto px-3 sm:px-4 py-3 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div class="flex items-center justify-between gap-3 sm:justify-start">
+        <div class="flex items-center gap-2 shrink-0">
+          <button type="button"
+                  class="lg:hidden rounded-xl border border-slate-200/90 bg-white p-2 text-slate-700 shadow-sm hover:bg-slate-50 hover:border-slate-300 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-bravo-pink/55"
+                  :aria-expanded="sidebarOpen.toString()" aria-controls="admin-sidebar"
+                  @click.stop="sidebarOpen = !sidebarOpen"
+                  aria-label="Open command center navigation">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+            </svg>
+          </button>
+          <!-- TriMCP Memory Engine Logo Element -->
+          <div class="flex items-center gap-3">
+            <svg class="w-8 h-8 text-bravo-pink drop-shadow-[0_0_8px_rgba(37,99,235,0.15)]" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="16" cy="16" r="15" fill="#FFFFFF" stroke="#2563EB" stroke-width="1.5" />
+              <!-- Three interconnected storage/memory nodes (tri-channel) -->
+              <circle cx="16" cy="11" r="3.5" fill="#2563EB" />
+              <circle cx="11" cy="20" r="3.5" fill="#E11D48" />
+              <circle cx="21" cy="20" r="3.5" fill="#10B981" />
+              <!-- Connecting paths -->
+              <path d="M16 11L11 20M11 20H21M21 20L16 11" stroke="#475569" stroke-width="1" stroke-dasharray="2 1" class="opacity-70" />
+              <!-- Center nucleus -->
+              <circle cx="16" cy="17" r="1.5" fill="#475569" class="animate-pulse" />
+            </svg>
+            <div class="flex flex-col min-w-0">
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <span class="text-xl font-extrabold tracking-tight font-hanken text-slate-900">TriMCP<span class="text-bravo-pink">.</span></span>
+                <span class="text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 uppercase tracking-wider font-semibold">Console</span>
+              </div>
+              <span class="text-[8px] font-mono tracking-widest text-slate-500 font-medium truncate">Triple Memory Engine</span>
             </div>
-            <!-- Subtitle -->
-            <span class="text-[8px] font-mono tracking-widest text-slate-500 font-medium">Triple Memory Engine</span>
           </div>
         </div>
-        
-        <!-- Navigation Links -->
-        <nav class="hidden md:flex items-center gap-1 text-xs font-semibold text-slate-500">
-          <a href="#health" class="px-2.5 py-1.5 rounded-lg hover:text-slate-900 hover:bg-slate-100 transition">Health</a>
-          <span class="text-slate-300">/</span>
-          <a href="#events" class="px-2.5 py-1.5 rounded-lg hover:text-slate-900 hover:bg-slate-100 transition">Events</a>
-          <span class="text-slate-300">/</span>
-          <a href="#quotas" class="px-2.5 py-1.5 rounded-lg hover:text-slate-900 hover:bg-slate-100 transition">Quotas</a>
-          <span class="text-slate-300">/</span>
-          <a href="#graph" class="px-2.5 py-1.5 rounded-lg hover:text-slate-900 hover:bg-slate-100 transition">Graph</a>
-          <span class="text-slate-300">/</span>
-          <a href="#embedding-migration" class="px-2.5 py-1.5 rounded-lg hover:text-slate-900 hover:bg-slate-100 transition">Embeddings</a>
-          <span class="text-slate-300">/</span>
-          <a href="#datastores" class="px-2.5 py-1.5 rounded-lg hover:text-slate-900 hover:bg-slate-100 transition">Datastores</a>
-        </nav>
+        <span class="text-[10px] font-semibold uppercase tracking-wide text-slate-400 lg:hidden font-mono" x-text="activeSectionHint"></span>
       </div>
-      
+
       <!-- Key Credentials persistence -->
       <div class="flex flex-wrap items-end gap-3 w-full sm:w-auto">
         <label class="flex-grow sm:flex-grow-0 sm:w-56">
           <span class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1 font-semibold">HMAC Secret (TRIMCP_API_KEY)</span>
-          <input type="password" x-model="apiKey" @change="persistKey"
+          <input type="password" id="trimcp-admin-hmac-secret" x-model="apiKey" @change="persistKey"
                  class="w-full rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-xs font-mono text-slate-800 focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink outline-none transition"
                  placeholder="Paste HMAC authorization key"
-                 autocomplete="off">
+                 autocomplete="new-password">
         </label>
         <label class="w-36">
           <span class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1 font-semibold">Default Namespace</span>
@@ -80,15 +77,336 @@
     </template>
   </div>
 
-  <!-- Main Container -->
-  <main class="max-w-7xl mx-auto px-4 py-8 space-y-20 w-full flex-grow">
+  <!-- Sidebar + scrollable workspace (fills viewport below header; nav stays reachable) -->
+  <div class="relative flex flex-1 min-h-0 w-full">
+    <!-- Mobile drawer backdrop -->
+    <div x-show="sidebarOpen"
+         x-transition.opacity.duration.150ms
+         @click="sidebarOpen = false"
+         class="fixed inset-0 z-30 bg-slate-900/45 backdrop-blur-[2px] lg:hidden"
+         x-cloak
+         aria-hidden="true"></div>
 
-    <!-- TriMCP Welcome Banner with Core Network Visualization -->
-    <section class="relative overflow-hidden rounded-2xl border border-slate-200 bg-gradient-to-r from-white via-slate-50 to-slate-100/50 p-6 sm:p-8 shadow-md">
+    <aside id="admin-sidebar"
+           class="fixed lg:sticky lg:top-0 z-40 flex h-full max-h-[100vh] lg:max-h-none lg:h-auto self-stretch top-0 left-0 w-[15.5rem] shrink-0 flex-col border-r border-slate-200/90 bg-gradient-to-b from-white via-[#fafbfc] to-slate-50/95 shadow-[4px_0_24px_-8px_rgba(15,23,42,0.12)] lg:shadow-none transition-transform duration-200 ease-out lg:translate-x-0 overflow-hidden"
+           :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'"
+           role="navigation"
+           aria-label="Command center sections">
+      <div class="px-3 pt-4 pb-2 border-b border-slate-100/90 hidden lg:block">
+        <p class="text-[9px] font-mono font-bold uppercase tracking-[0.2em] text-slate-400">Command Center</p>
+      </div>
+      <nav class="flex flex-col gap-0.5 p-2 sm:p-3 overflow-y-auto flex-1 min-h-0">
+        <template x-for="item in adminNavItems" :key="item.slug">
+          <button type="button"
+                  :aria-current="adminTab === item.slug ? 'page' : false"
+                  :aria-label="item.label"
+                  @click="setAdminTab(item.slug); sidebarOpen = false"
+                  class="group flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-xs font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-offset-white focus-visible:ring-bravo-pink/65 border border-transparent"
+                  :class="adminTab === item.slug
+                    ? 'bg-white text-slate-900 border-slate-200/90 shadow-sm ring-1 ring-slate-100'
+                    : 'text-slate-600 hover:bg-white/70 hover:border-slate-200/70 hover:text-slate-900'">
+            <span class="flex h-6 w-0.5 shrink-0 rounded-full transition-colors"
+                  :class="adminTab === item.slug ? 'bg-bravo-pink shadow-[0_0_10px_rgba(225,29,72,0.35)]' : 'bg-slate-200 group-hover:bg-slate-300'"></span>
+            <span class="truncate" x-text="item.label"></span>
+          </button>
+        </template>
+      </nav>
+      <div class="p-3 pt-0 hidden lg:block">
+        <p class="text-[9px] text-slate-400 font-mono leading-relaxed border-t border-slate-100/80 pt-3">Alpine tab routing · synced with URL hash.</p>
+      </div>
+    </aside>
+
+  <!-- Main Container -->
+  <main class="flex-1 min-w-0 min-h-0 overflow-y-auto lg:overflow-y-auto">
+
+    <div class="max-w-7xl mx-auto px-4 py-8 w-full">
+
+    <!-- Tab: Fleet Command -->
+    <div id="panel-fleet" x-show="adminTab === 'fleet'" x-cloak class="space-y-8">
+      <section id="fleet-command" class="scroll-mt-24 pt-2 md:pt-4" x-data="fleetOperationsPanel" x-init="mount()">
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between border-b border-slate-200 pb-4 mb-6">
+          <div>
+            <h2 class="text-lg font-bold font-hanken tracking-tight text-slate-900 uppercase">Fleet Command</h2>
+            <p class="text-xs text-slate-500 mt-1">Namespace operations · <code class="text-bravo-pink font-semibold">GET /api/admin/fleet-overview</code></p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button type="button" @click="refreshFleet(); refreshContradictions()"
+                    class="rounded-lg bg-white border border-slate-300 px-4 py-2 text-xs font-bold text-slate-700 hover:border-slate-400 shadow-sm transition">
+              Refresh fleet
+            </button>
+          </div>
+        </div>
+
+        <div class="flex flex-col xl:flex-row gap-6 items-start">
+          <div class="flex-1 min-w-0 space-y-4 w-full">
+            <div class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm flex flex-wrap gap-3 items-end">
+              <label class="flex-1 min-w-[160px]">
+                <span class="block text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Slug prefix filter</span>
+                <input type="text" x-model="slugPrefix" placeholder="e.g. prod"
+                       class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-mono text-slate-800 focus:border-bravo-pink outline-none transition">
+              </label>
+              <button type="button" @click="page = 1; refreshFleet()"
+                      class="rounded-lg bg-gradient-to-r from-indigo-600 to-bravo-pink px-4 py-2 text-xs font-bold text-white shadow-md">
+                Apply
+              </button>
+              <div class="flex gap-2 flex-wrap text-[10px] font-mono text-slate-600">
+                <template x-for="(ok, tbl) in rlsHint" :key="tbl">
+                  <span class="px-2 py-1 rounded-md border"
+                        :class="ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-amber-50 border-amber-200 text-amber-900'"
+                        x-text="tbl + ':' + (ok ? 'RLS' : 'off')"></span>
+                </template>
+              </div>
+            </div>
+
+            <div class="flex flex-wrap gap-2 items-center">
+              <button type="button" @click="openBulkConsolidationPreview()"
+                      class="rounded-lg bg-slate-900 text-white px-3 py-2 text-[10px] font-bold uppercase tracking-wide hover:bg-slate-800 transition">
+                Enable consolidation…
+              </button>
+              <button type="button" @click="openRetentionPreview()"
+                      class="rounded-lg bg-white border border-slate-300 px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-slate-800 hover:border-bravo-pink transition">
+                Set retention policy…
+              </button>
+              <span class="text-[10px] text-slate-500 font-medium" x-text="checkedIds.length ? checkedIds.length + ' selected' : 'Select rows for bulk actions'"></span>
+            </div>
+
+            <div class="rounded-xl border border-slate-200 bg-white shadow-sm overflow-x-auto">
+              <table class="min-w-full text-left text-xs">
+                <thead class="bg-slate-50 border-b border-slate-200">
+                  <tr>
+                    <th class="px-3 py-2.5 w-10">
+                      <input type="checkbox" class="rounded border-slate-300"
+                             :checked="items.length && checkedIds.length === items.length"
+                             @change="toggleCheckAll()">
+                    </th>
+                    <th class="px-3 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Namespace</th>
+                    <th class="px-3 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Memory · 7d</th>
+                    <th class="px-3 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Salience P50</th>
+                    <th class="px-3 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Contradictions</th>
+                    <th class="px-3 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Consolidation</th>
+                    <th class="px-3 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Bridges</th>
+                    <th class="px-3 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Events</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="row in items" :key="row.namespace_id">
+                    <tr class="border-b border-slate-100 hover:bg-slate-50/80 transition">
+                      <td class="px-3 py-2 align-middle">
+                        <input type="checkbox" class="rounded border-slate-300"
+                               :checked="checkedIds.includes(row.namespace_id)"
+                               @change="toggleCheck(row.namespace_id)">
+                      </td>
+                      <td class="px-3 py-2 align-middle">
+                        <button type="button" class="text-left font-bold text-indigo-700 hover:underline font-hanken"
+                                @click="deepLink('consolidation', row.namespace_id)" x-text="row.slug"></button>
+                        <p class="text-[9px] font-mono text-slate-400 truncate max-w-[160px]" x-text="row.namespace_id"></p>
+                      </td>
+                      <td class="px-3 py-2 align-middle">
+                        <div class="flex items-center gap-2">
+                          <button type="button" class="text-left font-mono text-slate-800 hover:text-bravo-pink"
+                                  title="Open Cognitive · decay map"
+                                  @click="deepLink('cognitive', row.namespace_id)" x-text="row.memory_count"></button>
+                          <svg class="shrink-0" width="56" height="22" viewBox="0 0 56 22" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                            <rect width="56" height="22" fill="#f8fafc" rx="3"/>
+                            <polyline fill="none" stroke="#2563eb" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"
+                                      :points="fleetSparkPoints(row.memory_velocity_7d)"/>
+                          </svg>
+                        </div>
+                      </td>
+                      <td class="px-3 py-2 align-middle font-mono text-slate-700" x-text="row.salience_p50 != null ? Number(row.salience_p50).toFixed(3) : '—'"></td>
+                      <td class="px-3 py-2 align-middle">
+                        <button type="button" class="font-bold text-rose-700 hover:underline"
+                                @click="deepLink('events', row.namespace_id)" x-text="row.open_contradictions"></button>
+                      </td>
+                      <td class="px-3 py-2 align-middle">
+                        <button type="button" class="text-[10px] uppercase font-bold tracking-wide text-slate-700 hover:text-bravo-pink"
+                                @click="deepLink('consolidation', row.namespace_id)"
+                                x-text="row.consolidation?.last_status || '—'"></button>
+                      </td>
+                      <td class="px-3 py-2 align-middle">
+                        <button type="button" class="text-[10px] font-bold text-purple-700 hover:underline"
+                                @click="selectBridgeLane(row.namespace_id, row.slug)" x-text="row.bridges?.active_count ?? 0"></button>
+                        <p class="text-[9px] font-mono text-slate-400" x-text="fmtIsoShort(row.bridges?.next_expires_at)"></p>
+                      </td>
+                      <td class="px-3 py-2 align-middle">
+                        <button type="button" class="text-[10px] font-bold uppercase tracking-wide hover:text-bravo-pink"
+                                :class="row.health?.event_feed === 'ok' ? 'text-emerald-700' : row.health?.event_feed === 'stale' ? 'text-amber-700' : 'text-slate-500'"
+                                @click="deepLink('events', row.namespace_id)" x-text="row.health?.event_feed || '—'"></button>
+                      </td>
+                    </tr>
+                  </template>
+                  <tr x-show="!loading && !items.length">
+                    <td colspan="8" class="px-4 py-10 text-center text-slate-500 font-medium">No namespaces match the fleet query.</td>
+                  </tr>
+                  <tr x-show="loading">
+                    <td colspan="8" class="px-4 py-10 text-center text-slate-500">
+                      <span class="inline-flex items-center gap-2"><span class="animate-spin h-4 w-4 border-2 border-slate-400 border-t-transparent rounded-full"></span> Loading fleet…</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="flex flex-wrap justify-between items-center gap-3 text-xs">
+              <p class="text-slate-500 font-medium">Total <span class="font-mono text-slate-800" x-text="total"></span></p>
+              <div class="flex gap-2">
+                <button type="button" @click="page = Math.max(1, page - 1); refreshFleet()" :disabled="page <= 1 || loading"
+                        class="rounded-lg border border-slate-300 px-3 py-1.5 font-bold disabled:opacity-40">Prev</button>
+                <button type="button" @click="page++; refreshFleet()" :disabled="loading || page * limit >= total"
+                        class="rounded-lg border border-slate-300 px-3 py-1.5 font-bold disabled:opacity-40">Next</button>
+              </div>
+            </div>
+          </div>
+
+          <aside class="w-full xl:w-[340px] shrink-0 space-y-4 xl:sticky xl:top-24">
+            <div class="rounded-xl border border-rose-200 bg-gradient-to-br from-white to-rose-50/40 p-4 shadow-md">
+              <div class="flex items-center justify-between mb-3">
+                <h3 class="text-[11px] font-bold uppercase tracking-widest text-rose-900">Contradiction feed</h3>
+                <span class="text-[9px] font-mono text-rose-600">latest 5 open</span>
+              </div>
+              <div x-show="feedLoading" class="text-slate-500 text-xs py-4 text-center">Loading…</div>
+              <ul class="space-y-2 max-h-[340px] overflow-y-auto" x-show="!feedLoading">
+                <template x-for="c in contradictionFeed" :key="c.id">
+                  <li class="rounded-lg border border-rose-100 bg-white/90 p-3 shadow-sm">
+                    <div class="flex justify-between gap-2">
+                      <button type="button" class="text-[11px] font-bold text-indigo-700 hover:underline text-left"
+                              @click="deepLink('events', c.namespace_id)" x-text="c.namespace_slug"></button>
+                      <span class="text-[9px] font-mono text-slate-400" x-text="fmtIsoShort(c.detected_at)"></span>
+                    </div>
+                    <p class="text-[10px] text-slate-600 mt-1 font-mono truncate" x-text="c.detection_path"></p>
+                    <p class="text-[9px] text-slate-500 mt-1">conf <span class="font-mono text-slate-800" x-text="c.confidence != null ? Number(c.confidence).toFixed(2) : '—'"></span></p>
+                  </li>
+                </template>
+                <li x-show="!contradictionFeed.length && !feedLoading" class="text-xs text-slate-500 py-4 text-center">No open contradictions.</li>
+              </ul>
+            </div>
+
+            <div class="rounded-xl border border-purple-200 bg-white p-4 shadow-md">
+              <h3 class="text-[11px] font-bold uppercase tracking-widest text-purple-900 mb-2">Bridge &amp; token lane</h3>
+              <p class="text-[10px] text-slate-500 mb-3">Select a namespace from the bridge column to load integration cards.</p>
+              <p class="text-[10px] font-bold text-slate-700 mb-2" x-show="bridgeNsId">
+                <span class="text-purple-700" x-text="bridgeSlug || bridgeNsId.slice(0,8)+'…'"></span>
+              </p>
+              <div x-show="bridgesLoading" class="text-xs text-slate-500 py-4">Loading bridges…</div>
+              <div class="space-y-3" x-show="!bridgesLoading">
+                <template x-for="b in bridges" :key="b.id">
+                  <div class="rounded-lg border border-slate-200 bg-slate-50/80 p-3">
+                    <div class="flex justify-between items-start gap-2">
+                      <div>
+                        <p class="text-[10px] font-bold uppercase text-slate-800" x-text="b.provider"></p>
+                        <p class="text-[9px] font-mono text-slate-500 mt-0.5 truncate" x-text="b.resource_id"></p>
+                      </div>
+                      <span class="text-[9px] font-bold px-2 py-0.5 rounded-full border"
+                            :class="b.status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-amber-50 text-amber-900 border-amber-200'"
+                            x-text="b.status"></span>
+                    </div>
+                    <div class="mt-2 h-2 rounded-full bg-slate-200 overflow-hidden" title="Remaining timeline vs 90d horizon">
+                      <div class="h-full rounded-full bg-gradient-to-r from-purple-500 to-bravo-pink transition-all duration-500"
+                           :style="'width:' + bridgeBarPct(b.expires_at) + '%'"></div>
+                    </div>
+                    <p class="text-[9px] text-slate-500 mt-1 font-mono">exp <span x-text="fmtIsoShort(b.expires_at)"></span></p>
+                    <button type="button"
+                            class="mt-2 w-full rounded-lg bg-slate-900 text-white text-[10px] font-bold py-2 uppercase tracking-wide hover:bg-slate-800 transition"
+                            @click="openRenewModal(b)">
+                      Force renewal…
+                    </button>
+                  </div>
+                </template>
+                <p x-show="bridgeNsId && !bridges.length && !bridgesLoading" class="text-xs text-slate-500 py-2">No active bridge subscriptions.</p>
+                <p x-show="!bridgeNsId" class="text-xs text-slate-400 italic">Awaiting namespace selection.</p>
+              </div>
+            </div>
+          </aside>
+        </div>
+
+        <!-- Bulk consolidation preview modal -->
+        <div x-show="bulkConsolidationModal.open" x-cloak class="fixed inset-0 z-[70] flex items-center justify-center p-4" style="display: none;">
+          <div class="absolute inset-0 bg-slate-900/55" @click="bulkConsolidationModal.open = false"></div>
+          <div class="relative z-10 max-w-lg w-full rounded-2xl bg-white border border-slate-200 shadow-2xl p-6">
+            <h4 class="text-sm font-bold text-slate-900 uppercase tracking-wide">Enable consolidation</h4>
+            <p class="text-xs text-slate-600 mt-2">Preview — namespaces that will receive <code class="font-mono bg-slate-100 px-1 rounded">consolidation.enabled = true</code> via metadata patch.</p>
+            <ul class="mt-3 max-h-40 overflow-y-auto text-xs font-mono border border-slate-100 rounded-lg divide-y divide-slate-100">
+              <template x-for="row in previewNamespaces" :key="row.namespace_id">
+                <li class="px-3 py-2 flex justify-between gap-2">
+                  <span class="font-bold text-indigo-700" x-text="row.slug"></span>
+                  <span class="text-slate-400 truncate" x-text="row.namespace_id"></span>
+                </li>
+              </template>
+            </ul>
+            <div class="mt-5 flex justify-end gap-2">
+              <button type="button" class="px-4 py-2 text-xs font-bold rounded-lg border border-slate-300 text-slate-700"
+                      @click="bulkConsolidationModal.open = false">Cancel</button>
+              <button type="button" class="px-4 py-2 text-xs font-bold rounded-lg bg-emerald-600 text-white disabled:opacity-50"
+                      :disabled="bulkConsolidationModal.loading"
+                      @click="executeBulkConsolidation()">
+                <span x-show="!bulkConsolidationModal.loading">Confirm enable</span>
+                <span x-show="bulkConsolidationModal.loading">Applying…</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Retention policy modal -->
+        <div x-show="retentionModal.open" x-cloak class="fixed inset-0 z-[70] flex items-center justify-center p-4" style="display: none;">
+          <div class="absolute inset-0 bg-slate-900/55" @click="retentionModal.open = false"></div>
+          <div class="relative z-10 max-w-lg w-full rounded-2xl bg-white border border-slate-200 shadow-2xl p-6">
+            <h4 class="text-sm font-bold text-slate-900 uppercase tracking-wide">Temporal retention</h4>
+            <p class="text-xs text-slate-600 mt-2">Sets <code class="font-mono bg-slate-100 px-1 rounded">temporal_retention_days</code> on each selected namespace.</p>
+            <label class="block mt-4 text-[10px] uppercase font-bold text-slate-500">Retention days</label>
+            <input type="number" min="0" x-model.number="retentionModal.days"
+                   class="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono">
+            <ul class="mt-3 max-h-32 overflow-y-auto text-xs font-mono border border-slate-100 rounded-lg divide-y divide-slate-100">
+              <template x-for="row in previewNamespaces" :key="'r'+row.namespace_id">
+                <li class="px-3 py-2 font-bold text-slate-800" x-text="row.slug"></li>
+              </template>
+            </ul>
+            <div class="mt-5 flex justify-end gap-2">
+              <button type="button" class="px-4 py-2 text-xs font-bold rounded-lg border border-slate-300 text-slate-700"
+                      @click="retentionModal.open = false">Cancel</button>
+              <button type="button" class="px-4 py-2 text-xs font-bold rounded-lg bg-indigo-600 text-white disabled:opacity-50"
+                      :disabled="retentionModal.loading"
+                      @click="executeRetention()">
+                <span x-show="!retentionModal.loading">Confirm policy</span>
+                <span x-show="retentionModal.loading">Applying…</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bridge renewal confirmation -->
+        <div x-show="renewModal.open" x-cloak class="fixed inset-0 z-[70] flex items-center justify-center p-4" style="display: none;">
+          <div class="absolute inset-0 bg-slate-900/55" @click="renewModal.open = false"></div>
+          <div class="relative z-10 max-w-md w-full rounded-2xl bg-white border border-slate-200 shadow-2xl p-6">
+            <h4 class="text-sm font-bold text-slate-900 uppercase tracking-wide">Force token renewal</h4>
+            <p class="text-xs text-slate-600 mt-2">POST renew on provider webhooks for bridge</p>
+            <template x-if="renewModal.bridge">
+              <div class="mt-3 rounded-lg bg-slate-50 border border-slate-100 p-3 text-xs font-mono space-y-1">
+                <p><span class="text-slate-500">provider</span> <span class="font-bold" x-text="renewModal.bridge.provider"></span></p>
+                <p class="truncate"><span class="text-slate-500">id</span> <span x-text="renewModal.bridge.id"></span></p>
+              </div>
+            </template>
+            <div class="mt-5 flex justify-end gap-2">
+              <button type="button" class="px-4 py-2 text-xs font-bold rounded-lg border border-slate-300 text-slate-700"
+                      @click="renewModal.open = false">Cancel</button>
+              <button type="button" class="px-4 py-2 text-xs font-bold rounded-lg bg-purple-700 text-white disabled:opacity-50"
+                      :disabled="renewModal.loading"
+                      @click="confirmRenewBridge()">
+                <span x-show="!renewModal.loading">Confirm renew</span>
+                <span x-show="renewModal.loading">Renewing…</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Tab: Overview (welcome) -->
+    <div x-show="adminTab === 'overview'" x-cloak class="space-y-12">
+    <section id="overview" class="relative overflow-hidden rounded-2xl border border-slate-200 bg-gradient-to-r from-white via-slate-50 to-slate-100/50 p-6 sm:p-8 shadow-md scroll-mt-24">
       <!-- Glow effects -->
       <div class="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-bravo-pink/5 blur-[100px] pointer-events-none"></div>
       <div class="absolute -left-20 -bottom-20 h-64 w-64 rounded-full bg-bravo-blue/5 blur-[100px] pointer-events-none"></div>
-      
+
       <div class="relative flex flex-col md:flex-row items-center gap-6">
         <!-- Inlined Vector TriMCP Memory Core Visual -->
         <div class="flex-shrink-0">
@@ -99,10 +417,10 @@
             <circle cx="50" cy="50" r="22" stroke="#10B981" stroke-width="1.5" stroke-dasharray="6 2" />
             <!-- Concentric solid core boundary -->
             <circle cx="50" cy="50" r="12" fill="#FFFFFF" stroke="#D97706" stroke-width="2" />
-            
+
             <line x1="50" y1="8" x2="50" y2="92" stroke="#475569" stroke-width="0.5" stroke-dasharray="1 4" class="opacity-40" />
             <line x1="8" y1="50" x2="92" y2="50" stroke="#475569" stroke-width="0.5" stroke-dasharray="1 4" class="opacity-40" />
-            
+
             <!-- Nodes on the rings -->
             <circle cx="50" cy="18" r="4.5" fill="#2563EB" class="animate-pulse" />
             <circle cx="50" cy="82" r="4.5" fill="#2563EB" />
@@ -112,7 +430,7 @@
             <circle cx="66" cy="66" r="3.5" fill="#10B981" />
             <circle cx="66" cy="34" r="3.5" fill="#D97706" />
             <circle cx="34" cy="66" r="3.5" fill="#D97706" />
-            
+
             <!-- Core visual -->
             <circle cx="50" cy="50" r="5" fill="#475569" class="animate-ping" />
             <circle cx="50" cy="50" r="4" fill="#475569" />
@@ -131,9 +449,11 @@
         </div>
       </div>
     </section>
+    </div>
 
-    <!-- Health -->
-    <section id="health" class="scroll-mt-24 pt-16 border-t border-slate-200/80">
+    <!-- Tab: Health -->
+    <div id="panel-health" x-show="adminTab === 'health'" x-cloak class="space-y-8">
+    <section id="health" class="scroll-mt-24 pt-6 md:pt-8 border-t border-slate-200/80">
       <div class="border-b border-slate-200 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h2 class="text-lg font-bold font-hanken tracking-tight text-slate-900 uppercase">Stack health status</h2>
@@ -141,7 +461,7 @@
         </div>
         <span class="self-start sm:self-auto text-[10px] font-mono text-slate-600 uppercase tracking-widest font-bold bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200">REALTIME TELEMETRY</span>
       </div>
-      
+
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <template x-for="(status, key) in healthRows" :key="key">
           <div class="rounded-xl border border-slate-200 bg-white p-4 transition duration-200 hover:border-slate-300 shadow-sm">
@@ -158,7 +478,7 @@
           </div>
         </template>
       </div>
-      
+
       <div class="mt-4 flex flex-wrap gap-3 items-center justify-between">
         <button type="button" @click="loadHealth()"
                 class="rounded-lg bg-bravo-blue hover:bg-bravo-blue/90 px-4 py-2 text-xs font-bold text-white transition disabled:opacity-50 tracking-wide shadow-md shadow-bravo-blue/10"
@@ -166,9 +486,254 @@
         <span class="text-xs text-slate-500 font-medium">Last active probe: <span class="text-bravo-pink font-mono" x-text="lastHealthAt || '—'"></span></span>
       </div>
     </section>
+    </div>
 
-    <!-- Event Log -->
-    <section id="events" class="scroll-mt-24 pt-16 border-t border-slate-200/80" x-data="eventLogComponent" x-init="mount()">
+    <!-- Tab: Security — Zero-trust audit gauges -->
+    <div id="panel-security" x-show="adminTab === 'security'" x-cloak class="space-y-8">
+    <section id="security-audit" class="scroll-mt-24 pt-6 md:pt-8 border-t border-slate-200/80"
+             x-data="securityAuditPanel" x-init="mount()">
+      <div class="border-b border-slate-200 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+        <div>
+          <h2 class="text-lg font-bold font-hanken tracking-tight text-slate-900 uppercase">Zero-trust security audit</h2>
+          <p class="text-xs text-slate-500 mt-1">Signing integrity, PII vault, WORM / Merkle chain, and RLS isolation probes</p>
+        </div>
+        <div class="flex flex-wrap gap-2 items-center">
+          <label class="text-[10px] uppercase font-bold text-slate-500 sr-only sm:not-sr-only">Namespace</label>
+          <input type="text" x-model="targetNs"
+                 class="w-52 rounded-lg border border-slate-300 px-2 py-1 text-[11px] font-mono"
+                 placeholder="Namespace UUID for probes">
+          <button type="button" @click="refreshAll()"
+                  class="rounded-lg bg-slate-900 text-white px-3 py-1.5 text-[11px] font-bold hover:bg-slate-800 disabled:opacity-50"
+                  :disabled="panelLoading">
+            <span x-show="!panelLoading">Refresh panel</span>
+            <span x-show="panelLoading" class="inline-flex items-center gap-1"><span class="animate-spin h-3 w-3 border-2 border-white border-t-transparent rounded-full"></span>Loading…</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Critical alert: invalid memory signatures after sampling -->
+      <div x-show="sampleInvalid > 0" x-cloak
+           class="mb-4 rounded-xl border-2 border-red-400 bg-red-50 px-4 py-3 shadow-sm flex gap-3 items-start"
+           role="alert">
+        <span class="text-red-600 text-lg leading-none">⚠</span>
+        <div>
+          <p class="text-xs font-bold text-red-800 uppercase tracking-wide">Signature integrity failure</p>
+          <p class="text-[11px] text-red-700 mt-1">
+            <span x-text="sampleInvalid"></span> invalid signature(s) in the last verify sweep. Investigate signing keys and memory rows immediately.
+          </p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <!-- 1: Signing integrity -->
+        <div class="rounded-2xl border border-slate-200/90 bg-white p-5 shadow-sm ring-1 ring-slate-900/5">
+          <div class="flex items-center justify-between gap-2 mb-3">
+            <h3 class="text-[11px] font-bold uppercase tracking-widest text-slate-600">Signing integrity monitor</h3>
+            <span class="text-[9px] font-mono text-slate-400">GET /api/admin/signing/status</span>
+          </div>
+          <div x-show="signingError" class="text-[11px] text-red-600 mb-2 font-medium" x-text="signingError"></div>
+          <template x-if="!signingLoading && !signingError">
+            <div class="space-y-3">
+              <div class="grid grid-cols-2 gap-2 text-[11px]">
+                <div class="rounded-lg bg-slate-50 border border-slate-100 px-3 py-2">
+                  <p class="text-[9px] uppercase text-slate-500 font-bold">Active key</p>
+                  <p class="font-mono text-slate-800 truncate mt-0.5" x-text="signing.active_key_id || '—'"></p>
+                </div>
+                <div class="rounded-lg bg-slate-50 border border-slate-100 px-3 py-2">
+                  <p class="text-[9px] uppercase text-slate-500 font-bold">Last rotation</p>
+                  <p class="font-mono text-slate-800 truncate mt-0.5" x-text="signing.latest_retired_at || '—'"></p>
+                </div>
+              </div>
+              <div>
+                <p class="text-[9px] uppercase text-slate-500 font-bold mb-1">Keys by status</p>
+                <div class="flex flex-wrap gap-1.5">
+                  <template x-for="(cnt, st) in signing.keys_by_status" :key="st">
+                    <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-mono border"
+                          :class="st === 'active' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-slate-50 border-slate-200 text-slate-700'">
+                      <span x-text="st"></span>
+                      <span class="font-bold" x-text="cnt"></span>
+                    </span>
+                  </template>
+                </div>
+              </div>
+              <p class="text-[10px] text-slate-500 leading-snug" x-text="signing.signing_wire_format_notes || ''"></p>
+            </div>
+          </template>
+          <div x-show="signingLoading" class="flex items-center gap-2 text-[11px] text-slate-500 py-4">
+            <span class="animate-spin h-4 w-4 border-2 border-bravo-blue border-t-transparent rounded-full"></span>
+            Loading signing status…
+          </div>
+        </div>
+
+        <!-- 2: PII ledger -->
+        <div class="rounded-2xl border border-slate-200/90 bg-white p-5 shadow-sm ring-1 ring-slate-900/5">
+          <div class="flex items-center justify-between gap-2 mb-3">
+            <h3 class="text-[11px] font-bold uppercase tracking-widest text-slate-600">PII redaction ledger</h3>
+            <span class="text-[9px] font-mono text-slate-400">GET /api/admin/pii-redactions</span>
+          </div>
+          <div x-show="piiError" class="text-[11px] text-red-600 mb-2 font-medium" x-text="piiError"></div>
+          <div x-show="piiLoading" class="flex items-center gap-2 text-[11px] text-slate-500 py-2">
+            <span class="animate-spin h-3 w-3 border-2 border-slate-400 border-t-transparent rounded-full"></span>
+            Loading ledger…
+          </div>
+          <template x-if="!piiLoading && piiGrouped.length">
+            <div class="mb-2 flex flex-wrap gap-1">
+              <template x-for="g in piiGrouped" :key="g.entity_type">
+                <span class="text-[10px] font-mono rounded-md bg-indigo-50 text-indigo-800 border border-indigo-100 px-2 py-0.5">
+                  <span x-text="g.entity_type"></span>
+                  <span class="font-bold" x-text="'×' + g.count"></span>
+                </span>
+              </template>
+            </div>
+          </template>
+          <div class="max-h-48 overflow-y-auto rounded-lg border border-slate-100">
+            <table class="w-full text-[10px] font-mono">
+              <thead class="bg-slate-50 text-slate-500 sticky top-0">
+                <tr>
+                  <th class="text-left px-2 py-1.5 font-bold">Entity</th>
+                  <th class="text-left px-2 py-1.5 font-bold">Token</th>
+                  <th class="text-left px-2 py-1.5 font-bold">Memory</th>
+                  <th class="text-left px-2 py-1.5 font-bold">At</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="row in piiItems" :key="row.memory_id + row.token">
+                  <tr class="border-t border-slate-100 hover:bg-slate-50/80">
+                    <td class="px-2 py-1 text-slate-800" x-text="row.entity_type"></td>
+                    <td class="px-2 py-1 text-bravo-pink" x-text="row.token"></td>
+                    <td class="px-2 py-1 truncate max-w-[8rem]" x-text="row.memory_id"></td>
+                    <td class="px-2 py-1 text-slate-500" x-text="row.created_at"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+            <p x-show="!piiLoading && !piiItems.length" class="text-[11px] text-slate-500 px-3 py-4">No PII vault rows in this window.</p>
+          </div>
+        </div>
+
+        <!-- 3: WORM / event log integrity -->
+        <div class="rounded-2xl border border-slate-200/90 bg-white p-5 shadow-sm ring-1 ring-slate-900/5">
+          <div class="flex flex-col gap-3 mb-3">
+            <div class="flex items-center justify-between gap-2">
+              <h3 class="text-[11px] font-bold uppercase tracking-widest text-slate-600">Event log integrity (Merkle + sequence)</h3>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button type="button" @click="runVerifySample()"
+                      class="rounded-lg bg-bravo-blue text-white px-3 py-1.5 text-[11px] font-bold hover:bg-bravo-blue/90 disabled:opacity-50 shadow-sm"
+                      :disabled="verifySampleLoading || !targetNs">
+                <span x-show="!verifySampleLoading">Verify random sample</span>
+                <span x-show="verifySampleLoading" class="inline-flex items-center gap-1">
+                  <span class="animate-spin h-3 w-3 border-2 border-white border-t-transparent rounded-full"></span>
+                  Sweeping…
+                </span>
+              </button>
+              <span class="text-[10px] text-slate-500 self-center" x-show="!targetNs">Set namespace to enable verify.</span>
+            </div>
+          </div>
+          <div x-show="chainError" class="text-[11px] text-red-600 mb-2" x-text="chainError"></div>
+          <div x-show="wormLoading" class="text-[11px] text-slate-500 mb-2 inline-flex items-center gap-1">
+            <span class="animate-spin h-3 w-3 border border-slate-400 border-t-transparent rounded-full"></span>
+            Loading chain / gaps…
+          </div>
+          <div class="grid grid-cols-2 gap-2 mb-3 text-[11px]" x-show="!wormLoading && targetNs">
+            <div class="rounded-lg px-3 py-2 border"
+                 :class="chain.valid ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-amber-50 border-amber-200 text-amber-900'">
+              <p class="text-[9px] font-bold uppercase">Merkle chain</p>
+              <p class="font-mono font-bold mt-1" x-text="chain.valid === true ? 'VALID' : (chain.valid === false ? 'BROKEN' : '—')"></p>
+              <p class="text-[10px] mt-1 opacity-80">Checked: <span x-text="chain.checked ?? '—'"></span> · Last seq: <span x-text="chain.last_verified_seq ?? '—'"></span></p>
+            </div>
+            <div class="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2">
+              <p class="text-[9px] font-bold uppercase text-slate-600">Sequence gaps</p>
+              <p class="font-mono font-bold mt-1 text-slate-900" x-text="seqGaps.gaps?.length ? (seqGaps.gaps.length + ' gap(s)') : 'None detected'"></p>
+              <p class="text-[10px] text-slate-600 mt-1">Range <span x-text="seqGaps.min_seq ?? '—'"></span> → <span x-text="seqGaps.max_seq ?? '—'"></span></p>
+            </div>
+          </div>
+          <!-- Timeline strip -->
+          <div class="mt-2 rounded-lg bg-slate-900/90 p-3 font-mono text-[10px] text-slate-200 min-h-[4rem]" x-show="targetNs && (seqGaps.max_seq != null)">
+            <p class="text-[9px] uppercase text-slate-400 mb-2">Sequence timeline (gaps in <span class="text-red-400">red</span>)</p>
+            <div class="flex h-8 rounded overflow-hidden border border-slate-700 relative">
+              <template x-for="(seg, idx) in timelineSegments" :key="idx">
+                <div class="h-full flex-1 border-r border-slate-800 last:border-r-0 relative"
+                     :class="seg.gapAfter ? 'bg-gradient-to-b from-red-500/60 to-red-900/40' : 'bg-gradient-to-b from-emerald-600/40 to-slate-900'">
+                </div>
+              </template>
+              <div class="absolute inset-0 flex items-center justify-center text-slate-500 pointer-events-none text-[10px]"
+                   x-show="timelineSegments.length === 0">No events in range</div>
+            </div>
+          </div>
+          <div x-show="verifySampleError" class="mt-2 text-[11px] text-red-600" x-text="verifySampleError"></div>
+          <div x-show="lastSample.summary" class="mt-2 text-[10px] text-slate-600" x-text="lastSample.summary"></div>
+        </div>
+
+        <!-- 4: RLS policy map -->
+        <div class="rounded-2xl border border-slate-200/90 bg-white p-5 shadow-sm ring-1 ring-slate-900/5">
+          <div class="flex items-center justify-between gap-2 mb-3">
+            <h3 class="text-[11px] font-bold uppercase tracking-widest text-slate-600">RLS policy map</h3>
+            <span class="text-[9px] font-mono text-slate-400">GET /api/admin/namespaces</span>
+          </div>
+          <div x-show="rlsMapError" class="text-[11px] text-red-600 mb-2" x-text="rlsMapError"></div>
+          <div x-show="rlsMapLoading" class="text-[11px] text-slate-500 mb-2">Loading namespaces…</div>
+          <div class="max-h-40 overflow-y-auto rounded-lg border border-slate-100 mb-3">
+            <table class="w-full text-[10px]">
+              <thead class="bg-slate-50 text-slate-500">
+                <tr>
+                  <th class="text-left px-2 py-1.5">Slug</th>
+                  <th class="text-left px-2 py-1.5">RLS</th>
+                  <th class="text-left px-2 py-1.5">Policy</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="ns in rlsNamespaces" :key="ns.id">
+                  <tr class="border-t border-slate-100">
+                    <td class="px-2 py-1 font-mono text-slate-800" x-text="ns.slug"></td>
+                    <td class="px-2 py-1">
+                      <span class="rounded px-1.5 py-0.5 font-bold"
+                            :class="ns.rls_enabled ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'"
+                            x-text="ns.rls_enabled ? 'on' : 'off'"></span>
+                    </td>
+                    <td class="px-2 py-1 font-mono text-slate-600" x-text="ns.policy_name"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+          <div class="flex flex-wrap gap-2 items-center">
+            <label class="text-[10px] text-slate-600">
+              Probe target (other namespace)
+              <input type="text" x-model="rlsProbeNs" class="ml-1 w-48 rounded border border-slate-300 px-1 py-0.5 text-[10px] font-mono" placeholder="UUID">
+            </label>
+            <button type="button" @click="runRlsIsolation()"
+                    class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-bold text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+                    :disabled="rlsTestLoading || !targetNs || !rlsProbeNs">
+              Test isolation
+            </button>
+            <button type="button" @click="rlsTerminalOpen = !rlsTerminalOpen"
+                    class="text-[10px] font-bold text-bravo-blue hover:underline"
+                    x-show="rlsLastResult">Toggle terminal</button>
+          </div>
+          <div x-show="rlsTestLoading" class="mt-2 text-[11px] text-slate-500 inline-flex items-center gap-1">
+            <span class="animate-spin h-3 w-3 border border-slate-400 border-t-transparent rounded-full"></span>
+            Running synthetic SELECT under SET LOCAL…
+          </div>
+          <div x-show="rlsTerminalOpen && rlsLastResult" x-cloak
+               class="mt-3 rounded-lg bg-slate-950 text-emerald-400 p-3 font-mono text-[10px] leading-relaxed overflow-x-auto border border-slate-800 shadow-inner max-h-56">
+            <div x-show="rlsLastResult.steps && rlsLastResult.steps.length">
+              <p class="text-slate-500 mb-2">// Session script</p>
+              <template x-for="(ln, i) in rlsLastResult.steps" :key="i">
+                <div x-text="ln"></div>
+              </template>
+            </div>
+            <p class="text-slate-500 mt-3 mb-1">// Result</p>
+            <pre class="whitespace-pre-wrap text-emerald-300" x-text="JSON.stringify(rlsLastResult, null, 2)"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+    </div>
+
+    <!-- Tab: Events -->
+    <div id="panel-events" x-show="adminTab === 'events'" x-cloak class="space-y-8">
+    <section id="events" class="scroll-mt-24 pt-6 md:pt-8 border-t border-slate-200/80" x-data="eventLogComponent" x-init="mount()">
       <div class="border-b border-slate-200 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h2 class="text-lg font-bold font-hanken tracking-tight text-slate-900 uppercase">Event stream trace</h2>
@@ -233,12 +798,12 @@
         <table class="min-w-full text-left text-xs">
           <thead class="bg-slate-50 text-[10px] uppercase text-slate-700 border-b border-slate-200 tracking-wider font-bold">
             <tr>
-              <th class="px-4 py-3">occurred_at</th>
-              <th class="px-4 py-3">seq</th>
-              <th class="px-4 py-3">type</th>
-              <th class="px-4 py-3">namespace</th>
-              <th class="px-4 py-3">agent</th>
-              <th class="px-4 py-3">parent</th>
+              <th class="px-4 py-3" scope="col">occurred_at</th>
+              <th class="px-4 py-3" scope="col">seq</th>
+              <th class="px-4 py-3" scope="col">type</th>
+              <th class="px-4 py-3" scope="col">namespace</th>
+              <th class="px-4 py-3" scope="col">agent</th>
+              <th class="px-4 py-3" scope="col">parent</th>
             </tr>
           </thead>
           <tbody>
@@ -266,9 +831,11 @@
         </div>
       </div>
     </section>
+    </div>
 
-    <!-- Quotas -->
-    <section id="quotas" class="scroll-mt-24 pt-16 border-t border-slate-200/80" x-data="quotaComponent" x-init="mount()">
+    <!-- Tab: Quotas -->
+    <div id="panel-quotas" x-show="adminTab === 'quotas'" x-cloak class="space-y-8">
+    <section id="quotas" class="scroll-mt-24 pt-6 md:pt-8 border-t border-slate-200/80" x-data="quotaComponent" x-init="mount()">
       <div class="border-b border-slate-200 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h2 class="text-lg font-bold font-hanken tracking-tight text-slate-900 uppercase">Token Resource quotas</h2>
@@ -334,9 +901,11 @@
         <p x-show="!tools.length && !loading" class="text-slate-500 text-xs font-medium col-span-2 py-4 text-center">No token quota definitions allocated. Deploy workloads to sync rates.</p>
       </div>
     </section>
+    </div>
 
-    <!-- Graph -->
-    <section id="graph" class="scroll-mt-24 pt-16 border-t border-slate-200/80" x-data="graphVisualizer" x-init="mount()">
+    <!-- Tab: Graph -->
+    <div id="panel-graph" x-show="adminTab === 'graph'" x-cloak class="space-y-8">
+    <section id="graph" class="scroll-mt-24 pt-6 md:pt-8 border-t border-slate-200/80" x-data="graphVisualizer" x-init="mount()">
       <div class="border-b border-slate-200 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h2 class="text-lg font-bold font-hanken tracking-tight text-slate-900 uppercase">GraphRAG Subgraph visualizer</h2>
@@ -387,7 +956,7 @@
             Active Query Anchor: <span class="text-bravo-pink font-mono font-bold" x-text="result.anchor || '—'"></span>
           </p>
         </div>
-        
+
         <!-- Lists -->
         <div class="space-y-4">
           <div class="rounded-xl border border-slate-200 bg-white p-4 max-h-64 overflow-y-auto shadow-sm">
@@ -421,9 +990,11 @@
         </div>
       </div>
     </section>
+    </div>
 
-    <!-- Embedding migration -->
-    <section id="embedding-migration" class="scroll-mt-24 pt-16 border-t border-slate-200/80" x-data="embeddingMigrationPanel" x-init="mount()">
+    <!-- Tab: Embeddings -->
+    <div id="panel-embedding-migration" x-show="adminTab === 'embedding-migration'" x-cloak class="space-y-8">
+    <section id="embedding-migration" class="scroll-mt-24 pt-6 md:pt-8 border-t border-slate-200/80" x-data="embeddingMigrationPanel" x-init="mount()">
       <div class="border-b border-slate-200 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h2 class="text-lg font-bold font-hanken tracking-tight text-slate-900 uppercase">Embedding registry &amp; migration</h2>
@@ -513,9 +1084,419 @@
         </div>
       </div>
     </section>
+    </div>
 
+    <!-- Tab: Consolidation -->
+    <div id="panel-consolidation" x-show="adminTab === 'consolidation'" x-cloak class="space-y-8">
+    <section id="consolidation" class="scroll-mt-24 pt-6 md:pt-8 border-t border-slate-200/80" x-data="consolidationComponent" x-init="mount()">
+      <div class="border-b border-slate-200 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+        <div>
+          <div class="flex items-center gap-2 mb-1">
+            <span class="h-1.5 w-1.5 rounded-full bg-bravo-pink animate-ping"></span>
+            <h2 class="text-xs uppercase tracking-widest text-slate-500 font-bold">Memory Maintenance &amp; Consolidation</h2>
+          </div>
+          <p class="text-[10px] text-slate-400 font-mono leading-relaxed">Configure cognitive consolidation (night-worker memory distillation) and temporal TTL retention rules per namespace.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <!-- Namespace Selector -->
+          <label class="text-[10px] font-mono text-slate-400 flex items-center gap-2">
+            <span>Namespace:</span>
+            <select x-model="selectedNamespaceId" @change="loadNamespaceMetadata()"
+                    class="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-mono font-semibold text-slate-700 outline-none focus:border-bravo-pink transition">
+              <option value="">-- Choose Namespace --</option>
+              <template x-for="ns in namespaces" :key="ns.id">
+                <option :value="ns.id" x-text="ns.slug + ' (' + ns.id.substring(0,8) + '...)'"></option>
+              </template>
+            </select>
+          </label>
+          <button type="button" @click="fetchNamespaces()"
+                  class="rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 p-1 text-slate-500 transition"
+                  title="Refresh namespaces"
+                  aria-label="Refresh namespaces">
+            <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 7.89M9 11l3-3 3 3m-3-3v12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Namespace details card -->
+        <div class="lg:col-span-1 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+          <h3 class="text-xs font-bold text-slate-800 uppercase tracking-wider border-b border-slate-100 pb-2 flex items-center gap-2">
+            <svg class="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Selected Namespace
+          </h3>
+          <template x-if="!selectedNamespaceId">
+            <div class="py-8 text-center text-slate-400 text-xs font-mono">
+              Select a namespace to load and manage maintenance configurations.
+            </div>
+          </template>
+          <template x-if="selectedNamespaceId">
+            <div class="space-y-4 font-mono text-[10px]">
+              <div>
+                <span class="block text-slate-400 uppercase tracking-wider mb-0.5">Namespace Slug</span>
+                <span class="text-xs font-semibold text-slate-800" x-text="selectedNamespace.slug"></span>
+              </div>
+              <div>
+                <span class="block text-slate-400 uppercase tracking-wider mb-0.5">Namespace UUID</span>
+                <span class="text-xs font-semibold text-slate-800" x-text="selectedNamespace.id"></span>
+              </div>
+              <div>
+                <span class="block text-slate-400 uppercase tracking-wider mb-0.5">Parent Namespace</span>
+                <span class="text-xs text-slate-800 font-semibold" x-text="selectedNamespace.parent_id || 'None (root)'"></span>
+              </div>
+              <div>
+                <span class="block text-slate-400 uppercase tracking-wider mb-0.5">Created At</span>
+                <span class="text-xs text-slate-800 font-semibold" x-text="new Date(selectedNamespace.created_at).toLocaleString()"></span>
+              </div>
+              <div class="pt-3 border-t border-slate-100">
+                <span class="block text-slate-500 font-sans font-semibold mb-1">Night-Worker Action Cycle</span>
+                <p class="text-slate-400 leading-relaxed font-sans text-[10.5px]">Cognitive consolidation identifies, links, and de-duplicates high-salience semantic relationships during sleep cycles, committing refined facts back to the Graph Database.</p>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- Configuration Settings form -->
+        <div class="lg:col-span-2 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-6">
+          <template x-if="!selectedNamespaceId">
+            <div class="flex flex-col items-center justify-center py-20 text-slate-400 font-medium">
+              <svg class="h-10 w-10 text-slate-300 mb-3 animate-bounce" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+              </svg>
+              <span class="text-xs font-mono">Choose a namespace in the dropdown to fetch configuration controls</span>
+            </div>
+          </template>
+
+          <template x-if="selectedNamespaceId">
+            <form @submit.prevent="saveNamespaceMetadata()" class="space-y-6">
+              <!-- Consolidation Group -->
+              <div class="space-y-4">
+                <h4 class="text-xs font-bold text-slate-700 uppercase tracking-wide flex items-center gap-1.5 border-b border-slate-100 pb-1.5">
+                  <span class="h-1.5 w-1.5 rounded-full bg-bravo-pink"></span>
+                  Cognitive Consolidation (LLM) Settings
+                </h4>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <!-- Enabled Switch -->
+                  <div class="flex items-center justify-between p-3 rounded-xl border border-slate-100 bg-slate-50/50">
+                    <div>
+                      <label class="text-xs font-semibold text-slate-800 block">Consolidation Engine</label>
+                      <span class="text-[9px] text-slate-400 block font-mono">Process background memory cleanups</span>
+                    </div>
+                    <div class="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" x-model="config.enabled" class="sr-only peer" aria-label="Enable consolidation engine">
+                      <span class="block w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-bravo-pink"></span>
+                    </div>
+                  </div>
+
+                  <!-- Decay Sources Switch -->
+                  <div class="flex items-center justify-between p-3 rounded-xl border border-slate-100 bg-slate-50/50">
+                    <div>
+                      <label class="text-xs font-semibold text-slate-800 block">Decay Source Salience</label>
+                      <span class="text-[9px] text-slate-400 block font-mono">Lower original memory salience after sync</span>
+                    </div>
+                    <div class="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" x-model="config.decay_sources" class="sr-only peer" aria-label="Enable decay source salience">
+                      <span class="block w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-bravo-pink"></span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <!-- LLM Provider -->
+                  <label class="block">
+                    <span class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1 font-semibold">LLM Provider</span>
+                    <select x-model="config.llm_provider"
+                            class="w-full rounded-lg bg-white border border-slate-200 px-3 py-1.5 text-xs text-slate-800 focus:border-bravo-pink outline-none transition font-semibold">
+                      <option value="">(None)</option>
+                      <option value="openai">OpenAI</option>
+                      <option value="anthropic">Anthropic Claude</option>
+                      <option value="gemini">Google Gemini</option>
+                      <option value="cohere">Cohere</option>
+                      <option value="local">Local Ollama/vLLM</option>
+                    </select>
+                  </label>
+
+                  <!-- LLM Model -->
+                  <label class="block col-span-2">
+                    <span class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1 font-semibold">LLM Model Name</span>
+                    <input type="text" x-model="config.llm_model"
+                           class="w-full rounded-lg bg-white border border-slate-200 px-3 py-1.5 text-xs font-mono text-slate-800 focus:border-bravo-pink outline-none transition"
+                           placeholder="gpt-4o, claude-3-5-sonnet-20241022, etc.">
+                  </label>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <!-- Temperature slider -->
+                  <div class="md:col-span-1">
+                    <span class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1 font-semibold">LLM Temperature: <span class="text-bravo-pink font-bold font-mono text-[10px]" x-text="config.llm_temperature.toFixed(2)"></span></span>
+                    <div class="flex items-center gap-2">
+                      <input type="range" x-model.number="config.llm_temperature" min="0" max="2" step="0.05"
+                             class="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-bravo-pink border border-slate-200">
+                    </div>
+                  </div>
+
+                  <!-- LLM Credentials Reference -->
+                  <label class="block md:col-span-2">
+                    <span class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1 font-semibold">LLM Secret Key Reference</span>
+                    <input type="text" x-model="config.llm_credentials"
+                           class="w-full rounded-lg bg-white border border-slate-200 px-3 py-1.5 text-xs font-mono text-slate-800 focus:border-bravo-pink outline-none transition"
+                           placeholder="ref:env/TRIMCP_NS_... or leave blank for engine-level default">
+                  </label>
+                </div>
+              </div>
+
+              <!-- Retention Group -->
+              <div class="space-y-4 pt-4 border-t border-slate-100">
+                <h4 class="text-xs font-bold text-slate-700 uppercase tracking-wide flex items-center gap-1.5 border-b border-slate-100 pb-1.5">
+                  <span class="h-1.5 w-1.5 rounded-full bg-bravo-blue"></span>
+                  Temporal Retention Limits
+                </h4>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <!-- Memory Retention Days -->
+                  <div class="block">
+                    <span class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1 font-semibold">Memory Retention: <span class="text-bravo-blue font-bold font-mono text-[10px]" x-text="config.temporal_retention_days === null ? 'Infinite' : config.temporal_retention_days + ' days'"></span></span>
+                    <div class="flex items-center gap-2">
+                      <input type="range" :value="config.temporal_retention_days === null ? 365 : config.temporal_retention_days"
+                             @input="config.temporal_retention_days = ($el.value >= 365 ? null : parseInt($el.value))"
+                             min="0" max="365" step="5"
+                             aria-label="Memory retention days"
+                             class="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-bravo-blue border border-slate-200">
+                    </div>
+                    <span class="text-[8px] text-slate-400 block mt-1 font-mono leading-relaxed">Timespan before raw memories decay. Extreme-right sets Infinite.</span>
+                  </div>
+
+                  <!-- LLM Payload Retention Days -->
+                  <div class="block">
+                    <span class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1 font-semibold">Object Storage Retention: <span class="text-bravo-blue font-bold font-mono text-[10px]" x-text="config.llm_payload_retention_days === null ? 'Infinite' : config.llm_payload_retention_days + ' days'"></span></span>
+                    <div class="flex items-center gap-2">
+                      <input type="range" :value="config.llm_payload_retention_days === null ? 365 : config.llm_payload_retention_days"
+                             @input="config.llm_payload_retention_days = ($el.value >= 365 ? null : parseInt($el.value))"
+                             min="0" max="365" step="5"
+                             aria-label="Object storage retention days"
+                             class="w-full h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-bravo-blue border border-slate-200">
+                    </div>
+                    <span class="text-[8px] text-slate-400 block mt-1 font-mono leading-relaxed">Timespan before MinIO payload responses decay. Extreme-right sets Infinite.</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Submit button -->
+              <div class="flex justify-end pt-4 border-t border-slate-100">
+                <button type="submit" :disabled="saveLoading"
+                        class="rounded-xl px-4 py-2 bg-gradient-to-tr from-bravo-pink to-bravo-purple text-white text-xs font-semibold hover:shadow-lg active:scale-95 transition disabled:opacity-50 flex items-center gap-2">
+                  <span x-show="!saveLoading">Apply Metadata configurations</span>
+                  <span x-show="saveLoading" class="flex items-center gap-1.5">
+                    <span class="animate-spin h-3.5 w-3.5 border-2 border-white border-t-transparent rounded-full"></span>
+                    Saving settings...
+                  </span>
+                </button>
+              </div>
+            </form>
+          </template>
+        </div>
+      </div>
+    </section>
+    </div>
+
+    <!-- Tab: Cognitive engine (decay map, consolidation trace, drawer) -->
+    <div id="panel-cognitive" x-show="adminTab === 'cognitive'" x-cloak class="space-y-8">
+    <section id="cognitive-engine" class="scroll-mt-24 pt-6 md:pt-8 border-t border-slate-200/80"
+             x-data="cognitiveEnginePanel" x-init="mount()">
+      <div class="border-b border-slate-200 pb-2.5 mb-6 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+        <div>
+          <h2 class="text-lg font-bold font-hanken tracking-tight text-slate-900 uppercase">Cognitive engine visualisation</h2>
+          <p class="text-xs text-slate-500 mt-1">Salience decay map, consolidation trace pipeline, and memory context drawer</p>
+        </div>
+        <div class="flex flex-wrap items-end gap-2">
+          <label class="text-[10px] font-mono text-slate-500">
+            <span class="block mb-0.5 uppercase font-bold">Namespace</span>
+            <select x-model="selectedNamespaceId"
+                    class="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-mono min-w-[200px]">
+              <option value="">— Select —</option>
+              <template x-for="ns in namespaces" :key="ns.id">
+                <option :value="ns.id" x-text="ns.slug"></option>
+              </template>
+            </select>
+          </label>
+          <label class="text-[10px] font-mono text-slate-500">
+            <span class="block mb-0.5 uppercase font-bold">Agent filter</span>
+            <input type="text" x-model="agentFilter" placeholder="optional"
+                   class="rounded-lg border border-slate-200 px-2 py-1 text-xs w-28 font-mono">
+          </label>
+          <label class="text-[10px] font-mono text-slate-500">
+            <span class="block mb-0.5 uppercase font-bold">top_k</span>
+            <input type="number" min="50" max="2000" step="50" x-model.number="topK"
+                   class="rounded-lg border border-slate-200 px-2 py-1 text-xs w-20 font-mono">
+          </label>
+          <button type="button" @click="loadSalience()" :disabled="mapLoading || !selectedNamespaceId"
+                  class="rounded-lg bg-bravo-blue text-white px-3 py-1.5 text-xs font-bold disabled:opacity-50">
+            Load map
+          </button>
+          <button type="button" @click="loadTrace()" :disabled="traceLoading || !selectedNamespaceId"
+                  class="rounded-lg bg-slate-800 text-white px-3 py-1.5 text-xs font-bold disabled:opacity-50">
+            Refresh trace
+          </button>
+          <button type="button" @click="runFpsStress()"
+                  class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-700">
+            FPS stress
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div class="xl:col-span-2 rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+          <div class="aspect-[16/9] min-h-[280px] bg-slate-50 relative">
+            <canvas x-ref="decayCanvas" class="w-full h-full block touch-none cursor-crosshair"
+                    aria-label="Memory health decay map"></canvas>
+            <div x-show="!points.length && !mapLoading" class="absolute inset-0 flex items-center justify-center text-slate-400 text-xs font-medium pointer-events-none">
+              Load a salience map for this namespace
+            </div>
+          </div>
+          <p class="text-[10px] text-slate-500 px-4 py-2 border-t border-slate-100 font-mono">
+            Red band: decay risk zone (decayed salience &lt; 0.3). Drag on canvas to select memories → context drawer.
+            <span class="text-bravo-pink font-bold" x-text="'Half-life preview λ = ln(2)/' + halfLifeDays.toFixed(1) + ' d'"></span>
+          </p>
+        </div>
+
+        <div class="space-y-4">
+          <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <h3 class="text-[10px] uppercase font-bold text-slate-500 mb-2">Half-life configurator</h3>
+            <input type="range" min="1" max="90" step="0.5" x-model.number="halfLifeDays" @input="drawHalfLifePreview()"
+                   class="w-full accent-bravo-pink h-1.5">
+            <p class="text-[10px] text-slate-600 mt-1 font-mono" x-text="'half_life_days = ' + halfLifeDays.toFixed(2) + ' (used on next Load map)'"></p>
+            <canvas x-ref="halfLifePreview" width="240" height="72" class="mt-2 w-full max-w-[240px] h-[72px] rounded border border-slate-100 bg-slate-50"></canvas>
+          </div>
+          <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm max-h-[420px] overflow-y-auto">
+            <h3 class="text-[10px] uppercase font-bold text-slate-500 mb-3">Consolidation trace</h3>
+            <p x-show="traceLoading" class="text-xs text-slate-400">Loading…</p>
+            <template x-for="ev in traceEvents" :key="ev.id">
+              <div class="mb-4 pb-4 border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50/80 rounded-lg px-1 -mx-1"
+                   @click="selectTraceEvent(ev)">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-[10px] font-mono text-slate-400" x-text="ev.occurred_at"></span>
+                  <span class="text-[9px] font-bold px-1.5 py-0.5 rounded"
+                        :class="traceOutcomeClass(ev)"
+                        x-text="traceOutcomeLabel(ev)"></span>
+                </div>
+                <div class="flex items-center gap-1 mt-2 flex-wrap">
+                  <template x-for="(step, si) in traceSteps(ev)" :key="ev.id + '-st' + si">
+                    <span class="inline-flex items-center gap-1">
+                      <span class="text-[9px] font-bold px-1.5 py-0.5 rounded border"
+                            :class="step.cls" x-text="step.label"></span>
+                      <span x-show="si < 2" class="text-slate-300">→</span>
+                    </span>
+                  </template>
+                </div>
+                <p x-show="selectedTraceId === ev.id" class="text-[10px] text-slate-600 mt-2 font-mono leading-relaxed"
+                   x-text="traceSummary(ev)"></p>
+                <div x-show="selectedTraceId === ev.id && traceDiffLeft(ev)" class="mt-2 grid grid-cols-1 gap-2 text-[10px]">
+                  <div class="rounded border border-slate-100 bg-slate-50 p-2 font-mono text-slate-700 max-h-24 overflow-y-auto">
+                    <span class="uppercase text-[9px] text-slate-400 font-bold">Sources</span>
+                    <pre class="whitespace-pre-wrap mt-1" x-text="traceDiffLeft(ev)"></pre>
+                  </div>
+                  <div class="rounded border border-emerald-100 bg-emerald-50/50 p-2 font-mono text-slate-800 max-h-24 overflow-y-auto">
+                    <span class="uppercase text-[9px] text-emerald-700 font-bold">Abstraction</span>
+                    <pre class="whitespace-pre-wrap mt-1" x-text="traceDiffRight(ev)"></pre>
+                  </div>
+                </div>
+                <div x-show="selectedTraceId === ev.id && ev.llm_payload_uri" class="mt-2">
+                  <button type="button" @click.stop="openLlmPayload(ev)"
+                          class="text-[10px] font-bold text-bravo-blue hover:underline">Open LLM payload</button>
+                </div>
+              </div>
+            </template>
+            <p x-show="!traceEvents.length && !traceLoading" class="text-xs text-slate-400">No consolidation events in this namespace</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Slide-in context drawer -->
+      <div x-show="drawerOpen" x-cloak
+           class="fixed inset-0 z-50 flex justify-end"
+           style="display: none;"
+           x-transition:enter="transition ease-out duration-200"
+           x-transition:enter-start="opacity-0"
+           x-transition:enter-end="opacity-100"
+           x-transition:leave="transition ease-in duration-150"
+           x-transition:leave-start="opacity-100"
+           x-transition:leave-end="opacity-0">
+        <div class="absolute inset-0 bg-slate-900/40" @click="closeDrawer()"></div>
+        <aside class="relative w-full max-w-md h-full bg-white shadow-2xl border-l border-slate-200 flex flex-col"
+               @click.stop
+               x-transition:enter="transition transform ease-out duration-200"
+               x-transition:enter-start="translate-x-full"
+               x-transition:enter-end="translate-x-0"
+               x-transition:leave="transition transform ease-in duration-150"
+               x-transition:leave-start="translate-x-0"
+               x-transition:leave-end="translate-x-full">
+          <div class="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+            <h3 class="text-sm font-bold text-slate-900">Memory context</h3>
+            <button type="button" @click="closeDrawer()" class="text-slate-400 hover:text-slate-700 text-lg leading-none">&times;</button>
+          </div>
+          <div class="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+            <template x-for="pt in selectedPoints" :key="pt.memory_id">
+              <div class="rounded-xl border border-slate-200 p-3 space-y-2">
+                <div class="font-mono text-[10px] text-slate-500">ID <span class="text-slate-800" x-text="pt.memory_id"></span></div>
+                <div class="grid grid-cols-2 gap-2 font-mono text-[10px]">
+                  <div><span class="text-slate-400">raw salience</span><br><span class="font-bold text-bravo-pink" x-text="fmt(pt.raw_salience)"></span></div>
+                  <div><span class="text-slate-400">decayed</span><br><span class="font-bold text-bravo-blue" x-text="fmt(pt.decayed_salience)"></span></div>
+                  <div><span class="text-slate-400">age (d)</span><br><span class="font-bold" x-text="fmt(pt.age_days)"></span></div>
+                  <div><span class="text-slate-400">type</span><br><span class="font-bold" x-text="pt.memory_type || '—'"></span></div>
+                </div>
+                <div class="text-[10px] text-slate-500">assertion <span class="text-slate-800 font-semibold" x-text="pt.assertion_type || '—'"></span></div>
+                <div class="rounded border border-slate-100 bg-slate-50 p-2 font-mono text-[10px] space-y-1">
+                  <p class="uppercase text-slate-400 font-bold">Decay steps (Ebbinghaus)</p>
+                  <p x-text="'λ = ln(2) / half_life = ' + decayLambda().toFixed(6) + ' day⁻¹'"></p>
+                  <p x-text="'stored salience (row) = ' + fmt(pt.raw_salience)"></p>
+                  <p x-text="'age since memory created ≈ ' + fmt(pt.age_days) + ' d'"></p>
+                  <p class="text-slate-600" x-text="'UI uses server decayed_salience = f(raw, salience_updated_at, half_life×jitter). Re-fetch map after boost for exact value.'"></p>
+                </div>
+                <button type="button" @click="boostPoint(pt)" :disabled="boostLoading"
+                        class="w-full rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold py-2 disabled:opacity-50">
+                  Boost memory (+0.2)
+                </button>
+              </div>
+            </template>
+          </div>
+        </aside>
+      </div>
+
+      <!-- LLM payload modal -->
+      <div x-show="payloadModal.open" x-cloak class="fixed inset-0 z-[60] flex items-center justify-center p-4" style="display: none;">
+        <div class="absolute inset-0 bg-slate-900/50" @click="payloadModal.open = false"></div>
+        <div class="relative bg-white rounded-2xl shadow-2xl max-w-3xl w-full max-h-[85vh] overflow-hidden flex flex-col border border-slate-200">
+          <div class="px-4 py-3 border-b border-slate-100 flex justify-between items-center">
+            <h4 class="text-sm font-bold">LLM payload</h4>
+            <button type="button" @click="payloadModal.open = false" class="text-slate-400 text-xl">&times;</button>
+          </div>
+          <div class="p-4 overflow-y-auto font-mono text-[10px] space-y-3">
+            <template x-if="payloadModal.error">
+              <p class="text-red-600" x-text="payloadModal.error"></p>
+            </template>
+            <template x-if="payloadModal.json && !payloadModal.error">
+              <div>
+                <p class="uppercase text-slate-400 font-bold mb-1">prompt</p>
+                <pre class="whitespace-pre-wrap bg-slate-50 p-2 rounded border border-slate-100 max-h-48 overflow-y-auto" x-text="payloadModal.json.prompt || '—'"></pre>
+                <p class="uppercase text-slate-400 font-bold mb-1 mt-3">response</p>
+                <pre class="whitespace-pre-wrap bg-slate-50 p-2 rounded border border-slate-100 max-h-48 overflow-y-auto" x-text="payloadModal.json.response || '—'"></pre>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </section>
+    </div>
+
+    <!-- Tab: Datastores -->
+    <div id="panel-datastores" x-show="adminTab === 'datastores'" x-cloak class="space-y-8">
     <!-- Datastores & Connectors Console -->
-    <section id="datastores" class="scroll-mt-32 pt-12 border-t border-slate-200" x-data="dbConsoleComponent" x-init="mount()">
+    <section id="datastores" class="scroll-mt-32 pt-6 md:pt-8 border-t border-slate-200" x-data="dbConsoleComponent" x-init="mount()">
       <div class="border-b border-slate-200 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h2 class="text-lg font-bold font-hanken tracking-tight text-slate-900 uppercase">Storage engines &amp; document connectors</h2>
@@ -579,7 +1560,7 @@
 
       <!-- Tab Content Panels -->
       <div class="rounded-2xl border border-slate-200 bg-white p-6 min-h-[300px] flex flex-col justify-between shadow-md">
-        
+
         <!-- Loading overlay -->
         <div x-show="loading" class="flex flex-col items-center justify-center py-12 text-slate-500">
           <div class="animate-spin rounded-full h-8 w-8 border-2 border-bravo-pink border-t-transparent mb-3"></div>
@@ -587,7 +1568,7 @@
         </div>
 
         <div x-show="!loading">
-          
+
           <!-- PostgreSQL Tab -->
           <div x-show="activeTab === 'postgres'" class="space-y-6">
             <!-- Stats overview -->
@@ -598,7 +1579,7 @@
               </div>
               <div class="rounded-xl border border-slate-200 bg-slate-50/50 p-4 transition duration-200 hover:bg-slate-50 hover:border-slate-300 shadow-sm">
                 <p class="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1">Time Partition Runway</p>
-                <p class="text-2xl font-bold font-hanken" 
+                <p class="text-2xl font-bold font-hanken"
                    :class="postgresData.partition_status?.runway_months < 2 ? 'text-amber-600' : 'text-emerald-600'"
                    x-text="(postgresData.partition_status?.runway_months ?? 0) + ' months'"></p>
               </div>
@@ -623,13 +1604,14 @@
                 </div>
               </div>
               <button type="button" @click="toggleDbEdit('postgres')"
+                      :aria-label="dbEditOpen === 'postgres' ? 'Hide Configuration' : 'Configure Database'"
                       class="px-4 py-1.5 text-xs font-bold rounded-lg bg-bravo-pink hover:bg-bravo-pink300 text-white transition duration-200 shadow-sm flex items-center gap-1.5">
                 <span x-text="dbEditOpen === 'postgres' ? 'Hide Configuration' : 'Configure Database'"></span>
               </button>
             </div>
 
             <!-- PostgreSQL Edit Panel -->
-            <div x-show="dbEditOpen === 'postgres'" 
+            <div x-show="dbEditOpen === 'postgres'"
                  x-transition
                  class="rounded-xl border border-rose-200/60 bg-rose-50/15 p-6 shadow-sm space-y-4">
               <div class="border-b border-slate-200 pb-3 flex items-center justify-between">
@@ -649,29 +1631,29 @@
                     <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold font-mono">Primary Connection DSN (PG_DSN)</label>
                     <input type="text" x-model="dbEditForm.postgres.pg_dsn" required
                            placeholder="postgresql://user:password@host:port/dbname"
-                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                   </div>
                   <div>
                     <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold font-mono">Read Replication Target URI (DB_READ_URL)</label>
                     <input type="text" x-model="dbEditForm.postgres.db_read_url" required
                            placeholder="postgresql://user:password@host:port/dbname"
-                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                   </div>
                   <div>
                     <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold font-mono">Write Routing Target URI (DB_WRITE_URL)</label>
                     <input type="text" x-model="dbEditForm.postgres.db_write_url" required
                            placeholder="postgresql://user:password@host:port/dbname"
-                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                   </div>
                   <div>
                     <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold font-mono">Minimum Active Pool Connections (PG_MIN_POOL)</label>
                     <input type="number" x-model="dbEditForm.postgres.pg_min_pool" min="1" required
-                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg font-mono shadow-sm" />
+                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg font-mono shadow-sm">
                   </div>
                   <div>
                     <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold font-mono">Maximum Active Pool Connections (PG_MAX_POOL)</label>
                     <input type="number" x-model="dbEditForm.postgres.pg_max_pool" min="1" required
-                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg font-mono shadow-sm" />
+                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg font-mono shadow-sm">
                   </div>
                 </div>
 
@@ -746,13 +1728,14 @@
                 </div>
               </div>
               <button type="button" @click="toggleDbEdit('mongodb')"
+                      :aria-label="dbEditOpen === 'mongodb' ? 'Hide Configuration' : 'Configure Database'"
                       class="px-4 py-1.5 text-xs font-bold rounded-lg bg-bravo-pink hover:bg-bravo-pink300 text-white transition duration-200 shadow-sm flex items-center gap-1.5">
                 <span x-text="dbEditOpen === 'mongodb' ? 'Hide Configuration' : 'Configure Database'"></span>
               </button>
             </div>
 
             <!-- MongoDB Edit Panel -->
-            <div x-show="dbEditOpen === 'mongodb'" 
+            <div x-show="dbEditOpen === 'mongodb'"
                  x-transition
                  class="rounded-xl border border-rose-200/60 bg-rose-50/15 p-6 shadow-sm space-y-4">
               <div class="border-b border-slate-200 pb-3 flex items-center justify-between">
@@ -772,7 +1755,7 @@
                     <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold font-mono">MongoDB Connection String (MONGO_URI)</label>
                     <input type="text" x-model="dbEditForm.mongodb.mongo_uri" required
                            placeholder="mongodb://user:password@host:port"
-                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                   </div>
                 </div>
 
@@ -851,13 +1834,14 @@
                 </div>
               </div>
               <button type="button" @click="toggleDbEdit('redis')"
+                      :aria-label="dbEditOpen === 'redis' ? 'Hide Configuration' : 'Configure Cache'"
                       class="px-4 py-1.5 text-xs font-bold rounded-lg bg-bravo-pink hover:bg-bravo-pink300 text-white transition duration-200 shadow-sm flex items-center gap-1.5">
-                <span x-text="dbEditOpen === 'redis' ? 'Hide Configuration' : 'Configure Cache'"></span >
+                <span x-text="dbEditOpen === 'redis' ? 'Hide Configuration' : 'Configure Cache'"></span>
               </button>
             </div>
 
             <!-- Redis Edit Panel -->
-            <div x-show="dbEditOpen === 'redis'" 
+            <div x-show="dbEditOpen === 'redis'"
                  x-transition
                  class="rounded-xl border border-rose-200/60 bg-rose-50/15 p-6 shadow-sm space-y-4">
               <div class="border-b border-slate-200 pb-3 flex items-center justify-between">
@@ -877,17 +1861,17 @@
                     <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold font-mono">Redis Connection URL (REDIS_URL)</label>
                     <input type="text" x-model="dbEditForm.redis.redis_url" required
                            placeholder="redis://user:password@host:port/0"
-                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                   </div>
                   <div class="col-span-3 md:col-span-1">
                     <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold font-mono">Default TTL (Seconds)</label>
                     <input type="number" x-model="dbEditForm.redis.redis_ttl" min="1" required
-                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg font-mono shadow-sm" />
+                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg font-mono shadow-sm">
                   </div>
                   <div class="col-span-3 md:col-span-2">
                     <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold font-mono">Maximum Connections Limit</label>
                     <input type="number" x-model="dbEditForm.redis.redis_max_connections" min="1" required
-                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg font-mono shadow-sm" />
+                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg font-mono shadow-sm">
                   </div>
                 </div>
 
@@ -956,13 +1940,14 @@
                 </div>
               </div>
               <button type="button" @click="toggleDbEdit('minio')"
+                      :aria-label="dbEditOpen === 'minio' ? 'Hide Configuration' : 'Configure Storage'"
                       class="px-4 py-1.5 text-xs font-bold rounded-lg bg-bravo-pink hover:bg-bravo-pink300 text-white transition duration-200 shadow-sm flex items-center gap-1.5">
                 <span x-text="dbEditOpen === 'minio' ? 'Hide Configuration' : 'Configure Storage'"></span>
               </button>
             </div>
 
             <!-- MinIO Edit Panel -->
-            <div x-show="dbEditOpen === 'minio'" 
+            <div x-show="dbEditOpen === 'minio'"
                  x-transition
                  class="rounded-xl border border-rose-200/60 bg-rose-50/15 p-6 shadow-sm space-y-4">
               <div class="border-b border-slate-200 pb-3 flex items-center justify-between">
@@ -982,23 +1967,24 @@
                     <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold font-mono">MinIO Endpoint Target Server (MINIO_ENDPOINT)</label>
                     <input type="text" x-model="dbEditForm.minio.minio_endpoint" required
                            placeholder="play.min.io or localhost:9000"
-                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                   </div>
                   <div>
                     <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold font-mono">MinIO Access Key / Username (MINIO_ACCESS_KEY)</label>
                     <input type="text" x-model="dbEditForm.minio.minio_access_key" required
                            placeholder="minioadmin"
-                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                   </div>
                   <div>
                     <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold font-mono">MinIO Secret Access Key (MINIO_SECRET_KEY)</label>
                     <input type="password" x-model="dbEditForm.minio.minio_secret_key" required
                            placeholder="••••••••"
-                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                           autocomplete="new-password"
+                           class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                   </div>
                   <div class="col-span-2 flex items-center gap-2 pt-1">
-                    <input type="checkbox" id="minio_secure_cb" x-model="dbEditForm.minio.minio_secure" 
-                           class="rounded bg-white border border-slate-300 text-bravo-pink focus:ring-bravo-pink h-4 w-4 shadow-sm" />
+                    <input type="checkbox" id="minio_secure_cb" x-model="dbEditForm.minio.minio_secure"
+                           class="rounded bg-white border border-slate-300 text-bravo-pink focus:ring-bravo-pink h-4 w-4 shadow-sm">
                     <label for="minio_secure_cb" class="text-xs text-slate-600 font-semibold cursor-pointer">Enforce HTTPS Secure Connections (MINIO_SECURE)</label>
                   </div>
                 </div>
@@ -1046,10 +2032,10 @@
               <h3 class="text-xs uppercase tracking-widest text-slate-500 font-bold">Connected Knowledge Bridges</h3>
               <p class="text-[10px] text-slate-400 font-mono">Select a connector below to customize configurations</p>
             </div>
-            
+
             <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
               <!-- Google Drive Card -->
-              <div @click="selectConnector('google_drive')" 
+              <div @click="selectConnector('google_drive')"
                    class="rounded-xl border p-5 flex flex-col justify-between min-h-[170px] relative overflow-hidden shadow-sm cursor-pointer transition-all duration-300 transform hover:-translate-y-1"
                    :class="selectedConnector === 'google_drive' ? 'border-bravo-pink bg-rose-50/15 shadow-md ring-1 ring-bravo-pink' : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'">
                 <div class="absolute top-0 right-0 h-16 w-16 bg-gradient-to-br from-purple-500/5 to-transparent rounded-bl-full"></div>
@@ -1065,17 +2051,18 @@
                 <div class="flex items-center justify-between pt-3 border-t border-slate-100">
                   <div class="text-[10px] text-slate-500 font-mono flex flex-col">
                     <span>Sync: <span class="text-purple-700 font-bold" x-text="(connectorData.bridges?.google_drive?.sync_interval_mins || '—') + 'm'"></span></span>
-                    <span class="text-[9px] mt-0.5" :class="connectorData.bridges?.google_drive?.enabled ? 'text-emerald-600 font-bold' : 'text-slate-400'" 
+                    <span class="text-[9px] mt-0.5" :class="connectorData.bridges?.google_drive?.enabled ? 'text-emerald-600 font-bold' : 'text-slate-400'"
                           x-text="connectorData.bridges?.google_drive?.enabled ? 'Active' : 'Inactive'"></span>
                   </div>
-                  <button type="button" class="px-3 py-1 text-[10px] font-bold rounded bg-slate-50 border border-slate-200 text-slate-700 hover:bg-slate-100 transition-all duration-200">
+                  <button type="button" class="px-3 py-1 text-[10px] font-bold rounded bg-slate-50 border border-slate-200 text-slate-700 hover:bg-slate-100 transition-all duration-200"
+                          :aria-label="selectedConnector === 'google_drive' ? 'Editing Google Drive connector' : 'Configure Google Drive connector'">
                     <span x-text="selectedConnector === 'google_drive' ? 'Editing' : 'Configure'"></span>
                   </button>
                 </div>
               </div>
 
               <!-- Dropbox Card -->
-              <div @click="selectConnector('dropbox')" 
+              <div @click="selectConnector('dropbox')"
                    class="rounded-xl border p-5 flex flex-col justify-between min-h-[170px] relative overflow-hidden shadow-sm cursor-pointer transition-all duration-300 transform hover:-translate-y-1"
                    :class="selectedConnector === 'dropbox' ? 'border-bravo-pink bg-rose-50/15 shadow-md ring-1 ring-bravo-pink' : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'">
                 <div class="absolute top-0 right-0 h-16 w-16 bg-gradient-to-br from-purple-500/5 to-transparent rounded-bl-full"></div>
@@ -1091,17 +2078,18 @@
                 <div class="flex items-center justify-between pt-3 border-t border-slate-100">
                   <div class="text-[10px] text-slate-500 font-mono flex flex-col">
                     <span>Sync: <span class="text-purple-700 font-bold" x-text="(connectorData.bridges?.dropbox?.sync_interval_mins || '—') + 'm'"></span></span>
-                    <span class="text-[9px] mt-0.5" :class="connectorData.bridges?.dropbox?.enabled ? 'text-emerald-600 font-bold' : 'text-slate-400'" 
+                    <span class="text-[9px] mt-0.5" :class="connectorData.bridges?.dropbox?.enabled ? 'text-emerald-600 font-bold' : 'text-slate-400'"
                           x-text="connectorData.bridges?.dropbox?.enabled ? 'Active' : 'Inactive'"></span>
                   </div>
-                  <button type="button" class="px-3 py-1 text-[10px] font-bold rounded bg-slate-50 border border-slate-200 text-slate-700 hover:bg-slate-100 transition-all duration-200">
+                  <button type="button" class="px-3 py-1 text-[10px] font-bold rounded bg-slate-50 border border-slate-200 text-slate-700 hover:bg-slate-100 transition-all duration-200"
+                          :aria-label="selectedConnector === 'dropbox' ? 'Editing Dropbox connector' : 'Configure Dropbox connector'">
                     <span x-text="selectedConnector === 'dropbox' ? 'Editing' : 'Configure'"></span>
                   </button>
                 </div>
               </div>
 
               <!-- OneDrive Card -->
-              <div @click="selectConnector('onedrive')" 
+              <div @click="selectConnector('onedrive')"
                    class="rounded-xl border p-5 flex flex-col justify-between min-h-[170px] relative overflow-hidden shadow-sm cursor-pointer transition-all duration-300 transform hover:-translate-y-1"
                    :class="selectedConnector === 'onedrive' ? 'border-bravo-pink bg-rose-50/15 shadow-md ring-1 ring-bravo-pink' : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'">
                 <div class="absolute top-0 right-0 h-16 w-16 bg-gradient-to-br from-purple-500/5 to-transparent rounded-bl-full"></div>
@@ -1117,10 +2105,11 @@
                 <div class="flex items-center justify-between pt-3 border-t border-slate-100">
                   <div class="text-[10px] text-slate-500 font-mono flex flex-col">
                     <span>Sync: <span class="text-purple-700 font-bold" x-text="(connectorData.bridges?.onedrive?.sync_interval_mins || '—') + 'm'"></span></span>
-                    <span class="text-[9px] mt-0.5" :class="connectorData.bridges?.onedrive?.enabled ? 'text-emerald-600 font-bold' : 'text-slate-400'" 
+                    <span class="text-[9px] mt-0.5" :class="connectorData.bridges?.onedrive?.enabled ? 'text-emerald-600 font-bold' : 'text-slate-400'"
                           x-text="connectorData.bridges?.onedrive?.enabled ? 'Active' : 'Inactive'"></span>
                   </div>
-                  <button type="button" class="px-3 py-1 text-[10px] font-bold rounded bg-slate-50 border border-slate-200 text-slate-700 hover:bg-slate-100 transition-all duration-200">
+                  <button type="button" class="px-3 py-1 text-[10px] font-bold rounded bg-slate-50 border border-slate-200 text-slate-700 hover:bg-slate-100 transition-all duration-200"
+                          :aria-label="selectedConnector === 'onedrive' ? 'Editing OneDrive connector' : 'Configure OneDrive connector'">
                     <span x-text="selectedConnector === 'onedrive' ? 'Editing' : 'Configure'"></span>
                   </button>
                 </div>
@@ -1128,7 +2117,7 @@
             </div>
 
             <!-- Interactive Editing Panel (Full Width) -->
-            <div x-show="selectedConnector !== ''" 
+            <div x-show="selectedConnector !== ''"
                  x-transition:enter="transition ease-out duration-300"
                  x-transition:enter-start="opacity-0 translate-y-4"
                  x-transition:enter-end="opacity-100 translate-y-0"
@@ -1136,12 +2125,13 @@
                  x-transition:leave-start="opacity-100 translate-y-0"
                  x-transition:leave-end="opacity-0 translate-y-4"
                  class="rounded-xl border border-rose-200 bg-[#FFFDFE] p-6 shadow-md relative">
-              
+
               <!-- Form Title and Indicator -->
               <div class="border-b border-slate-200 pb-3 mb-5 flex items-center justify-between">
                 <div>
                   <h4 class="text-sm font-bold text-slate-800 uppercase tracking-wider font-hanken flex items-center gap-2">
                     <span class="h-2 w-2 rounded-full bg-bravo-pink animate-ping"></span>
+                    <span class="sr-only">Connector configuration</span>
                     <span x-text="selectedConnector === 'google_drive' ? 'Google Drive Connector Configuration' : selectedConnector === 'dropbox' ? 'Dropbox Connector Configuration' : 'OneDrive (MS Graph) Connector Configuration'"></span>
                   </h4>
                   <p class="text-[11px] text-slate-500 mt-1">Configure credentials, tokens, and synchronization targets. These updates apply to the runtime memory and write directly to the local .env configuration.</p>
@@ -1152,21 +2142,22 @@
               <form @submit.prevent="saveConnectorSettings()" class="space-y-6">
                 <!-- Inputs Section based on Selected Bridge -->
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  
+
                   <!-- Google Drive Form Fields -->
                   <template x-if="selectedConnector === 'google_drive'">
                     <div class="space-y-4 col-span-2 grid grid-cols-1 md:grid-cols-2 gap-5">
                       <div class="col-span-2 md:col-span-1">
                         <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">OAuth Client ID</label>
-                        <input type="text" x-model="editForm.google_drive.client_id" 
+                        <input type="text" x-model="editForm.google_drive.client_id"
                                placeholder="gdrive-client-id-xxxxxx.apps.googleusercontent.com"
-                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                       </div>
                       <div class="col-span-2 md:col-span-1">
                         <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">OAuth Client Secret</label>
-                        <input type="password" x-model="editForm.google_drive.client_secret" 
+                        <input type="password" x-model="editForm.google_drive.client_secret"
                                placeholder="••••••••"
-                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                               autocomplete="new-password"
+                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                       </div>
                       <div class="col-span-2">
                         <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">Refresh / Access Token (GDRIVE_BRIDGE_TOKEN)</label>
@@ -1182,9 +2173,9 @@
                     <div class="space-y-4 col-span-2 grid grid-cols-1 md:grid-cols-2 gap-5">
                       <div class="col-span-2">
                         <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">OAuth App Client Key / ID</label>
-                        <input type="text" x-model="editForm.dropbox.client_id" 
+                        <input type="text" x-model="editForm.dropbox.client_id"
                                placeholder="dropbox-client-key-xxxxxxxx"
-                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                       </div>
                       <div class="col-span-2">
                         <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">Bridge Storage Access Token</label>
@@ -1200,27 +2191,29 @@
                     <div class="space-y-4 col-span-2 grid grid-cols-1 md:grid-cols-2 gap-5">
                       <div class="col-span-2 md:col-span-1">
                         <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">Azure Application (Client) ID</label>
-                        <input type="text" x-model="editForm.onedrive.client_id" 
+                        <input type="text" x-model="editForm.onedrive.client_id"
                                placeholder="azure-application-client-uuid-xxxx"
-                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                       </div>
                       <div class="col-span-2 md:col-span-1">
                         <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">Azure Client Secret</label>
-                        <input type="password" x-model="editForm.onedrive.client_secret" 
+                        <input type="password" x-model="editForm.onedrive.client_secret"
                                placeholder="••••••••"
-                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                               autocomplete="new-password"
+                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                       </div>
                       <div class="col-span-2 md:col-span-1">
                         <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">Azure Directory (Tenant) ID</label>
-                        <input type="text" x-model="editForm.onedrive.tenant_id" 
+                        <input type="text" x-model="editForm.onedrive.tenant_id"
                                placeholder="common or specific-tenant-uuid-xxxx"
-                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                       </div>
                       <div class="col-span-2 md:col-span-1">
                         <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">MS Graph Bridge Token</label>
-                        <input type="password" x-model="editForm.onedrive.token" 
+                        <input type="password" x-model="editForm.onedrive.token"
                                placeholder="••••••••"
-                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                               autocomplete="new-password"
+                               class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                       </div>
                     </div>
                   </template>
@@ -1230,28 +2223,28 @@
                 <!-- Global Sync / Common Settings Group -->
                 <div class="border-t border-slate-200 pt-5 mt-4">
                   <h5 class="text-[10px] font-bold uppercase text-amber-700 tracking-wider mb-4 font-mono">Shared Bridge Environment Settings</h5>
-                  
+
                   <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
                     <div>
                       <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">Sync Interval (Minutes)</label>
                       <input type="number" x-model="editForm.common.cron_interval_mins" min="1" required
-                             class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg font-mono shadow-sm" />
+                             class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg font-mono shadow-sm">
                       <p class="text-[9px] text-slate-400 mt-1">Periodic background crawl and recall timing interval.</p>
                     </div>
 
                     <div>
                       <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">Webhook Base URL</label>
-                      <input type="text" x-model="editForm.common.webhook_base_url" 
+                      <input type="text" x-model="editForm.common.webhook_base_url"
                              placeholder="https://api.trimcp-enterprise.com"
-                             class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                             class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                       <p class="text-[9px] text-slate-400 mt-1">Inbound webhook listener endpoint address for instant sync.</p>
                     </div>
 
                     <div>
                       <label class="block text-[9px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">OAuth Redirect URI Override</label>
-                      <input type="text" x-model="editForm.common.redirect_uri" 
+                      <input type="text" x-model="editForm.common.redirect_uri"
                              placeholder="https://api.trimcp-enterprise.com/oauth/callback"
-                             class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm" />
+                             class="w-full bg-white border border-slate-200 text-slate-800 focus:outline-none focus:border-bravo-pink focus:ring-1 focus:ring-bravo-pink transition duration-200 text-xs py-2 px-3 rounded-lg placeholder-slate-400 font-mono shadow-sm">
                       <p class="text-[9px] text-slate-400 mt-1">OAuth callback path for web sign-in authentication flow.</p>
                     </div>
                   </div>
@@ -1282,9 +2275,12 @@
         </div>
       </div>
     </section>
+    </div>
 
+    <!-- Tab: Maintenance (GC) -->
+    <div id="panel-maintenance" x-show="adminTab === 'maintenance'" x-cloak class="space-y-8">
     <!-- GC -->
-    <section class="scroll-mt-32 pt-12 border-t border-slate-200">
+    <section id="maintenance" class="scroll-mt-32 pt-6 md:pt-8 border-t border-slate-200">
       <div class="border-b border-slate-200 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h2 class="text-lg font-bold font-hanken tracking-tight text-slate-900 uppercase">Engine Maintenance &amp; Cleanup</h2>
@@ -1307,10 +2303,15 @@
         <pre class="mt-3 text-[10px] font-mono text-emerald-700 bg-slate-50 border border-slate-200 rounded-lg p-3 overflow-x-auto" x-text="JSON.stringify(gcResult, null, 2)"></pre>
       </template>
     </section>
+    </div>
+
+    </div><!-- /inner max-width column -->
 
   </main>
 
-  <footer class="border-t border-slate-200 py-6 text-center text-[10px] text-slate-500 font-semibold tracking-wide font-mono uppercase bg-slate-50">
+  </div><!-- /sidebar + main shell -->
+
+  <footer class="border-t border-slate-200 py-6 text-center text-[10px] text-slate-500 font-semibold tracking-wide font-mono uppercase bg-slate-50 shrink-0">
     TriMCP Admin · HMAC Header Protocol Required · Enterprise Console v2.0
   </footer>
 
@@ -1326,11 +2327,51 @@
     }
 
     /**
+     * Resolve TRIMCP_API_KEY material for HMAC signing (never sent as a plaintext HTTP header).
+     * The shared secret is only used locally to compute Authorization: HMAC-SHA256 <sig>.
+     * Order: non-empty explicit argument → adminShell.apiKey (body x-data) → header password input value
+     * (covers unsaved / pre-blur typing) → localStorage.
+     */
+    function resolveTrimcpApiKey(explicit) {
+      if (explicit != null) {
+        const t = String(explicit).trim();
+        if (t) return t;
+      }
+      try {
+        if (window.Alpine && typeof Alpine.$data === 'function') {
+          const d = Alpine.$data(document.body);
+          if (d != null && d.apiKey != null) {
+            const t = String(d.apiKey).trim();
+            if (t) return t;
+          }
+        }
+      } catch (_) { /* ignore */ }
+      try {
+        const inp = document.getElementById('trimcp-admin-hmac-secret');
+        if (inp && typeof inp.value === 'string' && inp.value.trim()) return inp.value.trim();
+      } catch (_) { /* ignore */ }
+      try {
+        const ls = localStorage.getItem('trimcp_api_key');
+        if (ls && ls.trim()) return ls.trim();
+      } catch (_) { /* ignore */ }
+      return '';
+    }
+
+    /**
      * HMAC must sign pathname ONLY (no ?query) — matches trimcp.auth.verify_hmac(request.url.path).
      * Pass query separately via options.query (string or object for URLSearchParams).
      */
     async function signedFetch(apiKey, pathname, options = {}) {
-      if (!apiKey) throw new Error('Set TRIMCP_API_KEY in the header field');
+      const secret = resolveTrimcpApiKey(apiKey);
+      if (!secret) {
+        const msg =
+          'HMAC secret (TRIMCP_API_KEY) is not set. Paste the server key into the header ' +
+          '"HMAC Secret" field (or persist it with Save), then retry.';
+        try {
+          trimcpShellToast(msg, 'error');
+        } catch (_) { /* ignore */ }
+        throw new Error(msg);
+      }
       const method = (options.method || 'GET').toUpperCase();
       let bodyStr = '';
       if (options.body !== undefined && options.body !== null) {
@@ -1343,13 +2384,14 @@
         const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
         canonical += '\n' + hex;
       }
-      const sig = await hmacSha256Hex(apiKey, canonical);
-      const headers = {
-        'X-TriMCP-Timestamp': String(ts),
-        'Authorization': 'HMAC-SHA256 ' + sig,
-        ...(options.headers || {}),
-      };
-      if (bodyStr) headers['Content-Type'] = 'application/json';
+      const sig = await hmacSha256Hex(secret, canonical);
+      const headers = { ...(options.headers || {}) };
+      headers['X-TriMCP-Timestamp'] = String(ts);
+      headers['Authorization'] = 'HMAC-SHA256 ' + sig;
+      if (bodyStr) {
+        const hasCt = Object.keys(headers).some((k) => k.toLowerCase() === 'content-type');
+        if (!hasCt) headers['Content-Type'] = 'application/json';
+      }
 
       let url = pathname;
       if (options.query) {
@@ -1359,15 +2401,264 @@
         if (qs) url += '?' + qs;
       }
 
-      return fetch(url, {
+      const res = await fetch(url, {
         method,
         headers,
         body: bodyStr || undefined,
       });
+
+      // Logic stress testing: graceful handling of empty or 403 responses
+      const originalJson = res.json.bind(res);
+      res.json = async () => {
+        const text = await res.text();
+        if (!text) {
+          if (res.status === 401 || res.status === 403) return { error: "Forbidden - Invalid API Key or permissions" };
+          return {};
+        }
+        try {
+          return JSON.parse(text);
+        } catch (e) {
+          return { error: `Invalid JSON response (HTTP ${res.status})` };
+        }
+      };
+
+      return res;
     }
+
+    /** Toast via root admin shell (nested x-data panels do not inherit parent). */
+    function trimcpShellToast(msg, kind = 'error') {
+      try {
+        if (window.Alpine && typeof Alpine.$data === 'function') {
+          const d = Alpine.$data(document.querySelector('body'));
+          if (d && typeof d.toast === 'function') {
+            d.toast(msg, kind);
+            return;
+          }
+        }
+      } catch (_) { /* ignore */ }
+      console.warn('[TriMCP]', kind, msg);
+    }
+
+    /** Switch admin shell tab from nested Alpine components (Fleet deep-links). */
+    function trimcpNavigateAdminTab(slug) {
+      try {
+        if (window.Alpine && typeof Alpine.$data === 'function') {
+          const d = Alpine.$data(document.querySelector('body'));
+          if (d && typeof d.setAdminTab === 'function') {
+            d.setAdminTab(slug);
+          }
+        }
+      } catch (_) { /* ignore */ }
+    }
+
+    /** Vanilla canvas rAF loop: salience decay scatter (Age × decayed salience). */
+    const TriMCP_CognitiveDecayMap = (function () {
+      function colorForAssertion(t) {
+        const key = (t || '').toLowerCase();
+        const map = {
+          asserted: '#059669',
+          inferred: '#2563eb',
+          abstraction: '#d97706',
+          contested: '#dc2626',
+          semantic: '#7c3aed',
+        };
+        return map[key] || '#64748b';
+      }
+
+      function attach(canvas, getState, handlers) {
+        let raf = 0;
+        let dragging = false;
+        let dragStart = null;
+        let frames = 0;
+        let fpsAccum = 0;
+        let lastTs = 0;
+        let fpsDisplay = 0;
+
+        function canvasCoords(evt) {
+          const rect = canvas.getBoundingClientRect();
+          const sx = canvas.width / Math.max(1, rect.width);
+          const sy = canvas.height / Math.max(1, rect.height);
+          return {
+            x: (evt.clientX - rect.left) * sx,
+            y: (evt.clientY - rect.top) * sy,
+          };
+        }
+
+        function drawFrame(ts) {
+          const dt = lastTs ? (ts - lastTs) / 1000 : 0;
+          lastTs = ts;
+          frames += 1;
+          fpsAccum += dt;
+          if (fpsAccum >= 0.45) {
+            fpsDisplay = Math.round(frames / fpsAccum);
+            frames = 0;
+            fpsAccum = 0;
+          }
+
+          const st = getState();
+          const dpr = window.devicePixelRatio || 1;
+          const rect = canvas.getBoundingClientRect();
+          const w = Math.max(1, Math.floor(rect.width * dpr));
+          const h = Math.max(1, Math.floor(rect.height * dpr));
+          if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w;
+            canvas.height = h;
+          }
+
+          const ctx = canvas.getContext('2d', { alpha: false });
+          const pad = st.pad || 40;
+          const plotW = w - 2 * pad;
+          const plotH = h - 2 * pad;
+          const pts = st.points || [];
+
+          let maxAge = 1e-6;
+          let maxSal = 0.01;
+          for (const p of pts) {
+            maxAge = Math.max(maxAge, Number(p.age_days) || 0);
+            maxSal = Math.max(maxSal, Number(p.decayed_salience) || 0, Number(p.raw_salience) || 0);
+          }
+          maxSal = Math.min(1, Math.max(maxSal, 0.05));
+
+          ctx.fillStyle = '#f8fafc';
+          ctx.fillRect(0, 0, w, h);
+
+          const yBand = pad + plotH * (1 - 0.3 / maxSal);
+          ctx.fillStyle = 'rgba(248, 113, 113, 0.14)';
+          ctx.fillRect(pad, yBand, plotW, h - pad - yBand);
+
+          ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+          ctx.lineWidth = 1;
+          for (let g = 0; g <= 4; g++) {
+            const gx = pad + (plotW * g) / 4;
+            ctx.beginPath();
+            ctx.moveTo(gx, pad);
+            ctx.lineTo(gx, h - pad);
+            ctx.stroke();
+            const gy = pad + (plotH * g) / 4;
+            ctx.beginPath();
+            ctx.moveTo(pad, gy);
+            ctx.lineTo(w - pad, gy);
+            ctx.stroke();
+          }
+
+          ctx.strokeStyle = '#64748b';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(pad, pad, plotW, plotH);
+
+          const dot = Math.max(2, Math.floor(dpr * 1.35));
+          for (const p of pts) {
+            const age = Number(p.age_days) || 0;
+            const sal = Number(p.decayed_salience) || 0;
+            const cx = pad + (age / maxAge) * plotW;
+            const cy = pad + plotH - (sal / maxSal) * plotH;
+            ctx.fillStyle = colorForAssertion(p.assertion_type);
+            ctx.fillRect(cx - dot / 2, cy - dot / 2, dot, dot);
+          }
+
+          const box = st.selectionBox;
+          if (box && box.w > 2 && box.h > 2) {
+            ctx.strokeStyle = 'rgba(37, 99, 235, 0.9)';
+            ctx.lineWidth = 2 * dpr;
+            ctx.setLineDash([6 * dpr, 4 * dpr]);
+            ctx.strokeRect(box.x, box.y, box.w, box.h);
+            ctx.setLineDash([]);
+          }
+
+          ctx.fillStyle = '#334155';
+          ctx.font = `${Math.round(11 * dpr)}px ui-monospace, monospace`;
+          ctx.fillText('Memory health map · Age (d) →  |  ↑ decayed salience', pad, Math.round(16 * dpr));
+          ctx.fillText(`FPS ${fpsDisplay}  ·  points ${pts.length}`, pad, Math.round(30 * dpr));
+          if (st.benchLabel) ctx.fillText(st.benchLabel, pad, Math.round(44 * dpr));
+
+          raf = requestAnimationFrame(drawFrame);
+        }
+
+        function start() {
+          cancelAnimationFrame(raf);
+          lastTs = 0;
+          raf = requestAnimationFrame(drawFrame);
+        }
+
+        function stop() {
+          cancelAnimationFrame(raf);
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+          dragging = true;
+          dragStart = canvasCoords(e);
+          handlers.onDragStart && handlers.onDragStart();
+        });
+        canvas.addEventListener('mousemove', (e) => {
+          if (!dragging || !dragStart) return;
+          const c = canvasCoords(e);
+          const x = Math.min(dragStart.x, c.x);
+          const y = Math.min(dragStart.y, c.y);
+          const bw = Math.abs(c.x - dragStart.x);
+          const bh = Math.abs(c.y - dragStart.y);
+          handlers.onSelectionBox && handlers.onSelectionBox({ x, y, w: bw, h: bh });
+        });
+        function endDrag() {
+          if (!dragging) return;
+          dragging = false;
+          const st = getState();
+          const box = st.selectionBox;
+          if (!box || box.w < 4 || box.h < 4) {
+            handlers.onSelectionBox && handlers.onSelectionBox(null);
+            handlers.onBoxSelect && handlers.onBoxSelect([]);
+            return;
+          }
+          const pad = st.pad || 40;
+          const pts = st.points || [];
+          let maxAge = 1e-6;
+          let maxSal = 0.01;
+          for (const p of pts) {
+            maxAge = Math.max(maxAge, Number(p.age_days) || 0);
+            maxSal = Math.max(maxSal, Number(p.decayed_salience) || 0);
+          }
+          maxSal = Math.min(1, Math.max(maxSal, 0.05));
+          const cw = canvas.width;
+          const ch = canvas.height;
+          const plotW = cw - 2 * pad;
+          const plotH = ch - 2 * pad;
+          const picked = [];
+          for (const p of pts) {
+            const age = Number(p.age_days) || 0;
+            const sal = Number(p.decayed_salience) || 0;
+            const cx = pad + (age / maxAge) * plotW;
+            const cy = pad + plotH - (sal / maxSal) * plotH;
+            if (cx >= box.x && cx <= box.x + box.w && cy >= box.y && cy <= box.y + box.h) {
+              picked.push(p);
+            }
+          }
+          handlers.onBoxSelect && handlers.onBoxSelect(picked);
+        }
+        canvas.addEventListener('mouseup', endDrag);
+        canvas.addEventListener('mouseleave', endDrag);
+
+        return { start, stop };
+      }
+
+      return { attach };
+    })();
 
     document.addEventListener('alpine:init', () => {
       Alpine.data('adminShell', () => ({
+        adminNavItems: [
+          { slug: 'fleet', label: 'Fleet' },
+          { slug: 'overview', label: 'Overview' },
+          { slug: 'health', label: 'Health' },
+          { slug: 'security', label: 'Security' },
+          { slug: 'events', label: 'Events' },
+          { slug: 'quotas', label: 'Quotas' },
+          { slug: 'graph', label: 'Graph' },
+          { slug: 'embedding-migration', label: 'Embeddings' },
+          { slug: 'consolidation', label: 'Consolidation' },
+          { slug: 'cognitive', label: 'Cognitive' },
+          { slug: 'datastores', label: 'Datastores' },
+          { slug: 'maintenance', label: 'Maintenance' },
+        ],
+        adminTab: 'fleet',
+
         apiKey: localStorage.getItem('trimcp_api_key') || '',
         defaultNs: localStorage.getItem('trimcp_default_ns') || '',
         toasts: [],
@@ -1376,11 +2667,35 @@
         lastHealthAt: null,
         gcLoading: false,
         gcResult: null,
+        sidebarOpen: false,
 
+        get activeSectionHint() {
+          const hit = this.adminNavItems.find((i) => i.slug === this.adminTab);
+          return hit ? '· ' + hit.label : '';
+        },
+
+        tabSlugFromLocation() {
+          const raw = (window.location.hash || '').replace(/^#/, '').trim();
+          const slug = raw || 'fleet';
+          const allowed = this.adminNavItems.map((i) => i.slug);
+          return allowed.includes(slug) ? slug : 'fleet';
+        },
+
+        setAdminTab(slug) {
+          const allowed = this.adminNavItems.map((i) => i.slug);
+          this.adminTab = allowed.includes(slug) ? slug : 'fleet';
+
+          const wantHash = this.adminTab === 'fleet' ? '' : '#' + this.adminTab;
+          const cur = window.location.hash || '';
+          if (cur === wantHash) return;
+
+          const base = window.location.pathname + window.location.search;
+          history.replaceState(null, '', base + wantHash);
+        },
         get healthRows() {
             // Flatten v1 response for the grid view
             const rows = { 'Overall': this.health.status };
-            
+
             // Security
             if (this.health.security?.master_key) {
                 rows['Master Key'] = this.health.security.master_key;
@@ -1402,7 +2717,13 @@
             return rows;
         },
 
-        init() { this.loadHealth(); },
+        init() {
+          this.adminTab = this.tabSlugFromLocation();
+          window.addEventListener('hashchange', () => {
+            this.adminTab = this.tabSlugFromLocation();
+          });
+          this.loadHealth();
+        },
 
         persistKey() {
           localStorage.setItem('trimcp_api_key', this.apiKey);
@@ -1447,6 +2768,260 @@
         },
       }));
 
+      /* ---------- Zero-trust security audit panel ---------- */
+      Alpine.data('securityAuditPanel', () => ({
+        targetNs: '',
+        rlsProbeNs: '',
+        panelLoading: false,
+
+        signing: {},
+        signingLoading: false,
+        signingError: '',
+
+        piiItems: [],
+        piiLoading: false,
+        piiError: '',
+
+        chain: {},
+        seqGaps: { gaps: [], min_seq: null, max_seq: null },
+        wormLoading: false,
+        chainError: '',
+
+        verifySampleLoading: false,
+        verifySampleError: '',
+        sampleInvalid: 0,
+        lastSample: { summary: '' },
+
+        rlsNamespaces: [],
+        rlsMapLoading: false,
+        rlsMapError: '',
+
+        rlsTestLoading: false,
+        rlsLastResult: null,
+        rlsTerminalOpen: false,
+
+        mount() {
+          if (this.defaultNs) this.targetNs = this.defaultNs;
+          window.addEventListener('trimcp-apply-ns-filter', (e) => {
+            const nid = e.detail?.namespace_id;
+            if (!nid) return;
+            this.targetNs = nid;
+          });
+        },
+
+        get piiGrouped() {
+          const m = {};
+          for (const r of this.piiItems) {
+            const et = r.entity_type || 'unknown';
+            m[et] = (m[et] || 0) + 1;
+          }
+          return Object.entries(m)
+            .map(([entity_type, count]) => ({ entity_type, count }))
+            .sort((a, b) => b.count - a.count);
+        },
+
+        get timelineSegments() {
+          const g = this.seqGaps;
+          if (g.max_seq == null || g.min_seq == null) return [];
+          const lo = g.min_seq;
+          const hi = g.max_seq;
+          if (hi < lo) return [];
+          const span = hi - lo + 1;
+          const buckets = Math.min(36, Math.max(4, span));
+          const gapSet = new Set();
+          for (const gap of (g.gaps || [])) {
+            const a = gap.after_seq;
+            const b = gap.before_seq;
+            for (let s = a + 1; s < b; s++) gapSet.add(s);
+          }
+          const segs = [];
+          for (let bidx = 0; bidx < buckets; bidx++) {
+            const start = lo + Math.floor((bidx * span) / buckets);
+            const end = lo + Math.floor(((bidx + 1) * span) / buckets) - 1;
+            let gapAfter = false;
+            for (let s = start; s <= end && s <= hi; s++) {
+              if (gapSet.has(s)) { gapAfter = true; break; }
+            }
+            segs.push({ gapAfter });
+          }
+          return segs;
+        },
+
+        async refreshAll() {
+          this.panelLoading = true;
+          this.signingError = this.piiError = this.chainError = this.rlsMapError = '';
+          const piiQ = new URLSearchParams({ page: '1', limit: '40' });
+          if (this.targetNs) piiQ.set('namespace_id', this.targetNs);
+          try {
+            const tasks = [
+              (async () => {
+                this.signingLoading = true;
+                try {
+                  const r = await signedFetch(undefined, '/api/admin/signing/status');
+                  const j = await r.json();
+                  if (!r.ok) throw new Error(j.error || j.detail || 'signing');
+                  this.signing = j;
+                } catch (e) {
+                  this.signingError = String(e.message || e);
+                } finally {
+                  this.signingLoading = false;
+                }
+              })(),
+              (async () => {
+                this.piiLoading = true;
+                try {
+                  const r = await signedFetch(undefined, '/api/admin/pii-redactions', { query: piiQ });
+                  const j = await r.json();
+                  if (!r.ok) throw new Error(j.error || j.detail || 'pii');
+                  this.piiItems = j.items || [];
+                } catch (e) {
+                  this.piiError = String(e.message || e);
+                } finally {
+                  this.piiLoading = false;
+                }
+              })(),
+              (async () => {
+                this.rlsMapLoading = true;
+                try {
+                  const r = await signedFetch(undefined, '/api/admin/namespaces', {
+                    query: new URLSearchParams({ page: '1', limit: '40' }),
+                  });
+                  const j = await r.json();
+                  if (!r.ok) throw new Error(j.error || j.detail || 'namespaces');
+                  const items = j.namespaces || j.items || [];
+                  this.rlsNamespaces = items.map((n) => ({
+                    id: n.id,
+                    slug: n.slug,
+                    rls_enabled:
+                      n.metadata?.security?.rls_enabled !== false &&
+                      n.metadata?.rls_enabled !== false,
+                    policy_name:
+                      n.metadata?.security?.rls_policy_name ||
+                      n.metadata?.rls_policy_name ||
+                      'namespace_isolation_policy',
+                  }));
+                } catch (e) {
+                  this.rlsMapError = String(e.message || e);
+                } finally {
+                  this.rlsMapLoading = false;
+                }
+              })(),
+            ];
+            if (this.targetNs) {
+              tasks.push(
+                (async () => {
+                  this.wormLoading = true;
+                  try {
+                    const [rc, rs] = await Promise.all([
+                      signedFetch(
+                        undefined,
+                        '/api/admin/verify-chain/' + encodeURIComponent(this.targetNs)
+                      ),
+                      signedFetch(
+                        undefined,
+                        '/api/admin/security/event-seq-gaps/' +
+                          encodeURIComponent(this.targetNs)
+                      ),
+                    ]);
+                    const cj = await rc.json();
+                    const sj = await rs.json();
+                    if (!rc.ok) throw new Error(cj.error || cj.detail || 'verify-chain');
+                    if (!rs.ok) throw new Error(sj.error || sj.detail || 'seq-gaps');
+                    this.chain = cj;
+                    this.seqGaps = sj;
+                  } catch (e) {
+                    this.chainError = String(e.message || e);
+                    this.chain = {};
+                    this.seqGaps = { gaps: [], min_seq: null, max_seq: null };
+                  } finally {
+                    this.wormLoading = false;
+                  }
+                })()
+              );
+            } else {
+              this.chain = {};
+              this.seqGaps = { gaps: [], min_seq: null, max_seq: null };
+            }
+            await Promise.all(tasks);
+          } finally {
+            this.panelLoading = false;
+          }
+        },
+
+        async runVerifySample() {
+          if (!this.targetNs) {
+            this.toast('Set target namespace first', 'error');
+            return;
+          }
+          this.verifySampleLoading = true;
+          this.verifySampleError = '';
+          try {
+            const r = await signedFetch(
+              undefined,
+              '/api/admin/security/verify-memory-sample',
+              {
+                method: 'POST',
+                body: JSON.stringify({
+                  namespace_id: this.targetNs,
+                  sample_size: 12,
+                }),
+              }
+            );
+            const j = await r.json();
+            if (!r.ok) throw new Error(j.error || j.detail || 'verify sample');
+            this.sampleInvalid = j.invalid_count || 0;
+            this.lastSample.summary =
+              'Sampled ' +
+              (j.sampled || 0) +
+              ' memories · invalid signatures: ' +
+              (j.invalid_count || 0);
+            if (this.sampleInvalid > 0) {
+              this.toast('Invalid signatures detected in sample', 'error');
+            } else {
+              this.toast('Verify sample completed — all signatures OK', 'ok');
+            }
+          } catch (e) {
+            this.verifySampleError = String(e.message || e);
+            this.toast('Verify sample failed: ' + this.verifySampleError, 'error');
+          } finally {
+            this.verifySampleLoading = false;
+          }
+        },
+
+        async runRlsIsolation() {
+          if (!this.targetNs || !this.rlsProbeNs) return;
+          this.rlsTestLoading = true;
+          this.rlsLastResult = null;
+          try {
+            const r = await signedFetch(
+              undefined,
+              '/api/admin/security/test-rls-isolation',
+              {
+                method: 'POST',
+                body: JSON.stringify({
+                  namespace_id: this.targetNs,
+                  probe_namespace_id: this.rlsProbeNs,
+                }),
+              }
+            );
+            const j = await r.json();
+            if (!r.ok) throw new Error(j.error || j.detail || 'rls test');
+            this.rlsLastResult = j;
+            this.rlsTerminalOpen = true;
+            this.toast(
+              j.isolation_ok ? 'RLS isolation probe: OK' : 'RLS isolation probe: FAILED (rows leaked)',
+              j.isolation_ok ? 'ok' : 'error'
+            );
+          } catch (e) {
+            this.toast('RLS test failed: ' + (e.message || e), 'error');
+            this.rlsLastResult = { error: String(e.message || e) };
+            this.rlsTerminalOpen = true;
+          } finally {
+            this.rlsTestLoading = false;
+          }
+        },
+      }));
+
       /* ---------- Event log ---------- */
       Alpine.data('eventLogComponent', () => ({
         items: [],
@@ -1459,6 +3034,13 @@
 
         mount() {
           if (this.defaultNs) this.filters.namespace_id = this.defaultNs;
+          window.addEventListener('trimcp-apply-ns-filter', (e) => {
+            const nid = e.detail?.namespace_id;
+            if (nid === undefined || nid === null) return;
+            this.filters.namespace_id = nid;
+            this.page = 1;
+            this.refreshAll();
+          });
           this.refreshAll();
         },
 
@@ -1484,11 +3066,10 @@
 
         async refreshAll() {
           this.loading = true;
-          const key = this.apiKey;
           try {
             const [rItems, rSum] = await Promise.all([
-              signedFetch(key, '/api/admin/events', { query: this.queryQs() }),
-              signedFetch(key, '/api/admin/events/summary', { query: this.summaryQs() }),
+              signedFetch(undefined, '/api/admin/events', { query: this.queryQs() }),
+              signedFetch(undefined, '/api/admin/events/summary', { query: this.summaryQs() }),
             ]);
             if (!rItems.ok) throw new Error((await rItems.json()).error || 'events');
             if (!rSum.ok) throw new Error((await rSum.json()).error || 'summary');
@@ -1524,28 +3105,36 @@
         totals: {},
         nearLimit: [],
         loading: false,
+        scopeNs: '',
 
         mount() {
+          window.addEventListener('trimcp-apply-ns-filter', (e) => {
+            const nid = e.detail?.namespace_id;
+            if (nid === undefined || nid === null) return;
+            this.scopeNs = nid;
+            this.refresh();
+          });
           this.refresh();
         },
 
         qs() {
           const p = new URLSearchParams();
           p.set('window', this.window);
-          if (this.defaultNs) p.set('namespace_id', this.defaultNs);
+          const ns = this.scopeNs || this.defaultNs;
+          if (ns) p.set('namespace_id', ns);
           return p.toString();
         },
 
         async refresh() {
           this.loading = true;
-          const key = this.apiKey;
           try {
-            const sumQ = this.defaultNs
-              ? 'namespace_id=' + encodeURIComponent(this.defaultNs)
+            const filteredNs = this.scopeNs || this.defaultNs;
+            const sumQ = filteredNs
+              ? 'namespace_id=' + encodeURIComponent(filteredNs)
               : '';
             const [rq, rs] = await Promise.all([
-              signedFetch(key, '/api/admin/quotas', { query: this.qs() }),
-              signedFetch(key, '/api/admin/quotas/summary', { query: sumQ || undefined }),
+              signedFetch(undefined, '/api/admin/quotas', { query: this.qs() }),
+              signedFetch(undefined, '/api/admin/quotas/summary', { query: sumQ || undefined }),
             ]);
             if (!rq.ok) throw new Error((await rq.json()).error || 'quotas');
             if (!rs.ok) throw new Error((await rs.json()).error || 'quota summary');
@@ -1590,7 +3179,7 @@
         async loadAll() {
           this.loading = true;
           try {
-            const res = await signedFetch(this.apiKey, '/api/admin/embedding-models');
+            const res = await signedFetch(undefined, '/api/admin/embedding-models');
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
             this.models = data.models || [];
@@ -1626,7 +3215,7 @@
           this.loading = true;
           try {
             const body = { target_model_id: this.targetModelId.trim() };
-            const res = await signedFetch(this.apiKey, '/api/admin/embedding-migrations/start', {
+            const res = await signedFetch(undefined, '/api/admin/embedding-migrations/start', {
               method: 'POST',
               body: JSON.stringify(body),
             });
@@ -1650,7 +3239,7 @@
             return;
           }
           try {
-            const res = await signedFetch(this.apiKey, this._midPath('/status'));
+            const res = await signedFetch(undefined, this._midPath('/status'));
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
             this.statusJson = JSON.stringify(data, null, 2);
@@ -1662,7 +3251,7 @@
 
         async validateMigration() {
           try {
-            const res = await signedFetch(this.apiKey, this._midPath('/validate'), { method: 'POST', body: '{}' });
+            const res = await signedFetch(undefined, this._midPath('/validate'), { method: 'POST', body: '{}' });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
             this.statusJson = JSON.stringify(data, null, 2);
@@ -1674,7 +3263,7 @@
 
         async commitMigration() {
           try {
-            const res = await signedFetch(this.apiKey, this._midPath('/commit'), { method: 'POST', body: '{}' });
+            const res = await signedFetch(undefined, this._midPath('/commit'), { method: 'POST', body: '{}' });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
             this.statusJson = JSON.stringify(data, null, 2);
@@ -1687,7 +3276,7 @@
 
         async abortMigration() {
           try {
-            const res = await signedFetch(this.apiKey, this._midPath('/abort'), { method: 'POST', body: '{}' });
+            const res = await signedFetch(undefined, this._midPath('/abort'), { method: 'POST', body: '{}' });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || data.detail || ('HTTP ' + res.status));
             this.statusJson = JSON.stringify(data, null, 2);
@@ -1709,11 +3298,25 @@
 
         mount() {
           if (this.defaultNs) this.form.namespace_id = this.defaultNs;
+          window.addEventListener('trimcp-apply-ns-filter', (e) => {
+            const nid = e.detail?.namespace_id;
+            if (!nid) return;
+            this.form.namespace_id = nid;
+          });
         },
 
         truncate(s, n) {
           if (!s) return '';
           return s.length <= n ? s : s.slice(0, n) + '…';
+        },
+
+        escapeHtml(s) {
+          return (s || '').toString()
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
         },
 
         renderSvgContent() {
@@ -1726,7 +3329,7 @@
           (this.layout.nodes || []).forEach(node => {
             const fill = node.center ? '#2563EB' : '#FFFFFF';
             const textClass = node.center ? 'fill-white' : 'fill-slate-800';
-            const labelStr = this.truncate(node.label, 12);
+            const labelStr = this.escapeHtml(this.truncate(node.label, 12));
             html += `
               <g transform="translate(${node.x},${node.y})">
                 <circle r="22" fill="${fill}" stroke="#E11D48" stroke-width="2" class="transition duration-300 hover:scale-110 cursor-pointer shadow-sm"></circle>
@@ -1787,7 +3390,7 @@
               anchor_top_k: Number(this.form.anchor_top_k) || 3,
             };
             if (this.form.as_of) body.as_of = this.form.as_of;
-            const res = await signedFetch(this.apiKey, '/api/admin/graph/explore', {
+            const res = await signedFetch(undefined, '/api/admin/graph/explore', {
               method: 'POST',
               body: JSON.stringify(body),
             });
@@ -1812,7 +3415,7 @@
         redisData: { info: {}, keyspaces: [] },
         minioData: { buckets: [] },
         connectorData: { bridges: {}, common: {} },
-        
+
         // Connector configuration editing state
         selectedConnector: '',
         saveLoading: false,
@@ -1843,7 +3446,7 @@
 
         async loadDatastoreConfigs() {
           try {
-            const res = await signedFetch(this.apiKey, '/api/admin/datastores/status');
+            const res = await signedFetch(undefined, '/api/admin/datastores/status');
             if (!res.ok) throw new Error('Failed to load database credentials status');
             this.dbConfigs = await res.json();
           } catch (e) {
@@ -1896,7 +3499,7 @@
               body.minio.minio_secure = !!body.minio.minio_secure;
             }
 
-            const res = await signedFetch(this.apiKey, '/api/admin/datastores/save', {
+            const res = await signedFetch(undefined, '/api/admin/datastores/save', {
               method: 'POST',
               body: JSON.stringify(body)
             });
@@ -1919,20 +3522,20 @@
           if (this.selectedConnector) {
             const bridges = this.connectorData.bridges || {};
             const common = this.connectorData.common || {};
-            
+
             // Populating form bindings with existing metadata or secure masks
             this.editForm.google_drive.client_id = bridges.google_drive?.client_id || '';
             this.editForm.google_drive.client_secret = bridges.google_drive?.has_client_secret ? '••••••••' : '';
             this.editForm.google_drive.token = bridges.google_drive?.has_token ? '••••••••' : '';
-            
+
             this.editForm.dropbox.client_id = bridges.dropbox?.client_id || '';
             this.editForm.dropbox.token = bridges.dropbox?.has_token ? '••••••••' : '';
-            
+
             this.editForm.onedrive.client_id = bridges.onedrive?.client_id || '';
             this.editForm.onedrive.client_secret = bridges.onedrive?.has_client_secret ? '••••••••' : '';
             this.editForm.onedrive.tenant_id = bridges.onedrive?.tenant_id || 'common';
             this.editForm.onedrive.token = bridges.onedrive?.has_token ? '••••••••' : '';
-            
+
             this.editForm.common.webhook_base_url = common.webhook_base_url || '';
             this.editForm.common.redirect_uri = common.redirect_uri || '';
             this.editForm.common.cron_interval_mins = common.cron_interval_mins || 45;
@@ -1942,7 +3545,6 @@
         async saveConnectorSettings() {
           this.saveLoading = true;
           try {
-            const key = this.apiKey;
             const body = {
               google_drive: {
                 client_id: this.editForm.google_drive.client_id,
@@ -1966,7 +3568,7 @@
               }
             };
 
-            const res = await signedFetch(key, '/api/admin/connectors/save', {
+            const res = await signedFetch(undefined, '/api/admin/connectors/save', {
               method: 'POST',
               body: JSON.stringify(body)
             });
@@ -1991,26 +3593,25 @@
 
         async refreshActive() {
           this.loading = true;
-          const key = this.apiKey;
           try {
             if (this.activeTab === 'postgres') {
-              const res = await signedFetch(key, '/api/admin/db/postgres/status');
+              const res = await signedFetch(undefined, '/api/admin/db/postgres/status');
               if (!res.ok) throw new Error((await res.json()).error || 'PostgreSQL status failed');
               this.postgresData = await res.json();
             } else if (this.activeTab === 'mongo') {
-              const res = await signedFetch(key, '/api/admin/db/mongo/status');
+              const res = await signedFetch(undefined, '/api/admin/db/mongo/status');
               if (!res.ok) throw new Error((await res.json()).error || 'MongoDB status failed');
               this.mongoData = await res.json();
             } else if (this.activeTab === 'redis') {
-              const res = await signedFetch(key, '/api/admin/db/redis/status');
+              const res = await signedFetch(undefined, '/api/admin/db/redis/status');
               if (!res.ok) throw new Error((await res.json()).error || 'Redis status failed');
               this.redisData = await res.json();
             } else if (this.activeTab === 'minio') {
-              const res = await signedFetch(key, '/api/admin/db/minio/status');
+              const res = await signedFetch(undefined, '/api/admin/db/minio/status');
               if (!res.ok) throw new Error((await res.json()).error || 'MinIO status failed');
               this.minioData = await res.json();
             } else if (this.activeTab === 'connectors') {
-              const res = await signedFetch(key, '/api/admin/connectors/status');
+              const res = await signedFetch(undefined, '/api/admin/connectors/status');
               if (!res.ok) throw new Error((await res.json()).error || 'Connectors status failed');
               this.connectorData = await res.json();
             }
@@ -2057,6 +3658,674 @@
 
         totalMinioBytes() {
           return (this.minioData.buckets || []).reduce((acc, curr) => acc + (curr.total_size_bytes || 0) + (curr.total_size_bytes || 0), 0);
+        }
+      }));
+
+      Alpine.data('cognitiveEnginePanel', () => ({
+        namespaces: [],
+        selectedNamespaceId: '',
+        agentFilter: '',
+        topK: 500,
+        halfLifeDays: 14,
+        points: [],
+        mapLoading: false,
+        traceEvents: [],
+        traceLoading: false,
+        selectedTraceId: null,
+        drawerOpen: false,
+        selectedPoints: [],
+        selectionBox: null,
+        benchLabel: '',
+        boostLoading: false,
+        payloadModal: { open: false, error: '', json: null },
+        _mapApi: null,
+
+        fmt(v) {
+          if (v == null || Number.isNaN(v)) return '—';
+          if (typeof v === 'number') return v.toFixed(4);
+          return String(v);
+        },
+
+        decayLambda() {
+          const hl = Number(this.halfLifeDays) || 1;
+          return Math.LN2 / hl;
+        },
+
+        async mount() {
+          await this.fetchNamespaces();
+          window.addEventListener('trimcp-apply-ns-filter', (e) => {
+            const nid = e.detail?.namespace_id;
+            if (!nid) return;
+            this.selectedNamespaceId = nid;
+          });
+          const defNs = localStorage.getItem('trimcp_default_ns');
+          if (defNs) this.selectedNamespaceId = defNs;
+          this.$nextTick(() => {
+            const canvas = this.$refs.decayCanvas;
+            if (!canvas) return;
+            const panel = this;
+            this._mapApi = TriMCP_CognitiveDecayMap.attach(canvas, () => ({
+              points: panel.points,
+              pad: 40,
+              selectionBox: panel.selectionBox,
+              benchLabel: panel.benchLabel,
+            }), {
+              onDragStart: () => { panel.selectionBox = null; },
+              onSelectionBox: (b) => { panel.selectionBox = b; },
+              onBoxSelect: (picked) => {
+                panel.selectedPoints = picked;
+                panel.drawerOpen = picked.length > 0;
+              },
+            });
+            this._mapApi.start();
+            this.drawHalfLifePreview();
+          });
+        },
+
+        async fetchNamespaces() {
+          try {
+            const resp = await signedFetch(undefined, '/api/admin/namespaces');
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || 'namespaces');
+            this.namespaces = data.namespaces || [];
+          } catch (e) {
+            trimcpShellToast('Cognitive: namespaces — ' + (e.message || e), 'error');
+          }
+        },
+
+        async loadSalience() {
+          if (!this.selectedNamespaceId) return;
+          this.mapLoading = true;
+          this.benchLabel = '';
+          try {
+            const q = new URLSearchParams({
+              namespace_id: this.selectedNamespaceId,
+              top_k: String(this.topK),
+              half_life_days: String(this.halfLifeDays),
+            });
+            if (this.agentFilter.trim()) q.set('agent_id', this.agentFilter.trim());
+            const res = await signedFetch(undefined, '/api/admin/salience-map', { query: q });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'salience-map');
+            this.points = data.points || [];
+            trimcpShellToast('Salience map loaded (' + this.points.length + ' pts)', 'ok');
+          } catch (e) {
+            trimcpShellToast(String(e.message || e), 'error');
+          } finally {
+            this.mapLoading = false;
+          }
+        },
+
+        async loadTrace() {
+          if (!this.selectedNamespaceId) return;
+          this.traceLoading = true;
+          try {
+            const q = new URLSearchParams({
+              namespace_id: this.selectedNamespaceId,
+              event_type: 'consolidation',
+              limit: '25',
+              page: '1',
+              include_details: '1',
+            });
+            const res = await signedFetch(undefined, '/api/admin/events', { query: q });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'events');
+            this.traceEvents = data.items || [];
+            this.selectedTraceId = null;
+          } catch (e) {
+            trimcpShellToast('Trace: ' + (e.message || e), 'error');
+          } finally {
+            this.traceLoading = false;
+          }
+        },
+
+        _parsedParams(ev) {
+          let p = ev.params;
+          if (typeof p === 'string') {
+            try { p = JSON.parse(p); } catch (_) { return {}; }
+          }
+          return p && typeof p === 'object' ? p : {};
+        },
+
+        traceOutcome(ev) {
+          const p = this._parsedParams(ev);
+          const contra = (p.contradicting_memory_ids && p.contradicting_memory_ids.length) > 0;
+          const conf = Number(p.confidence);
+          if (contra) return 'contradiction';
+          if (!Number.isNaN(conf) && conf < 0.3) return 'discarded';
+          return 'stored';
+        },
+
+        traceOutcomeLabel(ev) {
+          const o = this.traceOutcome(ev);
+          if (o === 'contradiction') return 'Contradiction';
+          if (o === 'discarded') return 'Discarded';
+          return 'Stored';
+        },
+
+        traceOutcomeClass(ev) {
+          const o = this.traceOutcome(ev);
+          if (o === 'contradiction') return 'bg-amber-100 text-amber-800 border border-amber-200';
+          if (o === 'discarded') return 'bg-red-100 text-red-800 border border-red-200';
+          return 'bg-emerald-100 text-emerald-800 border border-emerald-200';
+        },
+
+        traceSteps(ev) {
+          const o = this.traceOutcome(ev);
+          let cls = 'bg-emerald-50 text-emerald-800 border-emerald-200';
+          if (o === 'contradiction') cls = 'bg-amber-50 text-amber-800 border-amber-200';
+          if (o === 'discarded') cls = 'bg-red-50 text-red-800 border-red-200';
+          return [
+            { label: 'HDBSCAN', cls: cls + ' border' },
+            { label: 'LLM', cls: cls + ' border' },
+            { label: 'Decision', cls: cls + ' border' },
+          ];
+        },
+
+        traceSummary(ev) {
+          const p = this._parsedParams(ev);
+          const conf = p.confidence != null ? 'confidence ' + p.confidence : '';
+          const n = (p.supporting_memory_ids || []).length;
+          return [conf, n ? n + ' supporting memories' : ''].filter(Boolean).join(' · ');
+        },
+
+        traceDiffLeft(ev) {
+          const p = this._parsedParams(ev);
+          const src = p.source_memories || p.supporting_memory_ids || [];
+          if (!src.length) return '';
+          return Array.isArray(src) ? src.join('\n') : String(src);
+        },
+
+        traceDiffRight(ev) {
+          const p = this._parsedParams(ev);
+          return p.abstraction || '(no abstraction in event params)';
+        },
+
+        selectTraceEvent(ev) {
+          this.selectedTraceId = this.selectedTraceId === ev.id ? null : ev.id;
+        },
+
+        async openLlmPayload(ev) {
+          this.payloadModal = { open: true, error: '', json: null };
+          try {
+            const q = new URLSearchParams({
+              namespace_id: this.selectedNamespaceId,
+              event_id: ev.id,
+            });
+            const res = await signedFetch(undefined, '/api/admin/llm-payload', { query: q });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'llm-payload');
+            this.payloadModal.json = data.payload || {};
+          } catch (e) {
+            this.payloadModal.error = String(e.message || e);
+          }
+        },
+
+        closeDrawer() {
+          this.drawerOpen = false;
+          this.selectedPoints = [];
+          this.selectionBox = null;
+        },
+
+        async boostPoint(pt) {
+          if (!this.selectedNamespaceId || !pt.memory_id) return;
+          this.boostLoading = true;
+          try {
+            const res = await signedFetch(undefined, '/api/admin/memory/boost', {
+              method: 'POST',
+              body: JSON.stringify({
+                namespace_id: this.selectedNamespaceId,
+                memory_id: pt.memory_id,
+                agent_id: pt.agent_id || 'default',
+                factor: 0.2,
+              }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'boost');
+            const add = Number(data.boosted_by) || 0.2;
+            pt.raw_salience = Math.min(1, (Number(pt.raw_salience) || 0) + add);
+            pt.decayed_salience = Math.min(1, (Number(pt.decayed_salience) || 0) + add);
+            trimcpShellToast('Memory boosted', 'ok');
+          } catch (e) {
+            trimcpShellToast('Boost: ' + (e.message || e), 'error');
+          } finally {
+            this.boostLoading = false;
+          }
+        },
+
+        runFpsStress() {
+          const n = 2000;
+          const rnd = () => Math.random();
+          this.points = Array.from({ length: n }, (_, i) => ({
+            memory_id: 'stress-' + i,
+            agent_id: 'bench',
+            raw_salience: rnd(),
+            decayed_salience: rnd(),
+            age_days: rnd() * 120,
+            assertion_type: ['asserted', 'inferred', 'abstraction'][i % 3],
+            memory_type: 'semantic',
+          }));
+          this.benchLabel = 'STRESS: ' + n + ' synthetic points (measure FPS overlay)';
+          setTimeout(() => {
+            this.benchLabel = '';
+          }, 6000);
+        },
+
+        drawHalfLifePreview() {
+          const c = this.$refs.halfLifePreview;
+          if (!c) return;
+          const ctx = c.getContext('2d');
+          const w = c.width;
+          const h = c.height;
+          ctx.fillStyle = '#f8fafc';
+          ctx.fillRect(0, 0, w, h);
+          const pad = 8;
+          const hl = Number(this.halfLifeDays) || 1;
+          const lam = Math.LN2 / hl;
+          ctx.strokeStyle = '#cbd5e1';
+          ctx.strokeRect(pad, pad, w - 2 * pad, h - 2 * pad);
+          ctx.strokeStyle = '#2563eb';
+          ctx.beginPath();
+          const plotW = w - 2 * pad;
+          const plotH = h - 2 * pad;
+          for (let i = 0; i <= 64; i++) {
+            const t = (i / 64) * (hl * 3);
+            const s = Math.exp(-lam * t);
+            const x = pad + (i / 64) * plotW;
+            const y = pad + plotH - s * plotH;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+          ctx.fillStyle = '#64748b';
+          ctx.font = '9px monospace';
+          ctx.fillText('s(t)=exp(-λt), λ=ln2/T½', pad, h - 2);
+        },
+      }));
+
+      /* ---------- Consolidation and Maintenance ---------- */
+      Alpine.data('fleetOperationsPanel', () => ({
+        loading: false,
+        items: [],
+        total: 0,
+        page: 1,
+        limit: 25,
+        slugPrefix: '',
+        rlsHint: {},
+        contradictionFeed: [],
+        feedLoading: false,
+        checkedIds: [],
+        bridgeNsId: '',
+        bridgeSlug: '',
+        bridges: [],
+        bridgesLoading: false,
+        renewModal: { open: false, bridge: null, loading: false },
+        bulkConsolidationModal: { open: false, loading: false },
+        retentionModal: { open: false, days: 30, loading: false },
+
+        get previewNamespaces() {
+          const sel = new Set(this.checkedIds);
+          return this.items.filter((r) => sel.has(r.namespace_id));
+        },
+
+        mount() {
+          this.refreshContradictions();
+          this.refreshFleet();
+        },
+
+        fleetSparkPoints(vals) {
+          const v = Array.isArray(vals) && vals.length === 7 ? vals : [0, 0, 0, 0, 0, 0, 0];
+          const max = Math.max(...v.map(Number), 1);
+          const w = 46;
+          const h = 12;
+          const padX = 4;
+          const padY = 3;
+          return v.map((n, i) => {
+            const x = padX + (v.length <= 1 ? w / 2 : (i / (v.length - 1)) * w);
+            const y = padY + h - (Math.max(0, Number(n)) / max) * h;
+            return `${x.toFixed(1)},${y.toFixed(1)}`;
+          }).join(' ');
+        },
+
+        toggleCheck(ns) {
+          const i = this.checkedIds.indexOf(ns);
+          if (i >= 0) {
+            this.checkedIds.splice(i, 1);
+          } else {
+            this.checkedIds.push(ns);
+          }
+        },
+
+        toggleCheckAll() {
+          if (this.checkedIds.length === this.items.length) {
+            this.checkedIds = [];
+          } else {
+            this.checkedIds = this.items.map((r) => r.namespace_id);
+          }
+        },
+
+        fmtIsoShort(s) {
+          if (!s) return '—';
+          return String(s).slice(0, 16).replace('T', ' ');
+        },
+
+        deepLink(tab, ns) {
+          trimcpNavigateAdminTab(tab);
+          requestAnimationFrame(() => {
+            window.dispatchEvent(
+              new CustomEvent('trimcp-apply-ns-filter', { detail: { namespace_id: ns } })
+            );
+          });
+        },
+
+        async refreshFleet() {
+          this.loading = true;
+          try {
+            const q = new URLSearchParams({
+              page: String(this.page),
+              limit: String(this.limit),
+            });
+            if (this.slugPrefix.trim()) {
+              q.set('slug_prefix', this.slugPrefix.trim());
+            }
+            const res = await signedFetch(undefined, '/api/admin/fleet-overview', { query: q });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'fleet-overview');
+            this.items = data.items || [];
+            this.total = data.total ?? 0;
+            this.rlsHint = data.rls_tenant_tables || {};
+          } catch (e) {
+            trimcpShellToast('Fleet: ' + (e.message || e), 'error');
+          } finally {
+            this.loading = false;
+          }
+        },
+
+        async refreshContradictions() {
+          this.feedLoading = true;
+          try {
+            const res = await signedFetch(undefined, '/api/admin/contradictions/recent', {
+              query: new URLSearchParams({ limit: '5' }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'contradictions');
+            this.contradictionFeed = data.items || [];
+          } catch (e) {
+            trimcpShellToast('Contradiction feed: ' + (e.message || e), 'error');
+          } finally {
+            this.feedLoading = false;
+          }
+        },
+
+        selectBridgeLane(ns, slug) {
+          this.bridgeNsId = ns;
+          this.bridgeSlug = slug || '';
+          this.loadBridges();
+        },
+
+        async loadBridges() {
+          if (!this.bridgeNsId) {
+            this.bridges = [];
+            return;
+          }
+          this.bridgesLoading = true;
+          try {
+            const path =
+              '/api/admin/namespaces/' + encodeURIComponent(this.bridgeNsId) + '/bridges';
+            const res = await signedFetch(undefined, path);
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'bridges');
+            this.bridges = data.items || [];
+          } catch (e) {
+            trimcpShellToast('Bridges: ' + (e.message || e), 'error');
+            this.bridges = [];
+          } finally {
+            this.bridgesLoading = false;
+          }
+        },
+
+        bridgeBarPct(expiresAt) {
+          if (!expiresAt) return 100;
+          const t = new Date(expiresAt).getTime();
+          const now = Date.now();
+          const maxMs = 90 * 86400000;
+          const remain = Math.max(0, t - now);
+          return Math.min(100, Math.round((remain / maxMs) * 100));
+        },
+
+        openRenewModal(b) {
+          this.renewModal = { open: true, bridge: b, loading: false };
+        },
+
+        async confirmRenewBridge() {
+          const b = this.renewModal.bridge;
+          if (!b || !this.bridgeNsId) return;
+          this.renewModal.loading = true;
+          try {
+            const path = '/api/admin/bridges/' + encodeURIComponent(b.id) + '/renew';
+            const res = await signedFetch(undefined, path, {
+              method: 'POST',
+              body: '{}',
+              query: new URLSearchParams({ namespace_id: this.bridgeNsId }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || data.detail || 'renew');
+            trimcpShellToast('Bridge token renewed', 'ok');
+            this.renewModal.open = false;
+            await this.loadBridges();
+            await this.refreshFleet();
+          } catch (e) {
+            trimcpShellToast('Renew failed: ' + (e.message || e), 'error');
+          } finally {
+            this.renewModal.loading = false;
+          }
+        },
+
+        openBulkConsolidationPreview() {
+          if (!this.checkedIds.length) {
+            trimcpShellToast('Select at least one namespace', 'error');
+            return;
+          }
+          this.bulkConsolidationModal.open = true;
+        },
+
+        async executeBulkConsolidation() {
+          this.bulkConsolidationModal.loading = true;
+          try {
+            for (const ns of this.checkedIds) {
+              const res = await signedFetch(
+                undefined,
+                '/api/admin/namespaces/' + encodeURIComponent(ns) + '/metadata',
+                {
+                  method: 'POST',
+                  body: { consolidation: { enabled: true } },
+                }
+              );
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error || ns);
+            }
+            trimcpShellToast(
+              'Consolidation enabled for ' + this.checkedIds.length + ' namespaces',
+              'ok'
+            );
+            this.bulkConsolidationModal.open = false;
+            await this.refreshFleet();
+          } catch (e) {
+            trimcpShellToast('Bulk consolidation: ' + (e.message || e), 'error');
+          } finally {
+            this.bulkConsolidationModal.loading = false;
+          }
+        },
+
+        openRetentionPreview() {
+          if (!this.checkedIds.length) {
+            trimcpShellToast('Select at least one namespace', 'error');
+            return;
+          }
+          this.retentionModal.open = true;
+        },
+
+        async executeRetention() {
+          const days = Number(this.retentionModal.days);
+          if (!Number.isFinite(days) || days < 0) {
+            trimcpShellToast('Invalid retention days', 'error');
+            return;
+          }
+          this.retentionModal.loading = true;
+          try {
+            for (const ns of this.checkedIds) {
+              const res = await signedFetch(
+                undefined,
+                '/api/admin/namespaces/' + encodeURIComponent(ns) + '/metadata',
+                {
+                  method: 'POST',
+                  body: { temporal_retention_days: Math.floor(days) },
+                }
+              );
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error || ns);
+            }
+            trimcpShellToast('Retention policy applied', 'ok');
+            this.retentionModal.open = false;
+            await this.refreshFleet();
+          } catch (e) {
+            trimcpShellToast('Retention bulk: ' + (e.message || e), 'error');
+          } finally {
+            this.retentionModal.loading = false;
+          }
+        },
+      }));
+
+      Alpine.data('consolidationComponent', () => ({
+        namespaces: [],
+        selectedNamespaceId: '',
+        selectedNamespace: null,
+        loading: false,
+        saveLoading: false,
+        config: {
+          enabled: false,
+          llm_provider: '',
+          llm_model: '',
+          llm_temperature: 0.2,
+          decay_sources: false,
+          llm_credentials: '',
+          temporal_retention_days: null,
+          llm_payload_retention_days: null,
+        },
+
+        async mount() {
+          await this.fetchNamespaces();
+          window.addEventListener('trimcp-apply-ns-filter', async (e) => {
+            const nid = e.detail?.namespace_id;
+            if (!nid) return;
+            this.selectedNamespaceId = nid;
+            await this.loadNamespaceMetadata();
+          });
+          const defNs = localStorage.getItem('trimcp_default_ns');
+          if (defNs) {
+            this.selectedNamespaceId = defNs;
+            await this.loadNamespaceMetadata();
+          }
+        },
+
+        async fetchNamespaces() {
+          this.loading = true;
+          try {
+            const resp = await signedFetch(undefined, '/api/admin/namespaces');
+            if (!resp.ok) {
+              const data = await resp.json();
+              throw new Error(data.error || 'Failed to list namespaces');
+            }
+            const data = await resp.json();
+            this.namespaces = data.namespaces || [];
+          } catch (err) {
+            console.error('fetchNamespaces failed', err);
+            this.toast('Namespaces: ' + (err.message || err), 'error');
+          } finally {
+            this.loading = false;
+          }
+        },
+
+        async loadNamespaceMetadata() {
+          if (!this.selectedNamespaceId) {
+            this.selectedNamespace = null;
+            return;
+          }
+          this.selectedNamespace = this.namespaces.find(ns => ns.id === this.selectedNamespaceId);
+          if (!this.selectedNamespace) {
+            this.loading = true;
+            try {
+              const resp = await signedFetch(undefined, `/api/admin/namespaces/${this.selectedNamespaceId}`);
+              if (!resp.ok) {
+                const data = await resp.json();
+                throw new Error(data.error || 'Failed to fetch namespace');
+              }
+              this.selectedNamespace = await resp.json();
+            } catch (err) {
+              console.error('loadNamespaceMetadata failed', err);
+              this.toast('Namespace fetch: ' + (err.message || err), 'error');
+              return;
+            } finally {
+              this.loading = false;
+            }
+          }
+
+          const m = this.selectedNamespace.metadata || {};
+          const c = m.consolidation || {};
+          this.config = {
+            enabled: !!c.enabled,
+            llm_provider: c.llm_provider || '',
+            llm_model: c.llm_model || '',
+            llm_temperature: typeof c.llm_temperature === 'number' ? c.llm_temperature : 0.2,
+            decay_sources: !!c.decay_sources,
+            llm_credentials: c.llm_credentials || '',
+            temporal_retention_days: m.temporal_retention_days !== undefined ? m.temporal_retention_days : null,
+            llm_payload_retention_days: m.llm_payload_retention_days !== undefined ? m.llm_payload_retention_days : null,
+          };
+        },
+
+        async saveNamespaceMetadata() {
+          if (!this.selectedNamespaceId) return;
+          this.saveLoading = true;
+          try {
+            const payload = {
+              temporal_retention_days: this.config.temporal_retention_days,
+              llm_payload_retention_days: this.config.llm_payload_retention_days,
+              consolidation: {
+                enabled: this.config.enabled,
+                llm_provider: this.config.llm_provider || null,
+                llm_model: this.config.llm_model || null,
+                llm_temperature: this.config.llm_temperature,
+                decay_sources: this.config.decay_sources,
+                llm_credentials: this.config.llm_credentials || null,
+              }
+            };
+
+            const resp = await signedFetch(undefined, `/api/admin/namespaces/${this.selectedNamespaceId}/metadata`, {
+              method: 'POST',
+              body: payload
+            });
+
+            const data = await resp.json();
+            if (!resp.ok) {
+              let errMsg = data.error || 'Failed to update metadata';
+              if (data.detail && Array.isArray(data.detail)) {
+                errMsg += ': ' + data.detail.map(e => `${e.loc.join('.')}: ${e.msg}`).join(', ');
+              }
+              throw new Error(errMsg);
+            }
+
+            if (this.selectedNamespace) {
+              this.selectedNamespace.metadata = data.metadata || payload;
+            }
+            this.toast('Namespace configurations successfully updated and saved!', 'ok');
+            await this.fetchNamespaces();
+          } catch (err) {
+            console.error('saveNamespaceMetadata failed', err);
+            this.toast(err.message || String(err), 'error');
+          } finally {
+            this.saveLoading = false;
+          }
         }
       }));
     });

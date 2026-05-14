@@ -65,6 +65,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import timezone
 from typing import Any
 
 import asyncpg
@@ -904,6 +905,62 @@ def verify_fields(
     """
     computed = sign_fields(fields, raw_signing_key)
     return hmac.compare_digest(computed, expected_signature)
+
+
+async def admin_signing_keys_status(conn: asyncpg.Connection) -> dict[str, Any]:
+    """
+    Non-secret operational summary for the Admin API.
+
+    Exposes metadata only — never raw key bytes, encrypted blobs, or master-key
+    derivation parameters.
+    """
+
+    active = await conn.fetchrow(
+        """
+        SELECT key_id, created_at
+        FROM   signing_keys
+        WHERE  status = 'active'
+        ORDER  BY created_at DESC
+        LIMIT  1
+        """
+    )
+    status_rows = await conn.fetch(
+        """
+        SELECT status, COUNT(*)::bigint AS cnt
+        FROM   signing_keys
+        GROUP BY status
+        """
+    )
+
+    retired_at_row = await conn.fetchrow(
+        """
+        SELECT max(retired_at) AS latest_retired_at
+        FROM   signing_keys
+        WHERE  status = 'retired'
+        """
+    )
+
+    by_status: dict[str, int] = {r["status"]: int(r["cnt"]) for r in status_rows}
+    latest_ret = retired_at_row["latest_retired_at"] if retired_at_row else None
+
+    return {
+        "active_key_id": str(active["key_id"]) if active else None,
+        "active_created_at": (
+            active["created_at"].astimezone(timezone.utc).isoformat()
+            if active and active.get("created_at")
+            else None
+        ),
+        "keys_by_status": by_status,
+        "latest_retired_at": (
+            latest_ret.astimezone(timezone.utc).isoformat()
+            if latest_ret is not None
+            else None
+        ),
+        "signing_wire_format_notes": (
+            "memories/events: HMAC-SHA256 over RFC 8785 (JCS) canonical JSON; "
+            "see trimcp.signing.sign_fields."
+        ),
+    }
 
 
 async def rotate_key(conn: asyncpg.Connection) -> str:

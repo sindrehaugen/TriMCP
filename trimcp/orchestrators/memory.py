@@ -690,15 +690,15 @@ class MemoryOrchestrator:
                     raise
 
     # ------------------------------------------------------------------
-    # store_media
+    # store_artifact (formerly store_media)
     # ------------------------------------------------------------------
 
-    async def store_media(self, payload: MediaPayload) -> str:
-        """Upload media to MinIO, index summary into Tri-Stack."""
+    async def store_artifact(self, payload: ArtifactPayload) -> str:
+        """Upload artifact to MinIO, index summary into Tri-Stack."""
         tracer = get_tracer()
-        with tracer.start_as_current_span("orchestrator.store_media") as span:
-            span.set_attribute("trimcp.media_type", payload.media_type)
-            with SagaMetrics("store_media"):
+        with tracer.start_as_current_span("orchestrator.store_artifact") as span:
+            span.set_attribute("trimcp.artifact_type", payload.media_type)
+            with SagaMetrics("store_artifact"):
                 safe_path = os.path.basename(payload.file_path_on_disk)
 
                 if not os.path.exists(safe_path):
@@ -721,12 +721,11 @@ class MemoryOrchestrator:
                     object_name,
                     safe_path,
                 )
-                log.info(
-                    "[MinIO] Uploaded %s to %s/%s",
-                    payload.media_type,
-                    bucket_name,
-                    object_name,
-                )
+                    log.info(
+                        "[MinIO] Uploaded artifact to %s/%s",
+                        bucket_name,
+                        object_name,
+                    )
 
                 media_metadata = {
                     "bucket": bucket_name,
@@ -774,6 +773,10 @@ class MemoryOrchestrator:
                         MINIO_ORPHAN_CLEANUP_FAILURES_TOTAL.inc()
                     raise
                 return res["payload_ref"]
+
+    async def store_media(self, payload: MediaPayload) -> str:
+        """[DEPRECATED] Alias for store_artifact."""
+        return await self.store_artifact(payload)
 
     # ------------------------------------------------------------------
     # verify_memory

@@ -1,0 +1,190 @@
+phase: "TriMCP Admin Console Phase 6: UX Operations"
+epics:
+  - id: "EPIC-1"
+    title: "Architectural Foundation & Tab Routing"
+    tasks:
+      - id: "TSK-1.1"
+        title: "Frontend Refactor to Tabbed Command Center"
+        status: "DONE"
+        verified: "2026-05-13 — Vertical sidebar Command Center shell; sticky primary nav beside scrollable workspace; mobile drawer + hash routing smoke-tested."
+        dependencies: []
+        target_files:
+          - "admin/index.html"
+        acceptance_criteria:
+          - "Primary nav matches adminNavItems in order: Fleet (fleet), Overview (overview), Health (health), Security (security), Events (events), Quotas (quotas), Graph (graph), Embeddings (embedding-migration), Consolidation (consolidation), Cognitive (cognitive), Datastores (datastores), Maintenance (maintenance)"
+          - "Each slug maps to a panel region with x-show=\"adminTab === '<slug>'\" (single scroll column; nested Datastores tabs use activeTab for postgres/mongo/redis/minio/connectors only)"
+          - "Shell: sticky top-0 header (brand + credentials); primary section nav in sticky vertical sidebar beside scrollable main (desktop) or off-canvas drawer (mobile)"
+          - "Existing operator tables and forms inside each panel remain usable (no broken layout from tab migration)"
+
+      - id: "TSK-1.2"
+        title: "Alpine.js State Management & Routing"
+        status: "DONE"
+        verified: "2026-05-13 — adminTab + setAdminTab + hash routing unchanged in behavior; Escape closes drawer; aria-current on active sidebar item."
+        dependencies:
+          - "TSK-1.1"
+        target_files:
+          - "admin/index.html"
+        acceptance_criteria:
+          - "adminTab drives which top-level panel is visible; setAdminTab(slug) validates against adminNavItems and falls back to fleet"
+          - "Location hash stays in sync: non-fleet tabs use #<slug>; fleet clears the hash; empty hash defaults to fleet; hashchange updates adminTab"
+          - "adminShell.init() runs loadHealth() once for shared stack telemetry (/api/health/v1)"
+          - "Panel data loading follows component contracts: panels with mount() that call refresh/load (Fleet overview, Cognitive engine, Events, Quotas, Embeddings, Datastores, Consolidation) may fetch when the Alpine component initializes at SPA load (panels stay mounted while x-show hides them); Security audit and Graph exploration defer admin API calls until explicit user actions (Refresh all, verify sample, isolation test, Explore); Overview is static chrome; Maintenance (GC) issues requests only when the operator clicks Execute GC pack"
+
+      - id: "TSK-1.3"
+        title: "API Contract Audit for Pagination & Namespace Filtering"
+        status: "DONE"
+        dependencies: []
+        target_files:
+          - "trimcp/admin_routes.py"
+          - "trimcp/schema.sql"
+        acceptance_criteria:
+          - "Existing GET /api/admin/... endpoints are audited for pagination support"
+          - "Existing GET /api/admin/... endpoints are audited for namespace filtering support"
+
+  - id: "EPIC-2"
+    title: "Zero-Trust Security Audit Panel"
+    tasks:
+      - id: "TSK-2.1"
+        title: "Backend: Security Audit Endpoints"
+        status: "DONE"
+        dependencies:
+          - "TSK-1.3"
+        target_files:
+          - "admin_server.py"
+          - "trimcp/auth.py"
+          - "trimcp/signing.py"
+          - "tests/test_admin_routes_audit.py"
+        acceptance_criteria:
+          - "Admin endpoint created to trigger verify_memory() sampling"
+          - "Paginated endpoint created to surface pii_redactions table data including unredact_memory events"
+          - "Endpoint created to verify sequence continuity from event_log"
+          - "Endpoint created to perform RLS Isolation synthetic cross-namespace read using SET LOCAL"
+
+      - id: "TSK-2.2"
+        title: "Frontend: 2x2 Gauge Grid & Component Layout"
+        status: "DONE"
+        dependencies:
+          - "TSK-1.1"
+          - "TSK-1.2"
+          - "TSK-2.1"
+        target_files:
+          - "admin/index.html"
+        acceptance_criteria:
+          - "Security tab renders a 2x2 grid for Signing, PII, WORM, and RLS gauges"
+          - "Signing Integrity Monitor displays valid/invalid counts, key_id distribution, and last rotation date"
+          - "PII Redaction Ledger displays a table of recent PII events grouped by entity type"
+          - "Event Log Integrity Gauge displays a visual timeline highlighting sequence gaps"
+          - "RLS Policy Map displays rls_enabled status and active policy name per namespace"
+
+      - id: "TSK-2.3"
+        title: "UX Interactions: Security Triggers & Visual Feedback"
+        status: "DONE"
+        dependencies:
+          - "TSK-2.1"
+          - "TSK-2.2"
+        target_files:
+          - "admin/index.html"
+        acceptance_criteria:
+          - "'VERIFY RANDOM SAMPLE' button triggers background sweep and displays live progress"
+          - "Red alert is triggered and visible if invalid signatures are found during sampling"
+          - "'TEST ISOLATION' button expands an inline terminal showing the synthetic query execution and verification result"
+
+  - id: "EPIC-3"
+    title: "Cognitive Engine Visualisation (Salience & Trace)"
+    tasks:
+      - id: "TSK-3.1"
+        title: "Backend: Cognitive Data & Payload Endpoints"
+        status: "DONE"
+        dependencies: []
+        target_files:
+          - "trimcp/admin_routes.py"
+          - "trimcp/salience.py"
+          - "admin_server.py"
+          - "tests/test_admin_cognitive_fleet.py"
+        acceptance_criteria:
+          - "GET /api/admin/salience-map endpoint created, optimized to return a top-K sample of decay points per namespace"
+          - "MinIO payload fetcher extended or confirmed to support admin retrieval of LLM prompt+response payloads via llm_payload_uri"
+
+      - id: "TSK-3.2"
+        title: "Frontend: Decay Map Canvas Rendering"
+        status: "DONE"
+        dependencies:
+          - "TSK-1.1"
+          - "TSK-3.1"
+        target_files:
+          - "admin/index.html"
+        acceptance_criteria:
+          - "HTML5 <canvas> rendering loop implemented for the Memory Health Map scatterplot (Age vs Salience)"
+          - "Points are color-coded by assertion_type, with a visible red-shaded decay zone below salience 0.3"
+          - "Performance holds at 60fps for thousands of rendered points without blocking the main thread"
+
+      - id: "TSK-3.3"
+        title: "Frontend: Consolidation Trace Timeline"
+        status: "DONE"
+        dependencies:
+          - "TSK-1.1"
+        target_files:
+          - "admin/index.html"
+        acceptance_criteria:
+          - "Trace timeline component implemented showing HDBSCAN -> LLM -> Decision pipeline nodes"
+          - "Pipeline steps are color-coded correctly: green (stored), amber (contradiction), red (discarded)"
+          - "Diff-style view implemented showing source memories vs. generated abstraction for stored clusters"
+          - "LLM Payload viewer modal implemented to show raw prompt/response from MinIO"
+
+      - id: "TSK-3.4"
+        title: "UX Interactions: Cognitive Management Controls"
+        status: "DONE"
+        dependencies:
+          - "TSK-3.2"
+          - "TSK-3.3"
+        target_files:
+          - "admin/index.html"
+        acceptance_criteria:
+          - "Drag-to-select interaction implemented on the <canvas> Decay Map"
+          - "Slide-in Context Drawer opens on selection, showing memory metadata and step-by-step decayed score computation"
+          - "'BOOST MEMORY' action functional and visually bumps points up the Y-axis on success"
+          - "Half-Life Configurator implemented showing preview curve for current lambda value"
+
+  - id: "EPIC-4"
+    title: "Fleet Operations & Integration Health"
+    tasks:
+      - id: "TSK-4.1"
+        title: "Backend: Fleet Aggregation & Bridge Endpoints"
+        status: "DONE"
+        dependencies: []
+        target_files:
+          - "trimcp/admin_routes.py"
+          - "trimcp/schema.sql"
+          - "admin_server.py"
+          - "trimcp/bridge_renewal.py"
+          - "tests/test_admin_cognitive_fleet.py"
+        acceptance_criteria:
+          - "GET /api/admin/fleet-overview endpoint created with highly indexed queries to avoid cross-partition scanning"
+          - "Endpoint correctly aggregates Health, Memories, Salience P50, Consolidation, Contradictions, Quota, and RLS per namespace"
+          - "Bridge renewal endpoint audited to log renewal actions accurately"
+
+      - id: "TSK-4.2"
+        title: "Frontend: Fleet Command & Bridge Components"
+        status: "DONE"
+        dependencies:
+          - "TSK-1.1"
+          - "TSK-4.1"
+        target_files:
+          - "admin/index.html"
+        acceptance_criteria:
+          - "Fleet Command table implemented as the default landing view"
+          - "Micro-sparklines implemented in the 'Memory Volume' column showing 7-day ingestion velocity"
+          - "Global Contradiction Feed widget implemented (top-right) showing 5 most recent unresolved contradictions"
+          - "Bridge & Token Panel implemented displaying Integration Cards with horizontal swimlane token timelines"
+
+      - id: "TSK-4.3"
+        title: "UX Interactions: Fleet Management & Token Renewal"
+        status: "DONE"
+        dependencies:
+          - "TSK-4.2"
+        target_files:
+          - "admin/index.html"
+        acceptance_criteria:
+          - "Deep-linking from Fleet table cells correctly transitions to specific tabs pre-filtered to the namespace"
+          - "Bulk actions (ENABLE CONSOLIDATION, SET RETENTION POLICY) implemented with preview-before-confirm modals"
+          - "'FORCE RENEWAL' button on Bridge Cards implemented with a confirmation modal and resets timeline bar on success"

@@ -1,6 +1,7 @@
 import hashlib
 import math
 from datetime import datetime, timezone
+from typing import Any
 
 import asyncpg
 
@@ -101,6 +102,15 @@ def ranking_score(cosine_sim: float, salience: float, alpha: float) -> float:
     alpha = max(0.0, min(1.0, float(alpha)))
 
     return cosine_sim * (alpha + (1.0 - alpha) * salience)
+
+
+async def fetch_llm_payload(uri: str) -> dict[str, Any]:
+    """Fetch ``{prompt, response}`` JSON from MinIO using ``bucket/object_key`` URIs."""
+
+    # Import here — ``replay`` pulls heavy deps; keep ``salience`` import surface light at load time.
+    from trimcp.replay import fetch_llm_payload as _replay_fetch_llm_payload
+
+    return await _replay_fetch_llm_payload(uri)
 
 
 async def reinforce(

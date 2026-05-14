@@ -7,7 +7,7 @@
 [![PostgreSQL + pgvector](https://img.shields.io/badge/db-PostgreSQL%20%2B%20pgvector-336791?style=flat-square)](https://github.com/pgvector/pgvector)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](LICENSE)
 
-> **Status**: Active development — v1.0 integration surface is deployed and testable. Not yet hardened for production traffic (as of 2026-05-11).
+> **Status**: TriMCP is entering production validation. The v1.0 integration surface is deployed and testable, but production hardening, load testing, security review, and operational runbooks are still in progress.
 
 ---
 
@@ -66,9 +66,7 @@ It is important to note that TriMCP is a 100% backend system — there is no fla
 
 It is no longer just a tool you ask questions to. It is a colleague with perfect, human-like oversight of the company's entire lifespan.
 
-### Where We Are Today: Entering Production
-
-Although the concept sounds like science fiction, TriMCP is a real platform — and it is ready. The core architecture has been hardened for enterprise security and stability, ensuring the system can support at least 100 employees simultaneously without compromising response time, and with absolute guarantees that the watertight partitions between different users and sensitive data remain unbreakable (through advanced Row-Level Security). We are now moving into full-scale production testing and real-world implementation.
+Although the concept sounds like science fiction, TriMCP is a real platform — and it is ready for production validation. The core architecture has been hardened for enterprise security and stability, ensuring the system can support at least 100 employees simultaneously without compromising response time, and with absolute guarantees that the watertight partitions between different users and sensitive data remain unbreakable (through advanced Row-Level Security). We are now moving into full-scale production testing and real-world implementation.
 
 ---
 
@@ -110,7 +108,7 @@ flowchart TB
     PG[(PostgreSQL\n+ pgvector\nSemantic + KG)]
     MG[(MongoDB\nEpisodic Archive)]
     RD[(Redis\nWorking Memory)]
-    S3[(MinIO\nMedia Store)]
+    S3[(MinIO\nArtifact Store)]
   end
   IDE --> STDIO
   STDIO --> TMP
@@ -161,22 +159,22 @@ No single database is optimal for all memory types. TriMCP assigns each layer ex
 | Layer | Engine | Responsibility | Key Property |
 |---|---|---|---|
 | **Semantic Memory** | PostgreSQL + pgvector | Vector embeddings, knowledge graph triplets, RLS-enforced tenant isolation, event log | ACID guarantees, cosine similarity at scale, Row-Level Security |
-| **Episodic Memory** | MongoDB | Raw payloads — conversation transcripts, source files, media metadata | Schema-less, high-throughput I/O, lazy-load hydration |
+| **Episodic Memory** | MongoDB | Raw payloads — conversation transcripts, source files, artifact metadata | Schema-less, high-throughput I/O, lazy-load hydration |
 | **Working Memory** | Redis | TTL-bound summaries, RQ job queue, HMAC nonce store, quota counters | Sub-millisecond recall, O(1) cache invalidation |
-| **Media Store** | MinIO | Audio, video, and image blobs; replay payload cache | S3-compatible, high-capacity object storage |
+| **Artifact Store** | MinIO | Audio, video, image blobs, and documents (PDF/Office); replay payload cache | S3-compatible, high-capacity object storage |
 
-### Saga Write Path
+### Saga Write Paths
 
-Every memory write is a distributed transaction spanning MongoDB and PostgreSQL. If PostgreSQL fails at any point, the MongoDB document is rolled back — automatically, synchronously, with no orphan records left behind.
+TriMCP uses different Saga paths depending on payload type:
 
-```
-Mongo ──► PG ──► Redis
-              │
-           FAILURE
-              │
-              └──► DELETE Mongo doc  (automatic, synchronous)
-                   RAISE exception   (propagates to caller)
-```
+1. **Memory event saga**:
+   MongoDB raw event → PostgreSQL semantic state → Redis cache invalidation.
+
+2. **Artifact saga**:
+   MinIO staging upload → checksum verification → PostgreSQL artifact metadata → parser/indexing jobs → promote to active.
+
+3. **Composite saga**:
+   Used when a webhook or ticket includes both structured data and file attachments.
 
 An hourly garbage collector runs as an independent safety net: any MongoDB document older than 5 minutes without a matching `mongo_ref_id` in PostgreSQL is automatically purged, regardless of how it arrived.
 
@@ -421,11 +419,12 @@ All tools use a generation-counter cache layer in Redis for sub-millisecond repe
 | `check_indexing_status` | Poll an async indexing job by `job_id`. |
 | `search_codebase` | Semantic search over indexed code chunks with file path and line numbers. *(Cached)* |
 
-### Media
+### Artifacts
 
 | Tool | Description |
 |---|---|
-| `store_media` | Save a media payload to MinIO and index its metadata into the memory stack. |
+| `store_artifact` | Save an artifact (media, PDF, log, etc.) to MinIO and index its metadata. |
+| `store_media` | *(Deprecated)* Alias for `store_artifact`. |
 
 ### Document Bridges
 
@@ -464,7 +463,7 @@ All tools use a generation-counter cache layer in Redis for sub-millisecond repe
 | Semantic Memory | PostgreSQL 15+ with `pgvector` |
 | Episodic Memory | MongoDB 6+ |
 | Working Memory | Redis 7+ |
-| Media Storage | MinIO |
+| Media Storage | MinIO (Artifact Store) |
 | Embeddings | SentenceTransformers / Jina (768-dim) or hash-stub for testing |
 | NLP & Entity Extraction | spaCy `en_core_web_sm` (bundled) |
 | NLI / Contradiction Detection | DeBERTa-v3 cross-encoder |
