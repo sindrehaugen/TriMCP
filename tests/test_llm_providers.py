@@ -263,7 +263,7 @@ class TestOpenAIMalformedResponses:
             status_code=401,
             text="Unauthorized",
         )
-        with pytest.raises(LLMProviderError, match="HTTP 401"):
+        with pytest.raises(LLMProviderError, match="authentication failed"):
             await openai_provider.complete(
                 messages=[],
                 response_model=_DummyResponse,

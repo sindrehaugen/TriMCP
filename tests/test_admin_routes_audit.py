@@ -1,15 +1,14 @@
-"""Admin list validation, pagination bounds, and handler security filters."""
+﻿"""Admin list validation, pagination bounds, and handler security filters."""
 
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from starlette.requests import Request
-
-import os
 
 os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-test-key-32chars-long!!")
 
@@ -41,7 +40,7 @@ def test_sanitize_filters() -> None:
 @pytest.mark.asyncio
 async def test_api_admin_dlq_bad_status_and_task_name() -> None:
     mock_engine = MagicMock()
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_dlq_list
 
         r = Request(
@@ -76,7 +75,7 @@ async def test_api_admin_dlq_page_mode_calls_count() -> None:
 
     # list/count use pool directly, not conn
     with (
-        patch("admin_server.engine", mock_engine),
+        patch("trimcp.admin_state.engine", mock_engine),
         patch(
             "trimcp.dead_letter_queue.count_dead_letters",
             new=AsyncMock(return_value=42),
@@ -129,13 +128,10 @@ async def test_api_admin_quotas_resource_type_and_pagination() -> None:
         }
     ]
 
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_quotas
 
-        qs = (
-            f"namespace_id={ns_id}&resource_type=tool_calls&page=1&limit=20"
-            .encode()
-        )
+        qs = f"namespace_id={ns_id}&resource_type=tool_calls&page=1&limit=20".encode()
         r = Request(
             {
                 "type": "http",
@@ -157,7 +153,7 @@ async def test_api_admin_quotas_resource_type_and_pagination() -> None:
 @pytest.mark.asyncio
 async def test_api_admin_quotas_bad_resource_type() -> None:
     mock_engine = MagicMock()
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_quotas
 
         r = Request(
@@ -180,17 +176,15 @@ async def test_api_admin_signing_status() -> None:
 
     sample = {"active_key_id": None, "keys_by_status": {}}
     with (
-        patch("admin_server.engine", mock_engine),
+        patch("trimcp.admin_state.engine", mock_engine),
         patch(
-            "admin_server.admin_signing_keys_status",
+            "trimcp.admin_handlers.fleet.admin_signing_keys_status",
             new=AsyncMock(return_value=sample),
         ),
     ):
         from admin_server import api_admin_signing_status
 
-        r = Request(
-            {"type": "http", "method": "GET", "path": "/api/admin/signing/status"}
-        )
+        r = Request({"type": "http", "method": "GET", "path": "/api/admin/signing/status"})
         resp = await api_admin_signing_status(r)
         assert resp.status_code == 200
         assert json.loads(resp.body.decode()) == sample
@@ -199,7 +193,7 @@ async def test_api_admin_signing_status() -> None:
 @pytest.mark.asyncio
 async def test_api_admin_events_bad_event_seq() -> None:
     mock_engine = MagicMock()
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_events
 
         r = Request(
@@ -233,7 +227,7 @@ async def test_api_admin_pii_redactions_list_ok() -> None:
             "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
         }
     ]
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_pii_redactions_list
 
         r = Request(
@@ -272,7 +266,7 @@ async def test_api_admin_security_event_seq_gaps() -> None:
         {"after_seq": 2, "before_seq": 4},
     ]
 
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_security_event_seq_gaps
 
         r = Request(
@@ -304,7 +298,7 @@ async def test_api_admin_security_verify_memory_sample() -> None:
         return_value={"valid": True, "reason": "ok", "key_id": "sk-1"}
     )
 
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_security_verify_memory_sample
 
         r = Request(
@@ -314,6 +308,7 @@ async def test_api_admin_security_verify_memory_sample() -> None:
                 "path": "/api/admin/security/verify-memory-sample",
             }
         )
+
         async def _json():
             return {"namespace_id": str(uuid.uuid4()), "sample_size": 5}
 
@@ -341,7 +336,7 @@ async def test_api_admin_security_test_rls_isolation() -> None:
     ns_a = uuid.uuid4()
     ns_b = uuid.uuid4()
 
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_security_test_rls_isolation
 
         r = Request(
@@ -351,6 +346,7 @@ async def test_api_admin_security_test_rls_isolation() -> None:
                 "path": "/api/admin/security/test-rls-isolation",
             }
         )
+
         async def _json():
             return {
                 "namespace_id": str(ns_a),

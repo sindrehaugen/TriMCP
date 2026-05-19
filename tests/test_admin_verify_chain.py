@@ -14,7 +14,7 @@ from starlette.requests import Request
 
 @pytest.fixture
 def mock_engine():
-    """Patch admin_server.engine with a mock that has pg_pool.acquire."""
+    """Patch trimcp.admin_state.engine with a mock that has pg_pool.acquire."""
     engine = MagicMock()
     conn = AsyncMock()
     engine.pg_pool.acquire = MagicMock(return_value=AsyncMock())
@@ -30,23 +30,30 @@ async def test_verify_chain_valid(mock_engine):
     engine, conn = mock_engine
     ns = uuid4()
 
-    with patch("admin_server.engine", engine):
-        with patch("admin_server.verify_merkle_chain", new=AsyncMock(return_value={
-            "valid": True,
-            "checked": 5,
-            "first_break": None,
-            "last_verified_seq": 5,
-        })):
+    with patch("trimcp.admin_state.engine", engine):
+        with patch(
+            "trimcp.admin_handlers.fleet.verify_merkle_chain",
+            new=AsyncMock(
+                return_value={
+                    "valid": True,
+                    "checked": 5,
+                    "first_break": None,
+                    "last_verified_seq": 5,
+                }
+            ),
+        ):
             from admin_server import api_admin_verify_chain
 
-            request = Request({
-                "type": "http",
-                "method": "GET",
-                "path": f"/api/admin/verify-chain/{ns}",
-                "path_params": {"namespace_id": str(ns)},
-                "query_string": b"",
-                "headers": [],
-            })
+            request = Request(
+                {
+                    "type": "http",
+                    "method": "GET",
+                    "path": f"/api/admin/verify-chain/{ns}",
+                    "path_params": {"namespace_id": str(ns)},
+                    "query_string": b"",
+                    "headers": [],
+                }
+            )
             response = await api_admin_verify_chain(request)
 
     assert response.status_code == 200
@@ -60,23 +67,30 @@ async def test_verify_chain_corrupted(mock_engine):
     engine, conn = mock_engine
     ns = uuid4()
 
-    with patch("admin_server.engine", engine):
-        with patch("admin_server.verify_merkle_chain", new=AsyncMock(return_value={
-            "valid": False,
-            "checked": 10,
-            "first_break": 3,
-            "last_verified_seq": 10,
-        })):
+    with patch("trimcp.admin_state.engine", engine):
+        with patch(
+            "trimcp.admin_handlers.fleet.verify_merkle_chain",
+            new=AsyncMock(
+                return_value={
+                    "valid": False,
+                    "checked": 10,
+                    "first_break": 3,
+                    "last_verified_seq": 10,
+                }
+            ),
+        ):
             from admin_server import api_admin_verify_chain
 
-            request = Request({
-                "type": "http",
-                "method": "GET",
-                "path": f"/api/admin/verify-chain/{ns}",
-                "path_params": {"namespace_id": str(ns)},
-                "query_string": b"",
-                "headers": [],
-            })
+            request = Request(
+                {
+                    "type": "http",
+                    "method": "GET",
+                    "path": f"/api/admin/verify-chain/{ns}",
+                    "path_params": {"namespace_id": str(ns)},
+                    "query_string": b"",
+                    "headers": [],
+                }
+            )
             response = await api_admin_verify_chain(request)
 
     assert response.status_code == 200
@@ -89,17 +103,19 @@ async def test_verify_chain_corrupted(mock_engine):
 async def test_verify_chain_invalid_namespace(mock_engine):
     engine, _ = mock_engine
 
-    with patch("admin_server.engine", engine):
+    with patch("trimcp.admin_state.engine", engine):
         from admin_server import api_admin_verify_chain
 
-        request = Request({
-            "type": "http",
-            "method": "GET",
-            "path": "/api/admin/verify-chain/not-a-uuid",
-            "path_params": {"namespace_id": "not-a-uuid"},
-            "query_string": b"",
-            "headers": [],
-        })
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/admin/verify-chain/not-a-uuid",
+                "path_params": {"namespace_id": "not-a-uuid"},
+                "query_string": b"",
+                "headers": [],
+            }
+        )
         response = await api_admin_verify_chain(request)
 
     assert response.status_code == 422
@@ -109,17 +125,19 @@ async def test_verify_chain_invalid_namespace(mock_engine):
 
 @pytest.mark.asyncio
 async def test_verify_chain_missing_namespace():
-    with patch("admin_server.engine", MagicMock()):
+    with patch("trimcp.admin_state.engine", MagicMock()):
         from admin_server import api_admin_verify_chain
 
-        request = Request({
-            "type": "http",
-            "method": "GET",
-            "path": "/api/admin/verify-chain/",
-            "path_params": {"namespace_id": ""},
-            "query_string": b"",
-            "headers": [],
-        })
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/admin/verify-chain/",
+                "path_params": {"namespace_id": ""},
+                "query_string": b"",
+                "headers": [],
+            }
+        )
         response = await api_admin_verify_chain(request)
 
     assert response.status_code == 422
@@ -129,17 +147,19 @@ async def test_verify_chain_missing_namespace():
 
 @pytest.mark.asyncio
 async def test_verify_chain_engine_not_connected():
-    with patch("admin_server.engine", None):
+    with patch("trimcp.admin_state.engine", None):
         from admin_server import api_admin_verify_chain
 
-        request = Request({
-            "type": "http",
-            "method": "GET",
-            "path": f"/api/admin/verify-chain/{uuid4()}",
-            "path_params": {"namespace_id": str(uuid4())},
-            "query_string": b"",
-            "headers": [],
-        })
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": f"/api/admin/verify-chain/{uuid4()}",
+                "path_params": {"namespace_id": str(uuid4())},
+                "query_string": b"",
+                "headers": [],
+            }
+        )
         response = await api_admin_verify_chain(request)
 
     assert response.status_code == 503

@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from trimcp import embeddings as _embeddings
 from trimcp.config import cfg
 from trimcp.models import (
+    ArtifactPayload,
     CompareStatesRequest,
     CreateSnapshotRequest,
     DeleteSnapshotResult,
@@ -39,7 +40,6 @@ from trimcp.models import (
     IndexCodeFileRequest,
     ManageNamespaceRequest,
     ManageQuotasRequest,
-    ArtifactPayload,
     MediaPayload,
     SnapshotRecord,
     StateDiffResult,
@@ -50,6 +50,21 @@ from trimcp.models import (
 MemoryPayload = StoreMemoryRequest
 
 log = logging.getLogger("tri-stack-orchestrator")
+
+# Health probes: degrade status, never raise to callers.
+_HEALTH_PROBE_ERRORS: tuple[type[BaseException], ...] = (
+    asyncpg.PostgresError,
+    OSError,
+    ConnectionError,
+    asyncio.TimeoutError,
+)
+_QUEUE_PROBE_ERRORS: tuple[type[BaseException], ...] = (
+    ImportError,
+    OSError,
+    ConnectionError,
+    asyncio.TimeoutError,
+    RuntimeError,
+)
 
 _ALLOWED_LANGUAGES = frozenset({"python", "javascript", "typescript", "go", "rust"})
 _MAX_TOP_K = 100
@@ -69,9 +84,7 @@ def _metadata_as_dict(raw: Any) -> dict[str, Any]:
     return dict(raw)
 
 
-def _shallow_metadata_delta(
-    old: dict[str, Any], new: dict[str, Any]
-) -> dict[str, dict[str, Any]]:
+def _shallow_metadata_delta(old: dict[str, Any], new: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Keys added or with changed JSON-serializable values (string compare)."""
     delta: dict[str, dict[str, Any]] = {}
     for k, nv in new.items():
@@ -222,6 +235,7 @@ class TriStackEngine:
             )
 
         await self._init_pg_schema()
+        await self._apply_pg_migrations()
         await self._verify_worm_enforcement()
         await self._verify_rls_enforcement()
         await self._check_global_legacy_warning()
@@ -269,7 +283,7 @@ class TriStackEngine:
         self.temporal = TemporalOrchestrator(
             pg_pool=self.pg_pool,
             mongo_client=self.mongo_client,
-            engine=self,
+            semantic_search_fn=self.semantic_search,
         )
         from trimcp.orchestrators.namespace import NamespaceOrchestrator
 
@@ -384,7 +398,9 @@ class TriStackEngine:
             from trimcp.orchestrators.temporal import TemporalOrchestrator
 
             self.temporal = TemporalOrchestrator(
-                self.pg_pool, self.mongo_client, self
+                self.pg_pool,
+                self.mongo_client,
+                semantic_search_fn=self.semantic_search,
             )
 
     async def _ensure_migration(self, method_name: str) -> None:
@@ -470,6 +486,19 @@ class TriStackEngine:
             await conn.execute(ddl)
         log.debug("[PG] schema.sql applied from %s", schema_path)
 
+    async def _apply_pg_migrations(self) -> None:
+        """Apply idempotent SQL files from trimcp/migrations/ in lexical order."""
+        from pathlib import Path
+
+        migrations_dir = Path(__file__).resolve().parent / "migrations"
+        if not migrations_dir.is_dir():
+            return
+        for path in sorted(migrations_dir.glob("*.sql")):
+            sql = path.read_text(encoding="utf-8")
+            async with self.pg_pool.acquire(timeout=60.0) as conn:
+                await conn.execute(sql)
+            log.debug("[PG] migration applied: %s", path.name)
+
     async def _verify_worm_enforcement(self):
         """
         Runtime assertion that all WORM tables deny UPDATE/DELETE.
@@ -489,17 +518,17 @@ class TriStackEngine:
         """
         Validate that all RLS-protected tables are scoped by namespace.
 
-        Acquires a connection from the pool and probes each table in
-        ``event_log._RLS_TABLES`` via ``verify_rls_enforcement()``.
-        Logs a warning for tables that can't be queried (may not exist
-        on first run) and raises ``RuntimeError`` if any table returns
-        rows without a namespace context.
+        Acquires a connection from the pool and runs
+        ``verify_rls_catalog_consistency()`` against the PostgreSQL catalog
+        to confirm all tenant tables exist, have RLS enabled, and have a
+        namespace isolation policy. Raises ``RuntimeError`` on any mismatch.
         """
-        from trimcp.event_log import _RLS_TABLES, verify_rls_enforcement
+        from trimcp.event_log import (
+            verify_rls_catalog_consistency,
+        )
 
         async with self.pg_pool.acquire(timeout=10.0) as conn:
-            for table in _RLS_TABLES:
-                await verify_rls_enforcement(conn, table)
+            await verify_rls_catalog_consistency(conn)
 
     async def _check_global_legacy_warning(self):
         """Warn if ``_global_legacy`` namespace still has KG entities.
@@ -514,7 +543,7 @@ class TriStackEngine:
                 row = await conn.fetchrow(
                     "SELECT id, created_at FROM namespaces WHERE slug = '_global_legacy'"
                 )
-        except Exception:
+        except _HEALTH_PROBE_ERRORS:
             log.warning(
                 "[legacy-warn] Could not query _global_legacy namespace "
                 "(table may not exist yet on first run)."
@@ -538,7 +567,7 @@ class TriStackEngine:
                     "SELECT count(*) FROM kg_nodes WHERE namespace_id = $1::uuid",
                     ns_id,
                 )
-        except Exception:
+        except _HEALTH_PROBE_ERRORS:
             log.warning(
                 "[legacy-warn] Could not query kg_nodes for _global_legacy "
                 "(table may not exist yet on first run)."
@@ -556,9 +585,7 @@ class TriStackEngine:
             else:
                 log.info("[legacy-warn] %s — will escalate after 30 days.", msg)
         else:
-            log.info(
-                "[legacy-warn] _global_legacy namespace exists but has no KG entities."
-            )
+            log.info("[legacy-warn] _global_legacy namespace exists but has no KG entities.")
 
     async def _init_mongo_indexes(self):
         db = self._mongo_db
@@ -607,9 +634,7 @@ class TriStackEngine:
 
     # --- Phase 0.2: Memory Integrity ---
 
-    async def verify_memory(
-        self, memory_id: str, as_of: datetime | None = None
-    ) -> dict:
+    async def verify_memory(self, memory_id: str, as_of: datetime | None = None) -> dict:
         """[Phase 0.2] Delegate to MemoryOrchestrator."""
         await self._ensure_memory()
         return await self.memory.verify_memory(memory_id, as_of)
@@ -630,9 +655,7 @@ class TriStackEngine:
 
     # --- Code Indexing ---
 
-    async def index_code_file(
-        self, payload: IndexCodeFileRequest, *, priority: int = 0
-    ) -> dict:
+    async def index_code_file(self, payload: IndexCodeFileRequest, *, priority: int = 0) -> dict:
         """[Phase 3.2] Code indexing — delegating to MigrationOrchestrator.
 
         *priority* routes to queue lane: >0 = high_priority, 0 = batch_processing.
@@ -744,7 +767,7 @@ class TriStackEngine:
             if self.mongo_client:
                 await self.mongo_client.admin.command("ping")
                 health["databases"]["mongo"] = "up"
-        except Exception:
+        except _HEALTH_PROBE_ERRORS:
             health["status"] = "degraded"
 
         # 2. Postgres (actual probe, not hard-coded)
@@ -753,7 +776,7 @@ class TriStackEngine:
                 async with self.pg_pool.acquire(timeout=10.0) as conn:
                     await conn.execute("SELECT 1")
                 health["databases"]["postgres"] = "up"
-        except Exception:
+        except _HEALTH_PROBE_ERRORS:
             health["status"] = "degraded"
 
         # 3. Redis
@@ -761,7 +784,7 @@ class TriStackEngine:
             if self.redis_client:
                 await self.redis_client.ping()
                 health["databases"]["redis"] = "up"
-        except Exception:
+        except _HEALTH_PROBE_ERRORS:
             health["status"] = "degraded"
 
         # 4. RQ queues — all three lanes (sync Redis I/O → thread pool)
@@ -779,29 +802,30 @@ class TriStackEngine:
                 lengths = await asyncio.to_thread(_get_queue_lengths)
                 for queue_name, qlen in lengths.items():
                     health["queues"][queue_name] = f"{qlen} pending jobs"
-        except Exception:
+        except _QUEUE_PROBE_ERRORS:
             pass
 
         # 5. Cognitive / Embeddings
-        from trimcp.embeddings import get_backend
+        import httpx
+
+        from trimcp.embeddings import cognitive_health_check_url, get_backend
 
         try:
             backend = get_backend()
             health["cognitive"]["backend_type"] = type(backend).__name__
-            import httpx
 
             async with httpx.AsyncClient(timeout=2.0) as client:
-                url = (
-                    f"{cfg.TRIMCP_COGNITIVE_BASE_URL}/health"
-                    if cfg.TRIMCP_COGNITIVE_BASE_URL
-                    else "http://localhost:11435/health"
-                )
+                url = cognitive_health_check_url()
                 resp = await client.get(url)
                 if resp.status_code == 200:
                     health["cognitive"]["engine"] = "up"
                 else:
                     health["cognitive"]["engine"] = f"down ({resp.status_code})"
-        except Exception as e:
+        except (
+            *_HEALTH_PROBE_ERRORS,
+            httpx.HTTPError,
+            httpx.TimeoutException,
+        ) as e:
             health["cognitive"]["engine"] = f"unreachable ({type(e).__name__})"
             if not cfg.TRIMCP_BACKEND:
                 health["status"] = "degraded"
@@ -860,13 +884,9 @@ class TriStackEngine:
     ) -> dict:
         """[Phase 1.1] Boost memory — delegating to CognitiveOrchestrator."""
         await self._ensure_cognitive("boost_memory")
-        return await self.cognitive.boost_memory(
-            memory_id, agent_id, namespace_id, factor
-        )
+        return await self.cognitive.boost_memory(memory_id, agent_id, namespace_id, factor)
 
-    async def forget_memory(
-        self, memory_id: str, agent_id: str, namespace_id: str
-    ) -> dict:
+    async def forget_memory(self, memory_id: str, agent_id: str, namespace_id: str) -> dict:
         """[Phase 1.1] Forget memory — delegating to CognitiveOrchestrator."""
         await self._ensure_cognitive("forget_memory")
         return await self.cognitive.forget_memory(memory_id, agent_id, namespace_id)
@@ -881,9 +901,7 @@ class TriStackEngine:
     ) -> list[dict]:
         """[Phase 1.3] List contradictions — delegating to CognitiveOrchestrator."""
         await self._ensure_cognitive("list_contradictions")
-        return await self.cognitive.list_contradictions(
-            namespace_id, resolution, agent_id
-        )
+        return await self.cognitive.list_contradictions(namespace_id, resolution, agent_id)
 
     async def resolve_contradiction(
         self,
@@ -925,9 +943,7 @@ class TriStackEngine:
     ) -> dict[str, Any]:
         """[Phase 2.2] Fetch memory rows valid at a point in time — delegating."""
         await self._ensure_temporal("_fetch_memories_valid_at")
-        return await self.temporal._fetch_memories_valid_at(
-            conn, namespace_id, memory_ids, as_of
-        )
+        return await self.temporal._fetch_memories_valid_at(conn, namespace_id, memory_ids, as_of)
 
     async def compare_states(self, payload: CompareStatesRequest) -> StateDiffResult:
         """[Phase 2.2] Compare states — delegating to TemporalOrchestrator."""

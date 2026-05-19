@@ -18,6 +18,20 @@ SUPPORTED_LANGUAGES = ("python", "javascript", "typescript", "go", "rust")
 # Protects against RecursionError on deeply nested auto-generated code (FIX-051)
 _MAX_AST_DEPTH = 200
 
+# Line-based fallback chunk size — prevents unbounded embedding payloads for
+# large files where Tree-sitter is unavailable or finds no top-level symbols.
+_FALLBACK_CHUNK_LINES = 200
+
+_LANGUAGE_ALIASES: dict[str, str] = {
+    "py": "python",
+    "python3": "python",
+    "js": "javascript",
+    "ts": "typescript",
+    "tsx": "typescript",
+    "golang": "go",
+    "rs": "rust",
+}
+
 
 @dataclass
 class CodeChunk:
@@ -133,35 +147,40 @@ def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | Non
 # --- Public API ---
 
 
+def _line_chunks(raw_code: str) -> Iterator[CodeChunk]:
+    """Split raw_code into bounded line-based chunks to limit payload size."""
+    lines = raw_code.splitlines()
+    for i in range(0, len(lines), _FALLBACK_CHUNK_LINES):
+        block = lines[i : i + _FALLBACK_CHUNK_LINES]
+        yield CodeChunk(
+            node_type="block",
+            name=f"<lines_{i + 1}_{i + len(block)}>",
+            code_string="\n".join(block),
+            start_line=i + 1,
+            end_line=i + len(block),
+        )
+
+
 def parse_file(raw_code: str, language: str) -> Iterator[CodeChunk]:
     """
     Parse source code into CodeChunk objects.
-    Tries Tree-sitter first; falls back to whole-file chunk if unavailable.
+
+    Normalises language aliases (e.g. "py" → "python"), tries Tree-sitter
+    for supported languages, then falls back to bounded line-based chunks.
     """
+    language = _LANGUAGE_ALIASES.get(language.lower(), language.lower())
+
     if language not in SUPPORTED_LANGUAGES:
-        log.warning(
-            "Language %r not supported — yielding single whole-file chunk.", language
-        )
-        yield CodeChunk(
-            node_type="file",
-            name="<whole_file>",
-            code_string=raw_code,
-            start_line=1,
-            end_line=len(raw_code.splitlines()),
-        )
+        log.warning("Language %r not supported — yielding line-based chunks.", language)
+        yield from _line_chunks(raw_code)
         return
 
     chunks = _try_treesitter_parse(raw_code, language)
 
     if not chunks:
-        # Whole-file fallback: nothing was detected or tree-sitter failed
-        yield CodeChunk(
-            node_type="file",
-            name="<whole_file>",
-            code_string=raw_code,
-            start_line=1,
-            end_line=len(raw_code.splitlines()),
-        )
+        # Tree-sitter unavailable or found no top-level symbols — use bounded
+        # line-based chunks to avoid huge embedding payloads for large files.
+        yield from _line_chunks(raw_code)
         return
 
     yield from chunks

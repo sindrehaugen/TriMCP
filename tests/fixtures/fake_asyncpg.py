@@ -73,6 +73,7 @@ class RecordingFakeConnection:
             db_clock or datetime(2026, 5, 5, 10, 0, 0, 123456, tzinfo=utc)
         ).astimezone(utc)
         self._seq_max: defaultdict[UUID, int] = defaultdict(int)
+        self._seq_counters: dict[UUID, int] = {}
         self._tx_depth = 0
         self.event_inserts: list[dict[str, Any]] = []
         self.unique_violation = simulate_unique_violation_on_insert
@@ -84,8 +85,20 @@ class RecordingFakeConnection:
         return _FakeTransaction(self)
 
     async def fetchval(self, query: str, *args: Any) -> Any:
+        q_compact = "".join(query.split()).lower()
         if "clock_timestamp()" in query.lower():
             return self._db_clock
+        if "fromevent_sequences" in q_compact:
+            namespace_id = args[0]
+            ns_key = namespace_id if isinstance(namespace_id, UUID) else UUID(str(namespace_id))
+            return self._seq_counters.get(ns_key)
+        if "max(event_seq)" in q_compact and "fromevent_log" in q_compact:
+            namespace_id = args[0]
+            ns_key = namespace_id if isinstance(namespace_id, UUID) else UUID(str(namespace_id))
+            rows = [r for r in self.event_inserts if r["namespace_id"] == ns_key]
+            if not rows:
+                return None
+            return max(int(r["event_seq"]) for r in rows)
         raise AssertionError(f"Unexpected fetchval query: {query!r}")
 
     async def execute(self, query: str, *args: Any) -> str:
@@ -112,16 +125,11 @@ class RecordingFakeConnection:
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         q = "".join(query.split()).lower()
 
-        if "intoevent_sequences" in q.replace(" ", "") and "onconflict" in q.replace(
-            " ", ""
-        ):
+        if "intoevent_sequences" in q.replace(" ", "") and "onconflict" in q.replace(" ", ""):
             namespace_id = args[0]
-            ns_key = (
-                namespace_id
-                if isinstance(namespace_id, UUID)
-                else UUID(str(namespace_id))
-            )
+            ns_key = namespace_id if isinstance(namespace_id, UUID) else UUID(str(namespace_id))
             nxt = self._seq_max[ns_key] + 1
+            self._seq_counters[ns_key] = nxt
             return {"seq": nxt}
 
         # _fetch_previous_chain_hash: SELECT chain_hash FROM event_log
@@ -150,10 +158,7 @@ class RecordingFakeConnection:
             namespace_id = args[0]
             target_seq = args[1]
             for r in self.event_inserts:
-                if (
-                    r["namespace_id"] == namespace_id
-                    and r.get("event_seq") == target_seq
-                ):
+                if r["namespace_id"] == namespace_id and r.get("event_seq") == target_seq:
                     return {"chain_hash": r.get("chain_hash")}
             return None
 
@@ -190,11 +195,7 @@ class RecordingFakeConnection:
             if self.unique_violation:
                 raise asyncpg.UniqueViolationError("simulated collision")
 
-            ns = (
-                namespace_id
-                if isinstance(namespace_id, UUID)
-                else UUID(str(namespace_id))
-            )
+            ns = namespace_id if isinstance(namespace_id, UUID) else UUID(str(namespace_id))
             self._seq_max[ns] = max(self._seq_max[ns], int(event_seq))
             self.event_inserts.append(record)
 
@@ -232,14 +233,10 @@ class RecordingFakePool:
         if self._outstanding > 0:
             self._outstanding -= 1
 
-    async def release(
-        self, conn: RecordingFakeConnection, *args: Any, **kwargs: Any
-    ) -> None:
+    async def release(self, conn: RecordingFakeConnection, *args: Any, **kwargs: Any) -> None:
         """asyncpg-compatible explicit release after ``await pool.acquire()``."""
         if conn is not self._conn:
-            raise ValueError(
-                "RecordingFakePool.release: connection does not belong to this pool"
-            )
+            raise ValueError("RecordingFakePool.release: connection does not belong to this pool")
         await self._release_conn()
 
     async def close(self) -> None:

@@ -1,9 +1,9 @@
 -- ============================================================================
--- TriMCP Migration: Enable Row-Level Security (RLS)
--- Target: P0 Security Gap - Multi-tenant Isolation
+-- TriMCP Migration: Row-Level Security hardening (idempotent)
+-- Complements trimcp/schema.sql — safe to re-run on existing databases.
 -- ============================================================================
 
--- 1. Create a restricted application role if it doesn't exist
+-- Application role (no login — granted to runtime DB user)
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
@@ -11,84 +11,100 @@ BEGIN
     END IF;
 END $$;
 
--- 2. Define the unified isolation logic
--- We use a helper function to avoid repeated current_setting logic in policies
+-- Fail-fast namespace resolver for RLS policies
 CREATE OR REPLACE FUNCTION get_trimcp_namespace() RETURNS uuid AS $$
-    SELECT current_setting('trimcp.namespace_id', true)::uuid;
-$$ LANGUAGE sql STABLE;
+DECLARE
+    val text;
+BEGIN
+    val := nullif(trim(current_setting('trimcp.namespace_id', true)), '');
+    IF val IS NULL THEN
+        RAISE EXCEPTION 'trimcp.namespace_id is not set for this transaction';
+    END IF;
+    BEGIN
+        RETURN val::uuid;
+    EXCEPTION
+        WHEN invalid_text_representation THEN
+            RAISE EXCEPTION 'trimcp.namespace_id is not a valid UUID: %', val;
+    END;
+END;
+$$ LANGUAGE plpgsql STABLE;
 
--- 3. List of tables requiring isolation
--- memories, pii_redactions, memory_salience, contradictions, 
--- memory_embeddings, kg_node_embeddings, consolidation_runs, 
--- event_log, a2a_grants, resource_quotas.
-
--- NOTE: kg_nodes and kg_edges are intentionally global/shared in the current 
--- architecture (labels are deduplicated across namespaces). Access control 
--- to their source is handled via the 'memories' table link.
-
--- 2.5 Ensure namespace_id columns exist in all isolated tables
 ALTER TABLE bridge_subscriptions ADD COLUMN IF NOT EXISTS namespace_id UUID REFERENCES namespaces(id);
 ALTER TABLE dead_letter_queue ADD COLUMN IF NOT EXISTS namespace_id UUID REFERENCES namespaces(id);
 ALTER TABLE embedding_migrations ADD COLUMN IF NOT EXISTS namespace_id UUID REFERENCES namespaces(id);
 
 DO $$
 DECLARE
+    legacy_ns UUID;
+BEGIN
+    SELECT id INTO legacy_ns FROM namespaces WHERE slug = '_global_legacy' LIMIT 1;
+    IF legacy_ns IS NOT NULL THEN
+        UPDATE bridge_subscriptions SET namespace_id = legacy_ns WHERE namespace_id IS NULL;
+        UPDATE dead_letter_queue SET namespace_id = legacy_ns WHERE namespace_id IS NULL;
+        UPDATE embedding_migrations SET namespace_id = legacy_ns WHERE namespace_id IS NULL;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_dead_letter_queue_namespace_id
+    ON dead_letter_queue (namespace_id);
+CREATE INDEX IF NOT EXISTS idx_embedding_migrations_namespace_id
+    ON embedding_migrations (namespace_id);
+
+DO $$
+DECLARE
     t text;
-    tables_to_isolate text[] := ARRAY[
-        'memories', 
-        'pii_redactions', 
-        'memory_salience', 
-        'contradictions', 
-        'consolidation_runs', 
-        'event_log', 
-        'a2a_grants', 
+    tenant_tables text[] := ARRAY[
+        'memories',
+        'kg_nodes',
+        'kg_edges',
+        'pii_redactions',
+        'memory_salience',
+        'contradictions',
+        'snapshots',
+        'event_log',
         'resource_quotas',
+        'consolidation_runs',
         'bridge_subscriptions',
         'dead_letter_queue',
-        'embedding_migrations'
+        'embedding_migrations',
+        'memory_embeddings'
     ];
 BEGIN
-    FOREACH t IN ARRAY tables_to_isolate
+    FOREACH t IN ARRAY tenant_tables
     LOOP
-        -- Enable RLS
-        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
-        EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
-
-        -- Drop existing policy if it exists (idempotency)
-        EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_policy ON %I', t);
-
-        -- Create the isolation policy
-        -- USING: Restricts which rows can be SELECTed, UPDATED, DELETED
-        -- WITH CHECK: Restricts which rows can be INSERTed or UPDATED to
-        EXECUTE format('
-            CREATE POLICY tenant_isolation_policy ON %I
-            FOR ALL
-            TO trimcp_app
-            USING (namespace_id = get_trimcp_namespace())
-            WITH CHECK (namespace_id = get_trimcp_namespace())
-        ', t);
-
-        -- Ensure the app role has permissions
-        EXECUTE format('GRANT ALL ON TABLE %I TO trimcp_app', t);
+        EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
+        EXECUTE format('ALTER TABLE public.%I FORCE ROW LEVEL SECURITY', t);
+        EXECUTE format('DROP POLICY IF EXISTS namespace_isolation_policy ON public.%I', t);
+        EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_policy ON public.%I', t);
+        EXECUTE format(
+            'CREATE POLICY tenant_isolation_policy ON public.%I '
+            'FOR ALL TO trimcp_app '
+            'USING (namespace_id IS NOT NULL AND namespace_id = get_trimcp_namespace()) '
+            'WITH CHECK (namespace_id IS NOT NULL AND namespace_id = get_trimcp_namespace())',
+            t
+        );
+        EXECUTE format(
+            'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.%I TO trimcp_app',
+            t
+        );
     END LOOP;
 END $$;
 
--- 4. Special case for a2a_grants (handling target_namespace_id)
--- Grants are visible to BOTH the owner and the target
+ALTER TABLE a2a_grants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE a2a_grants FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS namespace_isolation_policy ON a2a_grants;
 DROP POLICY IF EXISTS tenant_isolation_policy ON a2a_grants;
 CREATE POLICY tenant_isolation_policy ON a2a_grants
-FOR ALL
-TO trimcp_app
-USING (
-    owner_namespace_id = get_trimcp_namespace() OR 
-    target_namespace_id = get_trimcp_namespace()
-)
-WITH CHECK (owner_namespace_id = get_trimcp_namespace());
+    FOR ALL TO trimcp_app
+    USING (
+        owner_namespace_id = get_trimcp_namespace()
+        OR target_namespace_id = get_trimcp_namespace()
+    )
+    WITH CHECK (owner_namespace_id = get_trimcp_namespace());
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE a2a_grants TO trimcp_app;
 
--- 5. Quality gate: row counts after RLS
--- FORCE ROW LEVEL SECURITY applies even to superuser. Without namespace context,
--- unscoped COUNT(*) on isolated tables returns 0 regardless of actual data — so any
--- verification must bypass RLS only for this transactional introspection block.
+-- Quality gate: catalog + row counts (RLS bypass only inside this transaction).
+-- WARNING: Do not copy SET LOCAL row_security = off outside a guarded migration block.
 BEGIN;
 SET LOCAL row_security = off;
 DO $$
@@ -96,37 +112,62 @@ DECLARE
     t text;
     tables_to_check text[] := ARRAY[
         'memories',
+        'kg_nodes',
+        'kg_edges',
         'pii_redactions',
         'memory_salience',
         'contradictions',
-        'consolidation_runs',
+        'snapshots',
         'event_log',
         'a2a_grants',
         'resource_quotas',
+        'consolidation_runs',
         'bridge_subscriptions',
         'dead_letter_queue',
-        'embedding_migrations'
+        'embedding_migrations',
+        'memory_embeddings'
     ];
     row_count bigint;
+    rls_on boolean;
+    force_on boolean;
+    pol_count int;
 BEGIN
     FOREACH t IN ARRAY tables_to_check
     LOOP
-        EXECUTE format('SELECT count(*) FROM %I', t) INTO row_count;
+        SELECT c.relrowsecurity, c.relforcerowsecurity
+        INTO rls_on, force_on
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = t;
+
+        IF NOT COALESCE(rls_on, false) THEN
+            RAISE EXCEPTION '001_enable_rls: RLS not enabled on %', t;
+        END IF;
+        IF NOT COALESCE(force_on, false) THEN
+            RAISE EXCEPTION '001_enable_rls: FORCE RLS not enabled on %', t;
+        END IF;
+
+        SELECT count(*)::int INTO pol_count
+        FROM pg_policies
+        WHERE schemaname = 'public' AND tablename = t;
+
+        IF pol_count < 1 THEN
+            RAISE EXCEPTION '001_enable_rls: no policies on %', t;
+        END IF;
+
+        EXECUTE format('SELECT count(*) FROM public.%I', t) INTO row_count;
         RAISE NOTICE '001_enable_rls quality gate: table % row_count=%', t, row_count;
     END LOOP;
 END $$;
 COMMIT;
 
--- 6. Hardened Admin Role Isolation (FIX-017)
--- Reset postgres superuser row_security setting so FORCE ROW LEVEL SECURITY functions correctly if enabled.
 ALTER ROLE postgres RESET row_security;
 
--- Create dedicated trimcp_gc background role with BYPASSRLS
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_gc') THEN
-        CREATE ROLE trimcp_gc BYPASSRLS;
+        CREATE ROLE trimcp_gc BYPASSRLS NOLOGIN;
     ELSE
-        ALTER ROLE trimcp_gc BYPASSRLS;
+        ALTER ROLE trimcp_gc BYPASSRLS NOLOGIN;
     END IF;
 END $$;

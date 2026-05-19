@@ -84,7 +84,16 @@ _MAGIC_BYTES: list[tuple[bytes, str]] = [
     (b"<?xml", "text/xml"),
     (b"{\"", "application/json"),
     (b"[\n", "application/json"),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "application/x-ole-storage"),
 ]
+
+# Extension MIME vs magic MIME pairs that must never be treated as compatible.
+_EXPLICIT_MIME_MISMATCH: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("application/pdf", "application/zip"),
+        ("application/pdf", "application/x-ole-storage"),
+    }
+)
 
 
 def _magic_mime_from_bytes(blob: bytes) -> str | None:
@@ -103,6 +112,8 @@ def _is_security_relevant_mismatch(ext_mime: str | None, magic_mime: str | None)
     on a security-relevant boundary (e.g. image vs archive vs executable)."""
     if ext_mime is None or magic_mime is None:
         return False
+    if (ext_mime, magic_mime) in _EXPLICIT_MIME_MISMATCH:
+        return True
     ext_family = ext_mime.split("/")[0]
     magic_family = magic_mime.split("/")[0]
     # Zip-based office docs are expected to look like zip
@@ -219,10 +230,17 @@ def ensure_registered() -> None:
     _initialized = True
 
 
+_MAX_ATTACHMENT_DEPTH = 3
+_MAX_ATTACHMENTS_PER_MESSAGE = 32
+
+
 async def extract_bytes(
     blob: bytes,
     filename: str | None = None,
     mime_type: str | None = None,
+    *,
+    attachment_depth: int = 0,
+    attachment_budget: list[int] | None = None,
 ) -> ExtractionResult:
     from trimcp.config import cfg
     from trimcp.observability import EXTRACTION_REJECTED_TOO_LARGE_TOTAL, get_tracer
@@ -233,14 +251,29 @@ async def extract_bytes(
         span.set_attribute("trimcp.filename", filename or "unknown")
         span.set_attribute("trimcp.mime_type", mime_type or "unknown")
 
+        if attachment_depth >= _MAX_ATTACHMENT_DEPTH:
+            return empty_skipped(
+                "dispatch",
+                "attachment_depth_limit",
+                warnings=[
+                    f"nested attachment depth {attachment_depth} exceeds {_MAX_ATTACHMENT_DEPTH}"
+                ],
+            )
+        if attachment_budget is not None and attachment_budget[0] >= _MAX_ATTACHMENTS_PER_MESSAGE:
+            return empty_skipped(
+                "dispatch",
+                "attachment_limit",
+                warnings=[
+                    f"attachment count {attachment_budget[0]} exceeds {_MAX_ATTACHMENTS_PER_MESSAGE}"
+                ],
+            )
+
         if len(blob) > cfg.TRIMCP_MAX_ATTACHMENT_BYTES:
             EXTRACTION_REJECTED_TOO_LARGE_TOTAL.inc()
             return empty_skipped(
                 "dispatch",
                 "payload_too_large",
-                warnings=[
-                    f"blob {len(blob)} B exceeds limit {cfg.TRIMCP_MAX_ATTACHMENT_BYTES} B"
-                ],
+                warnings=[f"blob {len(blob)} B exceeds limit {cfg.TRIMCP_MAX_ATTACHMENT_BYTES} B"],
             )
 
         ensure_registered()
@@ -249,9 +282,7 @@ async def extract_bytes(
             return empty_skipped(
                 "dispatch",
                 "unsupported_format",
-                warnings=[
-                    f"unknown or unregistered extension: {ext!r} (file={filename!r})"
-                ],
+                warnings=[f"unknown or unregistered extension: {ext!r} (file={filename!r})"],
             )
 
         # Magic-byte cross-check (Item E)
@@ -270,9 +301,7 @@ async def extract_bytes(
             return empty_skipped(
                 "dispatch",
                 "mime_mismatch",
-                warnings=[
-                    f"extension claims {ext_mime} but magic bytes indicate {magic_mime}"
-                ],
+                warnings=[f"extension claims {ext_mime} but magic bytes indicate {magic_mime}"],
             )
 
         span.set_attribute("trimcp.extension", ext)
@@ -292,6 +321,15 @@ async def extract_with_fallback(
     blob: bytes,
     filename: str | None = None,
     mime_type: str | None = None,
+    *,
+    attachment_depth: int = 0,
+    attachment_budget: list[int] | None = None,
 ) -> ExtractionResult:
     """Same as extract_bytes; name matches Appendix J.9 attachment recursion."""
-    return await extract_bytes(blob, filename, mime_type)
+    return await extract_bytes(
+        blob,
+        filename,
+        mime_type,
+        attachment_depth=attachment_depth,
+        attachment_budget=attachment_budget,
+    )

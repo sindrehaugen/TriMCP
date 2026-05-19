@@ -26,9 +26,10 @@ Exception             Code     Message
 ``ScopeError``        -32005   Scope forbidden
 ``RateLimitError``    -32029   Rate limit exceeded
 ``ValidationError``   -32602   Invalid parameters
-``ValueError``        -32602   Invalid parameters
-``TypeError``         -32602   Invalid parameters
-``KeyError``          -32602   Invalid parameters
+``QuotaExceededError``  -32013   Resource quota exceeded
+``ValueError``          -32602   Invalid parameters
+``TypeError``           -32602   Invalid parameters
+``KeyError``            -32602   Invalid parameters (missing field, name not exposed)
 ``UnknownToolError``  -32601   Method not found
 Everything else       -32603   Internal error
 ====================  =======  ===========================
@@ -37,13 +38,17 @@ Everything else       -32603   Internal error
 from __future__ import annotations
 
 import functools
+import inspect
 import logging
+import uuid
 from collections.abc import Callable
 from typing import Any, TypeVar
 
 from pydantic import ValidationError
 
 from trimcp.auth import RateLimitError, ScopeError
+from trimcp.config import cfg
+from trimcp.quotas import QuotaExceededError
 
 log = logging.getLogger(__name__)
 
@@ -100,11 +105,54 @@ class UnknownToolError(McpError):
         super().__init__(MCP_METHOD_NOT_FOUND, f"Unknown tool: {tool_name}")
 
 
+def client_visible_detail(message: str | None) -> str | None:
+    """Return *message* for MCP clients only when ``cfg.IS_DEV`` is true."""
+    if not message or not cfg.IS_DEV:
+        return None
+    return message
+
+
+def internal_error_data(exc: Exception, *, request_id: str | None = None) -> dict[str, Any]:
+    """Build a production-safe ``error.data`` payload for uncaught handler failures."""
+    rid = request_id or str(uuid.uuid4())
+    data: dict[str, Any] = {
+        "reason": "internal_error",
+        "type": type(exc).__name__,
+        "request_id": rid,
+    }
+    detail = client_visible_detail(str(exc))
+    if detail is not None:
+        data["detail"] = detail
+    return data
+
+
+def invalid_arguments_data(exc: Exception) -> dict[str, Any]:
+    """Build ``error.data`` for ``ValueError`` / ``TypeError`` without leaking in prod."""
+    data: dict[str, Any] = {"reason": "invalid_arguments"}
+    detail = client_visible_detail(str(exc))
+    if detail is not None:
+        data["detail"] = detail
+    return data
+
+
+def merge_client_error_data(
+    base: dict[str, Any] | None,
+    *,
+    detail: str | None = None,
+) -> dict[str, Any]:
+    """Merge optional client ``detail`` into JSON-RPC error data (dev-only for strings)."""
+    merged: dict[str, Any] = dict(base or {})
+    visible = client_visible_detail(detail)
+    if visible is not None:
+        merged["detail"] = visible
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # @mcp_handler decorator
 # ---------------------------------------------------------------------------
 
-F = TypeVar("F", bound="Callable[..., Any]")  # noqa: F723 — forward ref for type hint
+F = TypeVar("F", bound=Callable[..., Any])
 
 
 def mcp_handler(handler_fn: F) -> F:
@@ -119,39 +167,61 @@ def mcp_handler(handler_fn: F) -> F:
       are propagated untouched.
     - ``McpError`` from explicit raises is propagated as-is.
     - All other exceptions are categorised by type.
+
+    The wrapper handles both async and sync handlers via ``inspect.iscoroutine``,
+    though all production MCP handlers are expected to be async.
     """
 
     @functools.wraps(handler_fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
-            return await handler_fn(*args, **kwargs)
+            result = handler_fn(*args, **kwargs)
+            if inspect.iscoroutine(result):
+                return await result
+            return result
         except (ScopeError, RateLimitError, McpError):
-            # Already typed — let call_tool format it.
+            # Already typed — propagate to call_tool unchanged.
             raise
         except ValidationError as e:
             raise McpError(
                 MCP_INVALID_PARAMS,
                 "Invalid parameters",
-                data={"detail": e.errors(include_url=False)},
+                data={
+                    "reason": "validation_error",
+                    "errors": e.errors(include_url=False),
+                },
             )
-        except (ValueError, TypeError, KeyError) as e:
-            msg = str(e)
-            # Preserve quota-exceeded prefix for the call_tool check
-            if msg.startswith("Resource quota exceeded"):
-                raise McpError(
-                    MCP_QUOTA_EXCEEDED, "Resource quota exceeded", data={"detail": msg}
-                )
+        except QuotaExceededError:
+            # Must precede ValueError — QuotaExceededError is a ValueError subclass.
+            raise McpError(
+                MCP_QUOTA_EXCEEDED,
+                "Resource quota exceeded",
+                data={"reason": "quota_exceeded"},
+            )
+        except KeyError:
+            # Separate handler: str(KeyError) echoes field names ('secret_key').
             raise McpError(
                 MCP_INVALID_PARAMS,
                 "Invalid parameters",
-                data={"detail": msg},
+                data={"reason": "missing_field"},
+            )
+        except (ValueError, TypeError) as e:
+            raise McpError(
+                MCP_INVALID_PARAMS,
+                "Invalid parameters",
+                data=invalid_arguments_data(e),
             )
         except Exception as e:
-            log.exception("Handler %s failed", handler_fn.__name__)
+            request_id = str(uuid.uuid4())
+            log.exception(
+                "Handler %s failed request_id=%s",
+                handler_fn.__name__,
+                request_id,
+            )
             raise McpError(
                 MCP_INTERNAL_ERROR,
                 "Internal error",
-                data={"type": type(e).__name__, "detail": str(e)},
+                data=internal_error_data(e, request_id=request_id),
             )
 
     return wrapper  # type: ignore[return-value]

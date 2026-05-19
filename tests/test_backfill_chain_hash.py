@@ -23,7 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import importlib.util
 
 _spec = importlib.util.spec_from_file_location(
-    "backfill_chain_hash", Path(__file__).resolve().parents[1] / "scripts" / "backfill_chain_hash.py"
+    "backfill_chain_hash",
+    Path(__file__).resolve().parents[1] / "scripts" / "backfill_chain_hash.py",
 )
 _backfill = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_backfill)
@@ -168,3 +169,35 @@ class TestCoerceChainHash:
 
     def test_str_returns_none(self):
         assert _backfill._coerce_chain_hash("not bytes") is None
+
+
+class TestWormTriggerHelpers:
+    @pytest.mark.asyncio
+    async def test_worm_trigger_enabled_true_when_not_disabled(self) -> None:
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value={"tgenabled": "O"})
+        assert await _backfill._worm_trigger_enabled(conn) is True
+
+    @pytest.mark.asyncio
+    async def test_worm_trigger_enabled_false_when_disabled(self) -> None:
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value={"tgenabled": "D"})
+        assert await _backfill._worm_trigger_enabled(conn) is False
+
+    @pytest.mark.asyncio
+    async def test_worm_trigger_missing_raises(self) -> None:
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=None)
+        with pytest.raises(RuntimeError, match="not found"):
+            await _backfill._worm_trigger_enabled(conn)
+
+    @pytest.mark.asyncio
+    async def test_set_worm_trigger_verifies_state(self) -> None:
+        conn = AsyncMock()
+        conn.execute = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value={"tgenabled": "D"})
+
+        with pytest.raises(RuntimeError, match="Failed to enable"):
+            await _backfill._set_worm_trigger(conn, enabled=True)
+
+        conn.execute.assert_awaited_once()

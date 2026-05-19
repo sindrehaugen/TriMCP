@@ -16,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_ENV = ROOT / "deploy" / "compose.stack.env"
+EXAMPLE_ENV = ROOT / "deploy" / "compose.stack.env.example"
 GENERATED = ROOT / "deploy" / "compose.stack.env.generated"
 
 HEADER = """# AUTO-GENERATED — do not commit real secrets. Added by scripts/bootstrap-compose-secrets.py
@@ -25,22 +26,40 @@ HEADER = """# AUTO-GENERATED — do not commit real secrets. Added by scripts/bo
 KEY_SPECS: list[tuple[str, Callable[[str], bool]]] = [
     (
         "TRIMCP_MASTER_KEY",
-        lambda v: _weak(v, min_len=32) or "dev" in v.lower() or "change" in v.lower(),
+        lambda v: _weak(v, min_len=32)
+        or "dev" in v.lower()
+        or "change" in v.lower()
+        or "replace_me" in v.lower(),
     ),
     (
         "TRIMCP_API_KEY",
         lambda v: _weak(v, min_len=16)
         or "change" in v.lower()
-        or v.lower().startswith("dev-"),
+        or v.lower().startswith("dev-")
+        or "replace_me" in v.lower(),
     ),
-    ("TRIMCP_JWT_SECRET", lambda v: _weak(v, min_len=32) or "dev-jwt" in v.lower()),
+    (
+        "TRIMCP_JWT_SECRET",
+        lambda v: _weak(v, min_len=32) or "dev-jwt" in v.lower() or "replace_me" in v.lower(),
+    ),
     (
         "TRIMCP_ADMIN_PASSWORD",
-        lambda v: _weak(v, min_len=8) or v.lower() in ("changeme", "admin", "password"),
+        lambda v: _weak(v, min_len=8)
+        or v.lower() in ("changeme", "admin", "password")
+        or "replace_me" in v.lower(),
     ),
-    ("DROPBOX_APP_SECRET", lambda v: _weak(v) or v.lower().startswith("dev-")),
-    ("GRAPH_CLIENT_STATE", lambda v: _weak(v) or v.lower().startswith("dev-")),
-    ("DRIVE_CHANNEL_TOKEN", lambda v: _weak(v) or v.lower().startswith("dev-")),
+    (
+        "DROPBOX_APP_SECRET",
+        lambda v: _weak(v) or v.lower().startswith("dev-") or "replace_me" in v.lower(),
+    ),
+    (
+        "GRAPH_CLIENT_STATE",
+        lambda v: _weak(v) or v.lower().startswith("dev-") or "replace_me" in v.lower(),
+    ),
+    (
+        "DRIVE_CHANNEL_TOKEN",
+        lambda v: _weak(v) or v.lower().startswith("dev-") or "replace_me" in v.lower(),
+    ),
 ]
 
 
@@ -71,9 +90,18 @@ def _gen_for_key(key: str) -> str:
     return secrets.token_hex(32)
 
 
+def _ensure_base_env() -> None:
+    if BASE_ENV.is_file():
+        return
+    if EXAMPLE_ENV.is_file():
+        BASE_ENV.write_text(EXAMPLE_ENV.read_text(encoding="utf-8"), encoding="utf-8")
+        print(f"Created {BASE_ENV.name} from {EXAMPLE_ENV.name}")
+        return
+    raise SystemExit(f"Missing {BASE_ENV} and {EXAMPLE_ENV}")
+
+
 def main() -> None:
-    if not BASE_ENV.is_file():
-        raise SystemExit(f"Missing {BASE_ENV}")
+    _ensure_base_env()
 
     base_vals = _parse_env_text(BASE_ENV.read_text(encoding="utf-8"))
     overrides: dict[str, str] = {}
@@ -87,9 +115,7 @@ def main() -> None:
         existing_gen = _parse_env_text(GENERATED.read_text(encoding="utf-8"))
 
     # Preserve previously generated strong values unless base file was fixed
-    merged: dict[str, str] = {
-        k: v for k, v in existing_gen.items() if not k.startswith("#")
-    }
+    merged: dict[str, str] = {k: v for k, v in existing_gen.items() if not k.startswith("#")}
     for k, v in overrides.items():
         merged[k] = v
 

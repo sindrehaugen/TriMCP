@@ -15,11 +15,37 @@ from uuid import UUID
 
 import asyncpg
 
+from trimcp.auth import set_namespace_context
 from trimcp.db_utils import scoped_pg_session
 
 log = logging.getLogger("tri-stack-orchestrator.namespace")
 
 _NS_DELETE_CHUNK_SIZE = 1_000
+
+# Tables eligible for id-based chunked delete.
+_CHUNKED_DELETE_TABLES: frozenset[str] = frozenset(
+    {
+        "memories",
+        "kg_nodes",
+        "kg_edges",
+        "pii_redactions",
+        "outbox_events",
+        "saga_execution_log",
+    }
+)
+
+# Tables eligible for single-shot DELETE WHERE namespace_id = $1.
+_SINGLE_SHOT_DELETE_TABLES: frozenset[str] = frozenset(
+    {
+        "contradictions",
+        "resource_quotas",
+        "embedding_migrations",
+        "snapshots",
+        "consolidation_runs",
+        "dead_letter_queue",
+        "bridge_subscriptions",
+    }
+)
 
 
 async def _delete_namespace_rows_chunked(
@@ -27,7 +53,13 @@ async def _delete_namespace_rows_chunked(
     table: str,
     namespace_id: UUID,
 ) -> None:
-    """Delete all rows for namespace_id in 1000-row chunks to limit lock duration."""
+    """Delete all rows for namespace_id in 1000-row chunks to limit lock duration.
+
+    Only tables in _CHUNKED_DELETE_TABLES are accepted to prevent accidental
+    misuse with arbitrary table names.
+    """
+    if table not in _CHUNKED_DELETE_TABLES:
+        raise ValueError(f"Table '{table}' is not in the allowed chunked-delete list")
     while True:
         result = await conn.execute(
             f"""
@@ -45,6 +77,31 @@ async def _delete_namespace_rows_chunked(
         if result == "DELETE 0":
             break
         await asyncio.sleep(0)  # yield event loop between chunks
+
+
+async def _delete_memory_salience_chunked(
+    conn: asyncpg.Connection,
+    namespace_id: UUID,
+) -> None:
+    """Chunked delete for memory_salience, which has composite PK (memory_id, agent_id)."""
+    while True:
+        result = await conn.execute(
+            """
+            WITH to_delete AS (
+                SELECT memory_id, agent_id
+                FROM memory_salience
+                WHERE namespace_id = $1
+                LIMIT $2
+            )
+            DELETE FROM memory_salience
+            WHERE (memory_id, agent_id) IN (SELECT memory_id, agent_id FROM to_delete)
+            """,
+            namespace_id,
+            _NS_DELETE_CHUNK_SIZE,
+        )
+        if result == "DELETE 0":
+            break
+        await asyncio.sleep(0)
 
 
 class NamespaceOrchestrator:
@@ -102,13 +159,14 @@ class NamespaceOrchestrator:
                     row = await conn.fetchrow(
                         """
                         INSERT INTO namespaces (slug, parent_id, metadata)
-                        VALUES ($1, $2, $3)
+                        VALUES ($1, $2, $3::jsonb)
                         RETURNING id, slug, parent_id, created_at, metadata
                         """,
                         payload.create.slug,
                         payload.create.parent_id,
                         payload.create.metadata.model_dump_json(),
                     )
+                    await set_namespace_context(conn, row["id"])
                     from trimcp.event_log import append_event
 
                     await append_event(
@@ -119,9 +177,7 @@ class NamespaceOrchestrator:
                         params={
                             "slug": payload.create.slug,
                             "parent_id": (
-                                str(payload.create.parent_id)
-                                if payload.create.parent_id
-                                else None
+                                str(payload.create.parent_id) if payload.create.parent_id else None
                             ),
                         },
                     )
@@ -129,55 +185,72 @@ class NamespaceOrchestrator:
 
         if payload.command == ManageNamespaceCommand.list:
             async with self.pg_pool.acquire(timeout=10.0) as conn:
-                rows = await conn.fetch(
-                    "SELECT * FROM namespaces ORDER BY created_at DESC"
-                )
+                rows = await conn.fetch("SELECT * FROM namespaces ORDER BY created_at DESC")
                 return {"namespaces": [dict(r) for r in rows]}
 
         if payload.command == ManageNamespaceCommand.update_metadata:
             async with self.scoped_session(payload.namespace_id) as conn:
-                old_meta_json = await conn.fetchval(
-                    "SELECT metadata FROM namespaces WHERE id = $1",
-                    payload.namespace_id,
-                )
-                if not old_meta_json:
-                    raise ValueError(f"Namespace {payload.namespace_id} not found")
+                async with conn.transaction():
+                    old_meta_json = await conn.fetchval(
+                        "SELECT metadata FROM namespaces WHERE id = $1",
+                        payload.namespace_id,
+                    )
+                    if not old_meta_json:
+                        raise ValueError(f"Namespace {payload.namespace_id} not found")
 
-                old_meta = json.loads(old_meta_json)
-                old_meta.update(payload.metadata_patch.model_dump(exclude_none=True))
+                    old_meta = json.loads(old_meta_json)
+                    was_disabled = bool(old_meta.get("disabled", False))
+                    old_meta.update(payload.metadata_patch.model_dump(exclude_none=True))
 
-                from trimcp.models import NamespaceMetadata
+                    from trimcp.models import NamespaceMetadata
 
-                validated = NamespaceMetadata(**old_meta)
+                    validated = NamespaceMetadata(**old_meta)
 
-                await conn.execute(
-                    "UPDATE namespaces SET metadata = $1 WHERE id = $2",
-                    validated.model_dump_json(),
-                    payload.namespace_id,
-                )
+                    await conn.execute(
+                        "UPDATE namespaces SET metadata = $1 WHERE id = $2",
+                        validated.model_dump_json(),
+                        payload.namespace_id,
+                    )
 
-                from trimcp.event_log import append_event
+                    from trimcp.event_log import append_event
 
-                await append_event(
-                    conn=conn,
-                    namespace_id=payload.namespace_id,
-                    agent_id=_agent_id,
-                    event_type="namespace_metadata_updated",
-                    params={
-                        "old_metadata": old_meta_json,
-                        "new_metadata": validated.model_dump_json(),
-                    },
-                )
+                    await append_event(
+                        conn=conn,
+                        namespace_id=payload.namespace_id,
+                        agent_id=_agent_id,
+                        event_type="namespace_metadata_updated",
+                        params={
+                            "old_metadata": old_meta_json,
+                            "new_metadata": validated.model_dump_json(),
+                        },
+                    )
+                    # Soft-disable audit — pairs with NamespaceMetadata.disabled
+                    # (physical deletes cannot append here first due to FK + WORM; see ``delete``).
+                    if validated.disabled and not was_disabled:
+                        await append_event(
+                            conn=conn,
+                            namespace_id=payload.namespace_id,
+                            agent_id=_agent_id,
+                            event_type="namespace_disabled",
+                            params={
+                                "was_disabled": was_disabled,
+                            },
+                        )
                 return {"status": "ok", "metadata": validated.model_dump()}
 
         if payload.command == ManageNamespaceCommand.grant:
             async with self.pg_pool.acquire(timeout=10.0) as conn:
                 async with conn.transaction():
-                    await conn.execute(
+                    result = await conn.execute(
                         "UPDATE namespaces SET parent_id = $1 WHERE id = $2",
                         payload.namespace_id,
                         payload.grantee_namespace_id,
                     )
+                    if result == "UPDATE 0":
+                        raise ValueError(
+                            f"Grantee namespace {payload.grantee_namespace_id} not found"
+                        )
+                    await set_namespace_context(conn, payload.grantee_namespace_id)
                     from trimcp.event_log import append_event
 
                     await append_event(
@@ -198,11 +271,17 @@ class NamespaceOrchestrator:
         if payload.command == ManageNamespaceCommand.revoke:
             async with self.pg_pool.acquire(timeout=10.0) as conn:
                 async with conn.transaction():
-                    await conn.execute(
+                    result = await conn.execute(
                         "UPDATE namespaces SET parent_id = NULL WHERE id = $1 AND parent_id = $2",
                         payload.grantee_namespace_id,
                         payload.namespace_id,
                     )
+                    if result == "UPDATE 0":
+                        raise ValueError(
+                            f"Namespace {payload.grantee_namespace_id} not found "
+                            f"or not granted by {payload.namespace_id}"
+                        )
+                    await set_namespace_context(conn, payload.grantee_namespace_id)
                     from trimcp.event_log import append_event
 
                     await append_event(
@@ -224,14 +303,18 @@ class NamespaceOrchestrator:
             if not payload.namespace_id:
                 raise ValueError("namespace_id required for delete")
 
-            async with self.pg_pool.acquire(timeout=10.0) as evt_chk:
+            # FIX-026: event_log is WORM-immutable — use scoped_session so RLS on
+            # event_log is satisfied; raw acquire() would see 0 rows under RLS.
+            async with self.scoped_session(payload.namespace_id) as evt_chk:
                 audit_rows = await evt_chk.fetchval(
-                    """
-                    SELECT COUNT(*)::bigint FROM event_log WHERE namespace_id = $1
-                    """,
+                    "SELECT COUNT(*)::bigint FROM event_log WHERE namespace_id = $1",
                     payload.namespace_id,
                 )
-            # FIX-026: event_log is WORM-immutable — DELETE forbidden; FK blocks namespace drop while rows exist.
+            # ``event_log.namespace_id`` is NOT NULL and references ``namespaces`` — we cannot
+            # append ``namespace_deletion_requested`` *before* a hard delete without leaving
+            # orphan references; WORM semantics reject purging audited rows here. Operators
+            # should rely on ``metadata.disabled`` (+ ``namespace_disabled`` audit via
+            # ``update_metadata``) unless a separate archival FK story exists.
             if audit_rows and audit_rows > 0:
                 msg = (
                     f"Cannot delete namespace {payload.namespace_id}: event_log retains "
@@ -261,29 +344,29 @@ class NamespaceOrchestrator:
                 async with conn.transaction():
                     # Large tables — chunked to limit per-statement lock duration.
                     # NB: omit event_log (WORM + FK); audited tenants are rejected above.
-                    for table in ("memories", "memory_salience", "kg_nodes"):
+                    for table in (
+                        "memories",
+                        "kg_nodes",
+                        "kg_edges",
+                        "pii_redactions",
+                        "outbox_events",
+                        "saga_execution_log",
+                    ):
                         await _delete_namespace_rows_chunked(conn, table, payload.namespace_id)
 
-                    # KG edges span two namespace columns; use a direct DELETE.
-                    while True:
-                        result = await conn.execute(
-                            """
-                            WITH to_delete AS (
-                                SELECT id FROM kg_edges
-                                WHERE source_namespace_id = $1 OR target_namespace_id = $1
-                                LIMIT $2
-                            )
-                            DELETE FROM kg_edges WHERE id IN (SELECT id FROM to_delete)
-                            """,
-                            payload.namespace_id,
-                            _NS_DELETE_CHUNK_SIZE,
-                        )
-                        if result == "DELETE 0":
-                            break
-                        await asyncio.sleep(0)
+                    # memory_salience has composite PK (memory_id, agent_id) — no id column.
+                    await _delete_memory_salience_chunked(conn, payload.namespace_id)
 
                     # Small tables — single-shot deletes are safe.
-                    for table in ("contradictions", "resource_quotas", "embedding_migrations"):
+                    for table in (
+                        "contradictions",
+                        "resource_quotas",
+                        "embedding_migrations",
+                        "snapshots",
+                        "consolidation_runs",
+                        "dead_letter_queue",
+                        "bridge_subscriptions",
+                    ):
                         await conn.execute(
                             f"DELETE FROM {table} WHERE namespace_id = $1",
                             payload.namespace_id,
@@ -294,7 +377,6 @@ class NamespaceOrchestrator:
                     )
 
             if result == "DELETE 0":
-                raise ValueError(f"Namespace {payload.namespace_id} not found")
                 raise ValueError(f"Namespace {payload.namespace_id} not found")
 
             # Bump global cache generation as a secondary invalidation signal.
@@ -326,23 +408,33 @@ class NamespaceOrchestrator:
 
         async with self.scoped_session(payload.namespace_id) as conn:
             if payload.command == ManageQuotasCommand.set:
-                row = await conn.fetchrow(
-                    """
-                    INSERT INTO resource_quotas (namespace_id, agent_id, resource_type, limit_amount)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (namespace_id, resource_type) WHERE agent_id IS NULL DO UPDATE
-                        SET limit_amount = EXCLUDED.limit_amount,
-                            updated_at = now()
-                    ON CONFLICT (namespace_id, agent_id, resource_type) WHERE agent_id IS NOT NULL DO UPDATE
-                        SET limit_amount = EXCLUDED.limit_amount,
-                            updated_at = now()
-                    RETURNING *
-                    """,
-                    payload.namespace_id,
-                    payload.agent_id,
-                    payload.resource_type,
-                    payload.limit,
-                )
+                if payload.agent_id is None:
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO resource_quotas (namespace_id, agent_id, resource_type, limit_amount)
+                        VALUES ($1, NULL, $2, $3)
+                        ON CONFLICT (namespace_id, resource_type) WHERE agent_id IS NULL
+                        DO UPDATE SET limit_amount = EXCLUDED.limit_amount, updated_at = now()
+                        RETURNING *
+                        """,
+                        payload.namespace_id,
+                        payload.resource_type,
+                        payload.limit,
+                    )
+                else:
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO resource_quotas (namespace_id, agent_id, resource_type, limit_amount)
+                        VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (namespace_id, agent_id, resource_type) WHERE agent_id IS NOT NULL
+                        DO UPDATE SET limit_amount = EXCLUDED.limit_amount, updated_at = now()
+                        RETURNING *
+                        """,
+                        payload.namespace_id,
+                        payload.agent_id,
+                        payload.resource_type,
+                        payload.limit,
+                    )
                 return dict(row)
 
             if payload.command == ManageQuotasCommand.list:

@@ -153,6 +153,23 @@ MERKLE_CHAIN_VALID = Gauge(
     ["namespace_id"],
 )
 
+# Transactional outbox relay (Phase 1.1)
+OUTBOX_DELIVERED_TOTAL = Counter(
+    "trimcp_outbox_delivered_total",
+    "Outbox events successfully published by the relay",
+    ["event_type"],
+)
+OUTBOX_DELIVERY_FAILURES_TOTAL = Counter(
+    "trimcp_outbox_delivery_failures_total",
+    "Outbox delivery attempts that failed (may retry until DLQ)",
+    ["event_type"],
+)
+OUTBOX_DLQ_TOTAL = Counter(
+    "trimcp_outbox_dlq_total",
+    "Outbox events routed to DLQ after exhausting relay attempts",
+    ["event_type"],
+)
+
 # Signing key cache (Item 31)
 SIGNING_KEY_CACHE_HIT_TOTAL = Counter(
     "trimcp_signing_key_cache_hit_total",
@@ -188,6 +205,26 @@ MINIO_ORPHAN_CLEANUP_FAILURES_TOTAL = Counter(
     "trimcp_minio_orphan_cleanup_failures_total",
     "Number of MinIO object deletions that failed during orphan cleanup",
 )
+EXTERNAL_HTTP_ATTEMPTS_TOTAL = Counter(
+    "trimcp_external_http_attempts_total",
+    "Total individual HTTP attempts including all retries",
+    ["operation"],
+)
+EXTERNAL_HTTP_RETRIES_TOTAL = Counter(
+    "trimcp_external_http_retries_total",
+    "Total retry attempts (excludes the initial attempt)",
+    ["operation"],
+)
+EXTERNAL_HTTP_FAILURES_TOTAL = Counter(
+    "trimcp_external_http_failures_total",
+    "Total HTTP calls that raised a client error or exhausted retries",
+    ["operation", "error_type"],
+)
+EXTERNAL_HTTP_LATENCY_SECONDS = Histogram(
+    "trimcp_external_http_latency_seconds",
+    "End-to-end wall-clock latency of HTTP calls including all retry attempts",
+    ["operation"],
+)
 
 # --- Initialization ---
 
@@ -214,9 +251,7 @@ def init_observability() -> None:
         resource = Resource(attributes={"service.name": cfg.TRIMCP_OTEL_SERVICE_NAME})
         provider = TracerProvider(resource=resource)
         processor = BatchSpanProcessor(
-            OTLPSpanExporter(
-                endpoint=f"{cfg.TRIMCP_OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces"
-            )
+            OTLPSpanExporter(endpoint=f"{cfg.TRIMCP_OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces")
         )
         provider.add_span_processor(processor)
         trace.set_tracer_provider(provider)
@@ -494,9 +529,7 @@ class OpenTelemetryTraceMiddleware:
         if scope["type"] == "http" and HAS_OTEL and cfg.TRIMCP_OBSERVABILITY_ENABLED:
             # Build a plain dict from the ASGI scope headers (list of (bytes, bytes))
             headers = {
-                k.decode("ascii", errors="replace").lower(): v.decode(
-                    "ascii", errors="replace"
-                )
+                k.decode("ascii", errors="replace").lower(): v.decode("ascii", errors="replace")
                 for k, v in scope.get("headers", [])
             }
             if "traceparent" in headers:

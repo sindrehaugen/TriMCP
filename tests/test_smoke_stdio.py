@@ -100,9 +100,9 @@ async def test_stdio_smoke_memory():
             assert isinstance(res_data, dict), f"Expected dict, got {type(res_data)}"
             assert res_data.get("status") == "ok", f"Expected status=ok, got {res_data}"
             assert "payload_ref" in res_data, f"Missing payload_ref in {res_data}"
-            assert (
-                len(res_data["payload_ref"]) == 24
-            ), f"Expected 24-char ObjectId, got {res_data['payload_ref']!r}"
+            assert len(res_data["payload_ref"]) == 24, (
+                f"Expected 24-char ObjectId, got {res_data['payload_ref']!r}"
+            )
 
             res_ctx = await asyncio.wait_for(
                 session.call_tool(

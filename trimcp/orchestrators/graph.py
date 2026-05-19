@@ -7,6 +7,7 @@ delegate pattern used by MemoryOrchestrator.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -74,11 +75,14 @@ class GraphOrchestrator:
         if self._graph_traverser is None:
             raise RuntimeError("Engine not connected — call connect() first")
 
+        if not payload.query or not str(payload.query).strip():
+            raise ValueError("graph_search requires a non-empty query")
+
         subgraph = await self._graph_traverser.search(
             payload.query,
             namespace_id=str(payload.namespace_id),
             max_depth=payload.max_depth,
-            anchor_top_k=3,
+            anchor_top_k=payload.anchor_top_k,
             user_id=payload.agent_id,
             private=bool(payload.agent_id),
             as_of=payload.as_of,
@@ -111,8 +115,21 @@ class GraphOrchestrator:
         elif user_id is not None and not _SAFE_ID_RE.match(user_id):
             raise ValueError("Invalid user_id format")
 
-        vector = await self._embed(query)
-        candidate_k = top_k * 4
+        query = query.strip()
+        if not query:
+            return []
+        if len(query) > 1000:
+            raise ValueError("query too long (max 1000 characters)")
+
+        try:
+            vector = await asyncio.wait_for(self._embed(query), timeout=10.0)
+        except asyncio.TimeoutError:
+            log.error("Embedding call timed out for query prefix=%r", query[:80])
+            raise RuntimeError("Embedding service timed out") from None
+        if not isinstance(vector, list) or not vector:
+            raise ValueError("Embedding function returned invalid output (empty or non-list)")
+
+        candidate_k = min(top_k * 4, 500)
 
         async with self.scoped_session(namespace_id or "default") as conn:
             if private:
@@ -134,11 +151,18 @@ class GraphOrchestrator:
             if language_filter:
                 query_params.append(language_filter)
 
+            # NOTE: scope_clause and lang_clause inject ONLY hardcoded string literals
+            # or parameterized placeholders ($N). No user-controlled values are
+            # ever interpolated directly into the SQL string. All user values are
+            # passed as asyncpg positional parameters ($1..$N) in query_params.
+            # Explicit namespace_id filter added as defense-in-depth (Fix 2B).
             sql = f"""
                 WITH vector_candidates AS (
                     SELECT id, embedding <=> $1::vector AS distance
                     FROM memories
-                    WHERE memory_type = 'code_chunk' {scope_clause} {lang_clause}
+                    WHERE memory_type = 'code_chunk'
+                      AND namespace_id = current_setting('trimcp.namespace_id')::uuid
+                      {scope_clause} {lang_clause}
                     ORDER BY distance ASC
                     LIMIT $2
                 ),
@@ -150,7 +174,10 @@ class GraphOrchestrator:
                     SELECT id, ts_rank_cd(content_fts, query) AS ts_score
                     FROM memories,
                     LATERAL websearch_to_tsquery('english', $3) AS query
-                    WHERE content_fts @@ query AND memory_type = 'code_chunk' {scope_clause} {lang_clause}
+                    WHERE content_fts @@ query
+                      AND memory_type = 'code_chunk'
+                      AND namespace_id = current_setting('trimcp.namespace_id')::uuid
+                      {scope_clause} {lang_clause}
                     ORDER BY ts_score DESC
                     LIMIT $2
                 ),
@@ -164,7 +191,7 @@ class GraphOrchestrator:
                      COALESCE(1.0 / (60 + f.rank), 0.0)) AS score
                 FROM vector_ranked v
                 FULL OUTER JOIN fts_ranked f ON v.id = f.id
-                ORDER BY score DESC
+                ORDER BY score DESC, id ASC
                 LIMIT $4
             """
 
@@ -186,15 +213,27 @@ class GraphOrchestrator:
                 memory_ids,
             )
 
-            code_docs = await fetch_code_files_raw_by_ref(
-                self._mongo_db,
-                [normalize_payload_ref(r["payload_ref"]) for r in rows],
-            )
+            try:
+                code_docs = await fetch_code_files_raw_by_ref(
+                    self._mongo_db,
+                    [normalize_payload_ref(r["payload_ref"]) for r in rows],
+                )
+            except Exception as exc:
+                log.warning(
+                    "Code file hydrate failed for %d refs: %s",
+                    len(rows),
+                    type(exc).__name__,
+                )
+                code_docs = {}
 
+            row_by_id = {str(r["id"]): r for r in rows}
             results = []
 
-            for row in rows:
-                mid = str(row["id"])
+            for fused in fused_rows:
+                mid = str(fused["id"])
+                row = row_by_id.get(mid)
+                if row is None:
+                    continue
                 meta = {}
                 raw = row.get("metadata")
                 if raw is not None:
@@ -202,7 +241,10 @@ class GraphOrchestrator:
                         try:
                             meta = json.loads(raw)
                         except json.JSONDecodeError:
-                            pass
+                            log.warning(
+                                "Invalid metadata JSON for memory_id=%s — treating as empty dict",
+                                mid,
+                            )
                     elif isinstance(raw, dict):
                         meta = dict(raw)
 
@@ -229,5 +271,4 @@ class GraphOrchestrator:
                     }
                 )
 
-            results.sort(key=lambda x: x["score"], reverse=True)
-            return results[:top_k]
+            return results

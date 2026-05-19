@@ -48,9 +48,7 @@ async def handle_manage_namespace(
 @require_scope("admin")
 @admin_rate_limit(limit=10, period=60)
 @mcp_handler
-async def handle_verify_memory(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_verify_memory(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """Verify the integrity and causal provenance of a memory."""
     from trimcp.temporal import parse_as_of
 
@@ -62,16 +60,12 @@ async def handle_verify_memory(
 @require_scope("admin")
 @admin_rate_limit(limit=10, period=60)
 @mcp_handler
-async def handle_trigger_consolidation(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_trigger_consolidation(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """[ADMIN] Manually trigger a sleep-consolidation run for a namespace."""
     from trimcp.temporal import parse_as_of
 
     since_dt = (
-        parse_as_of(arguments.get("since_timestamp"))
-        if "since_timestamp" in arguments
-        else None
+        parse_as_of(arguments.get("since_timestamp")) if "since_timestamp" in arguments else None
     )
     res = await engine.trigger_consolidation(
         namespace_id=arguments["namespace_id"], since_timestamp=since_dt
@@ -82,9 +76,7 @@ async def handle_trigger_consolidation(
 @require_scope("admin")
 @admin_rate_limit(limit=10, period=60)
 @mcp_handler
-async def handle_consolidation_status(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_consolidation_status(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """[ADMIN] Check the status of a consolidation run."""
     res = await engine.consolidation_status(run_id=arguments["run_id"])
     return json.dumps(res)
@@ -93,9 +85,7 @@ async def handle_consolidation_status(
 @require_scope("admin")
 @admin_rate_limit(limit=10, period=60)
 @mcp_handler
-async def handle_manage_quotas(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_manage_quotas(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """[ADMIN] Manage resource quotas for a namespace."""
     from trimcp.models import ManageQuotasRequest
 
@@ -108,13 +98,25 @@ async def handle_manage_quotas(
 @admin_rate_limit(limit=10, period=60)
 @mcp_handler
 async def handle_rotate_signing_key(
-    engine: TriStackEngine, arguments: dict[str, Any]
+    engine: TriStackEngine,
+    arguments: dict[str, Any],
+    admin_identity: str | None = None,
 ) -> str:
     """[ADMIN] Generate a new active signing key and retire the current one."""
     from trimcp.signing import rotate_key
 
     async with engine.pg_pool.acquire(timeout=10.0) as conn:
-        new_key_id = await rotate_key(conn)
+        async with conn.transaction():
+            new_key_id = await rotate_key(conn)
+
+    # Signing keys are global (not namespace-scoped), so append_event cannot be
+    # used here until a designated system/security namespace is provisioned.
+    # Log at WARNING level so this always surfaces in operator logs.
+    log.warning(
+        "SECURITY: signing key rotated by %s — new_key_id=%s",
+        admin_identity or "admin",
+        new_key_id,
+    )
     return json.dumps({"status": "ok", "new_key_id": new_key_id})
 
 

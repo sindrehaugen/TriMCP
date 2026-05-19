@@ -11,10 +11,11 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict, Field
 
 from trimcp.config import cfg
+from trimcp.db_utils import scoped_pg_session
+from trimcp.event_log import append_event
 from trimcp.mongo_bulk import fetch_episodes_raw_by_ref, normalize_payload_ref
 from trimcp.providers import LLMProvider, Message
 from trimcp.sanitize import sanitize_llm_payload
-from trimcp.signing import get_active_key, sign_fields
 
 log = logging.getLogger(__name__)
 
@@ -185,9 +186,7 @@ class ConsolidationWorker:
             return None
 
         input_ids = set(mem_ids)
-        bad_ids = [
-            mid for mid in abstraction.supporting_memory_ids if mid not in input_ids
-        ]
+        bad_ids = [mid for mid in abstraction.supporting_memory_ids if mid not in input_ids]
         if bad_ids:
             log.warning(
                 "Cluster %s rejected: hallucinated supporting_memory_ids %s",
@@ -206,6 +205,23 @@ class ConsolidationWorker:
 
         return abstraction
 
+    async def _store_abstraction_in_mongo(self, abstraction_text: str) -> str:
+        """Persist abstraction text to Mongo and return its ObjectId string.
+
+        This gives us a valid ObjectId to use as payload_ref in the memories
+        table, satisfying the ObjectId format constraint (FIX: P0.2).
+        """
+        if self.mongo_client is None:
+            raise RuntimeError(
+                "mongo_client is required for consolidation — "
+                "abstraction text must be stored in Mongo to produce a valid payload_ref."
+            )
+        db = self.mongo_client.memory_archive
+        result = await db.episodes.insert_one(
+            {"raw_data": abstraction_text, "source": "consolidation"}
+        )
+        return str(result.inserted_id)
+
     async def _store_consolidated_memory(
         self,
         conn,
@@ -213,48 +229,38 @@ class ConsolidationWorker:
         namespace_id: UUID,
         abstraction: ConsolidatedAbstraction,
         mem_ids: list,
+        payload_ref: str,
     ):
-        """Store consolidated memory row + event log (inside PG transaction)."""
-        key_id, raw_key = await get_active_key(conn)
+        """Store consolidated memory row + WORM-compliant event log (inside PG transaction).
 
+        Caller must have set namespace context on *conn* (via scoped_pg_session).
+        Uses append_event() exclusively — never writes event_log directly.
+        """
         new_mem_id = await conn.fetchval(
             """
-            INSERT INTO memories (namespace_id, memory_type, assertion_type, payload_ref, derived_from)
-            VALUES ($1, 'semantic', 'abstraction', $2, $3)
+            INSERT INTO memories (
+                namespace_id, memory_type, assertion_type, payload_ref, derived_from
+            )
+            VALUES ($1, 'consolidated', 'fact', $2, $3)
             RETURNING id
             """,
             namespace_id,
-            abstraction.abstraction,
+            payload_ref,
             json.dumps(mem_ids),
         )
 
         event_params = abstraction.model_dump()
         event_params["source_memories"] = mem_ids
+        event_params["consolidated_memory_id"] = str(new_mem_id)
+        event_params["payload_ref"] = payload_ref
 
-        seq = await conn.fetchval(
-            "SELECT COALESCE(MAX(event_seq), 0) + 1 FROM event_log WHERE namespace_id = $1",
-            namespace_id,
-        )
-
-        fields_to_sign = {
-            "namespace_id": str(namespace_id),
-            "agent_id": "system",
-            "event_type": "consolidation_run",
-            "event_seq": seq,
-            "params": event_params,
-        }
-        signature = sign_fields(fields_to_sign, raw_key)
-
-        await conn.execute(
-            """
-            INSERT INTO event_log (namespace_id, agent_id, event_type, event_seq, params, signature, signature_key_id)
-            VALUES ($1, 'system', 'consolidation', $2, $3, $4, $5)
-            """,
-            namespace_id,
-            seq,
-            json.dumps(event_params),
-            signature,
-            key_id,
+        # Use append_event() — the only authorised WORM event writer.
+        await append_event(
+            conn=conn,
+            namespace_id=namespace_id,
+            agent_id="system",
+            event_type="consolidation_run",
+            params=event_params,
         )
 
         return new_mem_id
@@ -337,43 +343,52 @@ class ConsolidationWorker:
     # run_consolidation
     # ------------------------------------------------------------------
 
-    async def run_consolidation(
-        self, namespace_id: UUID, since_timestamp: datetime | None = None
-    ):
+    async def run_consolidation(self, namespace_id: UUID, since_timestamp: datetime | None = None):
         log.info(
             "Running consolidation for namespace %s (since=%s)",
             namespace_id,
             since_timestamp,
         )
 
-        # 1. Create run record + fetch memories
-        async with self.pool.acquire(timeout=10.0) as conn:
-            run_id = await conn.fetchval(
-                "INSERT INTO consolidation_runs (namespace_id) VALUES ($1) RETURNING id",
-                namespace_id,
-            )
-            try:
-                sql = "SELECT id, payload_ref, embedding::text FROM memories WHERE namespace_id = $1 AND memory_type = 'episodic'"
+        # 1. Create run record + fetch episodic fact memories via scoped session.
+        #    scoped_pg_session enforces RLS namespace isolation.
+        run_id: Any = None
+        memories: list = []
+        try:
+            async with scoped_pg_session(self.pool, namespace_id) as conn:
+                run_id = await conn.fetchval(
+                    "INSERT INTO consolidation_runs (namespace_id) VALUES ($1) RETURNING id",
+                    namespace_id,
+                )
+                sql = (
+                    "SELECT id, payload_ref, embedding::text FROM memories "
+                    "WHERE namespace_id = $1 AND memory_type = 'episodic' "
+                    "AND assertion_type = 'fact' AND valid_to IS NULL"
+                )
                 args: list = [namespace_id]
                 if since_timestamp:
                     sql += " AND created_at >= $2"
                     args.append(since_timestamp)
                 sql += " LIMIT 1000"
                 memories = await conn.fetch(sql, *args)
-            except Exception as e:
-                log.exception("Failed to fetch memories for consolidation")
-                await conn.execute(
-                    "UPDATE consolidation_runs SET status = 'failed', error_message = $2, completed_at = now() WHERE id = $1",
-                    run_id,
-                    str(e),
-                )
-                raise
+        except Exception as e:
+            log.exception("Failed to create consolidation run or fetch memories")
+            if run_id is not None:
+                async with scoped_pg_session(self.pool, namespace_id) as conn:
+                    await conn.execute(
+                        "UPDATE consolidation_runs SET status = 'failed', "
+                        "error_message = $2, completed_at = now() WHERE id = $1",
+                        run_id,
+                        str(e),
+                    )
+            raise
 
         if not memories:
             log.info("No memories found to consolidate.")
-            async with self.pool.acquire(timeout=10.0) as conn:
+            async with scoped_pg_session(self.pool, namespace_id) as conn:
                 await conn.execute(
-                    "UPDATE consolidation_runs SET status = 'completed', completed_at = now() WHERE id = $1",
+                    "UPDATE consolidation_runs SET status = 'completed', "
+                    "completed_at = now() WHERE id = $1",
                     run_id,
                 )
             return
@@ -384,7 +399,7 @@ class ConsolidationWorker:
 
             if not clusters:
                 log.info("Not enough embeddings to cluster.")
-                async with self.pool.acquire(timeout=10.0) as conn:
+                async with scoped_pg_session(self.pool, namespace_id) as conn:
                     await conn.execute(
                         "UPDATE consolidation_runs SET status = 'completed', completed_at = now() WHERE id = $1",
                         run_id,
@@ -393,42 +408,47 @@ class ConsolidationWorker:
 
             abstractions_created = 0
 
-            # 3. Per-cluster: LLM → validate → store
+            # 3. Per-cluster: Mongo insert → LLM → validate → PG store + event log
             for label, cluster_mems in clusters.items():
                 mem_ids = [str(m["id"]) for m in cluster_mems]
 
-                abstraction = await self._call_consolidation_llm(
-                    cluster_mems, mem_ids, label
-                )
+                abstraction = await self._call_consolidation_llm(cluster_mems, mem_ids, label)
                 if abstraction is None:
                     continue
 
                 try:
-                    async with self.pool.acquire(timeout=10.0) as conn:
-                        async with conn.transaction():
-                            await self._store_consolidated_memory(
-                                conn,
-                                namespace_id=namespace_id,
-                                abstraction=abstraction,
-                                mem_ids=mem_ids,
-                            )
-                            await self._update_kg(
-                                conn,
-                                namespace_id=namespace_id,
-                                abstraction=abstraction,
-                                mem_ids=mem_ids,
-                            )
+                    # Store abstraction text in Mongo FIRST to get a valid ObjectId
+                    # for payload_ref. This must happen outside the PG transaction
+                    # because Motor is async and the PG transaction should be short.
+                    payload_ref = await self._store_abstraction_in_mongo(abstraction.abstraction)
+
+                    # PG transaction: memory row + WORM event log via append_event().
+                    async with scoped_pg_session(self.pool, namespace_id) as conn:
+                        await self._store_consolidated_memory(
+                            conn,
+                            namespace_id=namespace_id,
+                            abstraction=abstraction,
+                            mem_ids=mem_ids,
+                            payload_ref=payload_ref,
+                        )
+                        await self._update_kg(
+                            conn,
+                            namespace_id=namespace_id,
+                            abstraction=abstraction,
+                            mem_ids=mem_ids,
+                        )
                     abstractions_created += 1
                 except Exception as e:
                     log.error("Database error storing cluster %s: %s", label, e)
                     continue
 
-            # 4. Update run status
-            async with self.pool.acquire(timeout=10.0) as conn:
+            # 4. Update run status via scoped session.
+            async with scoped_pg_session(self.pool, namespace_id) as conn:
                 await conn.execute(
                     """
                     UPDATE consolidation_runs
-                    SET status = 'completed', completed_at = now(), events_processed = $2, clusters_formed = $3, abstractions_created = $4
+                    SET status = 'completed', completed_at = now(),
+                        events_processed = $2, clusters_formed = $3, abstractions_created = $4
                     WHERE id = $1
                     """,
                     run_id,
@@ -439,10 +459,12 @@ class ConsolidationWorker:
 
         except Exception as e:
             log.exception("Consolidation failed")
-            async with self.pool.acquire(timeout=10.0) as conn:
-                await conn.execute(
-                    "UPDATE consolidation_runs SET status = 'failed', error_message = $2, completed_at = now() WHERE id = $1",
-                    run_id,
-                    str(e),
-                )
+            if run_id is not None:
+                async with scoped_pg_session(self.pool, namespace_id) as conn:
+                    await conn.execute(
+                        "UPDATE consolidation_runs SET status = 'failed', "
+                        "error_message = $2, completed_at = now() WHERE id = $1",
+                        run_id,
+                        str(e),
+                    )
             raise

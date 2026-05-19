@@ -44,9 +44,9 @@ class TestZeroAndNegativeDelta:
         """updated_at 1 second in the future (clock skew) → clamped to 0."""
         future = _NOW + timedelta(seconds=1)
         score = compute_decayed_score(0.9, future, half_life_days=30.0, now=_NOW)
-        assert score == pytest.approx(
-            0.9
-        ), "Clock-skewed future timestamp must return s_last, not a boosted score"
+        assert score == pytest.approx(0.9), (
+            "Clock-skewed future timestamp must return s_last, not a boosted score"
+        )
 
     def test_negative_delta_large_skew_returns_unmodified(self):
         """updated_at 7 days in the future → still returns s_last."""
@@ -147,9 +147,5 @@ class TestOverflowGuard:
             (0.5, _NOW + timedelta(days=365), 30.0),  # clock skew (future ts)
         ]
         for s_last, updated_at, half_life in cases:
-            score = compute_decayed_score(
-                s_last, updated_at, half_life_days=half_life, now=_NOW
-            )
-            assert (
-                score >= 0.0
-            ), f"Negative score for inputs ({s_last}, {updated_at}, {half_life})"
+            score = compute_decayed_score(s_last, updated_at, half_life_days=half_life, now=_NOW)
+            assert score >= 0.0, f"Negative score for inputs ({s_last}, {updated_at}, {half_life})"

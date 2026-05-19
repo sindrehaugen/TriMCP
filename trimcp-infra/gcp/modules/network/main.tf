@@ -40,11 +40,11 @@ resource "google_compute_firewall" "allow_internal" {
   }
   allow {
     protocol = "tcp"
-    ports    = ["0-65535"]
+    ports    = ["443", "5432", "6379", "27017"]
   }
   allow {
     protocol = "udp"
-    ports    = ["0-65535"]
+    ports    = ["53"]
   }
   source_ranges = [var.vpc_cidr]
   priority      = 1000
@@ -78,11 +78,7 @@ resource "google_service_account" "worker" {
   display_name = "TriMCP worker / Cloud Run"
 }
 
-resource "google_project_iam_member" "worker_secret_accessor" {
-  project = var.project_id
-  role    = "roles/secretmanager.secretAccessor"
-  member  = "serviceAccount:${google_service_account.worker.email}"
-}
+# Secret-level accessor grants live in cloudsql/memorystore/mongo-secret modules.
 
 output "network_id" {
   value = google_compute_network.vpc.id

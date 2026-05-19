@@ -92,15 +92,11 @@ def validate_base_url(
         raise LLMProviderError(f"SSRF guard: invalid base_url {base_url!r}")
 
     if not allow_http and parsed.scheme != "https":
-        raise LLMProviderError(
-            f"SSRF guard: base_url must use HTTPS, got {parsed.scheme!r}"
-        )
+        raise LLMProviderError(f"SSRF guard: base_url must use HTTPS, got {parsed.scheme!r}")
 
     hostname = parsed.hostname
     if not hostname:
-        raise LLMProviderError(
-            f"SSRF guard: could not extract hostname from {base_url!r}"
-        )
+        raise LLMProviderError(f"SSRF guard: could not extract hostname from {base_url!r}")
 
     # Resolve hostname to IP addresses (synchronous, fast for typical hostnames).
     try:
@@ -117,8 +113,13 @@ def validate_base_url(
         except ValueError:
             continue  # not a recognised IP family, skip
 
-        if allow_loopback:
-            continue  # caller takes responsibility for local access
+        if ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            raise LLMProviderError(
+                f"SSRF guard: {base_url!r} resolves to non-public IP {ip_str} (hostname={hostname!r})"
+            )
+
+        if allow_loopback and (ip.is_loopback or ip.is_private):
+            continue  # local cognitive sidecar / docker network only
 
         if ip.is_private:
             raise LLMProviderError(
@@ -161,15 +162,11 @@ async def validate_base_url_async(
         raise LLMProviderError(f"SSRF guard: invalid base_url {base_url!r}")
 
     if not allow_http and parsed.scheme != "https":
-        raise LLMProviderError(
-            f"SSRF guard: base_url must use HTTPS, got {parsed.scheme!r}"
-        )
+        raise LLMProviderError(f"SSRF guard: base_url must use HTTPS, got {parsed.scheme!r}")
 
     hostname = parsed.hostname
     if not hostname:
-        raise LLMProviderError(
-            f"SSRF guard: could not extract hostname from {base_url!r}"
-        )
+        raise LLMProviderError(f"SSRF guard: could not extract hostname from {base_url!r}")
 
     loop = asyncio.get_running_loop()
     try:
@@ -523,9 +520,7 @@ class CircuitBreaker:
             CircuitBreakerState.HALF_OPEN: 1,
             CircuitBreakerState.OPEN: 2,
         }
-        CIRCUIT_BREAKER_STATE.labels(provider=provider_label).set(
-            state_map.get(self._state, 0)
-        )
+        CIRCUIT_BREAKER_STATE.labels(provider=provider_label).set(state_map.get(self._state, 0))
         CIRCUIT_BREAKER_FAILURES.labels(provider=provider_label).set(self._failure_count)
 
     async def record_success(self) -> None:
@@ -676,16 +671,18 @@ class LLMProvider(ABC):
                 exc = retry_state.outcome.exception()
             # Honour Retry-After from rate-limit responses (P2/FIX-058): widen jitter ceiling,
             # still capped by max_delay_ms so MCP callers cannot stall indefinitely.
-            if isinstance(exc, LLMRateLimitError) and exc.retry_after is not None and exc.retry_after > 0:
+            if (
+                isinstance(exc, LLMRateLimitError)
+                and exc.retry_after is not None
+                and exc.retry_after > 0
+            ):
                 hint_ms = min(rp.max_delay_ms, int(exc.retry_after * 1000))
                 cap_ms = max(cap_ms, hint_ms)
             # Full jitter in [0, cap_ms] spreads retries across workers (vs fixed backoff).
             delay_ms = max(1, int(random.uniform(0, max(1, cap_ms))))
             return delay_ms / 1000.0
 
-        stop = stop_after_attempt(rp.max_retries + 1) | stop_after_delay(
-            rp.max_total_ms / 1000.0
-        )
+        stop = stop_after_attempt(rp.max_retries + 1) | stop_after_delay(rp.max_total_ms / 1000.0)
         retry_predicate = retry_if_exception(
             lambda exc: isinstance(exc, Exception) and rp.is_retryable(exc)
         )

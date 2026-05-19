@@ -77,6 +77,6 @@ Note: In production environments, admin tools should be restricted to authorized
 
 **v1.0 runtime** (temporal engine, A2A protocol, cognitive / background workers, Mermaid diagrams): [architecture-v1.md](./architecture-v1.md).
 
-Phase **0.1** / **0.2** (multi-tenant model, signing): [architecture-phase-0-1-0-2.md](./architecture-phase-0-1-0-2.md).
+Phase **0.1** / **0.2** (multi-tenant model, signing): [multi_tenancy.md](./multi_tenancy.md) and [signing.md](./signing.md).
 
 **Docker Compose** defaults: [deploy/README.md](../deploy/README.md).

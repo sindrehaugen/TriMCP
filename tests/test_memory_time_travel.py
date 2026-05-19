@@ -144,16 +144,12 @@ class TemporalGraphFakeConn:
         # Current-state batch edges: (labels[])
         if "historical_nodes" in q and "<=>" in q and len(args) >= 4:
             as_of = args[3]
-        elif (
-            "recursive traversal" in q or "WITH RECURSIVE" in q or "with recursive" in q
-        ):
+        elif "recursive traversal" in q or "WITH RECURSIVE" in q or "with recursive" in q:
             # Recursive CTE — param order depends on time-travel vs current-state
             if len(args) >= 4 and isinstance(args[3], datetime):
                 as_of = args[3]  # time-travel: (label, depth, ns_id, as_of, ...)
             elif self._events:
-                as_of = self._events[
-                    -1
-                ].occurred_at  # current-state: (label, depth, max_nodes)
+                as_of = self._events[-1].occurred_at  # current-state: (label, depth, max_nodes)
             else:
                 as_of = T2
         elif "historical_edges" in q and any("$3" in query for _ in [1]):
@@ -165,9 +161,7 @@ class TemporalGraphFakeConn:
         else:
             as_of = args[-1] if args else T2
 
-        assert isinstance(
-            as_of, datetime
-        ), f"as_of must be datetime, got {type(as_of)}: {as_of}"
+        assert isinstance(as_of, datetime), f"as_of must be datetime, got {type(as_of)}: {as_of}"
 
         active = _active_store_rows(self._events, NS_ID, as_of)
 
@@ -212,10 +206,7 @@ class TemporalGraphFakeConn:
             rows = []
             for ev in active.values():
                 for tr in ev.triplets:
-                    if (
-                        tr["subject_label"] == start_label
-                        or tr["object_label"] == start_label
-                    ):
+                    if tr["subject_label"] == start_label or tr["object_label"] == start_label:
                         for lab in (tr["subject_label"], tr["object_label"]):
                             if lab not in seen:
                                 seen.add(lab)
@@ -295,9 +286,7 @@ class TemporalGraphFakeConn:
                 )
             return out
 
-        raise AssertionError(
-            f"Unexpected temporal fetch query: {query!r} args={args!r}"
-        )
+        raise AssertionError(f"Unexpected temporal fetch query: {query!r} args={args!r}")
 
 
 async def _noop_hydrate(*_a: object, **_k: object) -> list:
@@ -355,9 +344,7 @@ def time_travel_traverser(monkeypatch: pytest.MonkeyPatch):
         probe_holder["q"] = text
         return [0.0, 0.0, float(len(text) % 7)]
 
-    t = GraphRAGTraverser(
-        pg_pool=pool, mongo_client=MagicClient(), embedding_fn=fake_embed
-    )
+    t = GraphRAGTraverser(pg_pool=pool, mongo_client=MagicClient(), embedding_fn=fake_embed)
 
     monkeypatch.setattr(t, "_hydrate_sources", _noop_hydrate)
     return t, conn, events
@@ -439,9 +426,7 @@ async def test_pure_reconstruction_matches_known_historical_snapshots() -> None:
         ),
     ]
 
-    snap_t1_5 = _active_store_rows(
-        events, NS_ID, datetime(2026, 1, 1, 10, 20, 0, tzinfo=TZ_UTC)
-    )
+    snap_t1_5 = _active_store_rows(events, NS_ID, datetime(2026, 1, 1, 10, 20, 0, tzinfo=TZ_UTC))
     assert MEM_A in snap_t1_5 and MEM_B not in snap_t1_5
 
     snap_after_forget = _active_store_rows(events, NS_ID, T3)
@@ -479,9 +464,7 @@ async def test_as_of_after_forget_yields_no_anchor(
     async def fake_embed(_text: str) -> list[float]:
         return [0.0]
 
-    t = GraphRAGTraverser(
-        pg_pool=pool, mongo_client=MagicClient(), embedding_fn=fake_embed
-    )
+    t = GraphRAGTraverser(pg_pool=pool, mongo_client=MagicClient(), embedding_fn=fake_embed)
     monkeypatch.setattr(t, "_hydrate_sources", _noop_hydrate)
 
     sg = await t.search(
@@ -601,7 +584,7 @@ def test_enforce_lookback_boundary_rejects_old_timestamp(
     from trimcp.temporal import parse_as_of
 
     # 2026-03-01 is 65 days before the pinned wall clock (2026-05-05) → exceeds 30-day limit.
-    with pytest.raises(ValueError, match="exceeds maximum temporal lookback"):
+    with pytest.raises(ValueError, match="outside the allowed lookback window"):
         parse_as_of("2026-03-01T00:00:00Z")
 
 
@@ -625,7 +608,7 @@ def test_enforce_lookback_boundary_one_second_before_cutoff_rejected(
     from trimcp.temporal import parse_as_of
 
     # 2026-04-05T11:59:59Z is 1 second before cutoff → should be rejected.
-    with pytest.raises(ValueError, match="exceeds maximum temporal lookback"):
+    with pytest.raises(ValueError, match="outside the allowed lookback window"):
         parse_as_of("2026-04-05T11:59:59Z")
 
 
@@ -659,5 +642,5 @@ def test_enforce_lookback_boundary_default_rejects_excessive(
     from trimcp.temporal import parse_as_of
 
     # 2026-01-26 is 99 days before pinned clock (2026-05-05) → exceeds 90-day limit.
-    with pytest.raises(ValueError, match="exceeds maximum temporal lookback"):
+    with pytest.raises(ValueError, match="outside the allowed lookback window"):
         parse_as_of("2026-01-26T00:00:00Z")

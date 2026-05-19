@@ -6,6 +6,7 @@ can be tested and maintained independently of the orchestrator's lifecycle.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -19,9 +20,13 @@ from pypika.enums import JoinType
 from pypika.terms import Term
 
 from trimcp.db_utils import scoped_pg_session
+from trimcp.embeddings import VECTOR_DIM
 from trimcp.models import _MAX_TOP_K, NamespaceCognitiveConfig
 
 log = logging.getLogger("tri-stack-semantic-search")
+
+_EMBED_TIMEOUT_SECONDS: float = 10.0
+_MAX_RAW_DATA_CHARS: int = 16_000
 
 
 class RawExpression(Term):
@@ -33,6 +38,12 @@ class RawExpression(Term):
 
     def get_sql(self, **kwargs) -> str:
         return self.sql
+
+
+# SAFETY: RawExpression interpolates only Parameter($N) objects — never raw
+# user-controlled strings. All values reach Postgres via bind parameters in
+# conn.fetch(sql, *builder.get_params()). Adding raw string interpolation here
+# would introduce SQL injection.
 
 
 class RawTable(Table):
@@ -61,6 +72,29 @@ class AsyncpgQueryBuilder:
 
     def get_params(self) -> list:
         return self._params
+
+
+async def _fire_reinforcement(
+    pool: asyncpg.Pool,
+    results: list[dict],
+    agent_id: str,
+    namespace_id: str,
+    delta: float,
+) -> None:
+    from trimcp.salience import reinforce
+
+    try:
+        async with scoped_pg_session(pool, namespace_id) as _conn:
+            for res in results:
+                await reinforce(
+                    _conn,
+                    str(res["memory_id"]),
+                    agent_id,
+                    namespace_id,
+                    delta=delta,
+                )
+    except Exception:
+        log.warning("Reinforcement background task failed (non-fatal)")
 
 
 async def semantic_search(
@@ -110,7 +144,9 @@ async def semantic_search(
             if "temporal_retention_days" in meta:
                 temporal_retention_days = meta["temporal_retention_days"]
 
-        vector = await embedding_fn(query)
+        vector = await asyncio.wait_for(embedding_fn(query), timeout=_EMBED_TIMEOUT_SECONDS)
+        if len(vector) != VECTOR_DIM:
+            raise ValueError(f"embedding_fn returned dim {len(vector)}, expected {VECTOR_DIM}")
 
         builder = AsyncpgQueryBuilder()
         p_vector = builder.param(json.dumps(vector))
@@ -143,12 +179,8 @@ async def semantic_search(
                 m.payload_ref,
                 m.id.as_("memory_id"),
                 distance_expr.as_("distance"),
-                RawExpression("COALESCE(s.salience_score, 1.0)").as_(
-                    "raw_salience"
-                ),
-                RawExpression("COALESCE(s.updated_at, m.created_at)").as_(
-                    "last_updated"
-                ),
+                RawExpression("COALESCE(s.salience_score, 1.0)").as_("raw_salience"),
+                RawExpression("COALESCE(s.updated_at, m.created_at)").as_("last_updated"),
             )
             .where(m.namespace_id == p_namespace_id)
             .where(m.memory_type == "episodic")
@@ -159,22 +191,14 @@ async def semantic_search(
             Query.from_(m)
             .left_join(s)  # type: ignore[arg-type]
             .on((m.id == s.memory_id) & (s.agent_id == p_agent_id))
-            .join(
-                RawTable(
-                    f"LATERAL websearch_to_tsquery('english', {p_query}) AS query"
-                )
-            )
+            .join(RawTable(f"LATERAL websearch_to_tsquery('english', {p_query}) AS query"))
             .on(RawExpression("true"))  # type: ignore[arg-type]
             .select(
                 m.payload_ref,
                 m.id.as_("memory_id"),
                 RawExpression("ts_rank_cd(m.content_fts, query)").as_("ts_score"),
-                RawExpression("COALESCE(s.salience_score, 1.0)").as_(
-                    "raw_salience"
-                ),
-                RawExpression("COALESCE(s.updated_at, m.created_at)").as_(
-                    "last_updated"
-                ),
+                RawExpression("COALESCE(s.salience_score, 1.0)").as_("raw_salience"),
+                RawExpression("COALESCE(s.updated_at, m.created_at)").as_("last_updated"),
             )
             .where(m.namespace_id == p_namespace_id)
             .where(RawExpression("m.content_fts @@ query"))
@@ -197,17 +221,15 @@ async def semantic_search(
             fts_cand_query = fts_cand_query.where(as_of_expr)
 
         v_cand_query = v_cand_query.orderby(Field("distance")).limit(p_candidate_k)  # type: ignore[arg-type]
-        fts_cand_query = fts_cand_query.orderby(
-            Field("ts_score"), order=Order.desc
-        ).limit(p_candidate_k)  # type: ignore[arg-type]
+        fts_cand_query = fts_cand_query.orderby(Field("ts_score"), order=Order.desc).limit(
+            p_candidate_k
+        )  # type: ignore[arg-type]
 
         vector_candidates = v_cand_query.as_("vector_candidates")
         vector_ranked = (
             Query.from_(Table("vector_candidates")).select(
                 RawExpression("*"),
-                RawExpression("ROW_NUMBER() OVER (ORDER BY distance ASC)").as_(
-                    "rank"
-                ),
+                RawExpression("ROW_NUMBER() OVER (ORDER BY distance ASC)").as_("rank"),
             )
         ).as_("vector_ranked")
 
@@ -215,9 +237,7 @@ async def semantic_search(
         fts_ranked = (
             Query.from_(Table("fts_candidates")).select(
                 RawExpression("*"),
-                RawExpression("ROW_NUMBER() OVER (ORDER BY ts_score DESC)").as_(
-                    "rank"
-                ),
+                RawExpression("ROW_NUMBER() OVER (ORDER BY ts_score DESC)").as_("rank"),
             )
         ).as_("fts_ranked")
 
@@ -235,14 +255,10 @@ async def semantic_search(
             .with_(fts_ranked, "fts_ranked")
             .from_(v_tbl)
             .join(f_tbl, JoinType.full_outer)
-            .on(v_tbl.payload_ref == f_tbl.payload_ref)
+            .on(v_tbl.memory_id == f_tbl.memory_id)
             .select(
-                RawExpression("COALESCE(v.payload_ref, f.payload_ref)").as_(
-                    "payload_ref"
-                ),
-                RawExpression("COALESCE(v.memory_id, f.memory_id)").as_(
-                    "memory_id"
-                ),
+                RawExpression("COALESCE(v.payload_ref, f.payload_ref)").as_("payload_ref"),
+                RawExpression("COALESCE(v.memory_id, f.memory_id)").as_("memory_id"),
                 RawExpression(
                     f"(COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + f.rank), 0.0))"
                     f" * ({p_alpha} + (1.0 - {p_alpha}) "
@@ -251,12 +267,11 @@ async def semantic_search(
                 ).as_("final_score"),
             )
             .orderby(Field("final_score"), order=Order.desc)
+            .orderby(RawExpression("COALESCE(v.memory_id, f.memory_id)"))
             .limit(p_need)  # type: ignore[arg-type]
         )
 
         rows = await conn.fetch(final_query.get_sql(), *builder.get_params())
-
-        from trimcp.salience import reinforce
 
         top_results = [
             {
@@ -266,27 +281,48 @@ async def semantic_search(
             }
             for row in rows
         ]
+        reinforcement_delta = cognitive_config.reinforcement_delta
 
-        for res in top_results:
-            await reinforce(
-                conn,
-                str(res["memory_id"]),
-                agent_id,
-                namespace_id,
-                delta=cognitive_config.reinforcement_delta,
-            )
+    asyncio.create_task(
+        _fire_reinforcement(
+            pg_pool,
+            top_results,
+            agent_id,
+            namespace_id,
+            reinforcement_delta,
+        )
+    )
 
     db = mongo_client.memory_archive
+    oid_map: dict[str, ObjectId] = {}
+    for res in top_results:
+        ref = str(res.get("payload_ref") or "")
+        try:
+            oid_map[ref] = ObjectId(ref)
+        except Exception:
+            pass
+
+    docs: dict[str, Any] = {}
+    if oid_map:
+        async for doc in db.episodes.find(
+            {"_id": {"$in": list(oid_map.values())}},
+            {"raw_data": 1},
+        ):
+            docs[str(doc["_id"])] = doc
+
     results = []
     for res in top_results:
-        doc = await db.episodes.find_one({"_id": ObjectId(res["payload_ref"])})
-        if doc:
-            results.append(
-                {
-                    "memory_id": res["memory_id"],
-                    "payload_ref": res["payload_ref"],
-                    "score": res["score"],
-                    "raw_data": doc.get("raw_data"),
-                }
-            )
+        ref = str(res.get("payload_ref") or "")
+        doc = docs.get(ref)
+        raw = (doc.get("raw_data") or "") if doc else ""
+        results.append(
+            {
+                "memory_id": res["memory_id"],
+                "payload_ref": ref,
+                "score": res["score"],
+                "raw_data": (raw[:_MAX_RAW_DATA_CHARS] if isinstance(raw, str) else raw)
+                if doc
+                else None,
+            }
+        )
     return results

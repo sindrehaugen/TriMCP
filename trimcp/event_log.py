@@ -45,7 +45,14 @@ Usage
             namespace_id=ns_id,
             agent_id="retrieval-agent",
             event_type="store_memory",
-            params={"memory_id": str(memory_id), "assertion_type": "fact"},
+            params={
+                "saga_id": str(uuid.uuid4()),
+                "memory_id": str(memory_id),
+                "payload_ref": "507f1f77bcf86cd799439011",
+                "assertion_type": "fact",
+                "entities": [],
+                "triplets": [],
+            },
         )
         # result.event_id, result.event_seq, result.occurred_at are now set.
 """
@@ -55,6 +62,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -62,7 +70,13 @@ from typing import Any, Final
 
 import asyncpg
 
-from trimcp.event_types import VALID_EVENT_TYPES, EventType
+from trimcp.config import cfg
+from trimcp.event_types import (
+    EVENT_FORBIDDEN_PARAM_KEYS,
+    EVENT_REQUIRED_PARAM_KEYS,
+    VALID_EVENT_TYPES,
+    EventType,
+)
 from trimcp.signing import SigningError, get_active_key, sign_fields
 
 log = logging.getLogger(__name__)
@@ -74,6 +88,17 @@ _AGENT_ID_MAX_LEN: Final[int] = 128
 # The first event in a namespace uses this as its "previous chain hash"
 # input rather than fetching a non-existent prior row.
 _GENESIS_SENTINEL: Final[bytes] = b"\x00" * 32
+
+# Plain identifiers only (tables in public schema probes) — no quoting of schema-qualified names.
+_IDENTIFIER_RE: Final[re.Pattern[str]] = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,62}$")
+
+
+def _validate_identifier(name: str) -> str:
+    """Return *name* if it matches safe SQL identifier rules; else raise ``ValueError``."""
+    if not _IDENTIFIER_RE.fullmatch(name):
+        raise ValueError(f"Invalid SQL identifier: {name!r}")
+    return name
+
 
 # ---------------------------------------------------------------------------
 # Public exceptions
@@ -127,7 +152,10 @@ __all__ = [
     "verify_worm_on_table",
     "_WORM_TABLES",
     "verify_rls_enforcement",
-    "_RLS_TABLES",
+    "verify_rls_catalog_consistency",
+    "EXPECTED_TENANT_RLS_TABLES",
+    "EXPECTED_SPECIAL_RLS_TABLES",
+    "EXPECTED_GLOBAL_TABLES",
     "EventLogError",
     "InvalidEventTypeError",
     "EventLogTimestampError",
@@ -147,7 +175,6 @@ __all__ = [
 _WORM_TABLES: tuple[str, ...] = (
     "event_log",
     "pii_redactions",
-    "memory_salience",
 )
 
 
@@ -176,8 +203,8 @@ async def verify_worm_on_table(conn: asyncpg.Connection, table_name: str) -> Non
     asyncpg.PostgresError
         Propagated for unexpected DB errors (e.g. table missing).
     """
-    import os
-    if os.getenv("TRIMCP_BYPASS_WORM", "").strip().lower() in ("1", "true", "yes", "on"):
+    table_name = _validate_identifier(table_name)
+    if cfg.TRIMCP_BYPASS_WORM:
         log.warning("[worm-probe] Bypassing WORM verification for table %s", table_name)
         return
 
@@ -208,34 +235,61 @@ async def verify_worm_on_table(conn: asyncpg.Connection, table_name: str) -> Non
 
 
 async def verify_worm_enforcement(conn: asyncpg.Connection) -> None:
-    """Backward-compat wrapper — probes only ``event_log``."""
-    await verify_worm_on_table(conn, "event_log")
+    """Probe WORM enforcement on every table listed in ``_WORM_TABLES``."""
+    for worm_table in _WORM_TABLES:
+        await verify_worm_on_table(conn, worm_table)
 
 
 # ---------------------------------------------------------------------------
 # RLS enforcement probe
 # ---------------------------------------------------------------------------
 
-# Tables protected by the ``namespace_isolation_policy`` RLS policy.
-_RLS_TABLES: tuple[str, ...] = (
-    "memories",
-    "memory_embeddings",
-    "consolidation_runs",
-    "contradictions",
-    "snapshots",
-    "forks",
-    "event_log",
-    "pii_redactions",
-    "memory_salience",
-    "resource_quotas",
-    "kg_nodes",
-    "kg_edges",
-    "outbox_events",
-)
+# ---------------------------------------------------------------------------
+# RLS intent declarations — authoritative source for catalog verification.
+# These are validated against pg_class / pg_policies at startup via
+# verify_rls_catalog_consistency(). Do not add entries here without
+# confirming the table exists and has RLS + namespace_id in schema.sql.
+# ---------------------------------------------------------------------------
+
+EXPECTED_TENANT_RLS_TABLES: dict[str, str] = {
+    # table_name: namespace ownership column
+    "memories": "namespace_id",
+    "kg_nodes": "namespace_id",
+    "kg_edges": "namespace_id",
+    "pii_redactions": "namespace_id",
+    "memory_salience": "namespace_id",
+    "contradictions": "namespace_id",
+    "snapshots": "namespace_id",
+    "event_log": "namespace_id",
+    "resource_quotas": "namespace_id",
+    "outbox_events": "namespace_id",
+    "saga_execution_log": "namespace_id",
+    "consolidation_runs": "namespace_id",
+    "bridge_subscriptions": "namespace_id",
+    "dead_letter_queue": "namespace_id",
+    "embedding_migrations": "namespace_id",
+    "memory_embeddings": "namespace_id",
+}
+
+EXPECTED_SPECIAL_RLS_TABLES: dict[str, tuple[str, ...]] = {
+    # table_name: all namespace ownership columns (multi-namespace ownership)
+    "a2a_grants": ("owner_namespace_id", "target_namespace_id"),
+}
+
+EXPECTED_GLOBAL_TABLES: set[str] = {
+    # Tables intentionally without RLS — shared across all tenants.
+    "embedding_models",
+    "kg_node_embeddings",
+}
 
 
 async def verify_rls_enforcement(conn: asyncpg.Connection, table_name: str) -> None:
     """
+    Legacy runtime smoke test: unscoped ``SELECT count(*)`` expects zero rows.
+
+    Empty tables return zero rows even when RLS is disabled, so this is weak as a guard.
+    Prefer :func:`verify_rls_catalog_consistency` for authoritative policy semantics.
+
     Validate that RLS is active on *table_name* by attempting a ``SELECT``
     without a scoped ``trimcp.namespace_id``.
 
@@ -260,8 +314,8 @@ async def verify_rls_enforcement(conn: asyncpg.Connection, table_name: str) -> N
     asyncpg.PostgresError
         Propagated for unexpected DB errors (e.g. table missing).
     """
-    import os
-    if os.getenv("TRIMCP_BYPASS_RLS", "").strip().lower() in ("1", "true", "yes", "on"):
+    table_name = _validate_identifier(table_name)
+    if cfg.TRIMCP_BYPASS_RLS:
         log.warning("[rls-probe] Bypassing RLS verification for table %s", table_name)
         return
 
@@ -284,9 +338,151 @@ async def verify_rls_enforcement(conn: asyncpg.Connection, table_name: str) -> N
             f"and the policy is correctly defined."
         )
 
-    log.info(
-        "[rls-probe] %s: unscoped SELECT returned 0 rows — RLS active ✅", table_name
+    log.info("[rls-probe] %s: unscoped SELECT returned 0 rows — RLS active ✅", table_name)
+
+
+async def verify_rls_catalog_consistency(conn: asyncpg.Connection) -> None:
+    """
+    Query pg_class, information_schema.columns, and pg_policies to verify
+    the deployed schema matches TriMCP's intended RLS security posture.
+
+    Raises RuntimeError listing all failures if any mismatch is found.
+    Call at startup (after pool creation) and in CI against a fresh database.
+    """
+    import logging as _logging
+
+    _cat_log = _logging.getLogger("trimcp.security_catalog")
+
+    rows = await conn.fetch("""
+        SELECT
+            c.relname                   AS table_name,
+            c.relrowsecurity            AS rls_enabled,
+            c.relforcerowsecurity       AS force_rls_enabled,
+            EXISTS (
+                SELECT 1
+                FROM information_schema.columns col
+                WHERE col.table_schema = 'public'
+                  AND col.table_name   = c.relname
+                  AND col.column_name  = 'namespace_id'
+            )                           AS has_namespace_id,
+            (
+                SELECT count(*)
+                FROM pg_policies p
+                WHERE p.schemaname = 'public'
+                  AND p.tablename  = c.relname
+            )                           AS policy_count
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname   = 'public'
+          AND c.relkind  IN ('r', 'p')
+        ORDER BY c.relname
+    """)
+
+    by_table = {row["table_name"]: row for row in rows}
+    errors: list[str] = []
+
+    # --- Tenant tables ---
+    for table_name in EXPECTED_TENANT_RLS_TABLES:
+        row = by_table.get(table_name)
+        if row is None:
+            errors.append(f"{table_name}: expected tenant table does not exist in schema")
+            continue
+        if not row["has_namespace_id"]:
+            errors.append(f"{table_name}: missing namespace_id column")
+        if not row["rls_enabled"]:
+            errors.append(f"{table_name}: RLS is not enabled")
+        if row["policy_count"] == 0:
+            errors.append(f"{table_name}: no RLS policies found")
+            continue
+
+        namespace_column = EXPECTED_TENANT_RLS_TABLES[table_name]
+        policies = await conn.fetch(
+            """
+            SELECT policyname, qual, with_check
+            FROM   pg_policies
+            WHERE  schemaname = 'public'
+              AND  tablename  = $1
+            """,
+            table_name,
+        )
+        combined = " ".join(f"{p['qual'] or ''} {p['with_check'] or ''}" for p in policies)
+        combined_lc = combined.lower()
+        if namespace_column not in combined:
+            errors.append(
+                f"{table_name}: RLS policies do not reference namespace column {namespace_column!r}"
+            )
+        if "get_trimcp_namespace" not in combined_lc and "trimcp.namespace_id" not in combined_lc:
+            errors.append(
+                f"{table_name}: RLS policies do not reference get_trimcp_namespace() "
+                "or trimcp.namespace_id"
+            )
+            _cat_log.error(
+                "[%s] policy missing namespace binding — qual/with_check excerpt: %s",
+                table_name,
+                combined[:500] + ("..." if len(combined) > 500 else ""),
+            )
+
+        if not row["force_rls_enabled"]:
+            errors.append(
+                f"{table_name}: FORCE ROW LEVEL SECURITY is not enabled (relforcerowsecurity=false)"
+            )
+
+    # --- Special RLS tables (multi-namespace ownership) ---
+    for table_name, ownership_columns in EXPECTED_SPECIAL_RLS_TABLES.items():
+        row = by_table.get(table_name)
+        if row is None:
+            errors.append(f"{table_name}: expected special RLS table does not exist")
+            continue
+        if not row["rls_enabled"]:
+            errors.append(f"{table_name}: RLS is not enabled")
+        if row["policy_count"] == 0:
+            errors.append(f"{table_name}: no RLS policies found")
+            continue
+        policies = await conn.fetch(
+            "SELECT policyname, qual, with_check FROM pg_policies "
+            "WHERE schemaname = 'public' AND tablename = $1",
+            table_name,
+        )
+        for ownership_column in ownership_columns:
+            if not any(
+                ownership_column in (str(p["qual"]) + str(p["with_check"])) for p in policies
+            ):
+                errors.append(
+                    f"{table_name}: no policy references ownership column {ownership_column!r}"
+                )
+
+    # --- Global tables (must NOT have RLS enabled) ---
+    for table_name in EXPECTED_GLOBAL_TABLES:
+        row = by_table.get(table_name)
+        if row is None:
+            continue
+        if row["rls_enabled"]:
+            errors.append(
+                f"{table_name}: declared global (no RLS) but RLS is enabled — "
+                "move to EXPECTED_TENANT_RLS_TABLES or disable RLS intentionally"
+            )
+
+    # --- Undeclared namespace tables (drift detection) ---
+    declared = (
+        set(EXPECTED_TENANT_RLS_TABLES) | set(EXPECTED_SPECIAL_RLS_TABLES) | EXPECTED_GLOBAL_TABLES
     )
+    for table_name, row in by_table.items():
+        if (
+            row["has_namespace_id"]
+            and row["rls_enabled"]
+            and table_name not in declared
+            and not table_name.endswith("_default")
+        ):
+            errors.append(
+                f"{table_name}: has namespace_id + RLS enabled but is not declared "
+                "in any RLS intent category — add to EXPECTED_TENANT_RLS_TABLES "
+                "or EXPECTED_SPECIAL_RLS_TABLES"
+            )
+
+    if errors:
+        raise RuntimeError(
+            "RLS catalog consistency check failed:\n" + "\n".join(f"  - {e}" for e in errors)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -360,12 +556,13 @@ def _serialise_jsonb(obj: Any) -> str | None:
 
 def _validate_params_no_backdated_timestamp(params: dict[str, Any]) -> None:
     """
-    D8 defence-in-depth: reject if *params* contains a ``valid_from`` that
-    is in the past relative to now (timezone.utc).
+    D8 defence-in-depth: reject if *params* contains a top-level string ``valid_from`` that
+    parses to a time before now (UTC).
 
-    This does NOT prevent all backdating — the DB clock is authoritative.
-    It is a cheap early rejection for clients that mistakenly pass a stale
-    timestamp in the params payload.
+    This is intentionally narrow: it does not walk nested dicts, datetime-typed values, or
+    other clock fields. Normal application code still relies on :func:`append_event`, which
+    binds ``occurred_at`` from the database clock. Backdating via raw SQL with sufficient
+    privileges is outside this module's guarantee unless enforced by triggers or constraints.
     """
     vf = params.get("valid_from")
     if vf is None:
@@ -429,9 +626,7 @@ def _compute_chain_hash(*, content_hash: bytes, previous_chain_hash: bytes) -> b
     return hashlib.sha256(content_hash + previous_chain_hash).digest()
 
 
-async def _fetch_previous_chain_hash(
-    conn: asyncpg.Connection, namespace_id: uuid.UUID
-) -> bytes:
+async def _fetch_previous_chain_hash(conn: asyncpg.Connection, namespace_id: uuid.UUID) -> bytes:
     """
     Fetch the ``chain_hash`` of the most recent event in *namespace_id*.
 
@@ -476,9 +671,10 @@ async def _acquire_seq_lock(conn: asyncpg.Connection, namespace_id: uuid.UUID) -
     """
     Reserved hook for historical per-namespace ``pg_advisory_xact_lock`` serialization.
 
-    Obsoleted by the atomic ``event_sequences`` counter (FIX-068 / FIX-069): the row-level
-    ``ON CONFLICT DO UPDATE`` acquires and releases exclusion for the upsert only — it does
-    not hold a lock for the remainder of the Saga transaction.
+    Obsoleted by the atomic ``event_sequences`` counter (FIX-068 / FIX-069).  The
+    ``INSERT … ON CONFLICT DO UPDATE`` on ``event_sequences`` takes a row lock on the
+    namespace's counter row that is held until the surrounding transaction ends, which
+    serializes ``event_seq`` allocation and the subsequent chain-hash read for that namespace.
     """
     pass  # Obsoleted by atomic event_sequences counter (FIX-068)
 
@@ -548,10 +744,34 @@ def _validate_event_payload(event_type: str, agent_id: str) -> str:
     if not agent_id:
         raise ValueError("agent_id must not be empty or whitespace-only.")
     if len(agent_id) > _AGENT_ID_MAX_LEN:
-        raise ValueError(
-            f"agent_id exceeds {_AGENT_ID_MAX_LEN} characters (got {len(agent_id)})."
-        )
+        raise ValueError(f"agent_id exceeds {_AGENT_ID_MAX_LEN} characters (got {len(agent_id)}).")
     return agent_id
+
+
+def _validate_event_params(event_type: str, params: dict[str, Any]) -> None:
+    """Defence-in-depth: enforce required/forbidden JSON keys before signing.
+
+    Only event types declaring entries in ``EVENT_REQUIRED_PARAM_KEYS`` /
+    ``EVENT_FORBIDDEN_PARAM_KEYS`` participate. Additional keys beyond the
+    required set are permitted (replay fork augmentation, forward evolution).
+    """
+    required = EVENT_REQUIRED_PARAM_KEYS.get(event_type)
+    if required:
+        missing = required - params.keys()
+        if missing:
+            raise ValueError(
+                f"append_event(..., event_type={event_type!r}): "
+                f"missing required param keys: {sorted(missing)}"
+            )
+
+    forbidden = EVENT_FORBIDDEN_PARAM_KEYS.get(event_type)
+    if forbidden:
+        present = forbidden & params.keys()
+        if present:
+            raise ValueError(
+                f"append_event(..., event_type={event_type!r}): "
+                f"forbidden param keys present: {sorted(present)}"
+            )
 
 
 async def _sign_event(
@@ -706,14 +926,15 @@ async def append_event(
     Sequence
     --------
     1. Validate ``event_type`` and ``agent_id`` (``_validate_event_payload``).
-    2. Apply D8 defence-in-depth check on ``params``.
-    3. Fetch the DB clock for signing.
-    4. Allocate ``event_seq`` via atomic ``event_sequences`` upsert.
-    5. Generate a fresh ``event_id``.
-    6. Load signing key, build canonical fields, and HMAC-sign (``_sign_event``).
-    7. Compute Merkle chain hash — SHA-256(content_hash || previous_chain_hash).
+    2. Optionally validate ``params`` keys (``EVENT_*_PARAM_KEYS`` contracts).
+    3. Apply D8 defence-in-depth check on ``params``.
+    4. Fetch the DB clock for signing.
+    5. Allocate ``event_seq`` via atomic ``event_sequences`` upsert.
+    6. Generate a fresh ``event_id``.
+    7. Load signing key, build canonical fields, and HMAC-sign (``_sign_event``).
+    8. Compute Merkle chain hash — SHA-256(content_hash || previous_chain_hash).
        Genesis events use a 32-byte zero sentinel as the previous hash.
-    8. INSERT the row (``_insert_event``).
+    9. INSERT the row (``_insert_event``).
 
     Returns
     -------
@@ -722,11 +943,21 @@ async def append_event(
 
     Raises
     ------
-    InvalidEventTypeError, ValueError, EventLogTimestampError,
+    InvalidEventTypeError, ValueError (including param contract breaches),
+    EventLogTimestampError,
     EventLogSigningError, EventLogSequenceError, asyncpg.PostgresError
     """
+    if not conn.is_in_transaction():
+        raise EventLogError(
+            "append_event() must be called inside an active transaction. "
+            "Wrap caller code in 'async with conn.transaction():'."
+        )
+
     # 1. Validate event_type and agent_id
     agent_id = _validate_event_payload(event_type, agent_id)
+
+    # 2. Optional required/forbidden JSON key contracts per event_type
+    _validate_event_params(event_type, params)
 
     # 1b.
     if parent_event_id is not None:
@@ -734,14 +965,14 @@ async def append_event(
         # Do not add back without providing occurred_at as a query parameter.
         pass
 
-    # 2. D8 defence-in-depth: reject backdated timestamps in params
+    # 3. D8 defence-in-depth: reject backdated timestamps in params
     _validate_params_no_backdated_timestamp(params)
 
-    # 3. Fetch DB clock (used in signature so it matches stored occurred_at)
+    # 4. Fetch DB clock (used in signature so it matches stored occurred_at)
     occurred_at: datetime = await _fetch_db_clock(conn)
     occurred_at_iso: str = occurred_at.isoformat()
 
-    # 4. Allocate event_seq (atomic event_sequences upsert)
+    # 5. Allocate event_seq (atomic event_sequences upsert)
     try:
         event_seq: int = await _next_event_seq(conn, namespace_id)
     except EventLogSequenceError:
@@ -753,10 +984,10 @@ async def append_event(
             f"Unexpected error allocating event_seq for namespace {namespace_id}: {exc}"
         ) from exc
 
-    # 5. Generate event UUID
+    # 6. Generate event UUID
     event_id = uuid.uuid4()
 
-    # 6. Load signing key, build canonical fields, and HMAC-sign
+    # 7. Load signing key, build canonical fields, and HMAC-sign
     key_id, signature = await _sign_event(
         conn,
         event_id=event_id,
@@ -769,7 +1000,7 @@ async def append_event(
         parent_event_id=parent_event_id,
     )
 
-    # 7. Compute Merkle chain hash.
+    # 8. Compute Merkle chain hash.
     #    content_hash = SHA-256(canonical signing fields)
     #    chain_hash   = SHA-256(content_hash || previous_chain_hash)
     #    Genesis events use _GENESIS_SENTINEL (32 zero bytes) as previous.
@@ -790,7 +1021,7 @@ async def append_event(
         previous_chain_hash=previous_chain_hash,
     )
 
-    # 8. INSERT — pass occurred_at explicitly so the stored value matches
+    # 9. INSERT — pass occurred_at explicitly so the stored value matches
     #    what was signed.  asyncpg maps uuid.UUID → PG UUID natively.
     result = await _insert_event(
         conn,
@@ -842,6 +1073,8 @@ async def verify_event_signature(
     """
     from trimcp.signing import get_key_by_id, verify_fields
 
+    record = dict(record)
+
     key_id = record.get("signature_key_id")
     if not key_id:
         raise DataIntegrityError("Row is missing signature_key_id.")
@@ -849,9 +1082,7 @@ async def verify_event_signature(
     try:
         raw_key = await get_key_by_id(conn, key_id)
     except Exception as exc:
-        raise DataIntegrityError(
-            f"Failed to retrieve signing key {key_id}: {exc}"
-        ) from exc
+        raise DataIntegrityError(f"Failed to retrieve signing key {key_id}: {exc}") from exc
 
     params: dict[str, Any] | None = record.get("params")
     if params is None:
@@ -936,10 +1167,12 @@ async def verify_merkle_chain(
     -------
     dict[str, Any]
         ``{"valid": bool, "checked": int, "first_break": int | None,
-          "last_verified_seq": int}``.
+          "last_verified_seq": int}``, and optionally ``"reason"`` when a
+        full-namespace check (``start_seq == 1`` and ``end_seq is None``)
+        finds ``event_sequences.seq != max(event_log.event_seq)``.
 
         ``first_break`` is the event_seq where the chain first broke, or
-        ``None`` if the entire chain is valid.
+        ``None`` if the entire chain verifies.
 
     Raises
     ------
@@ -982,7 +1215,8 @@ async def verify_merkle_chain(
                 anchor_hash = bytes(anchor_hash)
             previous_chain_hash = anchor_hash
 
-    for row in rows:
+    for raw_row in rows:
+        row: dict[str, Any] = dict(raw_row)
         event_seq = int(row["event_seq"])
 
         # Deserialise params
@@ -1041,6 +1275,32 @@ async def verify_merkle_chain(
         last_verified_seq = event_seq
 
     valid = first_break is None
+    reason: str | None = None
+
+    # Full-namespace read: allocator counter must align with tallest event_seq
+    if start_seq == 1 and end_seq is None:
+        seq_counter = await conn.fetchval(
+            "SELECT seq FROM event_sequences WHERE namespace_id = $1",
+            namespace_id,
+        )
+        max_seq = await conn.fetchval(
+            "SELECT max(event_seq) FROM event_log WHERE namespace_id = $1",
+            namespace_id,
+        )
+        if seq_counter is not None or max_seq is not None:
+            sc = int(seq_counter) if seq_counter is not None else 0
+            ms = int(max_seq) if max_seq is not None else 0
+            if sc != ms:
+                log.error(
+                    "MERKLE SEQUENCE MISMATCH: namespace=%s event_sequences.seq=%s "
+                    "max(event_seq)=%s",
+                    namespace_id,
+                    seq_counter,
+                    max_seq,
+                )
+                valid = False
+                reason = "event_sequences counter does not match max(event_seq)"
+
     if valid and checked > 0:
         log.info(
             "Merkle chain verified: namespace=%s events=%d all valid.",
@@ -1048,9 +1308,12 @@ async def verify_merkle_chain(
             checked,
         )
 
-    return {
+    out: dict[str, Any] = {
         "valid": valid,
         "checked": checked,
         "first_break": first_break,
         "last_verified_seq": last_verified_seq,
     }
+    if reason is not None:
+        out["reason"] = reason
+    return out

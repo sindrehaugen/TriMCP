@@ -37,9 +37,7 @@ async def test_trimcp_app_missing_update_delete_grants_event_log() -> None:
         await conn.close()
 
     if not rows:
-        pytest.skip(
-            "Role trimcp_app has no grants on event_log (schema not bootstrapped)."
-        )
+        pytest.skip("Role trimcp_app has no grants on event_log (schema not bootstrapped).")
 
     privs = {r["privilege_type"] for r in rows}
     assert "INSERT" in privs

@@ -26,28 +26,42 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from trimcp.bridge_renewal import renew_expiring_subscriptions
 from trimcp.config import cfg
-from trimcp.cron_lock import acquire_cron_lock as _acquire_cron_lock
+from trimcp.cron_lock import CronLock, acquire_cron_lock, release_cron_lock
+from trimcp.db_utils import scoped_pg_session, unmanaged_pg_connection
 from trimcp.reembedding_worker import CRON_INTERVAL_MINUTES as _REEMBED_INTERVAL
 from trimcp.reembedding_worker import ReembeddingWorker
 
 log = logging.getLogger("trimcp.cron")
 
+# Cron ticks must never crash the scheduler; catch operational failures only.
+_CRON_TICK_ERRORS: tuple[type[BaseException], ...] = (
+    asyncpg.PostgresError,
+    OSError,
+    TimeoutError,
+    ValueError,
+    TypeError,
+    KeyError,
+    json.JSONDecodeError,
+    RuntimeError,
+)
+
 
 async def _renewal_tick(pool: asyncpg.Pool) -> None:
     ttl = cfg.BRIDGE_CRON_INTERVAL_MINUTES * 60 + 60
-    if not await _acquire_cron_lock("bridge_subscription_renewal", ttl):
+    lock: CronLock | None = await acquire_cron_lock("bridge_subscription_renewal", ttl)
+    if lock is None:
         log.debug("Skipping bridge_subscription_renewal — lock held by another instance")
         return
     try:
         stats = await renew_expiring_subscriptions(pool)
         log.info("bridge renewal tick: %s", stats)
-    except Exception:
+    except _CRON_TICK_ERRORS:
         log.exception("bridge renewal tick failed unexpectedly")
+    finally:
+        await release_cron_lock(lock)
 
 
-async def _consolidation_tick(
-    pool: asyncpg.Pool, mongo_client: Any | None = None
-) -> None:
+async def _consolidation_tick(pool: asyncpg.Pool, mongo_client: Any | None = None) -> None:
     """
     Run sleep consolidation for each namespace with metadata.consolidation.enabled=true.
 
@@ -57,17 +71,20 @@ async def _consolidation_tick(
     in bulk before consolidation LLM calls.
     """
     ttl = min(cfg.CONSOLIDATION_CRON_INTERVAL_MINUTES * 60, 7200) + 60
-    if not await _acquire_cron_lock("sleep_consolidation", ttl):
+    lock: CronLock | None = await acquire_cron_lock("sleep_consolidation", ttl)
+    if lock is None:
         log.debug("Skipping sleep_consolidation — lock held by another instance")
         return
     try:
         from trimcp.consolidation import ConsolidationWorker
         from trimcp.providers import get_provider
 
-        rows = await pool.fetch("""
-            SELECT id, metadata FROM namespaces
-            WHERE COALESCE((metadata->'consolidation'->>'enabled')::boolean, false) = true
-            """)
+        # namespaces is a global admin table — unmanaged connection is correct here.
+        async with unmanaged_pg_connection(pool, site="cron.consolidation.namespaces_scan") as conn:
+            rows = await conn.fetch("""
+                SELECT id, metadata FROM namespaces
+                WHERE COALESCE((metadata->'consolidation'->>'enabled')::boolean, false) = true
+                """)
         for row in rows:
             ns_id: UUID = row["id"]
             raw_meta = row["metadata"]
@@ -82,10 +99,12 @@ async def _consolidation_tick(
                 worker = ConsolidationWorker(pool, provider, mongo_client=mongo_client)
                 await worker.run_consolidation(ns_id)
                 log.info("consolidation tick completed for namespace %s", ns_id)
-            except Exception:
+            except _CRON_TICK_ERRORS:
                 log.exception("consolidation tick failed for namespace %s", ns_id)
-    except Exception:
+    except _CRON_TICK_ERRORS:
         log.exception("consolidation tick failed unexpectedly")
+    finally:
+        await release_cron_lock(lock)
 
 
 async def _partition_maintenance_tick(pool: asyncpg.Pool) -> None:
@@ -93,11 +112,12 @@ async def _partition_maintenance_tick(pool: asyncpg.Pool) -> None:
     Ensure event_log monthly partitions exist ahead of time.
     Re-entrant: the PostgreSQL function uses IF NOT EXISTS.
     """
-    if not await _acquire_cron_lock("event_log_partition_maintenance", 3600):
+    lock: CronLock | None = await acquire_cron_lock("event_log_partition_maintenance", 3600)
+    if lock is None:
         log.debug("Skipping event_log_partition_maintenance — lock held by another instance")
         return
     try:
-        async with pool.acquire(timeout=10.0) as conn:
+        async with unmanaged_pg_connection(pool, site="cron.partition_maintenance") as conn:
             await conn.execute("SELECT trimcp_ensure_event_log_monthly_partitions(3)")
             # Update Prometheus gauge with how many future partitions exist
             row = await conn.fetchrow(
@@ -120,29 +140,51 @@ async def _partition_maintenance_tick(pool: asyncpg.Pool) -> None:
                     "event_log partition runway low: only %s months ahead (need >= 2)",
                     months_ahead,
                 )
-    except Exception:
+    except _CRON_TICK_ERRORS:
         log.exception("event_log partition maintenance tick failed")
+    finally:
+        await release_cron_lock(lock)
 
 
 async def _saga_recovery_tick(pool: asyncpg.Pool) -> None:
     """
-    Re-drive rollback for sagas that crashed between PG commit and completion.
-    Stale 'pg_committed' rows older than 5 minutes are assumed zombie sagas.
+    Finalize sagas that committed to PG but never advanced to 'completed'.
+
+    A saga in state 'pg_committed' older than 5 minutes means the application
+    crashed between the PG commit and the downstream completion signal. Because
+    the memory already exists in Postgres (pg_committed = data is durable), the
+    correct recovery action is to VERIFY and COMPLETE, NOT to rollback.
+
+    Recovery steps per saga:
+      1. Verify the target memory row exists in memories.
+      2. If it exists: mark saga 'completed' + append 'saga_recovered' event.
+      3. If it is missing: the saga committed but the memory row was lost (rare) —
+         mark 'failed' for manual review rather than attempting blind rollback.
+
+    We do NOT soft-delete (valid_to=now()) pg_committed memories.
+    'pg_committed' means PG says the memory is there — trust the DB.
     """
+    lock: CronLock | None = await acquire_cron_lock("saga_recovery", 600)
+    if lock is None:
+        log.debug("Skipping saga_recovery — lock held by another instance")
+        return
     try:
-        from trimcp.auth import set_namespace_context
         from trimcp.event_log import append_event
 
-        rows = await pool.fetch(
-            """
-            SELECT id, namespace_id, agent_id, payload
-            FROM saga_execution_log
-            WHERE state = 'pg_committed'
-              AND created_at < now() - interval '5 minutes'
-            ORDER BY created_at
-            LIMIT 100
-            """
-        )
+        # Read saga candidates without an RLS scope — saga_execution_log is a
+        # global admin table, not tenant-partitioned by RLS.
+        async with unmanaged_pg_connection(pool, site="cron.saga_recovery.list_stuck") as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, namespace_id, agent_id, payload
+                FROM saga_execution_log
+                WHERE state = 'pg_committed'
+                  AND COALESCE(updated_at, created_at) < now() - interval '5 minutes'
+                ORDER BY COALESCE(updated_at, created_at)
+                LIMIT 100
+                """
+            )
+
         for row in rows:
             saga_id: str = str(row["id"])
             ns_id: str = str(row["namespace_id"])
@@ -151,59 +193,114 @@ async def _saga_recovery_tick(pool: asyncpg.Pool) -> None:
             memory_id = payload.get("memory_id")
 
             log.warning(
-                "[SAGA-RECOVERY] Re-driving rollback for saga=%s memory_id=%s",
+                "[SAGA-RECOVERY] Found pg_committed saga=%s memory_id=%s — verifying memory exists",
                 saga_id,
                 memory_id,
             )
             try:
-                async with pool.acquire(timeout=10.0) as conn:
-                    async with conn.transaction():
-                        await set_namespace_context(conn, UUID(ns_id))
-                        await conn.execute(
+                if memory_id:
+                    # Step 1: verify memory exists via RLS-scoped session.
+                    async with scoped_pg_session(pool, ns_id) as conn:
+                        memory_row = await conn.fetchrow(
                             """
-                            UPDATE saga_execution_log
-                            SET state = 'recovery_needed', updated_at = NOW()
-                            WHERE id = $1::uuid
+                            SELECT id FROM memories
+                            WHERE id = $1::uuid AND namespace_id = $2::uuid
                             """,
-                            saga_id,
+                            memory_id,
+                            ns_id,
                         )
-                        if memory_id:
-                            # Soft-close memory
+
+                    if memory_row is None:
+                        # Memory row is missing despite pg_committed state.
+                        # Do NOT rollback blindly — mark failed for human review.
+                        log.error(
+                            "[SAGA-RECOVERY] saga=%s is pg_committed but memory=%s is "
+                            "MISSING from memories table. Marking 'failed' for manual review.",
+                            saga_id,
+                            memory_id,
+                        )
+                        async with unmanaged_pg_connection(
+                            pool, site="cron.saga_recovery.mark_failed"
+                        ) as conn:
                             await conn.execute(
                                 """
-                                UPDATE memories
-                                SET valid_to = NOW()
-                                WHERE id = $1::uuid AND namespace_id = $2::uuid AND valid_to IS NULL
+                                UPDATE saga_execution_log
+                                SET state = 'failed', updated_at = NOW()
+                                WHERE id = $1::uuid AND state = 'pg_committed'
                                 """,
-                                memory_id,
-                                ns_id,
+                                saga_id,
                             )
-                            # Compensating event
-                            await append_event(
-                                conn=conn,
-                                namespace_id=UUID(ns_id),
-                                agent_id=agent_id,
-                                event_type="store_memory_rolled_back",
-                                params={
-                                    "memory_id": memory_id,
-                                    "reason": "saga_recovery_cron",
-                                    "saga_id": saga_id,
-                                },
-                            )
-                        # Mark rolled_back
+                        continue
+
+                    # Step 2: memory exists — finalize saga + append recovery event.
+                    async with scoped_pg_session(pool, ns_id) as conn:
+                        await append_event(
+                            conn=conn,
+                            namespace_id=UUID(ns_id),
+                            agent_id=agent_id,
+                            event_type="saga_recovered",
+                            params={
+                                "memory_id": memory_id,
+                                "saga_id": saga_id,
+                                "recovery_action": "finalized",
+                                "reason": "pg_committed_saga_recovery_cron",
+                            },
+                        )
                         await conn.execute(
                             """
                             UPDATE saga_execution_log
-                            SET state = 'rolled_back', updated_at = NOW()
-                            WHERE id = $1::uuid
+                            SET state = 'completed', updated_at = NOW()
+                            WHERE id = $1::uuid AND state = 'pg_committed'
                             """,
                             saga_id,
                         )
-                log.info("[SAGA-RECOVERY] Rolled back saga=%s", saga_id)
-            except Exception:
+                    log.info("[SAGA-RECOVERY] Finalized saga=%s memory=%s", saga_id, memory_id)
+
+                else:
+                    # No memory_id in payload — mark completed, nothing to verify.
+                    log.warning(
+                        "[SAGA-RECOVERY] saga=%s has no memory_id in payload. "
+                        "Marking completed (no memory to verify).",
+                        saga_id,
+                    )
+                    async with unmanaged_pg_connection(
+                        pool, site="cron.saga_recovery.mark_completed_no_memory"
+                    ) as conn:
+                        await conn.execute(
+                            """
+                            UPDATE saga_execution_log
+                            SET state = 'completed', updated_at = NOW()
+                            WHERE id = $1::uuid AND state = 'pg_committed'
+                            """,
+                            saga_id,
+                        )
+
+            except _CRON_TICK_ERRORS:
                 log.exception("[SAGA-RECOVERY] Failed to recover saga=%s", saga_id)
-    except Exception:
+
+    except _CRON_TICK_ERRORS:
         log.exception("saga recovery tick failed unexpectedly")
+    finally:
+        await release_cron_lock(lock)
+
+
+async def _outbox_relay_tick(pool: asyncpg.Pool) -> None:
+    """Drain pending outbox events (same relay as MCP stdio background loop)."""
+    from trimcp.outbox_relay import run_outbox_relay_once
+
+    ttl = max(cfg.OUTBOX_RELAY_INTERVAL_SECONDS * 2, 30)
+    lock: CronLock | None = await acquire_cron_lock("outbox_relay", ttl)
+    if lock is None:
+        log.debug("Skipping outbox_relay — lock held by another instance")
+        return
+    try:
+        delivered = await run_outbox_relay_once(pool)
+        if delivered:
+            log.info("outbox relay tick delivered=%s", delivered)
+    except _CRON_TICK_ERRORS:
+        log.exception("outbox relay tick failed unexpectedly")
+    finally:
+        await release_cron_lock(lock)
 
 
 async def _reembedding_tick(pool: asyncpg.Pool, mongo_client: Any) -> None:
@@ -217,7 +314,7 @@ async def _reembedding_tick(pool: asyncpg.Pool, mongo_client: Any) -> None:
         worker = ReembeddingWorker()
         stats = await worker.run_once(pool, mongo_client)
         log.info("re-embedding tick: %s", stats)
-    except Exception:
+    except _CRON_TICK_ERRORS:
         log.exception("re-embedding tick failed unexpectedly")
 
 
@@ -314,6 +411,17 @@ async def async_main() -> None:
         replace_existing=True,
     )
 
+    outbox_seconds = max(1, int(cfg.OUTBOX_RELAY_INTERVAL_SECONDS))
+    scheduler.add_job(
+        _outbox_relay_tick,
+        IntervalTrigger(seconds=outbox_seconds),
+        args=[pool],
+        id="outbox_relay",
+        coalesce=True,
+        max_instances=1,
+        replace_existing=True,
+    )
+
     scheduler.start()
     log.info(
         "Started bridge renewal scheduler: interval=%s min, lookahead=%s h",
@@ -329,6 +437,7 @@ async def async_main() -> None:
         "Started consolidation scheduler: interval=%s min (namespaces with consolidation.enabled)",
         consolidation_minutes,
     )
+    log.info("Started outbox relay scheduler: interval=%s s", outbox_seconds)
 
     # Fire maintenance jobs immediately on startup so the first interval is not wasted.
     await _renewal_tick(pool)
@@ -336,11 +445,12 @@ async def async_main() -> None:
     await _consolidation_tick(pool, mongo_client)
     await _partition_maintenance_tick(pool)
     await _saga_recovery_tick(pool)
+    await _outbox_relay_tick(pool)
 
     try:
         await asyncio.Event().wait()
     finally:
-        scheduler.shutdown(wait=True)
+        await asyncio.to_thread(scheduler.shutdown, wait=True)
         await pool.close()
         if mongo_client:
             mongo_client.close()

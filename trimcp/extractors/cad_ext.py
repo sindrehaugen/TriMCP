@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -13,8 +14,23 @@ from trimcp.extractors.core import ExtractionResult, Section, empty_skipped
 
 log = logging.getLogger(__name__)
 
+_MAX_CAD_TEXT_ENTITIES = int(os.environ.get("TRIMCP_CAD_MAX_ENTITIES", "10000"))
+
 _SKP_HEADER_RE = re.compile(rb"SketchUp Model", re.I)
 _RVT_MAGIC = b"{ rvtml"  # sometimes present in RVT family
+
+
+def _collect_entity_texts(msp, warnings: list[str]) -> list[str]:
+    """Extract TEXT/MTEXT strings from modelspace with a hard entity cap."""
+    lines: list[str] = []
+    for i, entity in enumerate(msp):
+        if i >= _MAX_CAD_TEXT_ENTITIES:
+            warnings.append(f"cad_entity_limit: capped at {_MAX_CAD_TEXT_ENTITIES}")
+            break
+        t = _entity_text(entity)
+        if t:
+            lines.append(t)
+    return lines
 
 
 def _entity_text(entity) -> str | None:
@@ -36,27 +52,20 @@ def _extract_dxf_sync(blob: bytes) -> ExtractionResult:
     try:
         import ezdxf
     except ImportError as e:
-        return empty_skipped(
-            "dxf", "dependency_missing", warnings=[f"ezdxf_unavailable:{e}"]
-        )
+        return empty_skipped("dxf", "dependency_missing", warnings=[f"ezdxf_unavailable:{e}"])
 
     try:
         doc = ezdxf.read(io.BytesIO(blob))  # type: ignore[arg-type]
     except Exception as e:
         log.warning("dxf_read_failed: %s", e)
         name = type(e).__name__
-        reason = (
-            "malformed_dxf" if "DXF" in name or "Structure" in name else "read_failed"
-        )
+        reason = "malformed_dxf" if "DXF" in name or "Structure" in name else "read_failed"
         return empty_skipped("dxf", reason, warnings=[str(e)])
 
     lines: list[str] = []
     try:
         msp = doc.modelspace()
-        for entity in msp:
-            t = _entity_text(entity)
-            if t:
-                lines.append(t)
+        lines = _collect_entity_texts(msp, warnings)
     except Exception as e:
         warnings.append(f"dxf_modelspace:{e}")
 
@@ -92,9 +101,7 @@ def _extract_dwg_sync(blob: bytes) -> ExtractionResult:
     try:
         import ezdxf
     except ImportError as e:
-        return empty_skipped(
-            "dwg", "dependency_missing", warnings=[f"ezdxf_unavailable:{e}"]
-        )
+        return empty_skipped("dwg", "dependency_missing", warnings=[f"ezdxf_unavailable:{e}"])
 
     path: Path | None = None
     try:
@@ -128,12 +135,8 @@ def _extract_dwg_sync(blob: bytes) -> ExtractionResult:
                     ],
                 )
 
-        lines: list[str] = []
         msp = doc.modelspace()
-        for ent in msp:
-            t = _entity_text(ent)
-            if t:
-                lines.append(t)
+        lines = _collect_entity_texts(msp, warnings)
         seen: set[str] = set()
         uniq = []
         for t in lines:
@@ -188,9 +191,7 @@ def _rvt_metadata_sync(blob: bytes) -> ExtractionResult:
 
     meta_lines = [f"bytes: {size}", *hints]
     body = "Revit project (.rvt) — metadata only.\n" + "\n".join(meta_lines)
-    sec = Section(
-        text=body, structure_path="RVT metadata", section_type="metadata", order=0
-    )
+    sec = Section(text=body, structure_path="RVT metadata", section_type="metadata", order=0)
     return ExtractionResult(
         method="rvt",
         text=body,
@@ -222,9 +223,7 @@ def _skp_metadata_sync(blob: bytes) -> ExtractionResult:
     if ver:
         lines.append(f"possible_version_marker: {ver}")
     body = "\n".join(lines)
-    sec = Section(
-        text=body, structure_path="SKP metadata", section_type="metadata", order=0
-    )
+    sec = Section(text=body, structure_path="SKP metadata", section_type="metadata", order=0)
     return ExtractionResult(
         method="skp",
         text=body,

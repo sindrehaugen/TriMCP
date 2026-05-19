@@ -1,3 +1,6 @@
+# Stub webhook ingress (I.6). Replace the Lambda with trimcp/webhook_receiver (Mangum/ASGI)
+# before exposing this API publicly. Until then the handler returns 503 by design.
+
 variable "deployment_name" {
   type = string
 }
@@ -9,8 +12,14 @@ data "archive_file" "lambda_zip" {
     content  = <<-PY
 import json
 def handler(event, context):
-    return {"statusCode": 200, "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"ok": True, "note": "replace with FastAPI/Mangum"})}
+    return {
+        "statusCode": 503,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps({
+            "error": "webhook handler not deployed",
+            "detail": "Replace this stub with trimcp/webhook_receiver before production use",
+        }),
+    }
 PY
     filename = "index.py"
   }

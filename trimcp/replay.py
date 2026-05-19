@@ -152,9 +152,7 @@ def _record_to_event_row(record: asyncpg.Record) -> _EventRow:
         occurred_at=record["occurred_at"].astimezone(timezone.utc),
         agent_id=record["agent_id"],
         params=dict(record["params"]) if record["params"] else {},
-        result_summary=(
-            dict(record["result_summary"]) if record["result_summary"] else None
-        ),
+        result_summary=(dict(record["result_summary"]) if record["result_summary"] else None),
         parent_event_id=record["parent_event_id"],
         llm_payload_uri=record["llm_payload_uri"],
         llm_payload_hash=(
@@ -281,9 +279,7 @@ async def get_run_status(
         "start_seq": row["start_seq"],
         "end_seq": row["end_seq"],
         "divergence_seq": row["divergence_seq"],
-        "config_overrides": (
-            dict(row["config_overrides"]) if row["config_overrides"] else None
-        ),
+        "config_overrides": (dict(row["config_overrides"]) if row["config_overrides"] else None),
         "status": row["status"],
         "events_applied": row["events_applied"],
         "started_at": row["started_at"].isoformat() if row["started_at"] else None,
@@ -813,7 +809,11 @@ _FORK_PROVENANCE_ONLY_TYPES: tuple[str, ...] = (
     "namespace_created",
     "namespace_metadata_updated",
     "namespace_impersonated",
-    "namespace_deleted",
+    "namespace_deletion_requested",
+    "namespace_disabled",
+    "migration_start_requested",
+    "migration_commit_requested",
+    "migration_abort_requested",
     "migration_started",
     "migration_committed",
     "migration_aborted",
@@ -821,6 +821,22 @@ _FORK_PROVENANCE_ONLY_TYPES: tuple[str, ...] = (
 
 for _fork_prov_et in _FORK_PROVENANCE_ONLY_TYPES:
     _HANDLER_REGISTRY[_fork_prov_et] = _handle_fork_provenance_only
+
+# Audit / saga / sharing events — provenance-only fork projection (same contract
+# as namespace + migration registrations above).
+_additional_fork_provenance_types: tuple[str, ...] = (
+    "store_memory_rolled_back",
+    "saga_recovered",
+    "a2a_grant_created",
+    "a2a_grant_revoked",
+    "a2a_shared_query",
+    "signing_key_rotated",
+)
+for _fork_et in _additional_fork_provenance_types:
+    assert _fork_et not in _HANDLER_REGISTRY, (
+        f"duplicate ForkedReplay handler registration for event_type={_fork_et!r}"
+    )
+    _HANDLER_REGISTRY[_fork_et] = _handle_fork_provenance_only
 
 
 # ---------------------------------------------------------------------------
@@ -861,9 +877,7 @@ async def _resolve_llm_payload(
     if replay_mode not in ("deterministic", "re-execute"):
         raise ReplayModeError(f"Invalid replay_mode: {replay_mode!r}")
 
-    fork_uri = _fork_llm_payload_uri(
-        src.llm_payload_uri, target_namespace_id, src.event_id
-    )
+    fork_uri = _fork_llm_payload_uri(src.llm_payload_uri, target_namespace_id, src.event_id)
 
     if replay_mode == "deterministic":
         try:
@@ -1006,9 +1020,7 @@ class ObservationalReplay:
             # The transaction keeps the cursor alive across yield boundaries.
             async with self.pool.acquire(timeout=10.0) as cursor_conn:
                 async with cursor_conn.transaction(isolation="repeatable_read"):
-                    async for record in cursor_conn.cursor(
-                        sql, *args, prefetch=_CURSOR_PREFETCH
-                    ):
+                    async for record in cursor_conn.cursor(sql, *args, prefetch=_CURSOR_PREFETCH):
                         try:
                             await verify_event_signature(cursor_conn, record)
                         except DataIntegrityError as exc:
@@ -1035,9 +1047,7 @@ class ObservationalReplay:
                             # Progress update uses a *different* connection to avoid
                             # nesting statements on the cursor connection.
                             async with self.pool.acquire(timeout=10.0) as prog_conn:
-                                await _update_run_progress(
-                                    prog_conn, run_id, events_streamed
-                                )
+                                await _update_run_progress(prog_conn, run_id, events_streamed)
                             yield {
                                 "type": "progress",
                                 "run_id": str(run_id),
@@ -1130,13 +1140,9 @@ class ForkedReplay:
         """
         handler = _HANDLER_REGISTRY.get(src.event_type)
         if handler is None:
-            log.warning(
-                "No handler for event_type=%s; writing provenance only", src.event_type
-            )
+            log.warning("No handler for event_type=%s; writing provenance only", src.event_type)
             return {"skipped": True, "reason": "no_handler"}
-        return await handler(
-            write_conn, src, target_namespace_id, llm_payload, config_overrides
-        )
+        return await handler(write_conn, src, target_namespace_id, llm_payload, config_overrides)
 
     async def _dispatch_and_apply(
         self,
@@ -1354,9 +1360,7 @@ class ForkedReplay:
 
                 if events_applied % _PROGRESS_INTERVAL == 0:
                     async with self.pool.acquire(timeout=10.0) as prog_conn:
-                        await _update_run_progress(
-                            prog_conn, run_id, events_applied
-                        )
+                        await _update_run_progress(prog_conn, run_id, events_applied)
                     yield {
                         "type": "progress",
                         "run_id": str(run_id),
@@ -1380,9 +1384,7 @@ class ForkedReplay:
             }
 
         except Exception as exc:
-            log.exception(
-                "ForkedReplay failed at event %d run_id=%s", events_applied, run_id
-            )
+            log.exception("ForkedReplay failed at event %d run_id=%s", events_applied, run_id)
             if run_id is not None:
                 async with self.pool.acquire(timeout=10.0) as err_conn:
                     await _finish_run(
@@ -1522,9 +1524,7 @@ class ReconstructiveReplay:
         try:
             async with self.pool.acquire(timeout=10.0) as cursor_conn:
                 async with cursor_conn.transaction(isolation="repeatable_read"):
-                    async for record in cursor_conn.cursor(
-                        sql, *args, prefetch=_CURSOR_PREFETCH
-                    ):
+                    async for record in cursor_conn.cursor(sql, *args, prefetch=_CURSOR_PREFETCH):
                         try:
                             await verify_event_signature(cursor_conn, record)
                         except DataIntegrityError as exc:
@@ -1593,9 +1593,7 @@ class ReconstructiveReplay:
 
                         if events_applied % _PROGRESS_INTERVAL == 0:
                             async with self.pool.acquire(timeout=10.0) as prog_conn:
-                                await _update_run_progress(
-                                    prog_conn, run_id, events_applied
-                                )
+                                await _update_run_progress(prog_conn, run_id, events_applied)
                             yield {
                                 "type": "progress",
                                 "run_id": str(run_id),

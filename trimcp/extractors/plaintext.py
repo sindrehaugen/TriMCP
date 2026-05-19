@@ -43,9 +43,7 @@ def _decode_blob(blob: bytes) -> tuple[str, list[str]]:
         return blob.decode(enc, errors="strict"), warnings
     except Exception:
         try:
-            return blob.decode("utf-8", errors="replace"), warnings + [
-                "decode_utf8_replace"
-            ]
+            return blob.decode("utf-8", errors="replace"), warnings + ["decode_utf8_replace"]
         except Exception as e:
             return blob.decode("latin-1", errors="replace"), warnings + [
                 f"decode_latin1_replace:{e}"
@@ -121,9 +119,7 @@ def _summarize_delimited_stream(
     return "\n".join(lines), warnings
 
 
-def _extract_delimited_sync(
-    blob: bytes, delimiter: str, label: str
-) -> ExtractionResult:
+def _extract_delimited_sync(blob: bytes, delimiter: str, label: str) -> ExtractionResult:
     text, enc_warnings = _decode_blob(blob)
     warnings = list(enc_warnings)
     sio = io.StringIO(text)
@@ -140,9 +136,7 @@ def _extract_delimited_sync(
             warnings=warnings + [str(e)],
         )
     if not rows:
-        return ExtractionResult(
-            method=label, text="", sections=[], metadata={}, warnings=warnings
-        )
+        return ExtractionResult(method=label, text="", sections=[], metadata={}, warnings=warnings)
 
     n_data = len(rows) - 1
     header = rows[0]
@@ -177,9 +171,7 @@ def _extract_delimited_sync(
         warnings.append(
             f"Large {label} sampled: {n_data + 1} rows; header + first 100 + 100 random middle + last 100"
         )
-        sec = Section(
-            text=md, structure_path=label.upper(), section_type="table", order=0
-        )
+        sec = Section(text=md, structure_path=label.upper(), section_type="table", order=0)
         return ExtractionResult(
             method=label,
             text=md,
@@ -189,13 +181,9 @@ def _extract_delimited_sync(
         )
 
     body_iter = (tuple(row) for row in rows[1:])
-    summary_txt, sw = _summarize_delimited_stream(
-        header, body_iter, label=label.upper()
-    )
+    summary_txt, sw = _summarize_delimited_stream(header, body_iter, label=label.upper())
     warnings.extend(sw)
-    sec = Section(
-        text=summary_txt, structure_path=label.upper(), section_type="table", order=0
-    )
+    sec = Section(text=summary_txt, structure_path=label.upper(), section_type="table", order=0)
     return ExtractionResult(
         method=label,
         text=summary_txt,
@@ -239,9 +227,7 @@ def _markdown_to_sections(src: str) -> list[Section]:
                 i += 1
             continue
         if t.type in ("paragraph_open", "blockquote_open"):
-            close = (
-                "paragraph_close" if t.type == "paragraph_open" else "blockquote_close"
-            )
+            close = "paragraph_close" if t.type == "paragraph_open" else "blockquote_close"
             i += 1
             chunk: list[str] = []
             while i < len(tokens) and tokens[i].type != close:
@@ -256,9 +242,7 @@ def _markdown_to_sections(src: str) -> list[Section]:
             if body:
                 path = " / ".join(heading_stack) if heading_stack else "Document"
                 sections.append(
-                    Section(
-                        text=body, structure_path=path, section_type="body", order=order
-                    )
+                    Section(text=body, structure_path=path, section_type="body", order=order)
                 )
                 order += 1
             if i < len(tokens) and tokens[i].type == close:
@@ -363,9 +347,7 @@ def _ipynb_sync(blob: bytes) -> ExtractionResult:
 async def extract_txt(blob: bytes) -> ExtractionResult:
     def _run() -> ExtractionResult:
         text, warnings = _decode_blob(blob)
-        sec = Section(
-            text=text.strip(), structure_path="Document", section_type="body", order=0
-        )
+        sec = Section(text=text.strip(), structure_path="Document", section_type="body", order=0)
         return ExtractionResult(
             method="chardet+txt",
             text=text,
@@ -430,8 +412,19 @@ def _html_sections_from_headings(html: str) -> list[Section]:
     order = 0
     HEADING_TAGS = {"h1": 1, "h2": 2, "h3": 3}
     BLOCK_TAGS = {
-        "p", "div", "li", "td", "th", "blockquote", "pre",
-        "article", "section", "aside", "main", "dd", "dt",
+        "p",
+        "div",
+        "li",
+        "td",
+        "th",
+        "blockquote",
+        "pre",
+        "article",
+        "section",
+        "aside",
+        "main",
+        "dd",
+        "dt",
     }
 
     def _flush(path: str) -> None:
@@ -439,7 +432,12 @@ def _html_sections_from_headings(html: str) -> list[Section]:
         combined = "\n".join(line for line in pending_lines if line.strip())
         if combined.strip():
             sections.append(
-                Section(text=combined.strip(), structure_path=path or "HTML", section_type="body", order=order)
+                Section(
+                    text=combined.strip(),
+                    structure_path=path or "HTML",
+                    section_type="body",
+                    order=order,
+                )
             )
             order += 1
         pending_lines.clear()
@@ -465,7 +463,9 @@ def _html_sections_from_headings(html: str) -> list[Section]:
 
     if not sections:
         plain = tree.root.text(separator="\n", strip=True)  # type: ignore[union-attr]
-        sections = [Section(text=plain.strip(), structure_path="HTML", section_type="body", order=0)]
+        sections = [
+            Section(text=plain.strip(), structure_path="HTML", section_type="body", order=0)
+        ]
 
     return sections
 
@@ -515,9 +515,7 @@ async def extract_rtf(blob: bytes) -> ExtractionResult:
                 metadata={},
                 warnings=warnings + [str(e)],
             )
-        sec = Section(
-            text=plain.strip(), structure_path="RTF", section_type="body", order=0
-        )
+        sec = Section(text=plain.strip(), structure_path="RTF", section_type="body", order=0)
         return ExtractionResult(
             method="striprtf",
             text=plain,
@@ -540,9 +538,7 @@ async def extract_json(blob: bytes) -> ExtractionResult:
         except Exception as e:
             pretty = text
             warnings.append(f"json_parse_failed_treating_as_text:{e}")
-        sec = Section(
-            text=pretty.strip(), structure_path="JSON", section_type="body", order=0
-        )
+        sec = Section(text=pretty.strip(), structure_path="JSON", section_type="body", order=0)
         return ExtractionResult(
             method="json",
             text=pretty,
@@ -562,9 +558,7 @@ async def extract_xml(blob: bytes) -> ExtractionResult:
         except ImportError as e:
             text, enc_w = _decode_blob(blob)
             plain = re.sub(r"<[^>]+>", " ", text)
-            sec = Section(
-                text=plain.strip(), structure_path="XML", section_type="body", order=0
-            )
+            sec = Section(text=plain.strip(), structure_path="XML", section_type="body", order=0)
             return ExtractionResult(
                 method="regex-fallback",
                 text=plain,
@@ -596,9 +590,7 @@ async def extract_xml(blob: bytes) -> ExtractionResult:
                 metadata={},
                 warnings=enc_w + [str(e)],
             )
-        sec = Section(
-            text=pretty.strip(), structure_path="XML", section_type="body", order=0
-        )
+        sec = Section(text=pretty.strip(), structure_path="XML", section_type="body", order=0)
         return ExtractionResult(
             method="lxml", text=pretty, sections=[sec], metadata={}, warnings=warnings
         )
@@ -626,9 +618,7 @@ async def extract_yaml(blob: bytes) -> ExtractionResult:
             dumped = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
         except Exception as e:
             log.warning("yaml parse failed: %s", e)
-            sec = Section(
-                text=text.strip(), structure_path="YAML", section_type="body", order=0
-            )
+            sec = Section(text=text.strip(), structure_path="YAML", section_type="body", order=0)
             return ExtractionResult(
                 method="yaml",
                 text=text,
@@ -636,9 +626,7 @@ async def extract_yaml(blob: bytes) -> ExtractionResult:
                 metadata={},
                 warnings=warnings + [str(e)],
             )
-        sec = Section(
-            text=dumped.strip(), structure_path="YAML", section_type="body", order=0
-        )
+        sec = Section(text=dumped.strip(), structure_path="YAML", section_type="body", order=0)
         return ExtractionResult(
             method="pyyaml", text=dumped, sections=[sec], metadata={}, warnings=warnings
         )

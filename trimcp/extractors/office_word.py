@@ -171,9 +171,7 @@ def extract_docx_sync(blob: bytes) -> ExtractionResult:
                 )
             try:
                 doc = Document(io.BytesIO(converted))
-                warnings.append(
-                    "Opened via LibreOffice re-normalization after python-docx failure"
-                )
+                warnings.append("Opened via LibreOffice re-normalization after python-docx failure")
             except Exception as e2:
                 return empty_skipped("python-docx", "corrupt", warnings=[str(e), str(e2)])
 
@@ -218,14 +216,10 @@ def extract_docx_sync(blob: bytes) -> ExtractionResult:
         for tbl in doc.tables:
             try:
                 rows = [
-                    "| "
-                    + " | ".join(cell.text.replace("|", "\\|") for cell in row.cells)
-                    + " |"
+                    "| " + " | ".join(cell.text.replace("|", "\\|") for cell in row.cells) + " |"
                     for row in tbl.rows
                 ]
-                path = (
-                    (" > ".join(heading_stack) + " > Table") if heading_stack else "Table"
-                )
+                path = (" > ".join(heading_stack) + " > Table") if heading_stack else "Table"
                 sections.append(
                     Section(
                         text="\n".join(rows),
@@ -339,9 +333,7 @@ def extract_docx_sync(blob: bytes) -> ExtractionResult:
         )
     except Exception as exc:
         log.warning("extract_docx_sync failed on corrupted blob: %s", exc)
-        return empty_skipped(
-            "python-docx", "corrupt", warnings=[f"extract_docx_sync_failed:{exc}"]
-        )
+        return empty_skipped("python-docx", "corrupt", warnings=[f"extract_docx_sync_failed:{exc}"])
 
 
 async def extract_doc(blob: bytes) -> ExtractionResult:
@@ -357,6 +349,4 @@ async def extract_doc(blob: bytes) -> ExtractionResult:
         return res
     except Exception as exc:
         log.warning("extract_doc failed on corrupted blob: %s", exc)
-        return empty_skipped(
-            "libreoffice", "corrupt", warnings=[f"extract_doc_failed:{exc}"]
-        )
+        return empty_skipped("libreoffice", "corrupt", warnings=[f"extract_doc_failed:{exc}"])

@@ -71,13 +71,21 @@ from typing import Any
 import asyncpg
 
 from trimcp import embeddings as _embeddings
+from trimcp.config import cfg
 from trimcp.embeddings import MODEL_ID, VECTOR_DIM  # noqa: F401
 
 log = logging.getLogger("trimcp.reembedding")
 
 # --------------------------------------------------------------------------- #
-# Model version — deterministic UUIDv5 keyed on the embedding model name.
+# Config — sourced from trimcp.config.cfg (env vars documented in .env.example)
 # --------------------------------------------------------------------------- #
+
+BATCH_SIZE: int = cfg.REEMBED_BATCH_SIZE
+BATCHES_PER_MINUTE: int = cfg.REEMBED_BATCHES_PER_MINUTE
+MAX_ROWS_PER_RUN: int = cfg.REEMBED_MAX_ROWS_PER_RUN
+INCLUDE_KG_NODES: bool = cfg.REEMBED_INCLUDE_KG_NODES
+MAX_TEXT_CHARS: int = cfg.REEMBED_MAX_TEXT_CHARS
+CRON_INTERVAL_MINUTES: int = cfg.REEMBED_CRON_INTERVAL_MINUTES
 
 _UUID_NS = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # uuid.NAMESPACE_URL
 
@@ -85,30 +93,6 @@ _UUID_NS = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # uuid.NAMESPACE_U
 def current_model_uuid() -> uuid.UUID:
     """Return a stable UUID that uniquely identifies the active embedding model."""
     return uuid.uuid5(_UUID_NS, MODEL_ID)
-
-
-# --------------------------------------------------------------------------- #
-# Env-driven config (isolated from _Config to avoid touching the shared class)
-# --------------------------------------------------------------------------- #
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except ValueError:
-        return default
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    return os.getenv(name, "false").lower() in ("1", "true", "yes")
-
-
-BATCH_SIZE: int = _env_int("REEMBED_BATCH_SIZE", 32)
-BATCHES_PER_MINUTE: int = _env_int("REEMBED_BATCHES_PER_MINUTE", 20)
-MAX_ROWS_PER_RUN: int = _env_int("REEMBED_MAX_ROWS_PER_RUN", 0)  # 0 = unlimited
-INCLUDE_KG_NODES: bool = _env_bool("REEMBED_INCLUDE_KG_NODES", False)
-MAX_TEXT_CHARS: int = _env_int("REEMBED_MAX_TEXT_CHARS", 4096)
-CRON_INTERVAL_MINUTES: int = _env_int("REEMBED_CRON_INTERVAL_MINUTES", 60)
 
 
 # --------------------------------------------------------------------------- #
@@ -276,9 +260,7 @@ async def _resolve_texts_from_mongo(
     if code_refs:
         try:
             oids = [ObjectId(r) for r in code_refs]
-            async for doc in db.code_files.find(
-                {"_id": {"$in": oids}}, {"raw_code": 1}
-            ):
+            async for doc in db.code_files.find({"_id": {"$in": oids}}, {"raw_code": 1}):
                 ref = str(doc["_id"])
                 result[ref] = str(doc.get("raw_code", ""))[:max_text_chars]
         except Exception as exc:
@@ -318,10 +300,7 @@ async def _update_memories_batch(
             WHERE  id         = $3
               AND  created_at = $4
             """,
-            [
-                (json.dumps(vec), model_str, mem_id, created_at)
-                for mem_id, created_at, vec in batch
-            ],
+            [(json.dumps(vec), model_str, mem_id, created_at) for mem_id, created_at, vec in batch],
         )
 
 
@@ -507,9 +486,7 @@ class ReembeddingWorker:
                 ref = row.get("payload_ref") or ""
                 text = mongo_texts.get(ref) or _fallback_text(row, self.max_text_chars)
                 if not text:
-                    log.debug(
-                        "Re-embed: skipping memory %s — no text available.", row["id"]
-                    )
+                    log.debug("Re-embed: skipping memory %s — no text available.", row["id"])
                     continue
                 texts.append(text)
                 selected.append((row["id"], row["created_at"]))
@@ -642,18 +619,14 @@ class ReembeddingWorker:
         kg_nodes_done = 0
 
         try:
-            memories_done = await self._run_memories_phase(
-                pool, mongo_client, model_uuid, run_id
-            )
+            memories_done = await self._run_memories_phase(pool, mongo_client, model_uuid, run_id)
 
             if self.include_kg_nodes:
                 kg_nodes_done = await self._run_kg_nodes_phase(
                     pool, run_id, memories_done, model_uuid
                 )
 
-            await self._close_run(
-                pool, run_id, "completed", memories_done, kg_nodes_done
-            )
+            await self._close_run(pool, run_id, "completed", memories_done, kg_nodes_done)
             log.info(
                 "Re-embedding run %s completed | memories=%d kg_nodes=%d",
                 run_id,

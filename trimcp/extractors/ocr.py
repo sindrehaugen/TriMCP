@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -14,6 +15,10 @@ from trimcp.extractors.core import Section
 
 log = logging.getLogger(__name__)
 
+# Guard against decompression bombs and runaway PDF OCR (configurable via env).
+_MAX_OCR_PAGES = int(os.environ.get("TRIMCP_OCR_MAX_PAGES", "50"))
+_MAX_IMAGE_PIXELS = int(os.environ.get("TRIMCP_OCR_MAX_IMAGE_PIXELS", "25000000"))
+
 
 async def ocr_pil_image(img: Any, *, lang: str = "eng") -> tuple[str, list[str]]:
     warnings: list[str] = []
@@ -21,9 +26,7 @@ async def ocr_pil_image(img: Any, *, lang: str = "eng") -> tuple[str, list[str]]
     def _run() -> tuple[str, float]:
         import pytesseract
 
-        data = pytesseract.image_to_data(
-            img, lang=lang, output_type=pytesseract.Output.DICT
-        )
+        data = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
         confs: list[int] = []
         for c in data.get("conf", []):
             try:
@@ -53,6 +56,7 @@ async def ocr_image_bytes(blob: bytes, *, lang: str = "eng") -> tuple[str, list[
     def _open():
         from PIL import Image
 
+        Image.MAX_IMAGE_PIXELS = _MAX_IMAGE_PIXELS
         im = Image.open(io.BytesIO(blob))
         return im.convert("RGB")
 
@@ -73,7 +77,7 @@ async def ocr_pdf_to_sections(
         return "", [], [f"pdf2image_unavailable: {e}"]
 
     def _pages():
-        return convert_from_bytes(blob, dpi=150)
+        return convert_from_bytes(blob, dpi=150, last_page=_MAX_OCR_PAGES)
 
     try:
         pages = await asyncio.to_thread(_pages)
@@ -84,6 +88,8 @@ async def ocr_pdf_to_sections(
     all_text: list[str] = []
     sections: list[Section] = []
     warnings: list[str] = []
+    if len(pages) >= _MAX_OCR_PAGES:
+        warnings.append(f"ocr_page_limit: capped at {_MAX_OCR_PAGES} pages")
     order = 0
     for i, pil in enumerate(pages, start=1):
         txt, w = await ocr_pil_image(pil, lang=lang)

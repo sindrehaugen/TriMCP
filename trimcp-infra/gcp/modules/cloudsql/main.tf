@@ -55,6 +55,12 @@ resource "google_secret_manager_secret" "db_admin" {
   }
 }
 
+resource "google_secret_manager_secret_iam_member" "worker_db_accessor" {
+  secret_id = google_secret_manager_secret.db_admin.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.worker_service_account_email}"
+}
+
 resource "google_secret_manager_secret_version" "db_admin" {
   secret      = google_secret_manager_secret.db_admin.id
   secret_data = jsonencode({

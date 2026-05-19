@@ -18,6 +18,39 @@ from trimcp.extractors.office_word import extract_docx
 
 log = logging.getLogger(__name__)
 
+_FORBIDDEN_SHELL_CHARS = frozenset(";|&$`<>")
+_DEFAULT_MPXJ_BINARIES = frozenset({"java", "python", "python3", "mpxj-cli"})
+
+
+def _mpxj_allowed_binaries() -> frozenset[str]:
+    raw = os.environ.get("TRIMCP_MPXJ_ALLOWED_BINARIES", "").strip()
+    if not raw:
+        return _DEFAULT_MPXJ_BINARIES
+    names = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    return names or _DEFAULT_MPXJ_BINARIES
+
+
+def _normalize_executable_name(path: str) -> str:
+    name = Path(path).name.lower()
+    if os.name == "nt" and name.endswith(".exe"):
+        return name[:-4]
+    return name
+
+
+def _parse_mpxj_argv(cmd: str) -> list[str] | None:
+    if any(ch in cmd for ch in _FORBIDDEN_SHELL_CHARS):
+        return None
+    try:
+        argv = shlex.split(cmd, posix=os.name != "nt")
+    except ValueError:
+        return None
+    if not argv:
+        return None
+    exe = _normalize_executable_name(argv[0])
+    if exe not in _mpxj_allowed_binaries():
+        return None
+    return argv
+
 
 def _extract_mpp_sync(blob: bytes) -> ExtractionResult:
     warnings: list[str] = []
@@ -36,15 +69,12 @@ def _extract_mpp_sync(blob: bytes) -> ExtractionResult:
         with tempfile.NamedTemporaryFile(suffix=".mpp", delete=False) as tf:
             tf.write(blob)
             path = Path(tf.name)
-        try:
-            argv = shlex.split(cmd, posix=os.name != "nt")
-        except ValueError as e:
-            return empty_skipped("mpp", "mpp_bad_command", warnings=[str(e)])
-        if not argv:
+        argv = _parse_mpxj_argv(cmd)
+        if argv is None:
             return empty_skipped(
                 "mpp",
                 "mpp_bad_command",
-                warnings=["TRIMCP_MPXJ_EXTRACTOR expanded to empty argv"],
+                warnings=["TRIMCP_MPXJ_EXTRACTOR is not on the allowlist or contains shell metacharacters"],
             )
         proc = subprocess.run(
             argv,
@@ -57,17 +87,13 @@ def _extract_mpp_sync(blob: bytes) -> ExtractionResult:
             return empty_skipped(
                 "mpp",
                 "mpp_sidecar_failed",
-                warnings=[
-                    (proc.stderr or proc.stdout or f"exit {proc.returncode}")[:500]
-                ],
+                warnings=[(proc.stderr or proc.stdout or f"exit {proc.returncode}")[:500]],
             )
         raw = (proc.stdout or "").strip()
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as e:
-            return empty_skipped(
-                "mpp", "mpp_json_invalid", warnings=[str(e), raw[:200]]
-            )
+            return empty_skipped("mpp", "mpp_json_invalid", warnings=[str(e), raw[:200]])
 
         sections: list[Section] = []
         order = 0
@@ -123,9 +149,7 @@ def _extract_mpp_sync(blob: bytes) -> ExtractionResult:
             warnings=warnings,
         )
     except subprocess.TimeoutExpired:
-        return empty_skipped(
-            "mpp", "mpp_sidecar_timeout", warnings=["MPXJ extractor timed out"]
-        )
+        return empty_skipped("mpp", "mpp_sidecar_timeout", warnings=["MPXJ extractor timed out"])
     except FileNotFoundError as e:
         return empty_skipped("mpp", "mpp_executable_missing", warnings=[str(e)])
     except Exception as e:
@@ -153,9 +177,7 @@ async def extract_pub(blob: bytes) -> ExtractionResult:
     if not docx_bytes:
         # Publisher sometimes converts better to PDF for text
         try:
-            pdf_bytes = await asyncio.to_thread(
-                libreoffice_convert, blob, ".pub", "pdf"
-            )
+            pdf_bytes = await asyncio.to_thread(libreoffice_convert, blob, ".pub", "pdf")
         except Exception as e:
             warnings.append(f"pub_pdf_fallback:{e}")
             pdf_bytes = None

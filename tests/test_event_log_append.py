@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from tests.fixtures.event_log_params import minimal_store_memory_params
 from tests.fixtures.fake_asyncpg import RecordingFakeConnection
 from trimcp import event_log as event_log_mod
 from trimcp.event_log import (
@@ -51,7 +52,8 @@ def namespace_id() -> UUID:
 @pytest.mark.asyncio
 async def test_append_two_events_increments_seq(namespace_id: UUID) -> None:
     conn = RecordingFakeConnection()
-    params = {"memory_id": str(uuid4())}
+    p1 = minimal_store_memory_params()
+    p2 = minimal_store_memory_params()
 
     async with conn.transaction():
         r1 = await append_event(
@@ -59,14 +61,14 @@ async def test_append_two_events_increments_seq(namespace_id: UUID) -> None:
             namespace_id=namespace_id,
             agent_id="retrieval-bot",
             event_type="store_memory",
-            params=params,
+            params=p1,
         )
         r2 = await append_event(
             conn=conn,
             namespace_id=namespace_id,
             agent_id="retrieval-bot",
             event_type="store_memory",
-            params={"memory_id": str(uuid4())},
+            params=p2,
         )
 
     assert r1.event_seq == 1
@@ -77,7 +79,7 @@ async def test_append_two_events_increments_seq(namespace_id: UUID) -> None:
 @pytest.mark.asyncio
 async def test_signature_detects_params_tampering(namespace_id: UUID) -> None:
     conn = RecordingFakeConnection()
-    memory_id = str(uuid4())
+    params_out = minimal_store_memory_params(memory_id=str(uuid4()))
 
     async with conn.transaction():
         res = await append_event(
@@ -85,7 +87,7 @@ async def test_signature_detects_params_tampering(namespace_id: UUID) -> None:
             namespace_id=namespace_id,
             agent_id="agent-clean",
             event_type="store_memory",
-            params={"memory_id": memory_id},
+            params=params_out,
         )
 
     row = conn.event_inserts[0]
@@ -96,7 +98,7 @@ async def test_signature_detects_params_tampering(namespace_id: UUID) -> None:
         event_type="store_memory",
         event_seq=res.event_seq,
         occurred_at_iso=res.occurred_at.isoformat(),
-        params={"memory_id": memory_id},
+        params=params_out,
         parent_event_id=None,
     )
     assert verify_fields(fields, _RAW_SIGNING_SECRET, row["signature"]) is True
@@ -139,7 +141,7 @@ async def test_invalid_agent_id_raises(namespace_id: UUID, bad_agent: str) -> No
                 namespace_id=namespace_id,
                 agent_id=bad_agent,
                 event_type="store_memory",
-                params={"pid": 1},
+                params=minimal_store_memory_params(extra_probe=1),
             )
 
 
@@ -154,7 +156,7 @@ async def test_d8_backdated_valid_from_in_params_raises(namespace_id: UUID) -> N
                 namespace_id=namespace_id,
                 agent_id="ok-agent",
                 event_type="store_memory",
-                params={"valid_from": past, "x": 1},
+                params=minimal_store_memory_params(valid_from=past),
             )
 
 
@@ -170,5 +172,5 @@ async def test_unique_violation_raises_event_log_sequence_error(
                 namespace_id=namespace_id,
                 agent_id="solo",
                 event_type="store_memory",
-                params={"k": "v"},
+                params=minimal_store_memory_params(marker="sequence_violation"),
             )

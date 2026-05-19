@@ -31,6 +31,10 @@ RESOURCE_MEMORY_COUNT = "memory_count"
 # Redis mirror for per-row used counters (namespace_id + quota row id in key — RLS-safe flush).
 QUOTA_REDIS_KEY_PREFIX = "trimcp:quota:used:"
 
+_MAX_QUOTA_DELTA: int = 10_000_000
+_REDIS_CALL_TIMEOUT_S: float = 2.0
+_QUOTA_REDIS_KEY_TTL_S: int = 86_400 * 7  # 7 days — well beyond flush interval
+
 _QUOTA_INCR_LUA = """
 local cur = redis.call('GET', KEYS[1])
 local base = tonumber(ARGV[1])
@@ -44,10 +48,15 @@ else
 end
 local newv = v + delta
 if newv > limit then
-  return '-1'
+  return -1
 end
-redis.call('SET', KEYS[1], newv)
-return tostring(newv)
+local ttl = tonumber(ARGV[4])
+if ttl and ttl > 0 then
+  redis.call('SET', KEYS[1], newv, 'EX', ttl)
+else
+  redis.call('SET', KEYS[1], newv)
+end
+return newv
 """
 
 
@@ -69,8 +78,10 @@ def _parse_quota_redis_key(key: str) -> tuple[UUID, UUID] | None:
 def _quota_incr_failed(result: Any) -> bool:
     if result is None:
         return True
+    if isinstance(result, (int, float)):
+        return int(result) == -1
     s = result.decode() if isinstance(result, bytes) else str(result)
-    return s == "-1"
+    return s.strip() == "-1"
 
 
 class QuotaExceededError(ValueError):
@@ -93,9 +104,16 @@ class QuotaReservation:
     async def rollback(self) -> None:
         if self.redis_client is not None and self.namespace_id is not None and self.steps:
             for qid, delta in reversed(self.steps):
-                await self.redis_client.decrby(
-                    quota_redis_key(self.namespace_id, qid), delta
-                )
+                try:
+                    await self.redis_client.decrby(quota_redis_key(self.namespace_id, qid), delta)
+                except Exception:
+                    log.error(
+                        "Quota rollback step failed — Redis DECRBY for quota_id=%s delta=%d "
+                        "namespace=%s. Counter may be over-counted.",
+                        qid,
+                        delta,
+                        self.namespace_id,
+                    )
             self.steps.clear()
             return
         if not self.steps or self.pool is None:
@@ -144,12 +162,27 @@ async def _consume_resources_redis(
         redis_client=redis_client,
         namespace_id=namespace_id,
     )
-    deltas = {k: int(v) for k, v in amounts.items() if int(v) > 0}
+    deltas: dict[str, int] = {}
+    for k, v in amounts.items():
+        d = int(v)
+        if d <= 0:
+            continue
+        if d > _MAX_QUOTA_DELTA:
+            raise ValueError(f"Quota delta for {k!r} exceeds maximum ({d} > {_MAX_QUOTA_DELTA})")
+        deltas[k] = d
     applied: list[tuple[UUID, int]] = []
 
     async def _rollback_partial() -> None:
         for qid, delta in reversed(applied):
-            await redis_client.decrby(quota_redis_key(namespace_id, qid), delta)
+            try:
+                await redis_client.decrby(quota_redis_key(namespace_id, qid), delta)
+            except Exception:
+                log.error(
+                    "Partial quota rollback failed for quota_id=%s delta=%d namespace=%s",
+                    qid,
+                    delta,
+                    namespace_id,
+                )
 
     try:
         async with pool.acquire(timeout=10.0) as conn:
@@ -178,13 +211,17 @@ async def _consume_resources_redis(
                     pg_used = int(row["used_amount"])
                     lim = int(row["limit_amount"])
                     key = quota_redis_key(namespace_id, qid)
-                    res = await redis_client.eval(
-                        _QUOTA_INCR_LUA,
-                        1,
-                        key,
-                        str(pg_used),
-                        str(delta),
-                        str(lim),
+                    res = await asyncio.wait_for(
+                        redis_client.eval(
+                            _QUOTA_INCR_LUA,
+                            1,
+                            key,
+                            str(pg_used),
+                            str(delta),
+                            str(lim),
+                            str(_QUOTA_REDIS_KEY_TTL_S),
+                        ),
+                        timeout=_REDIS_CALL_TIMEOUT_S,
                     )
                     if _quota_incr_failed(res):
                         await _rollback_partial()
@@ -225,13 +262,18 @@ async def consume_resources(
     if not cfg.TRIMCP_QUOTAS_ENABLED:
         return null_reservation()
 
-    deltas = {k: int(v) for k, v in amounts.items() if int(v) > 0}
+    deltas: dict[str, int] = {}
+    for k, v in amounts.items():
+        d = int(v)
+        if d <= 0:
+            continue
+        if d > _MAX_QUOTA_DELTA:
+            raise ValueError(f"Quota delta for {k!r} exceeds maximum ({d} > {_MAX_QUOTA_DELTA})")
+        deltas[k] = d
     if not deltas:
         return QuotaReservation(pool=pool, steps=[])
 
-    use_redis = bool(
-        cfg.TRIMCP_QUOTA_REDIS_COUNTERS and redis_client is not None
-    )
+    use_redis = bool(cfg.TRIMCP_QUOTA_REDIS_COUNTERS and redis_client is not None)
     if use_redis:
         return await _consume_resources_redis(
             pool,
@@ -280,9 +322,7 @@ async def consume_resources(
                             row["id"],
                         )
                         if upd is None:
-                            scope = (
-                                "namespace" if row["agent_id"] is None else "agent"
-                            )
+                            scope = "namespace" if row["agent_id"] is None else "agent"
                             raise QuotaExceededError(
                                 f"Quota exceeded for namespace={namespace_id} "
                                 f"resource={resource_type!r} ({scope} limit)"
@@ -296,9 +336,7 @@ async def consume_resources(
     return reservation
 
 
-async def flush_quota_counters_to_postgres(
-    redis_client: Any, pool: asyncpg.Pool
-) -> int:
+async def flush_quota_counters_to_postgres(redis_client: Any, pool: asyncpg.Pool) -> int:
     """Scan Redis quota keys and persist ``used_amount`` under RLS-scoped sessions."""
     if redis_client is None:
         return 0
@@ -324,7 +362,8 @@ async def flush_quota_counters_to_postgres(
                 await conn.execute(
                     """
                     UPDATE resource_quotas
-                    SET used_amount = $1, updated_at = now()
+                    SET used_amount = GREATEST(used_amount, $1),
+                        updated_at = now()
                     WHERE id = $2
                     """,
                     used,

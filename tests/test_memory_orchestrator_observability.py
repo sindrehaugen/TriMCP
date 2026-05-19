@@ -313,21 +313,21 @@ class TestMemoryModuleStructure:
                 f"{len(body)} statement(s) — expected real work"
             )
 
-    def test_store_media_no_pass_in_saga_metrics(self) -> None:
-        """store_media must also have actual work inside SagaMetrics."""
-        method = self._get_method_ast("store_media")
+    def test_store_artifact_no_pass_in_saga_metrics(self) -> None:
+        """store_artifact must have actual work inside SagaMetrics (store_media delegates here)."""
+        method = self._get_method_ast("store_artifact")
         blocks = self._get_saga_metrics_blocks(method)
 
-        assert len(blocks) >= 1, "No SagaMetrics context found in store_media"
+        assert len(blocks) >= 1, "No SagaMetrics context found in store_artifact"
 
         for with_node in blocks:
             body = with_node.body
             assert not (len(body) == 1 and isinstance(body[0], ast.Pass)), (
-                "SagaMetrics context in store_media still contains only `pass` — "
+                "SagaMetrics context in store_artifact still contains only `pass` — "
                 "the P0 bug fix was not applied."
             )
             assert len(body) > 2, (
-                f"SagaMetrics context in store_media has only "
+                f"SagaMetrics context in store_artifact has only "
                 f"{len(with_node.body)} statement(s) — expected real work"
             )
 
@@ -413,9 +413,7 @@ class TestMemoryOrchestratorObservabilityContract:
         # Mock insert_one to return a result with inserted_id
         insert_result = MagicMock()
         insert_result.inserted_id = MagicMock()
-        insert_result.inserted_id.__str__ = MagicMock(
-            return_value="507f1f77bcf86cd799439011"
-        )
+        insert_result.inserted_id.__str__ = MagicMock(return_value="507f1f77bcf86cd799439011")
         collection.insert_one = AsyncMock(return_value=insert_result)
         collection.delete_one = AsyncMock()
         db.episodes = collection
@@ -554,9 +552,9 @@ class TestMemoryOrchestratorObservabilityContract:
 
         class _TracerSpy:
             def start_as_current_span(self, name, **kw):
-                assert (
-                    "store_memory" in name
-                ), f"Expected span name containing 'store_memory', got {name!r}"
+                assert "store_memory" in name, (
+                    f"Expected span name containing 'store_memory', got {name!r}"
+                )
                 return _SpanSpy()
 
         monkeypatch.setattr(
@@ -603,9 +601,7 @@ class TestMemoryOrchestratorObservabilityContract:
         assert exited[0], "The store_memory OTel span was never exited"
 
     @pytest.mark.asyncio
-    async def test_store_media_saga_metrics_records_work(
-        self, orchestrator, monkeypatch
-    ) -> None:
+    async def test_store_media_saga_metrics_records_work(self, orchestrator, monkeypatch) -> None:
         """store_media must also properly wrap work in SagaMetrics."""
         monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
         observed_durations: list[float] = []
@@ -615,7 +611,7 @@ class TestMemoryOrchestratorObservabilityContract:
         original_labels = SAGA_DURATION.labels
 
         def _capture_labels(**kw):
-            if kw.get("operation") == "store_media":
+            if kw.get("operation") == "store_artifact":
 
                 class _SpyHistogram:
                     def observe(self_hist, value):
@@ -668,7 +664,7 @@ class TestMemoryOrchestratorObservabilityContract:
             os.unlink(tmp_path)
 
         assert len(observed_durations) >= 1, (
-            "SagaMetrics never recorded a duration for store_media — "
+            "SagaMetrics never recorded a duration for store_artifact — "
             "the context manager is not wrapping the work."
         )
 
@@ -691,7 +687,7 @@ class TestMemoryOrchestratorObservabilityContract:
 
         class _TracerSpy:
             def start_as_current_span(self, name, **kw):
-                assert "store_media" in name
+                assert "store_artifact" in name
                 return _SpanSpy()
 
         monkeypatch.setattr(
@@ -731,5 +727,5 @@ class TestMemoryOrchestratorObservabilityContract:
         finally:
             os.unlink(tmp_path)
 
-        assert entered[0], "The store_media OTel span was never entered"
-        assert exited[0], "The store_media OTel span was never exited"
+        assert entered[0], "The store_artifact OTel span was never entered"
+        assert exited[0], "The store_artifact OTel span was never exited"

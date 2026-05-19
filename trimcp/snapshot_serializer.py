@@ -54,7 +54,7 @@ SNAPSHOT_ARG_KEYS = _SnapshotArgKeys()
 # Sentinel for default-agent lookups — avoids repeating "default" as a literal.
 _DEFAULT_AGENT_ID: str = "default"
 _DEFAULT_TOP_K: int = 10
-_DEFAULT_METADATA: dict[str, Any] = {}
+_MAX_QUERY_LEN: int = 2_048
 
 
 # ── Pure serializers ─────────────────────────────────────────────────────────
@@ -69,17 +69,17 @@ def serialize_snapshot_record(record: SnapshotRecord) -> str:
     Returns:
         A JSON string suitable for ``TextContent`` wrapping.
     """
-    return json.dumps(record.model_dump(mode="json"))
+    return json.dumps(record.model_dump(mode="json"), default=str)
 
 
 def serialize_snapshot_list(records: list[SnapshotRecord]) -> str:
     """Serialize a list of ``SnapshotRecord`` to a JSON string."""
-    return json.dumps([s.model_dump(mode="json") for s in records])
+    return json.dumps([s.model_dump(mode="json") for s in records], default=str)
 
 
 def serialize_delete_result(result: DeleteSnapshotResult) -> str:
     """Serialize the ``DeleteSnapshotResult`` to a JSON string."""
-    return json.dumps(result.model_dump(mode="json"))
+    return json.dumps(result.model_dump(mode="json"), default=str)
 
 
 def serialize_state_diff(diff: StateDiffResult) -> str:
@@ -91,7 +91,7 @@ def serialize_state_diff(diff: StateDiffResult) -> str:
     Returns:
         A JSON string suitable for ``TextContent`` wrapping.
     """
-    return json.dumps(diff.model_dump(mode="json"))
+    return json.dumps(diff.model_dump(mode="json"), default=str)
 
 
 # ── Request builders ─────────────────────────────────────────────────────────
@@ -109,14 +109,34 @@ def build_create_snapshot_request(arguments: dict[str, Any]) -> CreateSnapshotRe
     Returns:
         A validated ``CreateSnapshotRequest`` instance.
     """
+    from trimcp.auth import validate_agent_id
     from trimcp.temporal import parse_as_of
+
+    # --- name ---
+    raw_name = arguments.get(SNAPSHOT_ARG_KEYS.NAME)
+    if not raw_name:
+        raise ValueError("name is required")
+    name = str(raw_name).strip()
+    if not name or len(name) > 256:
+        raise ValueError(f"name must be between 1 and 256 characters, got {len(name)!r}")
+
+    # --- agent_id ---
+    agent_id = validate_agent_id(
+        str(arguments.get(SNAPSHOT_ARG_KEYS.AGENT_ID) or _DEFAULT_AGENT_ID)
+    )
+
+    # --- metadata (fresh dict, never shared reference) ---
+    meta_raw = arguments.get(SNAPSHOT_ARG_KEYS.METADATA)
+    if meta_raw is not None and not isinstance(meta_raw, dict):
+        raise ValueError(f"metadata must be a JSON object, got {type(meta_raw).__name__!r}")
+    metadata = dict(meta_raw) if isinstance(meta_raw, dict) else {}
 
     return CreateSnapshotRequest(
         namespace_id=arguments[SNAPSHOT_ARG_KEYS.NAMESPACE_ID],
-        name=arguments[SNAPSHOT_ARG_KEYS.NAME],
-        agent_id=arguments.get(SNAPSHOT_ARG_KEYS.AGENT_ID, _DEFAULT_AGENT_ID),
+        name=name,
+        agent_id=agent_id,
         snapshot_at=parse_as_of(arguments.get(SNAPSHOT_ARG_KEYS.SNAPSHOT_AT)),
-        metadata=arguments.get(SNAPSHOT_ARG_KEYS.METADATA, _DEFAULT_METADATA),
+        metadata=metadata,
     )
 
 
@@ -129,16 +149,31 @@ def build_compare_states_request(arguments: dict[str, Any]) -> CompareStatesRequ
     Returns:
         A validated ``CompareStatesRequest`` instance.
     """
+    from trimcp.models import _MAX_TOP_K
     from trimcp.temporal import parse_as_of
 
     as_of_a = parse_as_of(arguments.get(SNAPSHOT_ARG_KEYS.AS_OF_A))
     as_of_b = parse_as_of(arguments.get(SNAPSHOT_ARG_KEYS.AS_OF_B))
     if as_of_a is None or as_of_b is None:
         raise ValueError("compare_states requires both as_of_a and as_of_b timestamps")
+    if as_of_a >= as_of_b:
+        raise ValueError(
+            f"as_of_a must be strictly before as_of_b "
+            f"(got as_of_a={as_of_a.isoformat()}, as_of_b={as_of_b.isoformat()})"
+        )
+
+    raw_query = arguments.get(SNAPSHOT_ARG_KEYS.QUERY)
+    if raw_query is not None and len(str(raw_query)) > _MAX_QUERY_LEN:
+        raise ValueError(f"query exceeds maximum length of {_MAX_QUERY_LEN} characters")
+    query = raw_query
+
+    raw_top_k = arguments.get(SNAPSHOT_ARG_KEYS.TOP_K, _DEFAULT_TOP_K)
+    top_k = max(1, min(int(raw_top_k), _MAX_TOP_K))
+
     return CompareStatesRequest(
         namespace_id=arguments[SNAPSHOT_ARG_KEYS.NAMESPACE_ID],
         as_of_a=as_of_a,
         as_of_b=as_of_b,
-        query=arguments.get(SNAPSHOT_ARG_KEYS.QUERY),
-        top_k=int(arguments.get(SNAPSHOT_ARG_KEYS.TOP_K, _DEFAULT_TOP_K)),
+        query=query,
+        top_k=top_k,
     )

@@ -9,8 +9,29 @@ from datetime import datetime, timedelta, timezone
 
 from trimcp.config import cfg
 
+_ABSOLUTE_MAX_LOOKBACK_DAYS: int = 3650  # 10 years hard ceiling
 
-def parse_as_of(raw: str | None) -> datetime | None:
+
+def _normalize_to_utc(ts: datetime) -> datetime:
+    """Return *ts* normalized to UTC. Naive datetimes are assumed UTC."""
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
+def _assert_not_future(dt: datetime, now: datetime, label: str = "timestamp") -> None:
+    """Raise ValueError if *dt* is in the future relative to *now*."""
+    if dt > now:
+        raise ValueError(
+            f"{label} must not be in the future — temporal queries read past state only"
+        )
+
+
+def parse_as_of(
+    raw: str | None,
+    *,
+    _now: datetime | None = None,
+) -> datetime | None:
     """
     Parse and validate an ISO 8601 timestamp from an MCP tool or REST body.
 
@@ -31,13 +52,9 @@ def parse_as_of(raw: str | None) -> datetime | None:
         raise ValueError(
             f"as_of must be a valid ISO 8601 timestamp (e.g. '2026-01-15T10:00:00Z'), got: {raw!r}"
         )
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    now = datetime.now(timezone.utc)
-    if dt > now:
-        raise ValueError(
-            "as_of must not be in the future — temporal queries read past state only"
-        )
+    dt = _normalize_to_utc(dt)
+    now = _now if _now is not None else datetime.now(timezone.utc)
+    _assert_not_future(dt, now, "as_of")
     _enforce_lookback_boundary(dt, now)
     return dt
 
@@ -55,16 +72,21 @@ def _enforce_lookback_boundary(dt: datetime, now: datetime) -> None:
     max_days = cfg.TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS
     if max_days <= 0:
         return
+    max_days = min(max_days, _ABSOLUTE_MAX_LOOKBACK_DAYS)
     cutoff = now - timedelta(days=max_days)
     if dt < cutoff:
         raise ValueError(
-            f"as_of timestamp {dt.isoformat()} exceeds maximum temporal lookback of "
-            f"{max_days} days (earliest allowed: {cutoff.isoformat()}). "
-            "Adjust TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS to increase the window."
+            f"as_of timestamp {dt.isoformat()} is outside the allowed lookback window "
+            f"(earliest allowed: {cutoff.isoformat()})"
         )
 
 
-def as_of_query(base_query: str, as_of: datetime | None) -> tuple[str, list]:
+def as_of_query(
+    base_query: str,
+    as_of: datetime | None,
+    *,
+    start_index: int = 1,
+) -> tuple[str, list]:
     """
     Append a parameterised temporal filter to *base_query*.
 
@@ -81,21 +103,17 @@ def as_of_query(base_query: str, as_of: datetime | None) -> tuple[str, list]:
 
     Example::
 
-        clause, params = as_of_query("...", as_of=my_timestamp)
+        clause, params = as_of_query("...", as_of=my_timestamp, start_index=2)
         sql = f"SELECT ... WHERE namespace_id = $1 {clause}"
         full_params = [ns_id] + params
     """
     if as_of is None:
         return "AND valid_to IS NULL", []
     now = datetime.now(timezone.utc)
-    if as_of.tzinfo is None:
-        as_of = as_of.replace(tzinfo=timezone.utc)
-    if as_of > now:
-        raise ValueError(
-            "as_of must not be in the future — temporal queries read past state only"
-        )
+    as_of = _normalize_to_utc(as_of)
+    _assert_not_future(as_of, now, "as_of")
     return (
-        "AND valid_from <= $1 AND (valid_to IS NULL OR valid_to > $1)",
+        f"AND valid_from <= ${start_index} AND (valid_to IS NULL OR valid_to > ${start_index})",
         [as_of],
     )
 
@@ -110,7 +128,5 @@ def validate_write_timestamp(ts: datetime | None) -> None:
     if ts is None:
         return
     now = datetime.now(timezone.utc)
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    if ts > now:
-        raise ValueError(f"Write timestamp must not be in the future: {ts.isoformat()}")
+    ts = _normalize_to_utc(ts)
+    _assert_not_future(ts, now, "write timestamp")

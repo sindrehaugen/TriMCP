@@ -39,6 +39,7 @@ log = logging.getLogger("tri-stack-graphify")
 def _get_spacy_model(model_name: str = "en_core_web_sm"):
     """Load and cache the spaCy model. Called once per process lifetime."""
     import spacy  # noqa: PLC0415
+
     return spacy.load(model_name)
 
 
@@ -88,18 +89,14 @@ def _spacy_extract(text: str) -> tuple[list[KGNode], list[KGEdge]]:
         label = chunk.root.lemma_.strip()
         label_key = label.lower()
         if label and label_key not in seen_lower and len(label) > 2:
-            nodes.append(
-                KGNode(label=label, entity_type="CONCEPT", source_text=chunk.text)
-            )
+            nodes.append(KGNode(label=label, entity_type="CONCEPT", source_text=chunk.text))
             seen_lower.add(label_key)
 
     # --- Triplets from dependency parse (SVO extraction) ---
     edges: list[KGEdge] = []
     for token in doc:
         if token.pos_ == "VERB" and token.dep_ in ("ROOT", "relcl", "advcl"):
-            subj = next(
-                (c for c in token.lefts if c.dep_ in ("nsubj", "nsubjpass")), None
-            )
+            subj = next((c for c in token.lefts if c.dep_ in ("nsubj", "nsubjpass")), None)
             obj = next(
                 (c for c in token.rights if c.dep_ in ("dobj", "attr", "prep", "pobj")),
                 None,
@@ -159,14 +156,10 @@ def _regex_extract(text: str) -> tuple[list[KGNode], list[KGEdge]]:
             m.group(2).strip().lower(),
             m.group(3).strip(),
         )
-        edges.append(
-            KGEdge(subject_label=subj, predicate=pred, object_label=obj, confidence=0.6)
-        )
+        edges.append(KGEdge(subject_label=subj, predicate=pred, object_label=obj, confidence=0.6))
         for label in (subj, obj):
             if label.lower() not in seen:
-                nodes.append(
-                    KGNode(label=label, entity_type="CONCEPT", source_text=label)
-                )
+                nodes.append(KGNode(label=label, entity_type="CONCEPT", source_text=label))
                 seen.add(label.lower())
 
     return nodes, edges
@@ -179,9 +172,7 @@ def deduplicate_graph(
     nodes: list[KGNode],
     edges: list[KGEdge],
     *,
-    confidence_accumulator: Callable[[float, float], float] = lambda a, b: min(
-        a + b, 1.0
-    ),
+    confidence_accumulator: Callable[[float, float], float] = lambda a, b: min(a + b, 1.0),
 ) -> tuple[list[KGNode], list[KGEdge]]:
     """
     Merge duplicate nodes and accumulate edge weights from overlapping extractions.

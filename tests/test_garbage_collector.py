@@ -7,6 +7,7 @@ before RLS-protected operations, and that helpers return gracefully on error.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
@@ -113,9 +114,7 @@ async def test_clean_orphaned_cascade_returns_zero_on_error():
     bad_pool = MagicMock()
     bad_pool.acquire.side_effect = RuntimeError("Connection refused")
 
-    with patch(
-        "trimcp.garbage_collector.set_namespace_context", new_callable=AsyncMock
-    ):
+    with patch("trimcp.garbage_collector.set_namespace_context", new_callable=AsyncMock):
         counts = await _clean_orphaned_cascade(bad_pool, uuid4())
     assert counts == {"salience": 0, "contradictions": 0}
 
@@ -153,32 +152,24 @@ async def test_clean_orphaned_cascade_passes_namespace_id_to_cte(mock_pg_pool):
         ]
     )
 
-    with patch(
-        "trimcp.garbage_collector.set_namespace_context", new_callable=AsyncMock
-    ):
+    with patch("trimcp.garbage_collector.set_namespace_context", new_callable=AsyncMock):
         counts = await _clean_orphaned_cascade(mock_pg_pool, ns_id)
 
     # Verify the namespace_id UUID was passed as the second argument to fetchrow
     call_args, call_kwargs = conn.fetchrow.call_args
     # The SQL text is the first positional arg, namespace_id is the second
-    assert (
-        len(call_args) >= 2
-    ), f"Expected at least 2 positional args, got {len(call_args)}"
-    assert (
-        call_args[1] == ns_id
-    ), f"Expected namespace_id {ns_id} but got {call_args[1]}"
+    assert len(call_args) >= 2, f"Expected at least 2 positional args, got {len(call_args)}"
+    assert call_args[1] == ns_id, f"Expected namespace_id {ns_id} but got {call_args[1]}"
 
     # Verify the SQL contains the explicit namespace_id filter pattern
     sql = call_args[0]
     assert "$1::uuid" in sql, "Expected parameterised namespace_id filter in CTE SQL"
-    assert (
-        "namespace_id = $1::uuid" in sql
-    ), "Expected explicit namespace_id WHERE clause in CTE"
+    assert "namespace_id = $1::uuid" in sql, "Expected explicit namespace_id WHERE clause in CTE"
     # Should appear at least 5 times: existing_memories, 4 orphan sub-selects, 2 DELETEs
     namespace_filter_count = sql.count("namespace_id = $1::uuid")
-    assert (
-        namespace_filter_count >= 5
-    ), f"Expected at least 5 explicit namespace_id filters, found {namespace_filter_count}"
+    assert namespace_filter_count >= 5, (
+        f"Expected at least 5 explicit namespace_id filters, found {namespace_filter_count}"
+    )
 
     assert counts == {"salience": 5, "contradictions": 3}
 
@@ -229,9 +220,7 @@ async def test_fetch_pg_refs_sets_context_per_namespace():
 
 
 @pytest.mark.asyncio
-async def test_collect_orphans_iterates_over_all_namespaces(
-    mock_pg_pool, sample_namespaces
-):
+async def test_collect_orphans_iterates_over_all_namespaces(mock_pg_pool, sample_namespaces):
     """Verify _collect_orphans calls unified cascade for each namespace."""
     from datetime import datetime, timedelta
 
@@ -246,12 +235,17 @@ async def test_collect_orphans_iterates_over_all_namespaces(
         for d in docs:
             yield d
 
+    def _find_chain(docs):
+        cursor = MagicMock()
+        cursor.max_time_ms = MagicMock(return_value=_async_cursor(docs))
+        return cursor
+
     # GC uses db[col_name] (subscript), not db.col_name (attribute)
     episodes_col = MagicMock()
-    episodes_col.find = MagicMock(return_value=_async_cursor([stale]))
+    episodes_col.find = MagicMock(return_value=_find_chain([stale]))
     episodes_col.delete_one = AsyncMock(return_value=MagicMock(deleted_count=1))
     code_col = MagicMock()
-    code_col.find = MagicMock(return_value=_async_cursor([]))
+    code_col.find = MagicMock(return_value=_find_chain([]))
     code_col.delete_one = AsyncMock(return_value=MagicMock(deleted_count=0))
 
     mongo_client = MagicMock()
@@ -288,7 +282,7 @@ async def test_collect_orphans_iterates_over_all_namespaces(
 
 @pytest.mark.asyncio
 async def test_collect_orphans_handles_no_namespaces():
-    """When no namespaces exist, skip PG maintenance passes entirely."""
+    """When no namespaces exist, abort before Mongo/PG deletion to prevent data loss."""
     from datetime import datetime, timedelta
 
     from trimcp.garbage_collector import _collect_orphans
@@ -310,12 +304,17 @@ async def test_collect_orphans_handles_no_namespaces():
         for d in docs:
             yield d
 
+    find_cursor = MagicMock()
+    find_cursor.max_time_ms = MagicMock(return_value=_async_cursor([stale]))
+
     mongo_client = MagicMock()
     episodes_col = MagicMock()
-    episodes_col.find = MagicMock(return_value=_async_cursor([stale]))
+    episodes_col.find = MagicMock(return_value=find_cursor)
     episodes_col.delete_one = AsyncMock(return_value=MagicMock(deleted_count=1))
     code_col = MagicMock()
-    code_col.find = MagicMock(return_value=_async_cursor([]))
+    code_find = MagicMock()
+    code_find.max_time_ms = MagicMock(return_value=_async_cursor([]))
+    code_col.find = MagicMock(return_value=code_find)
     code_col.delete_one = AsyncMock(return_value=MagicMock(deleted_count=0))
     mongo_client.memory_archive = {"episodes": episodes_col, "code_files": code_col}
 
@@ -326,14 +325,350 @@ async def test_collect_orphans_handles_no_namespaces():
         patch(
             "trimcp.garbage_collector._fetch_pg_refs",
             new_callable=AsyncMock,
-            return_value=set(),
-        ),
+        ) as mock_pg_refs,
     ):
         result = await _collect_orphans(mongo_client, pool)
 
     mock_cascade.assert_not_awaited()
-    # No namespaces → PG maintenance skipped; doc orphan still cleaned
-    assert isinstance(result, dict)
-    assert "deleted_nodes" not in result
-    assert result["deleted_salience"] == 0
-    assert result["deleted_contradictions"] == 0
+    mock_pg_refs.assert_not_awaited()
+    episodes_col.delete_one.assert_not_awaited()
+    assert result == {
+        "deleted_docs": 0,
+        "deleted_salience": 0,
+        "deleted_contradictions": 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Batch 6 — hardening regressions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clean_orphaned_cascade_sql_no_trailing_comma_before_select(
+    mock_pg_pool,
+):
+    """deleted_contradictions CTE must not have a trailing comma before SELECT."""
+    from trimcp.garbage_collector import _clean_orphaned_cascade
+
+    conn = mock_pg_pool.acquire.return_value.__aenter__.return_value
+    conn.fetchrow = AsyncMock(return_value={"salience_count": 0, "contradictions_count": 0})
+
+    with patch("trimcp.garbage_collector.set_namespace_context", new_callable=AsyncMock):
+        await _clean_orphaned_cascade(mock_pg_pool, uuid4())
+
+    sql = conn.fetchrow.call_args[0][0]
+    assert ")\n                    SELECT" in sql
+    assert "),\n                    SELECT" not in sql
+
+
+@pytest.mark.asyncio
+async def test_collect_orphans_empty_namespaces_never_deletes_mongo():
+    """Empty namespace list must abort before any Mongo delete_one calls."""
+    from datetime import datetime, timedelta
+
+    from trimcp.garbage_collector import _collect_orphans
+
+    stale_docs = [
+        {
+            "_id": f"507f1f77bcf86cd79943901{i}",
+            "ingested_at": datetime.now(timezone.utc) - timedelta(hours=1),
+        }
+        for i in range(3)
+    ]
+
+    async def _async_cursor(docs):
+        for d in docs:
+            yield d
+
+    def _find_chain(docs):
+        cursor = MagicMock()
+        cursor.max_time_ms = MagicMock(return_value=_async_cursor(docs))
+        return cursor
+
+    episodes_col = MagicMock()
+    episodes_col.find = MagicMock(return_value=_find_chain(stale_docs))
+    episodes_col.delete_one = AsyncMock()
+    code_col = MagicMock()
+    code_col.find = MagicMock(return_value=_find_chain([]))
+    code_col.delete_one = AsyncMock()
+
+    mongo_client = MagicMock()
+    mongo_client.memory_archive = {"episodes": episodes_col, "code_files": code_col}
+
+    pool = MagicMock()
+
+    with patch(
+        "trimcp.garbage_collector._fetch_all_namespaces",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        result = await _collect_orphans(mongo_client, pool)
+
+    episodes_col.delete_one.assert_not_awaited()
+    code_col.delete_one.assert_not_awaited()
+    assert result == {
+        "deleted_docs": 0,
+        "deleted_salience": 0,
+        "deleted_contradictions": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_connect_with_retry_closes_mongo_when_pg_fails():
+    """Mongo client must be closed when PG pool creation fails mid-connect."""
+    from trimcp.garbage_collector import _connect_with_retry
+
+    first_mongo = MagicMock()
+    first_mongo.admin.command = AsyncMock(return_value={"ok": 1})
+    first_mongo.close = MagicMock()
+
+    second_mongo = MagicMock()
+    second_mongo.admin.command = AsyncMock(return_value={"ok": 1})
+
+    mock_pool = MagicMock()
+
+    with (
+        patch(
+            "trimcp.garbage_collector.AsyncIOMotorClient",
+            side_effect=[first_mongo, second_mongo],
+        ),
+        patch(
+            "trimcp.garbage_collector.asyncpg.create_pool",
+            new_callable=AsyncMock,
+            side_effect=[RuntimeError("pg down"), mock_pool],
+        ),
+        patch("trimcp.garbage_collector.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        mongo, pool = await _connect_with_retry()
+
+    first_mongo.close.assert_called_once()
+    assert mongo is second_mongo
+    assert pool is mock_pool
+
+
+@pytest.mark.asyncio
+async def test_acquire_gc_lock_returns_none_when_not_acquired():
+    from trimcp.garbage_collector import _acquire_gc_lock
+
+    mock_client = AsyncMock()
+    mock_client.set = AsyncMock(return_value=False)
+
+    with (
+        patch("trimcp.garbage_collector.cfg.REDIS_URL", "redis://localhost:6379/0"),
+        patch("redis.asyncio.Redis.from_url", return_value=mock_client),
+    ):
+        result = await _acquire_gc_lock()
+
+    assert result is None
+    mock_client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_acquire_gc_lock_returns_client_when_acquired():
+    from trimcp.garbage_collector import _acquire_gc_lock
+
+    mock_client = AsyncMock()
+    mock_client.set = AsyncMock(return_value=True)
+
+    with (
+        patch("trimcp.garbage_collector.cfg.REDIS_URL", "redis://localhost:6379/0"),
+        patch("redis.asyncio.Redis.from_url", return_value=mock_client),
+    ):
+        result = await _acquire_gc_lock()
+
+    assert result is mock_client
+    mock_client.aclose.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_release_gc_lock_deletes_key_and_closes():
+    from trimcp.garbage_collector import _GC_LOCK_KEY, _release_gc_lock
+
+    mock_client = AsyncMock()
+
+    await _release_gc_lock(mock_client)
+
+    mock_client.delete.assert_awaited_once_with(_GC_LOCK_KEY)
+    mock_client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_gc_loop_releases_lock_on_collect_error():
+    from trimcp.garbage_collector import run_gc_loop
+
+    mock_mongo = MagicMock()
+    mock_mongo.close = MagicMock()
+    mock_pool = AsyncMock()
+    mock_pool.close = AsyncMock()
+    mock_lock = AsyncMock()
+
+    sleep_calls = 0
+
+    async def _sleep(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            raise asyncio.CancelledError()
+
+    with (
+        patch(
+            "trimcp.garbage_collector._connect_with_retry",
+            new_callable=AsyncMock,
+            return_value=(mock_mongo, mock_pool),
+        ),
+        patch(
+            "trimcp.garbage_collector._acquire_gc_lock",
+            new_callable=AsyncMock,
+            return_value=mock_lock,
+        ),
+        patch(
+            "trimcp.garbage_collector._collect_orphans",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("collect boom"),
+        ),
+        patch(
+            "trimcp.garbage_collector._release_gc_lock",
+            new_callable=AsyncMock,
+        ) as mock_release,
+        patch("trimcp.garbage_collector.asyncio.sleep", side_effect=_sleep),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await run_gc_loop()
+
+    mock_release.assert_awaited_once_with(mock_lock)
+
+
+@pytest.mark.asyncio
+async def test_run_gc_loop_skips_collect_when_lock_not_acquired():
+    from trimcp.garbage_collector import run_gc_loop
+
+    mock_mongo = MagicMock()
+    mock_mongo.close = MagicMock()
+    mock_pool = AsyncMock()
+    mock_pool.close = AsyncMock()
+
+    with (
+        patch(
+            "trimcp.garbage_collector._connect_with_retry",
+            new_callable=AsyncMock,
+            return_value=(mock_mongo, mock_pool),
+        ),
+        patch(
+            "trimcp.garbage_collector._acquire_gc_lock",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "trimcp.garbage_collector._collect_orphans",
+            new_callable=AsyncMock,
+        ) as mock_collect,
+        patch(
+            "trimcp.garbage_collector.asyncio.sleep",
+            new_callable=AsyncMock,
+            side_effect=asyncio.CancelledError(),
+        ),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await run_gc_loop()
+
+    mock_collect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_collect_orphans_find_uses_max_time_ms(mock_pg_pool, sample_namespaces):
+    from datetime import datetime, timedelta
+
+    from trimcp.garbage_collector import _collect_orphans
+
+    stale = {
+        "_id": "507f1f77bcf86cd799439011",
+        "ingested_at": datetime.now(timezone.utc) - timedelta(hours=1),
+    }
+
+    async def _async_cursor(docs):
+        for d in docs:
+            yield d
+
+    def _find_chain(docs):
+        cursor = MagicMock()
+        cursor.max_time_ms = MagicMock(return_value=_async_cursor(docs))
+        return cursor
+
+    episodes_find = _find_chain([stale])
+    code_find = _find_chain([])
+
+    episodes_col = MagicMock()
+    episodes_col.find = MagicMock(return_value=episodes_find)
+    episodes_col.delete_one = AsyncMock(return_value=MagicMock(deleted_count=0))
+    code_col = MagicMock()
+    code_col.find = MagicMock(return_value=code_find)
+    code_col.delete_one = AsyncMock(return_value=MagicMock(deleted_count=0))
+
+    mongo_client = MagicMock()
+    mongo_client.memory_archive = {"episodes": episodes_col, "code_files": code_col}
+
+    with (
+        patch(
+            "trimcp.garbage_collector._fetch_all_namespaces",
+            new_callable=AsyncMock,
+            return_value=sample_namespaces,
+        ),
+        patch(
+            "trimcp.garbage_collector._fetch_pg_refs",
+            new_callable=AsyncMock,
+            return_value=set(),
+        ),
+        patch(
+            "trimcp.garbage_collector._clean_orphaned_cascade",
+            new_callable=AsyncMock,
+            return_value={"salience": 0, "contradictions": 0},
+        ),
+    ):
+        await _collect_orphans(mongo_client, mock_pg_pool)
+
+    episodes_find.max_time_ms.assert_called_once_with(30_000)
+    code_find.max_time_ms.assert_called_once_with(30_000)
+
+
+@pytest.mark.asyncio
+async def test_run_gc_loop_cancelled_error_propagates():
+    from trimcp.garbage_collector import run_gc_loop
+
+    mock_mongo = MagicMock()
+    mock_mongo.close = MagicMock()
+    mock_pool = AsyncMock()
+    mock_pool.close = AsyncMock()
+    mock_lock = AsyncMock()
+
+    sleep_calls = 0
+
+    async def _sleep(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        raise asyncio.CancelledError()
+
+    with (
+        patch(
+            "trimcp.garbage_collector._connect_with_retry",
+            new_callable=AsyncMock,
+            return_value=(mock_mongo, mock_pool),
+        ),
+        patch(
+            "trimcp.garbage_collector._acquire_gc_lock",
+            new_callable=AsyncMock,
+            return_value=mock_lock,
+        ),
+        patch(
+            "trimcp.garbage_collector._collect_orphans",
+            new_callable=AsyncMock,
+            return_value={"deleted_docs": 0, "deleted_salience": 0, "deleted_contradictions": 0},
+        ),
+        patch(
+            "trimcp.garbage_collector._release_gc_lock",
+            new_callable=AsyncMock,
+        ),
+        patch("trimcp.garbage_collector.asyncio.sleep", side_effect=_sleep),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await run_gc_loop()

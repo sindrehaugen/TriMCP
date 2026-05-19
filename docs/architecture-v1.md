@@ -1,6 +1,6 @@
 # TriMCP v1.0 — System architecture
 
-This document is the **public, code-aligned** view of the TriMCP **v1.0** runtime: quad-database memory stack, **temporal** (time-travel) queries, **A2A** (agent-to-agent) sharing, and **cognitive / background** workers. It complements [architecture-phase-0-1-0-2.md](./architecture-phase-0-1-0-2.md) (namespaces, signing) and [deploy/README.md](../deploy/README.md) (Compose layout).
+This document is the **public, code-aligned** view of the TriMCP **v1.0** runtime: quad-database memory stack, **temporal** (time-travel) queries, **A2A** (agent-to-agent) sharing, and **cognitive / background** workers. For namespaces and signing, see [multi_tenancy.md](./multi_tenancy.md) and [signing.md](./signing.md). Compose layout: [deploy/README.md](../deploy/README.md).
 
 ---
 
@@ -358,6 +358,6 @@ The following tools are exposed via the Model Context Protocol (MCP) in `server.
 | Topic | Document |
 |-------|----------|
 | Async `index_code_file` + RQ worker saga | [recursive_indexing_flow.md](./recursive_indexing_flow.md) |
-| Namespaces, signing, Phase 0 data model | [architecture-phase-0-1-0-2.md](./architecture-phase-0-1-0-2.md) |
+| Namespaces, signing, Phase 0 data model | [multi_tenancy.md](./multi_tenancy.md), [signing.md](./signing.md) |
 | Push / webhooks | [push_architecture.md](./push_architecture.md) |
 | Compose services | [deploy/README.md](../deploy/README.md) |

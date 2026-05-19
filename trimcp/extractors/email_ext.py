@@ -11,6 +11,7 @@ from typing import Any
 
 from trimcp.extractors.common import html_to_text
 from trimcp.extractors.core import ExtractionResult, Section, empty_skipped
+from trimcp.extractors.dispatch import _MAX_ATTACHMENTS_PER_MESSAGE
 
 log = logging.getLogger(__name__)
 
@@ -118,8 +119,12 @@ async def extract_msg(blob: bytes) -> ExtractionResult:
     except Exception as e:
         warnings.append(f"msg_attachments_list_failed:{e}")
 
+    budget: list[int] = [0]
     for att in attachments:
         try:
+            if budget[0] >= _MAX_ATTACHMENTS_PER_MESSAGE:
+                warnings.append("attachment_limit")
+                break
             data = getattr(att, "data", None)
             if data is None:
                 data = att.get_bytes() if hasattr(att, "get_bytes") else None
@@ -134,8 +139,13 @@ async def extract_msg(blob: bytes) -> ExtractionResult:
                 continue
             from trimcp.extractors.dispatch import extract_with_fallback
 
+            budget[0] += 1
             att_result = await extract_with_fallback(
-                blob=data, filename=str(fname), mime_type=None
+                blob=data,
+                filename=str(fname),
+                mime_type=None,
+                attachment_depth=1,
+                attachment_budget=budget,
             )
             block = f"[Attachment: {fname}]\n\n{att_result.text}"
             if att_result.warnings:
@@ -245,17 +255,19 @@ async def extract_eml(blob: bytes) -> ExtractionResult:
         warnings.append(f"eml_body_walk:{e}")
 
     body = body_plain or body_html or "(no body)"
-    sections.append(
-        Section(text=body, structure_path="Body", section_type="body", order=order)
-    )
+    sections.append(Section(text=body, structure_path="Body", section_type="body", order=order))
     order += 1
 
+    budget: list[int] = [0]
     try:
         if em.is_multipart():
             for part in em.walk():
                 fname = part.get_filename()
                 if not fname:
                     continue
+                if budget[0] >= _MAX_ATTACHMENTS_PER_MESSAGE:
+                    warnings.append("attachment_limit")
+                    break
                 try:
                     ctype = part.get_content_type()
                     payload = part.get_payload(decode=True)
@@ -264,10 +276,13 @@ async def extract_eml(blob: bytes) -> ExtractionResult:
                         continue
                     from trimcp.extractors.dispatch import extract_with_fallback
 
+                    budget[0] += 1
                     att_res = await extract_with_fallback(
                         blob=payload if isinstance(payload, bytes) else bytes(payload),
                         filename=fname,
                         mime_type=ctype,
+                        attachment_depth=1,
+                        attachment_budget=budget,
                     )
                     block = f"[Attachment: {fname}]\n\n{att_res.text}"
                     warnings.extend([f"att:{fname}:{w}" for w in att_res.warnings])

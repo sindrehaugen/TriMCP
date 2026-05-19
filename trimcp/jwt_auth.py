@@ -41,10 +41,11 @@ Standard claims:
 
 Supported algorithms
 ---------------------
-  HS256  — symmetric, HMAC-SHA256.  Set ``TRIMCP_JWT_SECRET``.
-           Suitable for development and internal service-to-service use.
-  RS256  — asymmetric, RSA + SHA-256.  Set ``TRIMCP_JWT_PUBLIC_KEY`` (PEM).
-  ES256  — asymmetric, ECDSA P-256.   Set ``TRIMCP_JWT_PUBLIC_KEY`` (PEM).
+  Symmetric (HMAC):   HS256, HS384, HS512.  Set ``TRIMCP_JWT_SECRET``.
+                      Suitable for development and internal service-to-service.
+  Asymmetric (RSA):   RS256, RS384, RS512.  Set ``TRIMCP_JWT_PUBLIC_KEY`` (PEM).
+  Asymmetric (ECDSA): ES256, ES384, ES512.  Set ``TRIMCP_JWT_PUBLIC_KEY`` (PEM).
+  Asymmetric (PSS):   PS256, PS384, PS512.  Set ``TRIMCP_JWT_PUBLIC_KEY`` (PEM).
 
 ``TRIMCP_JWT_PUBLIC_KEY`` may be:
   - A raw PEM string (begins with ``-----BEGIN``), OR
@@ -63,7 +64,6 @@ JSON-RPC 2.0 error codes (server-defined range, extends trimcp.auth)
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 from uuid import UUID
 
@@ -101,6 +101,7 @@ _HTTP_BAD_REQUEST: int = 400
 _ASYMMETRIC_ALGORITHMS: frozenset[str] = frozenset(
     {"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"}
 )
+_HMAC_ALGORITHMS: frozenset[str] = frozenset({"HS256", "HS384", "HS512"})
 
 
 # ---------------------------------------------------------------------------
@@ -119,12 +120,18 @@ def _jsonrpc_error(
     HTTP status:
       401 — authentication / token errors (-32005, -32006, -32007)
       400 — only for malformed claim values outside the UUID check
+
+    401 responses include ``WWW-Authenticate: Bearer realm="trimcp"``
+    per RFC 6750 §3 so HTTP clients know the expected scheme.
     """
     http_status = (
         _HTTP_UNAUTHORIZED
         if code in (_CODE_JWT_INVALID, _CODE_JWT_MISSING_CLAIM, _CODE_JWT_BAD_CLAIM)
         else _HTTP_BAD_REQUEST
     )
+    headers: dict[str, str] = {}
+    if http_status == _HTTP_UNAUTHORIZED:
+        headers["WWW-Authenticate"] = 'Bearer realm="trimcp"'
     return JSONResponse(
         status_code=http_status,
         content={
@@ -136,6 +143,7 @@ def _jsonrpc_error(
             },
             "id": request_id,
         },
+        headers=headers or None,
     )
 
 
@@ -168,13 +176,14 @@ def _load_public_key(raw: str) -> str:
         key_path = Path(path_str).resolve(strict=False)
 
         # Validate against allowed base directory
-        allowed_dir_raw = os.getenv("TRIMCP_JWT_KEY_DIR", str(Path.cwd()))
-        allowed_base = Path(allowed_dir_raw).resolve(strict=True)
+        allowed_dir_raw = cfg.TRIMCP_JWT_KEY_DIR
+        try:
+            allowed_base = Path(allowed_dir_raw).resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise ValueError(f"TRIMCP_JWT_KEY_DIR does not exist: {allowed_dir_raw!r}") from exc
 
         if not key_path.is_relative_to(allowed_base):
-            raise ValueError(
-                f"TRIMCP_JWT_PUBLIC_KEY path escapes allowed directory: {path_str!r}"
-            )
+            raise ValueError(f"TRIMCP_JWT_PUBLIC_KEY path escapes allowed directory: {path_str!r}")
 
         if not key_path.is_file():
             raise ValueError(f"TRIMCP_JWT_PUBLIC_KEY file not found: {path_str!r}")
@@ -188,23 +197,36 @@ def _build_jwt_key(algorithm: str) -> Any:
     """Return the key object / string to pass to ``jwt.decode()``.
 
     Priority:
-      1. Public key  (for asymmetric algorithms, RS256 / ES256 / …)
-      2. Shared secret (for HS256)
+      1. ``TRIMCP_JWT_PUBLIC_KEY`` — asymmetric algorithms only.
+      2. ``TRIMCP_JWT_SECRET``     — HMAC algorithms only.
 
-    Raises ``RuntimeError`` if the algorithm requires a key that is not
-    configured (server misconfiguration).
+    Raises ``RuntimeError`` on server misconfiguration:
+      - public key set but algorithm is not asymmetric
+      - asymmetric algorithm but no public key
+      - unrecognised algorithm
+      - no key configured at all
     """
     if cfg.TRIMCP_JWT_PUBLIC_KEY:
+        if algorithm not in _ASYMMETRIC_ALGORITHMS:
+            raise RuntimeError(
+                f"TRIMCP_JWT_PUBLIC_KEY is set but algorithm {algorithm!r} is not "
+                f"asymmetric. Use one of: {sorted(_ASYMMETRIC_ALGORITHMS)}"
+            )
         return _load_public_key(cfg.TRIMCP_JWT_PUBLIC_KEY)
     if algorithm in _ASYMMETRIC_ALGORITHMS:
         raise RuntimeError(
             f"Algorithm {algorithm!r} requires TRIMCP_JWT_PUBLIC_KEY to be set but it is empty."
         )
+    if algorithm not in _HMAC_ALGORITHMS:
+        raise RuntimeError(
+            f"Unsupported JWT algorithm {algorithm!r}. "
+            f"Supported: {sorted(_ASYMMETRIC_ALGORITHMS | _HMAC_ALGORITHMS)}"
+        )
     if cfg.TRIMCP_JWT_SECRET:
         return cfg.TRIMCP_JWT_SECRET
     raise RuntimeError(
-        "JWT key not configured: set TRIMCP_JWT_SECRET (HS256) or "
-        "TRIMCP_JWT_PUBLIC_KEY (RS256 / ES256)."
+        "JWT key not configured: set TRIMCP_JWT_SECRET (HS256/HS384/HS512) or "
+        "TRIMCP_JWT_PUBLIC_KEY (RS256/RS384/RS512/ES256/ES384/ES512/PS256/PS384/PS512)."
     )
 
 
@@ -240,9 +262,9 @@ def decode_agent_token(
             is strictly enforced — a token with a different or missing ``aud``
             is rejected with ``InvalidAudienceError``.
 
-            When ``None`` the function falls back to the global config.
-            If the resolved value is still empty the ``aud`` claim is required
-            to be present (``require=["aud"]``) but its value is not validated.
+            When ``None``, falls back to the global config.  If the resolved
+            value is still ``None``, ``aud`` is **not** required or validated
+            (PyJWT accepts tokens with or without it).
 
     Returns:
         A frozen ``NamespaceContext`` with ``namespace_id`` and ``agent_id``.
@@ -263,28 +285,26 @@ def decode_agent_token(
             "jwt_server_misconfigured",
         ) from exc
 
-    # Resolve audience: explicit param > global config > None (claim required, value unchecked)
-    resolved_audience = (
-        audience if audience is not None else (cfg.TRIMCP_JWT_AUDIENCE or None)
-    )
-    # Resolve issuer: coerce empty string to None so PyJWT skips validation
+    resolved_audience = audience if audience is not None else (cfg.TRIMCP_JWT_AUDIENCE or None)
     resolved_issuer = cfg.TRIMCP_JWT_ISSUER or None
-
-    # Only require ``aud`` when we have a specific expected value.
-    # PyJWT raises InvalidAudienceError when audience=None but the token
-    # carries an aud claim — so we must drop it from ``require`` when
-    # intentionally not validating the audience value.
+    required_claims = ["exp"]
+    if resolved_issuer:
+        required_claims.append("iss")
     if resolved_audience:
-        decode_options: dict[str, Any] = {"require": ["exp", "iss", "aud"]}
-    else:
-        decode_options = {"require": ["exp", "iss"]}
+        required_claims.append("aud")
+    if cfg.IS_PROD:
+        required_claims.extend(["iat", "nbf"])
+    decode_options: dict[str, Any] = {"require": required_claims}
 
     decode_kwargs: dict[str, Any] = {
         "algorithms": [algorithm],
         "options": decode_options,
-        "issuer": resolved_issuer,
-        "audience": resolved_audience,
+        "leeway": cfg.TRIMCP_JWT_LEEWAY_SECONDS,
     }
+    if resolved_issuer:
+        decode_kwargs["issuer"] = resolved_issuer
+    if resolved_audience:
+        decode_kwargs["audience"] = resolved_audience
 
     try:
         payload: dict[str, Any] = jwt.decode(token, key, **decode_kwargs)
@@ -344,15 +364,15 @@ def decode_agent_token(
     try:
         namespace_id = UUID(str(raw_ns).strip())
     except ValueError as exc:
-        log.warning("JWT 'namespace_id' claim is not a valid UUID: %r", raw_ns)
+        log.warning("JWT 'namespace_id' claim is not a valid UUID")
         raise JWTDecodeError(
             _CODE_JWT_BAD_CLAIM,
             "Authentication failed",
-            f"invalid_claim:namespace_id:{raw_ns!r}",
+            "invalid_claim:namespace_id",
         ) from exc
 
     raw_agent = payload.get("agent_id")
-    agent_id = validate_agent_id(str(raw_agent) if raw_agent is not None else "")
+    agent_id = validate_agent_id(str(raw_agent or "default"))
 
     try:
         return NamespaceContext(namespace_id=namespace_id, agent_id=agent_id)
@@ -458,9 +478,23 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 "invalid_authorization_scheme",
             )
 
+        token_value = token_value.strip()
+        if len(token_value) > 8192:
+            log.debug(
+                "JWT auth rejected: token exceeds size limit (%d bytes) for %s %s",
+                len(token_value),
+                request.method,
+                request.url.path,
+            )
+            return _jsonrpc_error(
+                _CODE_JWT_INVALID,
+                "Authentication failed",
+                "jwt_too_large",
+            )
+
         try:
             namespace_ctx = decode_agent_token(
-                token_value.strip(),
+                token_value,
                 audience=self._expected_audience,
             )
         except JWTDecodeError as exc:

@@ -3,18 +3,53 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
+import time
+from functools import lru_cache
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from redis import Redis
+from starlette.responses import JSONResponse
 
 from trimcp.config import cfg
 from trimcp.extractors.dispatch import get_priority_queue
 from trimcp.net_safety import BridgeURLValidationError, validate_webhook_payload_url
 from trimcp.tasks import process_bridge_event
 
+log = logging.getLogger("trimcp.webhook_receiver")
+
 app = FastAPI(title="TriMCP Webhook Receiver")
+
+# Production guardrails (override via trimcp.config.cfg / env).
+_MAX_BODY_BYTES = cfg.WEBHOOK_MAX_BODY_BYTES
+_RATE_LIMIT = cfg.WEBHOOK_RATE_LIMIT
+_RATE_PERIOD_S = cfg.WEBHOOK_RATE_PERIOD_SECONDS
+
+# In-memory sliding window per client IP (per webhook-receiver instance).
+_ip_windows: dict[str, list[float]] = {}
+
+_DEDUP_TTL_S = cfg.WEBHOOK_DEDUP_TTL_SECONDS
+_DEDUP_FAIL_OPEN = cfg.WEBHOOK_DEDUP_FAIL_OPEN
+
+# Atomic sliding-window rate limit (sync Redis; mirrors trimcp.auth._RATE_LIMIT_LUA).
+_RATE_LIMIT_LUA = """
+local key = KEYS[1]
+local window_start = ARGV[1]
+local now = ARGV[2]
+local limit = tonumber(ARGV[3])
+local period = tonumber(ARGV[4])
+
+redis.call('ZREMRANGEBYSCORE', key, 0, window_start)
+local count = redis.call('ZCARD', key)
+if count >= limit then
+    return 0
+end
+redis.call('ZADD', key, now, now)
+redis.call('EXPIRE', key, period)
+return 1
+"""
 
 
 @app.get("/health")
@@ -23,18 +58,169 @@ async def health():
     return {"status": "ok"}
 
 
-def _require_env(name: str) -> str:
-    value = os.getenv(name)
+def _require_cfg_secret(attr: str) -> str:
+    value = (os.environ.get(attr) or getattr(cfg, attr, "") or "").strip()
     if not value:
         raise RuntimeError(
-            f"{name} must be set in the environment (no default allowed for webhook secrets)"
+            f"{attr} must be set in the environment (no default allowed for webhook secrets)"
         )
     return value
 
 
-DROPBOX_APP_SECRET = _require_env("DROPBOX_APP_SECRET")
-GRAPH_CLIENT_STATE = _require_env("GRAPH_CLIENT_STATE")
-DRIVE_CHANNEL_TOKEN = _require_env("DRIVE_CHANNEL_TOKEN")
+DROPBOX_APP_SECRET = _require_cfg_secret("DROPBOX_APP_SECRET")
+GRAPH_CLIENT_STATE = _require_cfg_secret("GRAPH_CLIENT_STATE")
+DRIVE_CHANNEL_TOKEN = _require_cfg_secret("DRIVE_CHANNEL_TOKEN")
+
+
+@lru_cache(maxsize=1)
+def _redis_client() -> Redis:
+    """Shared sync Redis client for RQ enqueue (one pool per process)."""
+    return Redis.from_url(cfg.REDIS_URL)
+
+
+def _client_ip(request: Request) -> str:
+    """Client IP for rate limiting; honor X-Forwarded-For only behind a trusted proxy."""
+    if cfg.TRIMCP_WEBHOOK_TRUST_PROXY:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip() or "unknown"
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _allow_webhook_request_memory(client_ip: str, path: str) -> bool:
+    """In-memory sliding window keyed by IP + path (single-instance fallback)."""
+    now = time.time()
+    key = f"{client_ip}:{path}"
+    window = _ip_windows.setdefault(key, [])
+    window[:] = [t for t in window if t > now - _RATE_PERIOD_S]
+    if len(window) >= _RATE_LIMIT:
+        return False
+    window.append(now)
+    return True
+
+
+def _allow_webhook_request_redis(client_ip: str, path: str) -> bool | None:
+    """Redis sliding window; returns None when Redis is unavailable."""
+    try:
+        now = time.time()
+        redis_key = f"trimcp:ratelimit:webhook:{client_ip}:{path}"
+        result = _redis_client().eval(
+            _RATE_LIMIT_LUA,
+            1,
+            redis_key,
+            str(now - _RATE_PERIOD_S),
+            str(now),
+            str(_RATE_LIMIT),
+            str(_RATE_PERIOD_S),
+        )
+        return bool(result)
+    except Exception as exc:
+        log.warning("Webhook Redis rate limiter unavailable: %s", exc)
+        return None
+
+
+def _allow_webhook_request(client_ip: str, path: str) -> bool:
+    """Sliding-window rate limit keyed by IP + path (Redis with RAM fallback)."""
+    redis_allowed = _allow_webhook_request_redis(client_ip, path)
+    if redis_allowed is not None:
+        return redis_allowed
+    if cfg.IS_PROD:
+        log.warning(
+            "Webhook rate limit: Redis unavailable in production; rejecting ip=%s path=%s",
+            client_ip,
+            path,
+        )
+        return False
+    return _allow_webhook_request_memory(client_ip, path)
+
+
+def _dedup_key(provider: str, payload: dict[str, Any]) -> str | None:
+    """Stable deduplication key per provider payload (None = always process)."""
+    if provider == "dropbox":
+        accounts = (payload.get("list_folder") or {}).get("accounts") or []
+        if not accounts:
+            return None
+        digest = hashlib.sha256(
+            json.dumps(sorted(accounts), sort_keys=True).encode("utf-8")
+        ).hexdigest()[:32]
+        return f"trimcp:webhook:dedup:dropbox:{digest}"
+    if provider == "sharepoint":
+        notifications = payload.get("notifications") or []
+        parts: list[str] = []
+        for note in notifications:
+            if not isinstance(note, dict):
+                continue
+            note_id = note.get("id") or note.get("subscriptionId") or ""
+            resource = note.get("resource") or ""
+            change = note.get("changeType") or ""
+            parts.append(f"{note_id}|{resource}|{change}")
+        if not parts:
+            return None
+        digest = hashlib.sha256("|".join(sorted(parts)).encode("utf-8")).hexdigest()[:32]
+        return f"trimcp:webhook:dedup:sharepoint:{digest}"
+    if provider == "gdrive":
+        channel_id = str(payload.get("channel_id") or "")
+        if not channel_id:
+            return None
+        resource_id = str(payload.get("resource_id") or "")
+        message_number = str(payload.get("message_number") or "")
+        resource_state = str(payload.get("resource_state") or "")
+        raw = f"{channel_id}|{resource_id}|{message_number}|{resource_state}"
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+        return f"trimcp:webhook:dedup:gdrive:{digest}"
+    return None
+
+
+def _claim_dedup(key: str) -> bool:
+    """Return True when this delivery should be enqueued (first-seen within TTL)."""
+    try:
+        return bool(_redis_client().set(key, "1", nx=True, ex=_DEDUP_TTL_S))
+    except Exception as exc:
+        log.warning("Webhook dedup Redis unavailable: %s", exc)
+        if _DEDUP_FAIL_OPEN:
+            return True
+        return False
+
+
+async def _read_body_bounded(request: Request) -> bytes:
+    """Read request body and reject oversize payloads before parsing."""
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > _MAX_BODY_BYTES:
+                raise HTTPException(status_code=413, detail="Request body too large")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length") from None
+
+    body = await request.body()
+    if len(body) > _MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Request body too large")
+    return body
+
+
+async def _read_json_bounded(request: Request) -> Any:
+    body = await _read_body_bounded(request)
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from None
+
+
+@app.middleware("http")
+async def webhook_rate_limit_middleware(request: Request, call_next):
+    """Apply per-IP rate limits on webhook routes only."""
+    path = request.url.path
+    if path.startswith("/webhooks/"):
+        client_ip = _client_ip(request)
+        if not _allow_webhook_request(client_ip, path):
+            log.warning("Webhook rate limit exceeded ip=%s path=%s", client_ip, path)
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded"},
+            )
+    return await call_next(request)
 
 
 def enqueue_process_bridge_event(provider: str, payload: dict[str, Any]) -> str:
@@ -44,7 +230,12 @@ def enqueue_process_bridge_event(provider: str, payload: dict[str, Any]) -> str:
     batch lane so real-time API extractions aren't starved (§5.4).
     Isolated for tests via monkeypatch.
     """
-    q = get_priority_queue(0, Redis.from_url(cfg.REDIS_URL))
+    dedup = _dedup_key(provider, payload)
+    if dedup and not _claim_dedup(dedup):
+        log.info("Webhook dedup skip provider=%s key=%s", provider, dedup)
+        return "dedup-skipped"
+
+    q = get_priority_queue(0, _redis_client())
     job = q.enqueue(
         process_bridge_event,
         kwargs={"provider": provider, "payload": payload},
@@ -64,11 +255,9 @@ async def dropbox_webhook(request: Request):
     """Receive Dropbox webhook notifications."""
     signature = request.headers.get("X-Dropbox-Signature")
     if not signature:
-        raise HTTPException(
-            status_code=403, detail="Missing X-Dropbox-Signature header"
-        )
+        raise HTTPException(status_code=403, detail="Missing X-Dropbox-Signature header")
 
-    body = await request.body()
+    body = await _read_body_bounded(request)
     expected_signature = hmac.new(
         DROPBOX_APP_SECRET.encode("utf-8"), body, hashlib.sha256
     ).hexdigest()
@@ -97,14 +286,14 @@ async def graph_webhook(
     if validationToken:
         return Response(content=validationToken, media_type="text/plain")
 
-    payload = await request.json()
+    payload = await _read_json_bounded(request)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     # Validate clientState and resource URLs for security (SSRF guard)
     for notification in payload.get("value", []):
         client_state = notification.get("clientState")
-        if not client_state or not hmac.compare_digest(
-            client_state, GRAPH_CLIENT_STATE
-        ):
+        if not client_state or not hmac.compare_digest(client_state, GRAPH_CLIENT_STATE):
             raise HTTPException(status_code=403, detail="Invalid clientState")
 
         resource = notification.get("resource", "")
@@ -133,9 +322,7 @@ async def drive_webhook(
 ):
     """Receive Google Drive webhook notifications."""
     if not channel_token or not hmac.compare_digest(channel_token, DRIVE_CHANNEL_TOKEN):
-        raise HTTPException(
-            status_code=403, detail="Invalid or missing X-Goog-Channel-Token"
-        )
+        raise HTTPException(status_code=403, detail="Invalid or missing X-Goog-Channel-Token")
 
     if not resource_state:
         raise HTTPException(status_code=400, detail="Missing X-Goog-Resource-State")

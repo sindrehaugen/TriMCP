@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests.conftest import first_recorded_contradiction as _first_recorded_contradiction
 from trimcp.contradictions import ContradictionResult, detect_contradictions
 
 
@@ -20,6 +21,7 @@ def _mock_pg_pool(conn: AsyncMock) -> MagicMock:
 
     pool.acquire = _acquire
     return pool
+
 
 _VALID_OID = "507f1f77bcf86cd799439011"
 
@@ -53,9 +55,7 @@ async def test_detect_uses_nli_and_skips_llm_on_strong_agreement():
 
     # Mock NLI to return high contradiction score
     with (
-        patch(
-            "trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock
-        ) as mock_nli,
+        patch("trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock) as mock_nli,
         patch(
             "trimcp.contradictions.fetch_episodes_raw_by_ref",
             new_callable=AsyncMock,
@@ -72,9 +72,7 @@ async def test_detect_uses_nli_and_skips_llm_on_strong_agreement():
         # So LLM WILL be triggered because KG and NLI disagree (KG=No, NLI=Yes)
 
         llm = StubLLM(
-            ContradictionResult(
-                is_contradiction=True, confidence=0.95, explanation="LLM agrees"
-            )
+            ContradictionResult(is_contradiction=True, confidence=0.95, explanation="LLM agrees")
         )
         with patch("trimcp.contradictions.get_provider", return_value=llm):
             out = await detect_contradictions(
@@ -89,10 +87,11 @@ async def test_detect_uses_nli_and_skips_llm_on_strong_agreement():
                 [],
             )
 
-    assert out is not None
-    assert any(s["source"] == "nli" for s in out["signals"])
-    assert any(s["source"] == "llm" for s in out["signals"])
-    assert out["confidence"] == 0.95
+    row = _first_recorded_contradiction(out)
+    assert row is not None
+    assert any(s["source"] == "nli" for s in row["signals"])
+    assert any(s["source"] == "llm" for s in row["signals"])
+    assert row["confidence"] == 0.95
 
 
 @pytest.mark.anyio
@@ -116,9 +115,7 @@ async def test_detect_llm_tiebreaker_prefers_llm_decision():
 
     # Mock NLI to return high contradiction score (hit)
     with (
-        patch(
-            "trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock
-        ) as mock_nli,
+        patch("trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock) as mock_nli,
         patch(
             "trimcp.contradictions.fetch_episodes_raw_by_ref",
             new_callable=AsyncMock,

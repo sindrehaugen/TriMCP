@@ -30,9 +30,7 @@ async def test_semantic_search_temporal_parameters_prevent_sql_injection():
     engine.mongo_client.memory_archive = MagicMock()
 
     # Mock fetchrow for namespace metadata
-    mock_conn.fetchrow = AsyncMock(
-        return_value={"metadata": {"temporal_retention_days": 90}}
-    )
+    mock_conn.fetchrow = AsyncMock(return_value={"metadata": {"temporal_retention_days": 90}})
     # Mock fetchval for embedding model
     mock_conn.fetchval = AsyncMock(return_value=None)
     # Mock fetch for the main query

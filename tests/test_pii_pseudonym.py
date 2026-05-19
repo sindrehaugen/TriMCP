@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 import pytest
+from pydantic import ValidationError
 
 from trimcp.models import NamespacePIIConfig, PIIPolicy
 from trimcp.pii import _pseudonym_token_suffix, process
@@ -34,8 +35,7 @@ def test_pseudonym_suffix_is_base64url_22_chars():
     assert 20 <= len(digest) <= 24
     # Only base64url characters (A-Z, a-z, 0-9, -, _)
     assert all(
-        c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-        for c in digest
+        c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for c in digest
     )
 
 
@@ -60,16 +60,14 @@ def test_pseudonym_per_namespace_key_changes_output():
     assert d1 != d2
 
 
-@pytest.mark.asyncio
-async def test_namespace_key_too_short_raises():
-    cfg = NamespacePIIConfig(
-        entity_types=["EMAIL"],
-        policy=PIIPolicy.pseudonymise,
-        reversible=False,
-        pseudonym_hmac_key="short",
-    )
-    with pytest.raises(ValueError, match="pseudonym_hmac_key"):
-        await process("user@example.com", cfg)
+def test_namespace_key_too_short_raises_at_validation():
+    with pytest.raises(ValidationError, match="pseudonym_hmac_key"):
+        NamespacePIIConfig(
+            entity_types=["EMAIL"],
+            policy=PIIPolicy.pseudonymise,
+            reversible=False,
+            pseudonym_hmac_key="short",
+        )
 
 
 @pytest.mark.asyncio

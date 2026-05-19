@@ -23,8 +23,8 @@ from rq import get_current_job
 from trimcp import embeddings as _embeddings
 from trimcp.ast_parser import parse_file
 from trimcp.config import cfg
-from trimcp.dead_letter_queue import _clear_attempt, _track_attempt, store_dead_letter
 from trimcp.db_utils import unmanaged_pg_connection
+from trimcp.dead_letter_queue import _clear_attempt, _track_attempt, store_dead_letter
 from trimcp.orchestrator import TriStackEngine
 
 log = logging.getLogger("tri-stack-tasks")
@@ -186,7 +186,9 @@ def process_code_indexing(
             async with (
                 engine.scoped_session(namespace_id)
                 if namespace_id
-                else unmanaged_pg_connection(engine.pg_pool)
+                else unmanaged_pg_connection(
+                    engine.pg_pool, site="tasks.code_indexing.legacy_no_namespace"
+                )
             ) as conn:
                 async with conn.transaction():
                     await conn.execute(
@@ -245,9 +247,7 @@ def process_code_indexing(
         except Exception as exc:
             log.exception("[Worker] Indexing failed for %s", filepath)
             if inserted_mongo_id:
-                log.warning(
-                    "[ROLLBACK] Removing orphaned Mongo doc %s", inserted_mongo_id
-                )
+                log.warning("[ROLLBACK] Removing orphaned Mongo doc %s", inserted_mongo_id)
                 try:
                     await collection.delete_one({"_id": inserted_result.inserted_id})
                 except Exception as mongo_exc:
@@ -362,3 +362,39 @@ def process_bridge_event(provider: str, payload: dict) -> dict:
                 )
             return {"status": "dead_lettered", "job_id": job_id}
         raise  # retry — let RQ re-enqueue
+
+
+def enqueue_memory_postprocess(payload: dict) -> None:
+    """
+    Enqueue post-processing work for a stored memory onto the high-priority RQ queue.
+
+    Called by the outbox relay when a 'memory.stored' event is delivered.
+    Intentionally thin — heavy work (embeddings, graph, contradiction detection)
+    belongs in the worker, not in the relay transaction.
+    """
+    from redis import Redis
+    from rq import Queue
+
+    from trimcp.extractors.dispatch import HIGH_PRIORITY_QUEUE
+
+    redis_conn = Redis.from_url(cfg.REDIS_URL)
+    q = Queue(HIGH_PRIORITY_QUEUE, connection=redis_conn)
+    q.enqueue(
+        "trimcp.tasks._process_memory_postprocess",
+        kwargs={"payload": payload},
+        job_timeout=300,
+    )
+
+
+def _process_memory_postprocess(payload: dict) -> dict:
+    """
+    Worker task: post-processing after a memory is stored.
+    Placeholder — wire embedding worker, graph worker, and contradiction
+    detection here as outbox-driven async steps.
+    """
+    log.info(
+        "[Worker] memory postprocess: memory_id=%s saga_id=%s",
+        payload.get("memory_id"),
+        payload.get("saga_id"),
+    )
+    return {"status": "ok", "memory_id": payload.get("memory_id")}

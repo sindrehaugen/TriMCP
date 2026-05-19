@@ -66,9 +66,7 @@ async def index_repo(namespace_id: str = "default"):
         tasks = [process_file(f) for f in files_to_index]
         results = await asyncio.gather(*tasks)
 
-        enqueued_jobs = [
-            r["job_id"] for r in results if r and r.get("status") == "enqueued"
-        ]
+        enqueued_jobs = [r["job_id"] for r in results if r and r.get("status") == "enqueued"]
         skipped = [r for r in results if r and r.get("status") == "skipped"]
         errors = [r for r in results if r and r.get("status") == "error"]
 
@@ -89,9 +87,7 @@ async def index_repo(namespace_id: str = "default"):
                 async with sem:
                     return await engine.get_job_status(j_id)
 
-            status_results = await asyncio.gather(
-                *(check_status(j_id) for j_id in pending_jobs)
-            )
+            status_results = await asyncio.gather(*(check_status(j_id) for j_id in pending_jobs))
 
             done_jobs = set()
             for status_res in status_results:

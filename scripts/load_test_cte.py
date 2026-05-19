@@ -1,17 +1,42 @@
+"""Async load test for recursive CTE graph traversal (local/dev only).
+
+Requires PG_DSN — never embed credentials in this file.
+
+Example::
+
+    PG_DSN=postgresql://user:pass@localhost:5432/memory_meta python scripts/load_test_cte.py
+"""
+
+from __future__ import annotations
+
 import asyncio
-import time
-import asyncpg
 import logging
+import os
+import sys
+import time
+
+import asyncpg
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("load-test-cte")
 
-PG_DSN = "postgres://mcp_user:mcp_password@localhost:5432/memory_meta"
 
-async def run_load_test():
-    pool = await asyncpg.create_pool(PG_DSN, min_size=5, max_size=20)
-    
-    # Simple BFS traversal query using the new path accumulation array to prevent cycles
+def _require_pg_dsn() -> str:
+    dsn = os.getenv("PG_DSN", "").strip()
+    if not dsn:
+        logger.error(
+            "PG_DSN is required. Example: "
+            "PG_DSN=postgresql://user:pass@localhost:5432/memory_meta "
+            "python scripts/load_test_cte.py"
+        )
+        sys.exit(2)
+    return dsn
+
+
+async def run_load_test() -> None:
+    dsn = _require_pg_dsn()
+    pool = await asyncpg.create_pool(dsn, min_size=5, max_size=20)
+
     query = """
     WITH RECURSIVE traversal AS (
         SELECT id, label, 0 AS depth, ARRAY[id] AS path
@@ -28,26 +53,27 @@ async def run_load_test():
     SELECT * FROM traversal LIMIT 100;
     """
 
-    async def worker(i):
+    async def worker(i: int) -> float:
         async with pool.acquire() as conn:
             start = time.time()
             try:
                 await conn.fetch(query)
             except Exception as e:
-                logger.error(f"Worker {i} error: {e}")
+                logger.error("Worker %s error: %s", i, e)
             return time.time() - start
 
     logger.info("Starting recursive CTE load test with 50 concurrent connections...")
     start_total = time.time()
     results = await asyncio.gather(*(worker(i) for i in range(50)))
     total_time = time.time() - start_total
-    
-    logger.info(f"Ran 50 concurrent CTE traversals in {total_time:.2f}s")
-    logger.info(f"Average time per query: {sum(results)/len(results):.3f}s")
-    logger.info(f"Max time: {max(results):.3f}s")
-    logger.info(f"Min time: {min(results):.3f}s")
-    
+
+    logger.info("Ran 50 concurrent CTE traversals in %.2fs", total_time)
+    logger.info("Average time per query: %.3fs", sum(results) / len(results))
+    logger.info("Max time: %.3fs", max(results))
+    logger.info("Min time: %.3fs", min(results))
+
     await pool.close()
+
 
 if __name__ == "__main__":
     asyncio.run(run_load_test())

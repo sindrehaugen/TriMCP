@@ -161,7 +161,8 @@ async def _main() -> int:
 
         for row in rows:
             try:
-                updated, reason = await _process_row(conn, row)
+                async with conn.transaction():
+                    updated, reason = await _process_row(conn, row)
                 if updated:
                     migrated += 1
                     logger.info("Migrated %s (reason=%s)", row["id"], reason)
@@ -189,4 +190,3 @@ async def _main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(asyncio.run(_main()))
-)))

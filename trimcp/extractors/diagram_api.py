@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -16,6 +18,8 @@ from trimcp.observability import inject_trace_headers
 log = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+_BOARD_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_MAX_MIRO_PAGES = int(os.environ.get("TRIMCP_MIRO_MAX_PAGES", "100"))
 
 
 def _text_from_miro_item(item: dict[str, Any]) -> str | None:
@@ -56,25 +60,35 @@ async def miro_extract_board(
         return empty_skipped(
             "miro_api",
             "no_token",
-            warnings=[
-                "Set TRIMCP_MIRO_ACCESS_TOKEN (or pass access_token=) for Miro extraction"
-            ],
+            warnings=["Set TRIMCP_MIRO_ACCESS_TOKEN (or pass access_token=) for Miro extraction"],
         )
     # SSRF guard: validate base_url before any outbound request
     try:
         validate_extractor_url(base_url)
     except BridgeURLValidationError as e:
         return empty_skipped("miro_api", "ssrf_blocked", warnings=[str(e)])
+    if not _BOARD_ID_RE.match(board_id):
+        return empty_skipped(
+            "miro_api",
+            "invalid_board_id",
+            warnings=[f"invalid board_id: {board_id!r}"],
+        )
+    safe_board_id = quote(board_id, safe="")
     sections: list[Section] = []
     order = 0
     cursor: str | None = None
+    page = 0
     try:
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             while True:
+                page += 1
+                if page > _MAX_MIRO_PAGES:
+                    warnings.append(f"miro_page_limit: capped at {_MAX_MIRO_PAGES} pages")
+                    break
                 params: dict[str, str] = {"limit": "50"}
                 if cursor:
                     params["cursor"] = cursor
-                url = f"{base_url.rstrip('/')}/boards/{board_id}/items"
+                url = f"{base_url.rstrip('/')}/boards/{safe_board_id}/items"
                 try:
                     r = await client.get(
                         url,
@@ -99,9 +113,7 @@ async def miro_extract_board(
                     )
                 except (httpx.RequestError, json.JSONDecodeError, ValueError) as e:
                     log.warning("miro_request_failed: %s", e)
-                    return empty_skipped(
-                        "miro_api", "request_failed", warnings=[str(e)]
-                    )
+                    return empty_skipped("miro_api", "request_failed", warnings=[str(e)])
 
                 items = payload.get("data") or []
                 if not isinstance(items, list):
@@ -183,9 +195,7 @@ async def lucidchart_extract_document(
         return empty_skipped(
             "lucid_api",
             "no_token",
-            warnings=[
-                "Set TRIMCP_LUCID_ACCESS_TOKEN (or pass access_token=) for Lucid extraction"
-            ],
+            warnings=["Set TRIMCP_LUCID_ACCESS_TOKEN (or pass access_token=) for Lucid extraction"],
         )
     # SSRF guard: validate base_url before any outbound request
     try:
@@ -207,9 +217,7 @@ async def lucidchart_extract_document(
         return empty_skipped(
             "lucid_api",
             "http_error",
-            warnings=[
-                f"Lucid API HTTP {e.response.status_code}: {e.response.text[:300]}"
-            ],
+            warnings=[f"Lucid API HTTP {e.response.status_code}: {e.response.text[:300]}"],
         )
     except (httpx.RequestError, json.JSONDecodeError, ValueError) as e:
         return empty_skipped("lucid_api", "request_failed", warnings=[str(e)])

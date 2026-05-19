@@ -6,19 +6,78 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 
 from trimcp import bridge_repo
+from trimcp.bridge_providers import BRIDGE_PROVIDERS
 from trimcp.bridge_renewal import ensure_fresh_oauth_token
+from trimcp.config import cfg
 from trimcp.orchestrator import TriStackEngine
 
 log = logging.getLogger("trimcp.bridge_runtime")
 
-# Hard deadline for the entire token-resolution path (DB fetch + decrypt).
-# External bridges (SharePoint, GDrive, Dropbox) are called from bridge workers;
-# if the upstream OAuth exchange or DB query hangs, we must not tie up asyncio
-# workers indefinitely.  Default: 10 s.  Override via BRIDGE_RESOLVE_TIMEOUT_S.
-_RESOLVE_TIMEOUT_S: float = float(os.environ.get("BRIDGE_RESOLVE_TIMEOUT_S", "10"))
+_RESOLVE_TIMEOUT_S: float = cfg.BRIDGE_RESOLVE_TIMEOUT_S
+
+# Explicit allowlist — rejects unknown providers before any DB/network I/O.
+PROVIDERS: frozenset[str] = BRIDGE_PROVIDERS
+
+
+async def resolve_stored_oauth_access_token_async(
+    provider: str,
+    *,
+    client_state: str | None = None,
+    subscription_id: str | None = None,
+    resource_id: str | None = None,
+) -> str | None:
+    """Async core: load and decrypt OAuth access token from ``bridge_subscriptions``.
+
+    Returns ``None`` if no matching subscription is found or on any error.
+    Callers that already own an event loop (e.g. FastAPI handlers) should await
+    this directly rather than going through the sync wrapper.
+    """
+    provider_lower = provider.strip().lower()
+    if provider_lower not in PROVIDERS:
+        log.warning(
+            "resolve_stored_oauth_access_token: unknown provider=%r — rejected.",
+            provider,
+        )
+        return None
+
+    if not any((client_state, subscription_id, resource_id)):
+        return None
+
+    engine = TriStackEngine()
+    await engine.connect()
+    try:
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            row = await bridge_repo.fetch_active_subscription(
+                conn,
+                provider_lower,
+                client_state=client_state,
+                subscription_id=subscription_id,
+                resource_id=resource_id,
+            )
+        if not row:
+            return None
+        try:
+            return await ensure_fresh_oauth_token(engine.pg_pool, row, "")
+        except Exception as exc:
+            log.warning(
+                "%s: Stored bridge OAuth token fetch/refresh failed for provider=%r: %s",
+                type(exc).__name__,
+                provider,
+                exc,
+            )
+            return None
+    finally:
+        try:
+            await asyncio.wait_for(engine.disconnect(), timeout=5.0)
+        except Exception as exc:
+            log.warning(
+                "%s: engine.disconnect() failed for provider=%r: %s",
+                type(exc).__name__,
+                provider,
+                exc,
+            )
 
 
 def resolve_stored_oauth_access_token(
@@ -28,41 +87,33 @@ def resolve_stored_oauth_access_token(
     subscription_id: str | None = None,
     resource_id: str | None = None,
 ) -> str | None:
-    """Load and decrypt OAuth access token from ``bridge_subscriptions`` (if present).
+    """Sync wrapper: safe to call from RQ workers (no running event loop).
 
-    Raises ``asyncio.TimeoutError`` (surfaced as a logged warning) if the
-    operation exceeds ``BRIDGE_RESOLVE_TIMEOUT_S`` (default 10 s).  Returns
-    ``None`` on timeout or any other failure so the caller can degrade
-    gracefully rather than blocking the worker indefinitely.
+    Raises ``RuntimeError`` if called from a thread that already owns a running
+    event loop — use ``resolve_stored_oauth_access_token_async`` there instead.
     """
-    if not any((client_state, subscription_id, resource_id)):
-        return None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
 
-    async def _run() -> str | None:
-        engine = TriStackEngine()
-        await engine.connect()
+    if loop is not None and loop.is_running():
+        raise RuntimeError(
+            "resolve_stored_oauth_access_token() called from a running event loop. "
+            "Await resolve_stored_oauth_access_token_async() instead."
+        )
+
+    async def _run_with_timeout() -> str | None:
         try:
-            async with engine.pg_pool.acquire(timeout=10.0) as conn:
-                row = await bridge_repo.fetch_active_subscription(
-                    conn,
+            return await asyncio.wait_for(
+                resolve_stored_oauth_access_token_async(
                     provider,
                     client_state=client_state,
                     subscription_id=subscription_id,
                     resource_id=resource_id,
-                )
-            if not row:
-                return None
-            try:
-                return await ensure_fresh_oauth_token(engine.pg_pool, row, "")
-            except Exception as e:
-                log.warning("Stored bridge OAuth token fetch/refresh failed: %s", e)
-                return None
-        finally:
-            await engine.disconnect()
-
-    async def _run_with_timeout() -> str | None:
-        try:
-            return await asyncio.wait_for(_run(), timeout=_RESOLVE_TIMEOUT_S)
+                ),
+                timeout=_RESOLVE_TIMEOUT_S,
+            )
         except TimeoutError:
             log.warning(
                 "resolve_stored_oauth_access_token timed out after %.1fs for "
@@ -74,7 +125,8 @@ def resolve_stored_oauth_access_token(
             return None
         except Exception as exc:
             log.warning(
-                "resolve_stored_oauth_access_token failed for provider=%r: %s",
+                "%s: resolve_stored_oauth_access_token failed for provider=%r: %s",
+                type(exc).__name__,
                 provider,
                 exc,
             )

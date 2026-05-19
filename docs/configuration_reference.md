@@ -226,7 +226,7 @@ SMTP is sent on **port 587 with STARTTLS** (`aiosmtplib`). The SMTP host itself 
 |---|---|---|
 | `TASK_MAX_RETRIES` | `5` | Maximum RQ worker retries before routing to `dead_letter_queue`. `0` = infinite retries. |
 | `TASK_DLQ_REDIS_TTL` | `86400` | TTL for Redis attempt-count keys (seconds). After expiry, retry counter resets. |
-| `TRIMCP_DISABLE_MIGRATION_MCP` | `false` | When `true`, `start_migration`, `commit_migration`, `abort_migration` are excluded from the MCP tool list. Recommended for production SaaS deployments. |
+| `TRIMCP_DISABLE_MIGRATION_MCP` | `true` when `TRIMCP_ENV` is production, else `false` | When `true`, `start_migration`, `commit_migration`, `abort_migration` are excluded from the MCP tool list. Set `false` explicitly in production only if you need live migration tools. |
 
 ---
 

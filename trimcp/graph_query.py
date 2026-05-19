@@ -11,17 +11,17 @@ Algorithm:
   5. Return a structured subgraph: nodes, edges, and source excerpts (optional
      ``edge_limit`` / ``edge_offset`` on deduplicated edges).
 
-Security model for ``kg_nodes`` / ``kg_edges`` (B12 decision — 2026-05-09):
-  These tables intentionally do NOT carry PostgreSQL row-level security (RLS).
-  KG nodes are *global semantic concepts* ("Redis", "TLS", "Python") derived
-  from memories across all tenants; adding per-row tenant filtering would break
-  valid cross-namespace consolidation and analytics queries.  Tenant isolation
-  is enforced at the ``memories`` layer (which has RLS) — callers who need
-  scoped results must join back through ``memories.namespace_id``.
-
-  The ``_allow_global_sweep`` flag on ``_find_anchor`` is the application-layer
-  guard that prevents accidental cross-tenant scans from tenant-facing code
-  paths.  Only admin / internal operations pass this flag explicitly.
+Security model for ``kg_nodes`` / ``kg_edges``:
+  Both tables carry ``namespace_id`` and PostgreSQL row-level security (RLS),
+  enforced via ``set_namespace_context()`` / ``SET LOCAL trimcp.namespace_id``
+  on tenant-scoped connections (same pattern as ``memories``).  Application
+  queries still include explicit ``WHERE namespace_id = $N`` filters for clarity
+  and planner hints.
+  The ``_allow_global_sweep`` flag preserves the admin/diagnostic global-sweep
+  path by passing ``NULL`` as the namespace parameter, which the ``IS NULL``
+  guard in the query passes through without filtering.
+  Only admin / internal operations should pass ``_allow_global_sweep=True``.
+  Tenant-facing code paths must always supply a ``namespace_id``.
 """
 
 from __future__ import annotations
@@ -153,6 +153,12 @@ class GraphRAGTraverser:
             "SELECT * FROM event_log WHERE id = ANY($1::uuid[])",
             unique_ids,
         )
+        found_ids = {str(r["id"]) for r in rows}
+        missing = set(unique_ids) - found_ids
+        if missing:
+            raise DataIntegrityError(
+                f"Missing event_log rows for signature verification: {missing}"
+            )
         for row in rows:
             try:
                 await verify_event_signature(conn, row)
@@ -199,9 +205,7 @@ class GraphRAGTraverser:
                 "Pass _allow_global_sweep=True only for admin/diagnostic cross-tenant operations."
             )
         if as_of is not None and as_of.tzinfo is None:
-            raise ValueError(
-                "as_of must be timezone-aware (UTC). Use datetime.now(timezone.utc)."
-            )
+            raise ValueError("as_of must be timezone-aware (UTC). Use datetime.now(timezone.utc).")
         vector = await self._embed(query)
 
         async def _run_find_anchor(c):
@@ -269,11 +273,13 @@ class GraphRAGTraverser:
                     SELECT label, entity_type, payload_ref,
                            embedding <=> $1::vector AS distance
                     FROM kg_nodes
+                    WHERE ($3::uuid IS NULL OR namespace_id = $3::uuid)
                     ORDER BY distance ASC
                     LIMIT $2
                     """,
                     json.dumps(vector),
                     top_k,
+                    namespace_id,
                 )
             return [
                 GraphNode(
@@ -453,9 +459,7 @@ class GraphRAGTraverser:
                         namespace_id,
                         as_of,
                     )
-                    bfs_event_ids = [
-                        str(r["event_id"]) for r in edge_rows if r.get("event_id")
-                    ]
+                    bfs_event_ids = [str(r["event_id"]) for r in edge_rows if r.get("event_id")]
                     all_edges = [
                         GraphEdge(
                             subject=r["subject_label"],
@@ -471,28 +475,27 @@ class GraphRAGTraverser:
                 labels = await c.fetch(
                     """
                     WITH RECURSIVE traversal AS (
-                        SELECT $1::text AS label, 0 AS depth
+                        SELECT $1::text AS label, 0 AS depth, ARRAY[$1::text] AS path
                         UNION
                         SELECT DISTINCT
                             CASE WHEN e.subject_label = t.label THEN e.object_label ELSE e.subject_label END,
-                            t.depth + 1
+                            t.depth + 1,
+                            t.path || (CASE WHEN e.subject_label = t.label THEN e.object_label ELSE e.subject_label END)
                         FROM traversal t
                         JOIN kg_edges e ON (e.subject_label = t.label OR e.object_label = t.label)
                         WHERE t.depth < $2
-                          -- Exclude labels already visited (avoid cycles)
-                          AND NOT EXISTS (
-                              SELECT 1 FROM traversal AS seen
-                              WHERE seen.label IN (e.subject_label, e.object_label)
-                                AND seen.label != t.label
-                          )
+                          -- Path-array cycle guard: new label must not already be in this path
+                          AND (CASE WHEN e.subject_label = t.label THEN e.object_label ELSE e.subject_label END) <> ALL(t.path)
                           -- Respect MAX_NODES cap
                           AND (SELECT count(DISTINCT label) FROM traversal) < $3
+                          AND ($4::uuid IS NULL OR e.namespace_id = $4::uuid)
                     )
                     SELECT DISTINCT label FROM traversal ORDER BY depth ASC
                     """,
                     start_label,
                     max_depth,
                     MAX_NODES,
+                    namespace_id,
                 )
                 visited = {r["label"] for r in labels}
 
@@ -506,9 +509,11 @@ class GraphRAGTraverser:
                                 AS decayed_confidence
                         FROM kg_edges e
                         WHERE (e.subject_label = ANY($1::text[]) OR e.object_label = ANY($1::text[]))
+                          AND ($2::uuid IS NULL OR e.namespace_id = $2::uuid)
                         ORDER BY e.subject_label, e.predicate, e.object_label, decayed_confidence DESC
                         """,
                         list(visited),
+                        namespace_id,
                     )
                     all_edges = [
                         GraphEdge(
@@ -589,10 +594,7 @@ class GraphRAGTraverser:
         for ref_id in valid_refs:
             doc = ep_docs.get(ref_id)
             if doc is not None:
-                if (
-                    restrict_user_id is not None
-                    and doc.get("user_id") != restrict_user_id
-                ):
+                if restrict_user_id is not None and doc.get("user_id") != restrict_user_id:
                     continue
                 raw = doc.get("raw_data", "")
                 sources.append(
@@ -607,10 +609,7 @@ class GraphRAGTraverser:
 
             code_doc = code_docs.get(ref_id)
             if code_doc is not None:
-                if (
-                    restrict_user_id is not None
-                    and code_doc.get("user_id") != restrict_user_id
-                ):
+                if restrict_user_id is not None and code_doc.get("user_id") != restrict_user_id:
                     continue
                 raw = code_doc.get("raw_code", "")
                 sources.append(
@@ -672,13 +671,14 @@ class GraphRAGTraverser:
                 "search: namespace_id is required for tenant-scoped graph searches. "
                 "Pass _allow_global_sweep=True only for admin/diagnostic cross-tenant operations."
             )
-        if as_of is not None and hasattr(as_of, "tzinfo") and as_of.tzinfo is None:
-            raise ValueError(
-                "as_of must be timezone-aware (UTC). Use datetime.now(timezone.utc)."
-            )
-        per_node = (
-            max_edges_per_node if max_edges_per_node is not None else MAX_EDGES_PER_NODE
-        )
+        if as_of is not None:
+            if not isinstance(as_of, datetime):
+                raise ValueError("as_of must be a datetime object")
+            if as_of.tzinfo is None:
+                raise ValueError(
+                    "as_of must be timezone-aware (UTC). Use datetime.now(timezone.utc)."
+                )
+        per_node = max_edges_per_node if max_edges_per_node is not None else MAX_EDGES_PER_NODE
         if per_node < 1:
             raise ValueError("max_edges_per_node must be >= 1")
         if edge_offset < 0:

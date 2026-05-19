@@ -42,32 +42,32 @@ class TestBuildCacheKey:
     """``build_cache_key`` must scope keys by namespace_id."""
 
     def test_includes_namespace_id(self):
-        key = build_cache_key("semantic_search", {}, "1", namespace_id=TEST_NS)
+        key = build_cache_key("semantic_search", {}, 1, namespace_id=TEST_NS)
         assert TEST_NS in key
         assert key.startswith("mcp_cache:v1:")
 
     def test_different_namespaces_different_keys(self):
         args = {"query": "hello"}
-        key_a = build_cache_key("semantic_search", args, "1", namespace_id=TEST_NS)
-        key_b = build_cache_key("semantic_search", args, "1", namespace_id=TEST_NS2)
+        key_a = build_cache_key("semantic_search", args, 1, namespace_id=TEST_NS)
+        key_b = build_cache_key("semantic_search", args, 1, namespace_id=TEST_NS2)
         assert key_a != key_b
 
     def test_none_namespace_uses_global(self):
-        key = build_cache_key("semantic_search", {"query": "x"}, "1", namespace_id=None)
+        key = build_cache_key("semantic_search", {"query": "x"}, 1, namespace_id=None)
         assert "global" in key
 
     def test_same_args_same_namespace_same_key(self):
         ns = str(uuid4())
         args = {"query": "hello"}
-        k1 = build_cache_key("graph_search", args, "5", namespace_id=ns)
-        k2 = build_cache_key("graph_search", args, "5", namespace_id=ns)
+        k1 = build_cache_key("graph_search", args, 5, namespace_id=ns)
+        k2 = build_cache_key("graph_search", args, 5, namespace_id=ns)
         assert k1 == k2
 
     def test_different_generations_different_keys(self):
         ns = str(uuid4())
         args = {"query": "hello"}
-        k1 = build_cache_key("search_codebase", args, "3", namespace_id=ns)
-        k2 = build_cache_key("search_codebase", args, "4", namespace_id=ns)
+        k1 = build_cache_key("search_codebase", args, 3, namespace_id=ns)
+        k2 = build_cache_key("search_codebase", args, 4, namespace_id=ns)
         assert k1 != k2
 
 
@@ -86,7 +86,8 @@ class TestExtractNamespaceId:
         assert extract_namespace_id({}) is None
 
     def test_invalid_uuid(self):
-        assert extract_namespace_id({"namespace_id": "not-a-uuid"}) is None
+        with pytest.raises(ValueError, match="Invalid namespace_id"):
+            extract_namespace_id({"namespace_id": "not-a-uuid"})
 
     def test_none_value(self):
         assert extract_namespace_id({"namespace_id": None}) is None
@@ -216,9 +217,7 @@ def mock_engine():
     engine.search_codebase = AsyncMock(return_value=[{"code": "def"}])
     engine.graph_search = AsyncMock(return_value={"nodes": []})
     engine.store_media = AsyncMock(return_value="mongo_456")
-    engine.forget_memory = AsyncMock(
-        return_value={"status": "success", "forgotten": True}
-    )
+    engine.forget_memory = AsyncMock(return_value={"status": "success", "forgotten": True})
     return engine
 
 
@@ -260,9 +259,7 @@ async def test_cache_miss_writes_namespace_scoped_key(mock_engine):
 
     call_args = mock_engine.redis_client.setex.call_args[0]
     redis_key = call_args[0]
-    assert (
-        TEST_NS in redis_key
-    ), f"Expected namespace {TEST_NS} in cache key, got {redis_key}"
+    assert TEST_NS in redis_key, f"Expected namespace {TEST_NS} in cache key, got {redis_key}"
     assert redis_key.startswith("mcp_cache:v")
     assert call_args[1] == 300  # TTL
 
@@ -275,9 +272,7 @@ async def test_cache_hit_returns_cached_value(mock_engine):
     async def mock_get(key):
         if key == "mcp_cache_generation":
             return b"2"
-        if TEST_NS in key and b"semantic_search" in (
-            key.encode() if isinstance(key, str) else key
-        ):
+        if TEST_NS in key and b"semantic_search" in (key.encode() if isinstance(key, str) else key):
             return b'[{"cached": "result"}]'
         return None
 

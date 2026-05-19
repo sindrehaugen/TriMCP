@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 
 log = logging.getLogger("trimcp.net_safety")
 
+_MAX_URL_LEN: int = 4_096
+
 # Explicit IPv6 CIDR denylist for SSRF (defense in depth next to ipaddress is_* flags).
 _SSRF_DENIED_IPV6_NETWORKS: tuple[ipaddress.IPv6Network, ...] = tuple(
     ipaddress.ip_network(c)  # type: ignore[misc]
@@ -81,15 +83,23 @@ def _any_non_public(ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address]) ->
     for ip in ips:
         if _ipv6_in_explicit_denylist(ip):
             return True
-        if (
-            ip.is_private
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_loopback
-        ):
+        if ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_loopback:
             return True
     return False
+
+
+def _url_matches_prefix(url: str, prefix: str) -> bool:
+    """Compare scheme, netloc, and path separately — prevents subdomain/credential spoofing."""
+    u = urlparse(url)
+    p = urlparse(prefix)
+    u_host = (u.hostname or "").lower().rstrip(".")
+    p_host = (p.hostname or "").lower().rstrip(".")
+    return (
+        u.scheme == p.scheme
+        and u_host == p_host
+        and (u.port or 443) == (p.port or 443)
+        and u.path.startswith(p.path)
+    )
 
 
 def validate_bridge_webhook_base_url(raw: str) -> str:
@@ -104,8 +114,13 @@ def validate_bridge_webhook_base_url(raw: str) -> str:
     base = (raw or "").strip().rstrip("/")
     if not base:
         raise BridgeURLValidationError("BRIDGE_WEBHOOK_BASE_URL is empty")
-
+    if len(base) > _MAX_URL_LEN:
+        raise BridgeURLValidationError(
+            f"BRIDGE_WEBHOOK_BASE_URL exceeds maximum length ({_MAX_URL_LEN} chars)"
+        )
     parsed = urlparse(base)
+    if parsed.username or parsed.password:
+        raise BridgeURLValidationError("BRIDGE_WEBHOOK_BASE_URL must not contain credentials")
     if parsed.scheme not in ("http", "https"):
         raise BridgeURLValidationError(
             f"BRIDGE_WEBHOOK_BASE_URL must use http or https (got scheme={parsed.scheme!r})"
@@ -134,17 +149,19 @@ def validate_bridge_webhook_base_url(raw: str) -> str:
     return base
 
 
-def assert_url_allowed_prefix(
-    url: str, allowed_prefixes: tuple[str, ...], *, what: str
-) -> None:
+def assert_url_allowed_prefix(url: str, allowed_prefixes: tuple[str, ...], *, what: str) -> None:
     """
-    Ensure ``url`` is strictly under one of ``allowed_prefixes`` (character prefix match after
-    normalisation). Used for delta / pagination links stored in Redis.
+    Ensure ``url`` is under one of ``allowed_prefixes`` (parsed scheme/host/port/path match).
+    Used for delta / pagination links stored in Redis.
     """
     u = (url or "").strip()
     if not u:
         raise BridgeURLValidationError(f"{what}: empty URL")
+    if len(u) > _MAX_URL_LEN:
+        raise BridgeURLValidationError(f"{what}: URL exceeds maximum length ({_MAX_URL_LEN} chars)")
     parsed = urlparse(u)
+    if parsed.username or parsed.password:
+        raise BridgeURLValidationError(f"{what}: credentials in URL are not allowed")
     if parsed.scheme not in ("https",):
         raise BridgeURLValidationError(
             f"{what}: only https URLs are allowed (got {parsed.scheme!r})"
@@ -160,12 +177,19 @@ def assert_url_allowed_prefix(
         except BridgeURLValidationError:
             raise
         except Exception as e:
-            log.warning("%s: resolution check failed for %r: %s", what, host, e)
+            log.warning(
+                "%s: DNS resolution failed for %r: %s",
+                what,
+                host[:64],
+                type(e).__name__,
+            )
+            raise BridgeURLValidationError(
+                f"{what}: could not verify host {host!r} — DNS resolution failed"
+            ) from e
 
-    ok = any(u.startswith(p) for p in allowed_prefixes)
-    if not ok:
+    if not any(_url_matches_prefix(u, p) for p in allowed_prefixes):
         raise BridgeURLValidationError(
-            f"{what}: URL must start with one of {allowed_prefixes!r} (got {u[:120]!r}...)"
+            f"{what}: URL not within allowed prefixes (got {u[:120]!r}...)"
         )
 
 
@@ -189,8 +213,11 @@ def validate_extractor_url(url: str, *, what: str = "extractor") -> str:
     raw = (url or "").strip()
     if not raw:
         raise BridgeURLValidationError(f"{what}: empty URL")
-
+    if len(raw) > _MAX_URL_LEN:
+        raise BridgeURLValidationError(f"{what}: URL exceeds maximum length ({_MAX_URL_LEN} chars)")
     parsed = urlparse(raw)
+    if parsed.username or parsed.password:
+        raise BridgeURLValidationError(f"{what}: credentials in URL are not allowed")
     if parsed.scheme not in ("https",):
         raise BridgeURLValidationError(
             f"{what}: only https URLs are allowed (got scheme={parsed.scheme!r})"
@@ -204,10 +231,13 @@ def validate_extractor_url(url: str, *, what: str = "extractor") -> str:
     except BridgeURLValidationError:
         raise
     except Exception as e:
-        log.warning("%s: DNS resolution failed for %r: %s", what, host, e)
-        raise BridgeURLValidationError(
-            f"{what}: could not resolve host {host!r}: {e}"
-        ) from e
+        log.warning(
+            "%s: DNS resolution failed for %r: %s",
+            what,
+            host[:64],
+            type(e).__name__,
+        )
+        raise BridgeURLValidationError(f"{what}: could not resolve host {host!r}: {e}") from e
 
     if _any_non_public(ips):
         raise BridgeURLValidationError(
@@ -261,8 +291,13 @@ def validate_webhook_payload_url(
     raw = (url or "").strip()
     if not raw:
         raise BridgeURLValidationError(f"webhook {field_name}: empty URL")
-
+    if len(raw) > _MAX_URL_LEN:
+        raise BridgeURLValidationError(
+            f"webhook {field_name}: URL exceeds maximum length ({_MAX_URL_LEN} chars)"
+        )
     parsed = urlparse(raw)
+    if parsed.username or parsed.password:
+        raise BridgeURLValidationError(f"webhook {field_name}: credentials in URL are not allowed")
 
     # Relative resource path — validate against known-safe prefixes
     if not parsed.scheme and not parsed.hostname:
@@ -281,9 +316,7 @@ def validate_webhook_payload_url(
         )
     host = parsed.hostname
     if not host:
-        raise BridgeURLValidationError(
-            f"webhook {field_name}: URL missing hostname: {raw!r}"
-        )
+        raise BridgeURLValidationError(f"webhook {field_name}: URL missing hostname: {raw!r}")
     try:
         ips = _resolve_ips(host)
         # Webhook payload URLs come from external sources — always reject
@@ -299,15 +332,13 @@ def validate_webhook_payload_url(
         log.warning(
             "webhook %s: DNS resolution check failed for %r: %s",
             field_name,
-            host,
-            e,
+            host[:64],
+            type(e).__name__,
         )
 
     # Also verify against allowed URL prefixes
-    ok_prefix = any(raw.startswith(p) for p in ALLOWED_WEBHOOK_URL_PREFIXES)
-    if not ok_prefix:
+    if not any(_url_matches_prefix(raw, p) for p in ALLOWED_WEBHOOK_URL_PREFIXES):
         raise BridgeURLValidationError(
-            f"webhook {field_name}: URL must start with one of "
-            f"{ALLOWED_WEBHOOK_URL_PREFIXES!r} (got {raw[:120]!r}...)"
+            f"webhook {field_name}: URL not within allowed prefixes (got {raw[:120]!r}...)"
         )
     return raw

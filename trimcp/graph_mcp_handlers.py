@@ -30,4 +30,4 @@ async def handle_graph_search(engine: TriStackEngine, arguments: dict[str, Any])
     """GraphRAG traversal over the Knowledge Graph with temporal and user scoping."""
     req = GraphSearchRequest(**arguments)
     result = await engine.graph_search(req)
-    return json.dumps(result, indent=2)
+    return json.dumps(result, default=str)

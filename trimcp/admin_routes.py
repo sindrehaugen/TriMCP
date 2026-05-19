@@ -58,9 +58,7 @@ ADMIN_MAX_ROWS_SKIP: int = 500_000
 
 _SLUG_PREFIX_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
-_DLQ_ALLOWED_STATUS: frozenset[str] = frozenset(
-    {"pending", "replayed", "purged"}
-)
+_DLQ_ALLOWED_STATUS: frozenset[str] = frozenset({"pending", "replayed", "purged"})
 
 
 def parse_optional_uuid(raw: str | None) -> uuid.UUID | None:
@@ -70,9 +68,7 @@ def parse_optional_uuid(raw: str | None) -> uuid.UUID | None:
     return uuid.UUID(raw)
 
 
-def clamp_bounded_int(
-    raw: str | None, *, default: int, min_value: int, max_value: int
-) -> int:
+def clamp_bounded_int(raw: str | None, *, default: int, min_value: int, max_value: int) -> int:
     """Parse optional query integer and clamp to ``[min_value, max_value]``."""
     if raw is None or raw == "":
         return default
@@ -117,9 +113,7 @@ def sanitize_event_type_filter(raw: str | None) -> tuple[str | None, str | None]
     if not trimmed:
         return None, None
     if len(trimmed) > ADMIN_MAX_EVENT_TYPE_LEN:
-        return None, (
-            f"event_type must be ≤{ADMIN_MAX_EVENT_TYPE_LEN} characters"
-        )
+        return None, (f"event_type must be ≤{ADMIN_MAX_EVENT_TYPE_LEN} characters")
     return trimmed, None
 
 
@@ -144,13 +138,9 @@ def sanitize_resource_type_filter(raw: str | None) -> tuple[str | None, str | No
     if not trimmed:
         return None, None
     if len(trimmed) > ADMIN_MAX_RESOURCE_TYPE_LEN:
-        return None, (
-            f"resource_type must be ≤{ADMIN_MAX_RESOURCE_TYPE_LEN} characters"
-        )
+        return None, (f"resource_type must be ≤{ADMIN_MAX_RESOURCE_TYPE_LEN} characters")
     if not re.fullmatch(r"[a-zA-Z0-9_.-]+", trimmed):
-        return None, (
-            "resource_type may only contain letters, digits, ._-"
-        )
+        return None, ("resource_type may only contain letters, digits, ._-")
     return trimmed, None
 
 
@@ -193,9 +183,7 @@ def offset_from_page_limit(page: int, limit: int) -> int:
     return off
 
 
-def parse_optional_bigint_bounds(
-    raw: str | None, *, label: str
-) -> tuple[int | None, str | None]:
+def parse_optional_bigint_bounds(raw: str | None, *, label: str) -> tuple[int | None, str | None]:
     """Optional BIGINT filter (event_seq ranges). Bounds to postgres bigint range-ish."""
     if raw is None or raw == "":
         return None, None
@@ -232,9 +220,7 @@ def sanitize_optional_agent_filter(raw: str | None) -> tuple[str | None, str | N
     if len(s) > 256:
         return None, "agent_id must be ≤256 characters"
     if not re.fullmatch(r"[a-zA-Z0-9:_./+-]+", s):
-        return None, (
-            "agent_id may only contain letters, digits, and : _ . / + -"
-        )
+        return None, ("agent_id may only contain letters, digits, and : _ . / + -")
     return s, None
 
 
@@ -268,7 +254,7 @@ async def fetch_pg_rls_snapshot(
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public'
-          AND c.relkind = 'r'
+          AND c.relkind IN ('r', 'p')
           AND c.relname = ANY($1::text[])
         """,
         list(names),
@@ -586,9 +572,7 @@ async def fetch_fleet_overview_page(
 
         hull = {
             "event_feed": evt_status,
-            "last_event_at": (
-                last_ev.astimezone(timezone.utc).isoformat() if last_ev else None
-            ),
+            "last_event_at": (last_ev.astimezone(timezone.utc).isoformat() if last_ev else None),
             "memory_volume": mem_c,
         }
 

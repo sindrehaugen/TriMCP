@@ -21,6 +21,7 @@ from uuid import UUID, uuid4
 
 try:
     from cryptography import x509 as crypto_x509
+
     _CRYPTOGRAPHY_AVAILABLE = True
 except Exception:  # pragma: no cover
     _CRYPTOGRAPHY_AVAILABLE = False
@@ -28,7 +29,7 @@ except Exception:  # pragma: no cover
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field
 
-from trimcp.auth import NamespaceContext
+from trimcp.auth import NamespaceContext, set_namespace_context
 
 log = logging.getLogger("trimcp.a2a")
 
@@ -190,12 +191,7 @@ def _parse_fingerprint_from_cert_dict(cert: dict[str, Any]) -> str | None:
     ``sha256``, or ``sha256_fingerprint`` keys.
     Returns normalised fingerprint or None if not present.
     """
-    raw = (
-        cert.get("sha256_fingerprint")
-        or cert.get("sha256")
-        or cert.get("fingerprint")
-        or ""
-    )
+    raw = cert.get("sha256_fingerprint") or cert.get("sha256") or cert.get("fingerprint") or ""
     if not raw:
         return None
     try:
@@ -390,9 +386,7 @@ def parse_client_cert_from_headers(headers: dict[str, str]) -> dict[str, Any] | 
                 try:
                     cert_dict["fingerprint"] = _normalise_fingerprint(value)
                 except A2AMTLSError:
-                    log.warning(
-                        "mTLS: unparseable fingerprint in X-Forwarded-Client-Cert"
-                    )
+                    log.warning("mTLS: unparseable fingerprint in X-Forwarded-Client-Cert")
             elif key == "san":
                 sans = [s.strip().lower() for s in value.split(",") if s.strip()]
                 cert_dict.setdefault("san", []).extend(sans)
@@ -454,9 +448,7 @@ def validate_mtls_cert(
                               colon-separated hex).
     """
     allowed_sans = [s.lower() for s in (allowed_sans or [])]
-    allowed_fingerprints = [
-        _normalise_fingerprint(f) for f in (allowed_fingerprints or [])
-    ]
+    allowed_fingerprints = [_normalise_fingerprint(f) for f in (allowed_fingerprints or [])]
 
     if not allowed_sans and not allowed_fingerprints:
         raise A2AMTLSError(
@@ -588,23 +580,43 @@ async def create_grant(
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=request.expires_in_seconds)
     scopes_json = json.dumps([s.model_dump() for s in request.scopes])
 
-    await conn.execute(
-        """
-        INSERT INTO a2a_grants (
-            id, owner_namespace_id, owner_agent_id,
-            target_namespace_id, target_agent_id,
-            scopes, token_hash, status, expires_at
-        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'active', $8)
-        """,
-        grant_id,
-        owner_ctx.namespace_id,
-        owner_ctx.agent_id,
-        request.target_namespace_id,
-        request.target_agent_id,
-        scopes_json,
-        token_hash,
-        expires_at,
-    )
+    async with conn.transaction():
+        await conn.execute(
+            """
+            INSERT INTO a2a_grants (
+                id, owner_namespace_id, owner_agent_id,
+                target_namespace_id, target_agent_id,
+                scopes, token_hash, status, expires_at
+            ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'active', $8)
+            """,
+            grant_id,
+            owner_ctx.namespace_id,
+            owner_ctx.agent_id,
+            request.target_namespace_id,
+            request.target_agent_id,
+            scopes_json,
+            token_hash,
+            expires_at,
+        )
+
+        await set_namespace_context(conn, owner_ctx.namespace_id)
+        from trimcp.event_log import append_event
+
+        await append_event(
+            conn=conn,
+            namespace_id=owner_ctx.namespace_id,
+            agent_id=owner_ctx.agent_id,
+            event_type="a2a_grant_created",
+            params={
+                "grant_id": str(grant_id),
+                "target_namespace_id": (
+                    str(request.target_namespace_id) if request.target_namespace_id else None
+                ),
+                "target_agent_id": request.target_agent_id,
+                "scope_count": len(request.scopes),
+                "expires_at": expires_at.isoformat(),
+            },
+        )
 
     log.info(
         "A2A grant created: grant_id=%s owner_ns=%s target_ns=%s scopes=%d expires=%s",
@@ -614,9 +626,7 @@ async def create_grant(
         len(request.scopes),
         expires_at.isoformat(),
     )
-    return A2AGrantResponse(
-        grant_id=grant_id, sharing_token=token, expires_at=expires_at
-    )
+    return A2AGrantResponse(grant_id=grant_id, sharing_token=token, expires_at=expires_at)
 
 
 async def verify_token(
@@ -647,9 +657,7 @@ async def verify_token(
     )
 
     if not row:
-        log.warning(
-            "A2A token verification failed: not found or inactive hash=<redacted>"
-        )
+        log.warning("A2A token verification failed: not found or inactive hash=<redacted>")
         raise A2AAuthorizationError("Invalid or revoked sharing token.")
 
     # Normalise timezone awareness for comparison
@@ -710,18 +718,31 @@ async def revoke_grant(
     Only the owning namespace can revoke a grant.
     Returns True if successfully revoked, False if not found / already inactive.
     """
-    result = await conn.execute(
-        """
-        UPDATE a2a_grants
-        SET status = 'revoked'
-        WHERE id = $1
-          AND owner_namespace_id = $2
-          AND status = 'active'
-        """,
-        grant_id,
-        owner_ctx.namespace_id,
-    )
-    revoked = result == "UPDATE 1"
+    async with conn.transaction():
+        result = await conn.execute(
+            """
+            UPDATE a2a_grants
+            SET status = 'revoked'
+            WHERE id = $1
+              AND owner_namespace_id = $2
+              AND status = 'active'
+            """,
+            grant_id,
+            owner_ctx.namespace_id,
+        )
+        revoked = result == "UPDATE 1"
+        if revoked:
+            await set_namespace_context(conn, owner_ctx.namespace_id)
+            from trimcp.event_log import append_event
+
+            await append_event(
+                conn=conn,
+                namespace_id=owner_ctx.namespace_id,
+                agent_id=owner_ctx.agent_id,
+                event_type="a2a_grant_revoked",
+                params={"grant_id": str(grant_id)},
+            )
+
     if revoked:
         log.info(
             "A2A grant revoked: grant_id=%s owner_ns=%s",
@@ -823,10 +844,15 @@ def enforce_scope(
             return
 
         # Namespace wildcard: a namespace grant covers memories and KG nodes within it
-        if scope.resource_type == "namespace" and scope.resource_id == str(resource_namespace_id) and resource_type in (
-            "memory",
-            "kg_node",
-            "subgraph",
+        if (
+            scope.resource_type == "namespace"
+            and scope.resource_id == str(resource_namespace_id)
+            and resource_type
+            in (
+                "memory",
+                "kg_node",
+                "subgraph",
+            )
         ):
             return
 

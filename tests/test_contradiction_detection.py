@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests.conftest import first_recorded_contradiction as _first_recorded_contradiction
 from trimcp.contradictions import ContradictionResult, detect_contradictions
 from trimcp.models import KGEdge
 
@@ -133,9 +134,7 @@ def test_detect_records_contradiction_when_llm_confident(
     conn.execute = AsyncMock(return_value="INSERT 1")
 
     mongo = MagicMock()
-    _patch_episode_hydrate(
-        monkeypatch, "The API timeout is configured to 30 seconds."
-    )
+    _patch_episode_hydrate(monkeypatch, "The API timeout is configured to 30 seconds.")
 
     llm = StubContradictionLLM(
         ContradictionResult(
@@ -171,11 +170,13 @@ def test_detect_records_contradiction_when_llm_confident(
         )
 
     out = asyncio.run(_run())
-    assert out is not None
-    assert out["memory_a_id"] == str(cand_id)
-    assert out["memory_b_id"] == new_mid
-    assert out["confidence"] == pytest.approx(0.88)
-    assert any(s["source"] == "llm" for s in out["signals"])
+    row = _first_recorded_contradiction(out)
+    assert row is not None
+    a_id, b_id = sorted([str(cand_id), new_mid])
+    assert row["memory_a_id"] == a_id
+    assert row["memory_b_id"] == b_id
+    assert row["confidence"] == pytest.approx(0.88)
+    assert any(s["source"] == "llm" for s in row["signals"])
     conn.execute.assert_awaited()
 
 
@@ -197,9 +198,7 @@ def test_detect_no_insert_when_llm_rejects_contradiction(
     _patch_episode_hydrate(monkeypatch, "Servers run in region eu-west-1.")
 
     llm = StubContradictionLLM(
-        ContradictionResult(
-            is_contradiction=False, confidence=0.2, explanation="Compatible."
-        )
+        ContradictionResult(is_contradiction=False, confidence=0.2, explanation="Compatible.")
     )
     monkeypatch.setattr("trimcp.contradictions.get_provider", lambda _name: llm)
 
@@ -273,9 +272,10 @@ def test_detect_inserts_on_kg_when_llm_raises(monkeypatch: pytest.MonkeyPatch):
 
     out = asyncio.run(_run())
 
-    assert out is not None
-    assert out["confidence"] == pytest.approx(0.95)
-    assert any(s["source"] == "kg" for s in out["signals"])
+    row = _first_recorded_contradiction(out)
+    assert row is not None
+    assert row["confidence"] == pytest.approx(0.95)
+    assert any(s["source"] == "kg" for s in row["signals"])
     conn.execute.assert_awaited()
 
 
@@ -417,11 +417,12 @@ def test_detect_contradictions_returns_none_on_llm_timeout(
 
     out = asyncio.run(_run())
     # Should NOT crash — returns result based on NLI signal (graceful degradation)
-    assert out is not None
-    assert out["confidence"] == 0.9
-    assert "LLM tiebreaker timed out" in out["explanation"]
-    assert any(s["source"] == "nli" for s in out["signals"])
-    assert not any(s["source"] == "llm" for s in out["signals"])
+    row = _first_recorded_contradiction(out)
+    assert row is not None
+    assert row["confidence"] == 0.9
+    assert "LLM tiebreaker timed out" in row["explanation"]
+    assert any(s["source"] == "nli" for s in row["signals"])
+    assert not any(s["source"] == "llm" for s in row["signals"])
     # INSERT should be called (contradiction recorded based on NLI signal)
     conn.execute.assert_awaited()
 
@@ -472,11 +473,12 @@ def test_detect_contradictions_returns_none_on_parse_failure(
 
     out = asyncio.run(_run())
     # Should NOT crash — returns result based on NLI signal (graceful degradation)
-    assert out is not None
-    assert out["confidence"] == 0.9
-    assert "LLM response unparseable" in out["explanation"]
-    assert any(s["source"] == "nli" for s in out["signals"])
-    assert not any(s["source"] == "llm" for s in out["signals"])
+    row = _first_recorded_contradiction(out)
+    assert row is not None
+    assert row["confidence"] == 0.9
+    assert "LLM response unparseable" in row["explanation"]
+    assert any(s["source"] == "nli" for s in row["signals"])
+    assert not any(s["source"] == "llm" for s in row["signals"])
     # INSERT should be called (contradiction recorded based on NLI signal)
     conn.execute.assert_awaited()
 
@@ -600,9 +602,10 @@ def test_detect_contradictions_still_records_on_kg_signal_with_llm_timeout(
     out = asyncio.run(_run())
 
     # KG hit + LLM timeout → should still record based on KG signal
-    assert out is not None
-    assert out["confidence"] == pytest.approx(0.95)
-    assert any(s["source"] == "kg" for s in out["signals"])
+    row = _first_recorded_contradiction(out)
+    assert row is not None
+    assert row["confidence"] == pytest.approx(0.95)
+    assert any(s["source"] == "kg" for s in row["signals"])
     conn.execute.assert_awaited()
 
 

@@ -139,9 +139,7 @@ def _emit_sheet_sections(
         path = f"Sheet: {sheet_name}"
         if len(subtables) > 1:
             path = f"{path} > Table {ti + 1}"
-        sections.append(
-            Section(text=md, structure_path=path, section_type="sheet", order=order)
-        )
+        sections.append(Section(text=md, structure_path=path, section_type="sheet", order=order))
         order += 1
     return sections, order
 
@@ -162,15 +160,9 @@ def extract_xlsx_sync(blob: bytes) -> ExtractionResult:
         metadata.update(
             {
                 "creator": getattr(props, "creator", None),
-                "created": (
-                    props.created.isoformat()
-                    if getattr(props, "created", None)
-                    else None
-                ),
+                "created": (props.created.isoformat() if getattr(props, "created", None) else None),
                 "modified": (
-                    props.modified.isoformat()
-                    if getattr(props, "modified", None)
-                    else None
+                    props.modified.isoformat() if getattr(props, "modified", None) else None
                 ),
             }
         )
@@ -286,9 +278,7 @@ async def extract_xlsx(blob: bytes) -> ExtractionResult:
 async def extract_xls(blob: bytes) -> ExtractionResult:
     converted = await asyncio.to_thread(libreoffice_convert, blob, ".xls", ".xlsx")
     if not converted:
-        return empty_skipped(
-            "libreoffice", "conversion_failed", warnings=["xls conversion failed"]
-        )
+        return empty_skipped("libreoffice", "conversion_failed", warnings=["xls conversion failed"])
     res = await extract_xlsx(converted)
     res.method = "libreoffice→openpyxl"
     res.warnings.insert(0, "Converted from legacy .xls via LibreOffice")

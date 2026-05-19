@@ -33,7 +33,7 @@ async def test_create_tracked_task_success():
         await asyncio.sleep(0.01)
         completed = True
 
-    task = await create_tracked_task(my_task(), name="test-success")
+    task = create_tracked_task(my_task(), name="test-success")
     await task
 
     # Give the done callback time to execute and mark complete
@@ -48,12 +48,13 @@ async def test_create_tracked_task_success():
 @pytest.mark.asyncio
 async def test_create_tracked_task_exception_logged(caplog):
     """Test that exceptions in background tasks are logged."""
+
     async def failing_task():
         await asyncio.sleep(0.01)
         raise ValueError("Test exception")
 
     with caplog.at_level(logging.ERROR, logger="trimcp.background_task_manager"):
-        task = await create_tracked_task(failing_task(), name="test-failing")
+        create_tracked_task(failing_task(), name="test-failing")
         # Give the done callback time to execute
         await asyncio.sleep(0.05)
 
@@ -64,10 +65,6 @@ async def test_create_tracked_task_exception_logged(caplog):
 @pytest.mark.asyncio
 async def test_create_tracked_task_exception_metrics(monkeypatch):
     """Test that task exceptions are recorded in metrics."""
-    from trimcp.background_task_manager import (
-        BACKGROUND_TASK_FAILURES_TOTAL,
-        BACKGROUND_TASKS_TOTAL,
-    )
 
     # Mock the metrics to track calls
     mock_failures = mock.Mock()
@@ -77,14 +74,12 @@ async def test_create_tracked_task_exception_metrics(monkeypatch):
         "trimcp.background_task_manager.BACKGROUND_TASK_FAILURES_TOTAL",
         mock_failures,
     )
-    monkeypatch.setattr(
-        "trimcp.background_task_manager.BACKGROUND_TASKS_TOTAL", mock_totals
-    )
+    monkeypatch.setattr("trimcp.background_task_manager.BACKGROUND_TASKS_TOTAL", mock_totals)
 
     async def failing_task():
         raise RuntimeError("Intentional failure")
 
-    task = await create_tracked_task(failing_task(), name="test-metric-failure")
+    create_tracked_task(failing_task(), name="test-metric-failure")
     # Give the done callback time to execute
     await asyncio.sleep(0.05)
 
@@ -97,10 +92,11 @@ async def test_create_tracked_task_exception_metrics(monkeypatch):
 @pytest.mark.asyncio
 async def test_create_tracked_task_cancelled():
     """Test that cancelled tasks don't log as failures."""
+
     async def long_task():
         await asyncio.sleep(10)
 
-    task = await create_tracked_task(long_task(), name="test-cancelled")
+    task = create_tracked_task(long_task(), name="test-cancelled")
     await asyncio.sleep(0.01)
     task.cancel()
 
@@ -121,12 +117,13 @@ async def test_create_tracked_task_cancelled():
 @pytest.mark.asyncio
 async def test_get_active_background_tasks():
     """Test retrieving active background tasks."""
+
     async def slow_task():
         await asyncio.sleep(1)
 
     # Create multiple tasks
-    task1 = await create_tracked_task(slow_task(), name="slow-1")
-    task2 = await create_tracked_task(slow_task(), name="slow-2")
+    task1 = create_tracked_task(slow_task(), name="slow-1")
+    task2 = create_tracked_task(slow_task(), name="slow-2")
 
     active = await get_active_background_tasks()
     assert len(active) >= 2
@@ -134,23 +131,21 @@ async def test_get_active_background_tasks():
     # Clean up
     task1.cancel()
     task2.cancel()
-    try:
-        await asyncio.gather(task1, task2, return_exceptions=True)
-    except:
-        pass
+    await asyncio.gather(task1, task2, return_exceptions=True)
 
 
 @pytest.mark.asyncio
 async def test_get_active_background_tasks_filtered():
     """Test filtering active tasks by name."""
+
     async def task_a():
         await asyncio.sleep(1)
 
     async def task_b():
         await asyncio.sleep(1)
 
-    task1 = await create_tracked_task(task_a(), name="filter-a")
-    task2 = await create_tracked_task(task_b(), name="filter-b")
+    task1 = create_tracked_task(task_a(), name="filter-a")
+    task2 = create_tracked_task(task_b(), name="filter-b")
 
     # Get only filter-a tasks
     active_a = await get_active_background_tasks(task_name="filter-a")
@@ -160,20 +155,18 @@ async def test_get_active_background_tasks_filtered():
     # Clean up
     task1.cancel()
     task2.cancel()
-    try:
-        await asyncio.gather(task1, task2, return_exceptions=True)
-    except:
-        pass
+    await asyncio.gather(task1, task2, return_exceptions=True)
 
 
 @pytest.mark.asyncio
 async def test_get_background_task_stats():
     """Test retrieving background task statistics."""
+
     async def quick_task():
         await asyncio.sleep(0.01)
 
     # Create and complete a task
-    task = await create_tracked_task(quick_task(), name="stats-test")
+    task = create_tracked_task(quick_task(), name="stats-test")
     await task
 
     # Give the done callback time to execute and mark complete
@@ -194,7 +187,7 @@ async def test_task_duration_recorded():
         await asyncio.sleep(0.1)
 
     start = time.time()
-    task = await create_tracked_task(timed_task(), name="timed-test")
+    task = create_tracked_task(timed_task(), name="timed-test")
     await task
     elapsed = time.time() - start
 
@@ -205,12 +198,13 @@ async def test_task_duration_recorded():
 @pytest.mark.asyncio
 async def test_multiple_tasks_with_same_name():
     """Test that multiple tasks with the same name are tracked separately."""
+
     async def task_gen():
         await asyncio.sleep(0.01)
 
     # Create multiple tasks with the same name
-    task1 = await create_tracked_task(task_gen(), name="dup-name")
-    task2 = await create_tracked_task(task_gen(), name="dup-name")
+    task1 = create_tracked_task(task_gen(), name="dup-name")
+    task2 = create_tracked_task(task_gen(), name="dup-name")
 
     await asyncio.gather(task1, task2)
 
@@ -230,7 +224,7 @@ async def test_task_exception_with_custom_name():
     async def fork_task():
         raise ValueError("Fork failed")
 
-    task = await create_tracked_task(fork_task(), name=f"fork-{fork_id}")
+    task = create_tracked_task(fork_task(), name=f"fork-{fork_id}")
     with pytest.raises(ValueError, match="Fork failed"):
         await task
 
@@ -248,14 +242,13 @@ async def test_background_task_reraises_to_done_callback(caplog):
     Test that exceptions in background tasks are properly extracted
     and logged in the done callback, not propagated to caller.
     """
-    call_count = 0
 
     async def failing_coro():
         raise RuntimeError("Background failure")
 
     with caplog.at_level(logging.ERROR, logger="trimcp.background_task_manager"):
         # create_tracked_task should return successfully even if coro fails
-        task = await create_tracked_task(failing_coro(), name="test-callback-failure")
+        create_tracked_task(failing_coro(), name="test-callback-failure")
 
         # Give the done callback time to execute
         await asyncio.sleep(0.05)

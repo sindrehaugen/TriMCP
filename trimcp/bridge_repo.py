@@ -25,6 +25,7 @@ from typing import Any
 
 import asyncpg
 
+from trimcp.bridge_providers import BRIDGE_PROVIDERS
 from trimcp.signing import (
     decrypt_signing_key,
     encrypt_signing_key,
@@ -50,6 +51,7 @@ async def insert_subscription(
     conn: asyncpg.Connection,
     *,
     user_id: str,
+    namespace_id: uuid.UUID,
     provider: str,
     resource_id: str,
     status: str = "REQUESTED",
@@ -63,13 +65,14 @@ async def insert_subscription(
     await conn.execute(
         """
         INSERT INTO bridge_subscriptions (
-            id, user_id, provider, resource_id, subscription_id,
+            id, user_id, namespace_id, provider, resource_id, subscription_id,
             cursor, status, expires_at, client_state, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
         """,
         rid,
         user_id,
+        namespace_id,
         provider,
         resource_id,
         subscription_id,
@@ -102,9 +105,7 @@ async def fetch_expiring(
     )
 
 
-async def get_by_id(
-    conn: asyncpg.Connection, bridge_id: uuid.UUID
-) -> asyncpg.Record | None:
+async def get_by_id(conn: asyncpg.Connection, bridge_id: uuid.UUID) -> asyncpg.Record | None:
     return await conn.fetchrow(
         "SELECT * FROM bridge_subscriptions WHERE id = $1",
         bridge_id,
@@ -170,7 +171,7 @@ async def fetch_oauth_token_enc(
     resource_id: str | None = None,
 ) -> bytes | None:
     """Return encrypted OAuth access token bytes for an ACTIVE bridge row, if any."""
-    if provider not in ("sharepoint", "gdrive", "dropbox"):
+    if provider not in BRIDGE_PROVIDERS:
         return None
     clauses: list[str] = []
     args: list[Any] = [provider]
@@ -202,11 +203,7 @@ async def fetch_oauth_token_enc(
         """,
         *args,
     )
-    return (
-        bytes(row["oauth_access_token_enc"])
-        if row and row["oauth_access_token_enc"]
-        else None
-    )
+    return bytes(row["oauth_access_token_enc"]) if row and row["oauth_access_token_enc"] else None
 
 
 async def fetch_active_subscription(
@@ -218,7 +215,7 @@ async def fetch_active_subscription(
     resource_id: str | None = None,
 ) -> asyncpg.Record | None:
     """Return the entire bridge subscription record for an ACTIVE bridge row, if any."""
-    if provider not in ("sharepoint", "gdrive", "dropbox"):
+    if provider not in BRIDGE_PROVIDERS:
         return None
     clauses: list[str] = []
     args: list[Any] = [provider]
@@ -251,9 +248,7 @@ async def fetch_active_subscription(
     )
 
 
-async def mark_status(
-    conn: asyncpg.Connection, bridge_id: uuid.UUID, status: str
-) -> None:
+async def mark_status(conn: asyncpg.Connection, bridge_id: uuid.UUID, status: str) -> None:
     await conn.execute(
         """
         UPDATE bridge_subscriptions
@@ -314,8 +309,8 @@ async def save_token(
     Raises ``MasterKeyMissingError`` if ``TRIMCP_MASTER_KEY`` is absent.
     """
     plaintext = json.dumps(token_payload).encode("utf-8")
-    mk = require_master_key()
-    ciphertext = encrypt_signing_key(plaintext, mk)
+    with require_master_key() as mk:
+        ciphertext = encrypt_signing_key(plaintext, mk)
     await conn.execute(
         """
         UPDATE bridge_subscriptions
@@ -351,7 +346,5 @@ async def get_token(
     if not row or not row["oauth_access_token_enc"]:
         return None
     with require_master_key() as mk:
-        plaintext = decrypt_signing_key(bytes(row["oauth_access_token_enc"]), mk).decode(
-            "utf-8"
-        )
+        plaintext = decrypt_signing_key(bytes(row["oauth_access_token_enc"]), mk).decode("utf-8")
     return json.loads(plaintext)

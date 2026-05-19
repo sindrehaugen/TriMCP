@@ -131,43 +131,27 @@ class TestOutboxEnqueueInStoreMemory:
         # Patch embedding
         from trimcp import embeddings as emb_mod
 
-        monkeypatch.setattr(
-            emb_mod, "embed_batch", AsyncMock(return_value=[[0.1] * 768])
-        )
+        monkeypatch.setattr(emb_mod, "embed_batch", AsyncMock(return_value=[[0.1] * 768]))
 
         # Patch event_log.append_event to avoid signing deps
-        monkeypatch.setattr(
-            "trimcp.event_log.append_event", AsyncMock(return_value=None)
-        )
+        monkeypatch.setattr("trimcp.event_log.append_event", AsyncMock(return_value=None))
 
         # Patch saga execution log helpers (added by parallel session)
-        monkeypatch.setattr(
-            orchestrator, "_saga_log_start", AsyncMock(return_value="saga-1")
-        )
-        monkeypatch.setattr(
-            orchestrator, "_saga_log_transition", AsyncMock(return_value=None)
-        )
+        monkeypatch.setattr(orchestrator, "_saga_log_start", AsyncMock(return_value="saga-1"))
+        monkeypatch.setattr(orchestrator, "_saga_log_transition", AsyncMock(return_value=None))
 
         # Patch scoped_pg_session to yield our mock conn directly
         @asynccontextmanager
         async def _fake_scoped(pg_pool, namespace_id):
             yield conn
 
-        monkeypatch.setattr(
-            "trimcp.orchestrators.memory.scoped_pg_session", _fake_scoped
-        )
+        monkeypatch.setattr("trimcp.orchestrators.memory.scoped_pg_session", _fake_scoped)
 
         await orchestrator.store_memory(store_payload)
 
         # Find the outbox INSERT call
-        outbox_calls = [
-            c
-            for c in conn.execute.call_args_list
-            if "outbox_events" in str(c[0][0])
-        ]
-        assert len(outbox_calls) >= 1, (
-            "store_memory did not execute an INSERT into outbox_events"
-        )
+        outbox_calls = [c for c in conn.execute.call_args_list if "outbox_events" in str(c[0][0])]
+        assert len(outbox_calls) >= 1, "store_memory did not execute an INSERT into outbox_events"
 
         # Verify the SQL and parameters
         sql, *params = outbox_calls[0][0]
@@ -206,35 +190,21 @@ class TestOutboxEnqueueInStoreMemory:
 
         from trimcp import embeddings as emb_mod
 
-        monkeypatch.setattr(
-            emb_mod, "embed_batch", AsyncMock(return_value=[[0.1] * 768])
-        )
-        monkeypatch.setattr(
-            "trimcp.event_log.append_event", AsyncMock(return_value=None)
-        )
+        monkeypatch.setattr(emb_mod, "embed_batch", AsyncMock(return_value=[[0.1] * 768]))
+        monkeypatch.setattr("trimcp.event_log.append_event", AsyncMock(return_value=None))
 
-        monkeypatch.setattr(
-            orchestrator, "_saga_log_start", AsyncMock(return_value="saga-1")
-        )
-        monkeypatch.setattr(
-            orchestrator, "_saga_log_transition", AsyncMock(return_value=None)
-        )
+        monkeypatch.setattr(orchestrator, "_saga_log_start", AsyncMock(return_value="saga-1"))
+        monkeypatch.setattr(orchestrator, "_saga_log_transition", AsyncMock(return_value=None))
 
         @asynccontextmanager
         async def _fake_scoped(pg_pool, namespace_id):
             yield conn
 
-        monkeypatch.setattr(
-            "trimcp.orchestrators.memory.scoped_pg_session", _fake_scoped
-        )
+        monkeypatch.setattr("trimcp.orchestrators.memory.scoped_pg_session", _fake_scoped)
 
         await orchestrator.store_memory(store_payload)
 
-        outbox_calls = [
-            c
-            for c in conn.execute.call_args_list
-            if "outbox_events" in str(c[0][0])
-        ]
+        outbox_calls = [c for c in conn.execute.call_args_list if "outbox_events" in str(c[0][0])]
         assert len(outbox_calls) >= 1
 
         payload_json = outbox_calls[0][0][5]  # payload param
@@ -274,16 +244,10 @@ class TestOutboxEnqueueInStoreMemory:
 
         from trimcp import embeddings as emb_mod
 
-        monkeypatch.setattr(
-            emb_mod, "embed_batch", AsyncMock(return_value=[[0.1] * 768])
-        )
+        monkeypatch.setattr(emb_mod, "embed_batch", AsyncMock(return_value=[[0.1] * 768]))
 
-        monkeypatch.setattr(
-            orchestrator, "_saga_log_start", AsyncMock(return_value="saga-1")
-        )
-        monkeypatch.setattr(
-            orchestrator, "_saga_log_transition", AsyncMock(return_value=None)
-        )
+        monkeypatch.setattr(orchestrator, "_saga_log_start", AsyncMock(return_value="saga-1"))
+        monkeypatch.setattr(orchestrator, "_saga_log_transition", AsyncMock(return_value=None))
 
         # Make the PG fetchval fail inside the transaction
         conn.fetchval = AsyncMock(side_effect=RuntimeError("PG deadlock"))
@@ -292,19 +256,13 @@ class TestOutboxEnqueueInStoreMemory:
         async def _fake_scoped(pg_pool, namespace_id):
             yield conn
 
-        monkeypatch.setattr(
-            "trimcp.orchestrators.memory.scoped_pg_session", _fake_scoped
-        )
+        monkeypatch.setattr("trimcp.orchestrators.memory.scoped_pg_session", _fake_scoped)
 
         with pytest.raises(RuntimeError, match="PG deadlock"):
             await orchestrator.store_memory(store_payload)
 
         # Outbox should NOT have been reached because fetchval failed first
-        outbox_calls = [
-            c
-            for c in conn.execute.call_args_list
-            if "outbox_events" in str(c[0][0])
-        ]
+        outbox_calls = [c for c in conn.execute.call_args_list if "outbox_events" in str(c[0][0])]
         assert len(outbox_calls) == 0, (
             "outbox_events should not be written when PG transaction fails"
         )
@@ -323,10 +281,7 @@ class TestOutboxRelay:
         """poll_outbox must return rows with published_at IS NULL."""
         from trimcp.outbox_relay import poll_outbox
 
-        pool = AsyncMock()
         conn = AsyncMock()
-        conn.__aenter__.return_value = conn
-        conn.__aexit__ = AsyncMock(return_value=None)
 
         fake_row = {
             "id": "evt-1",
@@ -337,11 +292,8 @@ class TestOutboxRelay:
             "created_at": "2024-01-01T00:00:00",
         }
         conn.fetch = AsyncMock(return_value=[fake_row])
-        pool.acquire = MagicMock()
-        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
-        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
 
-        results = await poll_outbox(pool, batch_size=10)
+        results = await poll_outbox(conn, batch_size=10)
 
         assert len(results) == 1
         assert results[0]["aggregate_type"] == "memory"
@@ -355,15 +307,9 @@ class TestOutboxRelay:
         """The LIMIT must match the batch_size parameter."""
         from trimcp.outbox_relay import poll_outbox
 
-        pool = AsyncMock()
         conn = AsyncMock()
-        conn.__aenter__.return_value = conn
-        conn.__aexit__ = AsyncMock(return_value=None)
         conn.fetch = AsyncMock(return_value=[])
-        pool.acquire = MagicMock()
-        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
-        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
 
-        await poll_outbox(pool, batch_size=42)
+        await poll_outbox(conn, batch_size=42)
 
-        assert conn.fetch.call_args[0][1] == 42
+        assert conn.fetch.call_args[0][2] == 42

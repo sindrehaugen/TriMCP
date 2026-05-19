@@ -225,9 +225,7 @@ def _build_multi_conn_pool(
         conn = AsyncMock()
         conn.fetch.return_value = [{"id": qid, "agent_id": agent_id}]
 
-        async def _fetchrow_update(
-            sql: str, delta: int, row_id: uuid.UUID
-        ) -> dict | None:
+        async def _fetchrow_update(sql: str, delta: int, row_id: uuid.UUID) -> dict | None:
             """Simulate the atomicity of ``UPDATE ... WHERE used + delta <= limit``."""
             # This is called under the "FOR UPDATE lock" (which we simulate by
             # having this function be the single point of mutation).
@@ -455,9 +453,7 @@ async def test_concurrent_multi_conn_namespace_and_agent_quotas(
 
     # Agent limit (80) is tighter than namespace limit (200).
     # 80 / 30 = 2 full consumptions, 3rd is rejected at the agent level.
-    assert (
-        len(successes) == 2
-    ), f"expected 2 successes (agent limit), got {len(successes)}"
+    assert len(successes) == 2, f"expected 2 successes (agent limit), got {len(successes)}"
     assert len(failures) == 6, f"expected 6 failures, got {len(failures)}"
     assert ag_used == 2 * DELTA
 
@@ -495,9 +491,7 @@ async def test_concurrent_multi_conn_partial_near_limit(
 
     assert len(successes) == 0, f"expected 0 successes, got {len(successes)}"
     assert len(failures) == 3, f"expected 3 failures, got {len(failures)}"
-    assert (
-        state["used"] == INITIAL
-    ), "quota was partially consumed — should be rejected entirely"
+    assert state["used"] == INITIAL, "quota was partially consumed — should be rejected entirely"
 
 
 # ---------------------------------------------------------------------------
@@ -574,9 +568,7 @@ async def test_concurrent_quota_consumption_no_overallocation(
     # Total consumed should be 90, not exceeding 100
     total_consumed = sum(s.steps[0][1] for s in successes if s.steps)
     assert total_consumed == 3 * DELTA
-    assert (
-        total_consumed <= LIMIT
-    ), f"overallocated! consumed={total_consumed} limit={LIMIT}"
+    assert total_consumed <= LIMIT, f"overallocated! consumed={total_consumed} limit={LIMIT}"
 
 
 @pytest.mark.asyncio
@@ -703,9 +695,9 @@ async def test_concurrent_quota_sql_contains_for_update(
 
     assert len(captured_sql) >= 1, "No SQL captured"
     # The fetch SQL should contain FOR UPDATE
-    assert any(
-        "FOR UPDATE" in sql for sql in captured_sql
-    ), f"FOR UPDATE not found in captured SQL: {captured_sql!r}"
+    assert any("FOR UPDATE" in sql for sql in captured_sql), (
+        f"FOR UPDATE not found in captured SQL: {captured_sql!r}"
+    )
 
 
 @pytest.mark.asyncio
@@ -826,7 +818,12 @@ def test_admin_api_search_returns_429_when_quota_exceeded(
         raise QuotaExceededError("namespace cap reached")
 
     monkeypatch.setattr("trimcp.quotas.consume_for_tool", _boom)
-    monkeypatch.setattr(adm, "engine", MagicMock())
+    mock_engine = MagicMock()
+    mock_engine.pg_pool = MagicMock()
+    mock_engine.redis_client = MagicMock()
+    mock_engine.semantic_search = AsyncMock(return_value=[])
+    monkeypatch.setattr("trimcp.admin_state.engine", mock_engine)
+    monkeypatch.setattr(adm, "engine", mock_engine)
 
     app = Starlette(
         middleware=[
@@ -893,3 +890,357 @@ async def test_mcp_call_tool_surfaces_quota_as_32013(
     assert payload["jsonrpc"] == "2.0"
     assert payload["error"]["code"] == -32013
     assert "no capacity" in payload["error"]["data"]["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.2 hardening — delta bounds, Redis Lua, flush GREATEST, rollback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_failed"),
+    [
+        (-1, True),
+        (b"-1", True),
+        ("-1", True),
+        (100, False),
+        (b"100", False),
+        (None, True),
+    ],
+)
+def test_quota_incr_failed_contract(result: object, expected_failed: bool) -> None:
+    assert quotas._quota_incr_failed(result) is expected_failed
+
+
+@pytest.mark.asyncio
+async def test_consume_rejects_delta_above_max_pg_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTA_REDIS_COUNTERS", False)
+
+    pool = MagicMock()
+    ns = uuid.uuid4()
+    over = quotas._MAX_QUOTA_DELTA + 1
+
+    with pytest.raises(ValueError, match="exceeds maximum"):
+        await quotas.consume_resources(
+            pool,
+            namespace_id=ns,
+            agent_id="a1",
+            amounts={quotas.RESOURCE_LLM_TOKENS: over},
+        )
+    pool.acquire.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_consume_resources_redis_rejects_delta_above_max() -> None:
+    pool = MagicMock()
+    redis = MagicMock()
+    ns = uuid.uuid4()
+    over = quotas._MAX_QUOTA_DELTA + 1
+
+    with pytest.raises(ValueError, match="exceeds maximum"):
+        await quotas._consume_resources_redis(
+            pool,
+            redis,
+            namespace_id=ns,
+            agent_id=None,
+            amounts={quotas.RESOURCE_LLM_TOKENS: over},
+        )
+    pool.acquire.assert_not_called()
+    redis.eval.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_consume_skips_zero_and_negative_delta_without_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTA_REDIS_COUNTERS", False)
+
+    pool = MagicMock()
+    ns = uuid.uuid4()
+
+    for amounts in (
+        {quotas.RESOURCE_LLM_TOKENS: 0},
+        {quotas.RESOURCE_LLM_TOKENS: -50},
+        {quotas.RESOURCE_LLM_TOKENS: 0, quotas.RESOURCE_STORAGE_BYTES: -1},
+    ):
+        res = await quotas.consume_resources(
+            pool,
+            namespace_id=ns,
+            agent_id="a1",
+            amounts=amounts,
+        )
+        assert res.steps == []
+        pool.acquire.assert_not_called()
+
+
+def _redis_consume_pool_mock(
+    qid: uuid.UUID,
+    *,
+    pg_used: int = 0,
+    limit_amount: int = 1_000_000,
+) -> tuple[MagicMock, AsyncMock]:
+    conn = AsyncMock()
+    conn.fetch.return_value = [
+        {
+            "id": qid,
+            "agent_id": None,
+            "used_amount": pg_used,
+            "limit_amount": limit_amount,
+        }
+    ]
+    tx = AsyncMock()
+    conn.transaction = MagicMock(return_value=tx)
+    tx.__aenter__.return_value = None
+    tx.__aexit__.return_value = None
+
+    pool = MagicMock()
+    acq = AsyncMock()
+    acq.__aenter__.return_value = conn
+    acq.__aexit__.return_value = None
+    pool.acquire = MagicMock(return_value=acq)
+    return pool, conn
+
+
+@pytest.mark.asyncio
+async def test_consume_resources_redis_eval_passes_ttl_as_fifth_argv() -> None:
+    ns = uuid.uuid4()
+    qid = uuid.uuid4()
+    pool, _conn = _redis_consume_pool_mock(qid, pg_used=10, limit_amount=500)
+
+    redis = MagicMock()
+    redis.eval = AsyncMock(return_value=42)
+
+    await quotas._consume_resources_redis(
+        pool,
+        redis,
+        namespace_id=ns,
+        agent_id=None,
+        amounts={quotas.RESOURCE_LLM_TOKENS: 5},
+    )
+
+    redis.eval.assert_awaited_once()
+    _lua, numkeys, key, base, delta, limit_s, ttl_s = redis.eval.await_args.args
+    assert numkeys == 1
+    assert key == quotas.quota_redis_key(ns, qid)
+    assert ttl_s == str(quotas._QUOTA_REDIS_KEY_TTL_S)
+
+
+@pytest.mark.asyncio
+async def test_consume_resources_redis_eval_timeout_propagates() -> None:
+    ns = uuid.uuid4()
+    qid = uuid.uuid4()
+    pool, _conn = _redis_consume_pool_mock(qid)
+
+    async def _slow_eval(*_a: object, **_k: object) -> int:
+        await asyncio.sleep(quotas._REDIS_CALL_TIMEOUT_S + 0.5)
+        return 100
+
+    redis = MagicMock()
+    redis.eval = _slow_eval
+
+    with pytest.raises(asyncio.TimeoutError):
+        await quotas._consume_resources_redis(
+            pool,
+            redis,
+            namespace_id=ns,
+            agent_id=None,
+            amounts={quotas.RESOURCE_LLM_TOKENS: 5},
+        )
+
+
+@pytest.mark.asyncio
+async def test_consume_resources_redis_quota_exceeded_message_format() -> None:
+    ns = uuid.uuid4()
+    qid = uuid.uuid4()
+    pool, _conn = _redis_consume_pool_mock(qid, pg_used=90, limit_amount=100)
+
+    redis = MagicMock()
+    redis.eval = AsyncMock(return_value=-1)
+    redis.decrby = AsyncMock()
+
+    with pytest.raises(QuotaExceededError) as exc_info:
+        await quotas._consume_resources_redis(
+            pool,
+            redis,
+            namespace_id=ns,
+            agent_id=None,
+            amounts={quotas.RESOURCE_LLM_TOKENS: 20},
+        )
+
+    msg = str(exc_info.value)
+    assert f"namespace={ns}" in msg
+    assert f"resource={quotas.RESOURCE_LLM_TOKENS!r}" in msg
+
+
+@pytest.mark.asyncio
+async def test_consume_resources_redis_partial_rollback_on_eval_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ns = uuid.uuid4()
+    qid1 = uuid.uuid4()
+    qid2 = uuid.uuid4()
+
+    conn = AsyncMock()
+
+    async def _fetch_by_resource(
+        _sql: str, _ns: uuid.UUID, resource_type: str, _agent: str | None
+    ) -> list[dict]:
+        if resource_type == quotas.RESOURCE_LLM_TOKENS:
+            return [
+                {
+                    "id": qid1,
+                    "agent_id": None,
+                    "used_amount": 0,
+                    "limit_amount": 1_000,
+                }
+            ]
+        if resource_type == quotas.RESOURCE_STORAGE_BYTES:
+            return [
+                {
+                    "id": qid2,
+                    "agent_id": None,
+                    "used_amount": 0,
+                    "limit_amount": 50,
+                }
+            ]
+        return []
+
+    conn.fetch = _fetch_by_resource
+    tx = AsyncMock()
+    conn.transaction = MagicMock(return_value=tx)
+    tx.__aenter__.return_value = None
+    tx.__aexit__.return_value = None
+
+    pool = MagicMock()
+    acq = AsyncMock()
+    acq.__aenter__.return_value = conn
+    acq.__aexit__.return_value = None
+    pool.acquire = MagicMock(return_value=acq)
+
+    redis = MagicMock()
+    redis.eval = AsyncMock(side_effect=[10, -1])
+    redis.decrby = AsyncMock()
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(QuotaExceededError):
+            await quotas._consume_resources_redis(
+                pool,
+                redis,
+                namespace_id=ns,
+                agent_id=None,
+                amounts={
+                    quotas.RESOURCE_LLM_TOKENS: 10,
+                    quotas.RESOURCE_STORAGE_BYTES: 100,
+                },
+            )
+
+    redis.decrby.assert_awaited_once_with(quotas.quota_redis_key(ns, qid1), 10)
+
+
+@pytest.mark.asyncio
+async def test_reservation_redis_rollback_attempts_all_steps_on_decrby_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ns = uuid.uuid4()
+    q1, q2, q3 = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    redis = AsyncMock()
+    redis.decrby = AsyncMock(
+        side_effect=[None, RuntimeError("redis down"), None],
+    )
+
+    r = quotas.QuotaReservation(
+        pool=None,
+        redis_client=redis,
+        namespace_id=ns,
+        steps=[(q1, 10), (q2, 20), (q3, 30)],
+    )
+
+    with caplog.at_level("ERROR"):
+        await r.rollback()
+
+    assert r.is_empty
+    assert redis.decrby.await_count == 3
+    assert any("Quota rollback step failed" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_flush_quota_counters_sql_uses_greatest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ns_id = uuid.uuid4()
+    qid = uuid.uuid4()
+    key = quotas.quota_redis_key(ns_id, qid)
+
+    async def _scan_iter(*_a: object, **_k: object):
+        yield key.encode()
+
+    redis = MagicMock()
+    redis.scan_iter = _scan_iter
+    redis.get = AsyncMock(return_value=b"200")
+
+    captured_sql: list[str] = []
+    conn = AsyncMock()
+
+    async def _execute(sql: str, used: int, row_id: uuid.UUID) -> None:
+        captured_sql.append(sql)
+        assert used == 200
+        assert row_id == qid
+
+    conn.execute = _execute
+
+    @asynccontextmanager
+    async def _fake_scoped(pool: object, namespace_id: object):
+        assert pool is not None
+        assert namespace_id == ns_id
+        yield conn
+
+    monkeypatch.setattr("trimcp.db_utils.scoped_pg_session", _fake_scoped)
+
+    pool = MagicMock()
+    flushed = await quotas.flush_quota_counters_to_postgres(redis, pool)
+
+    assert flushed == 1
+    assert len(captured_sql) == 1
+    assert "GREATEST(used_amount" in captured_sql[0]
+
+
+@pytest.mark.asyncio
+async def test_flush_greatest_prevents_regressing_higher_pg_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flush passes Redis value; SQL GREATEST keeps PG row if it already exceeds mirror."""
+    ns_id = uuid.uuid4()
+    qid = uuid.uuid4()
+    key = quotas.quota_redis_key(ns_id, qid)
+    stale_redis_used = 200
+
+    async def _scan_iter(*_a: object, **_k: object):
+        yield key
+
+    redis = MagicMock()
+    redis.scan_iter = _scan_iter
+    redis.get = AsyncMock(return_value=str(stale_redis_used).encode())
+
+    bound_used: list[int] = []
+    conn = AsyncMock()
+
+    async def _execute(sql: str, used: int, row_id: uuid.UUID) -> None:
+        bound_used.append(used)
+        assert "GREATEST(used_amount" in sql
+        assert row_id == qid
+
+    conn.execute = _execute
+
+    @asynccontextmanager
+    async def _fake_scoped(pool: object, namespace_id: object):
+        yield conn
+
+    monkeypatch.setattr("trimcp.db_utils.scoped_pg_session", _fake_scoped)
+
+    await quotas.flush_quota_counters_to_postgres(redis, MagicMock())
+
+    assert bound_used == [stale_redis_used]

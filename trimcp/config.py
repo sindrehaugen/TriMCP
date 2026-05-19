@@ -12,11 +12,19 @@ Import pattern inside the package:
 import logging
 import os
 import re
+from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Conditionally load .env — disabled in production by setting TRIMCP_LOAD_DOTENV=false.
+if os.environ.get("TRIMCP_LOAD_DOTENV", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}:
+    load_dotenv()
 
 log = logging.getLogger("tri-stack-config")
 
@@ -87,6 +95,66 @@ def _fail_unless_trimcp_master_key_ok(raw: str) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Env-var parsing helpers — used only by _Config below.
+# ---------------------------------------------------------------------------
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    """Parse a boolean environment variable.
+
+    Accepts ``1``, ``true``, ``yes``, ``on`` (case-insensitive) as truthy.
+    Returns *default* when the variable is unset.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int_env(name: str, default: int, *, minimum: int | None = None) -> int:
+    """Parse an integer environment variable, optionally enforcing a minimum."""
+    raw = os.getenv(name)
+    value = default if raw is None or raw.strip() == "" else int(raw)
+    if minimum is not None and value < minimum:
+        raise RuntimeError(f"{name} must be >= {minimum}, got {value}")
+    return value
+
+
+def live_env_str(name: str, *, default: str = "") -> str:
+    """Read a string from the live process environment (honours runtime / pytest changes).
+
+    Unlike ``cfg`` fields captured at import, this always reflects the current env.
+    Auth scope checks use these helpers so ``monkeypatch.setenv`` / ``delenv`` behave correctly.
+    """
+    return (os.getenv(name, default) or "").strip()
+
+
+def live_admin_override_enabled() -> bool:
+    return live_env_str("TRIMCP_ADMIN_OVERRIDE").lower() in {"1", "true", "yes", "on"}
+
+
+def live_admin_api_key() -> str:
+    return live_env_str("TRIMCP_ADMIN_API_KEY")
+
+
+def live_mcp_api_key() -> str:
+    return live_env_str("TRIMCP_MCP_API_KEY")
+
+
+def live_mcp_namespace_id() -> str:
+    return live_env_str("TRIMCP_MCP_NAMESPACE_ID")
+
+
+def _float_env(name: str, default: float, *, minimum: float | None = None) -> float:
+    """Parse a float environment variable, optionally enforcing a minimum."""
+    raw = os.getenv(name)
+    value = default if raw is None or raw.strip() == "" else float(raw)
+    if minimum is not None and value < minimum:
+        raise RuntimeError(f"{name} must be >= {minimum}, got {value}")
+    return value
+
+
 class _EmbeddingConfig:
     """
     Embedding / pgvector dimension. Must stay aligned with ``memories.embedding`` and
@@ -99,6 +167,14 @@ class _EmbeddingConfig:
 class _Config:
     EMBEDDING = _EmbeddingConfig
 
+    # --- Environment mode ---
+    # Set TRIMCP_ENV=prod in production. Controls fail-fast validation and
+    # whether dev-convenience defaults are accepted at startup.
+    ENVIRONMENT: str = os.getenv("TRIMCP_ENV", "dev").strip().lower()
+    IS_PROD: bool = ENVIRONMENT in {"prod", "production"}
+    IS_TEST: bool = ENVIRONMENT in {"test", "testing", "ci"}
+    IS_DEV: bool = not IS_PROD and not IS_TEST
+
     # --- Database connections ---
     # ``DATABASE_URL`` is accepted as a 12-factor alias for ``PG_DSN`` (same precedence: explicit PG_DSN wins).
     MONGO_URI: str = os.getenv("MONGO_URI", "mongodb://localhost:27017")
@@ -108,8 +184,18 @@ class _Config:
         or "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta"
     )
     # Read/write split — fall back to PG_DSN when not explicitly configured
-    DB_READ_URL: str = os.getenv("DB_READ_URL") or os.getenv("PG_DSN") or os.getenv("DATABASE_URL") or "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta"
-    DB_WRITE_URL: str = os.getenv("DB_WRITE_URL") or os.getenv("PG_DSN") or os.getenv("DATABASE_URL") or "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta"
+    DB_READ_URL: str = (
+        os.getenv("DB_READ_URL")
+        or os.getenv("PG_DSN")
+        or os.getenv("DATABASE_URL")
+        or "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta"
+    )
+    DB_WRITE_URL: str = (
+        os.getenv("DB_WRITE_URL")
+        or os.getenv("PG_DSN")
+        or os.getenv("DATABASE_URL")
+        or "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta"
+    )
     PG_BOUNCER_URL: str = os.getenv("PG_BOUNCER_URL", "")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
@@ -144,13 +230,34 @@ class _Config:
         os.getenv("TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS", "90")
     )
 
+    # --- Code indexing limits ---
+    # Max raw bytes allowed through index_code_file() before the file is skipped.
+    TRIMCP_MAX_CODE_INDEX_BYTES: int = _int_env(
+        "TRIMCP_MAX_CODE_INDEX_BYTES", 2 * 1024 * 1024, minimum=1024
+    )
+    # Max AST/line chunks extracted per file — prevents embedding queue flood.
+    TRIMCP_MAX_CODE_CHUNKS_PER_FILE: int = _int_env(
+        "TRIMCP_MAX_CODE_CHUNKS_PER_FILE", 500, minimum=1
+    )
+
     # --- Embeddings ---
     EMBED_BATCH_CHUNK: int = int(os.getenv("EMBED_BATCH_CHUNK", "64"))
+    # Model identity — configurable so operators can swap the embedding model without a code change.
+    TRIMCP_EMBEDDING_MODEL_ID: str = os.getenv(
+        "TRIMCP_EMBEDDING_MODEL_ID", "jinaai/jina-embeddings-v2-base-code"
+    )
+    # Pin model revision for supply-chain safety; empty string means "latest" (not recommended in prod).
+    TRIMCP_EMBEDDING_MODEL_REVISION: str = os.getenv("TRIMCP_EMBEDDING_MODEL_REVISION", "")
+    # trust_remote_code=True is required for some Jina models; must be explicit in production.
+    TRIMCP_EMBEDDING_TRUST_REMOTE_CODE: bool = os.getenv(
+        "TRIMCP_EMBEDDING_TRUST_REMOTE_CODE", "true"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    # Input guard — reject batches that exceed these limits rather than silently truncating.
+    TRIMCP_EMBED_MAX_BATCH_TEXTS: int = int(os.getenv("TRIMCP_EMBED_MAX_BATCH_TEXTS", "512"))
+    TRIMCP_EMBED_MAX_TEXT_CHARS: int = int(os.getenv("TRIMCP_EMBED_MAX_TEXT_CHARS", "32000"))
     # Enterprise §8 — hardware backend / OpenVINO NPU (see trimcp.embeddings, openvino_npu_export).
     TRIMCP_BACKEND: str = (os.getenv("TRIMCP_BACKEND") or "").strip().lower()
-    TRIMCP_OPENVINO_MODEL_DIR: str = (
-        os.getenv("TRIMCP_OPENVINO_MODEL_DIR") or ""
-    ).strip()
+    TRIMCP_OPENVINO_MODEL_DIR: str = (os.getenv("TRIMCP_OPENVINO_MODEL_DIR") or "").strip()
     TRIMCP_OPENVINO_SEQ_LEN: int = int(os.getenv("TRIMCP_OPENVINO_SEQ_LEN", "512"))
 
     # --- Contradictions / NLI ---
@@ -165,21 +272,38 @@ class _Config:
     TRIMCP_COGNITIVE_EMBEDDING_MODEL: str = (
         os.getenv("TRIMCP_COGNITIVE_EMBEDDING_MODEL") or ""
     ).strip()
-    TRIMCP_COGNITIVE_API_KEY: str = (
-        os.getenv("TRIMCP_COGNITIVE_API_KEY") or ""
+    # Fallback model used when the primary cognitive backend returns 429 or times out.
+    TRIMCP_COGNITIVE_FALLBACK_MODEL: str = os.getenv(
+        "TRIMCP_COGNITIVE_FALLBACK_MODEL", "text-embedding-3-small"
     ).strip()
+    TRIMCP_COGNITIVE_API_KEY: str = (os.getenv("TRIMCP_COGNITIVE_API_KEY") or "").strip()
     # Declarative default LLM provider label for operators / future LLMProvider wiring [D2].
-    TRIMCP_LLM_PROVIDER: str = (
-        os.getenv("TRIMCP_LLM_PROVIDER") or "local-cognitive-model"
-    ).strip()
+    TRIMCP_LLM_PROVIDER: str = (os.getenv("TRIMCP_LLM_PROVIDER") or "local-cognitive-model").strip()
+
+    # --- A2A server ---
+    # Base URL at which the A2A server is reachable (used in agent card discovery).
+    TRIMCP_A2A_URL: str = os.getenv("TRIMCP_A2A_URL", "http://localhost:8004").rstrip("/")
 
     # --- Document bridges (Phase 2 / §10.3) — OAuth tokens from env or future bridge_tokens PG ---
     GRAPH_BRIDGE_TOKEN: str = os.getenv("GRAPH_BRIDGE_TOKEN", "")
     GDRIVE_BRIDGE_TOKEN: str = os.getenv("GDRIVE_BRIDGE_TOKEN", "")
     DROPBOX_BRIDGE_TOKEN: str = os.getenv("DROPBOX_BRIDGE_TOKEN", "")
+    # Bridge worker token-resolution timeout (seconds). Prevents RQ workers
+    # from hanging on slow DB/OAuth exchanges.
+    BRIDGE_RESOLVE_TIMEOUT_S: float = _float_env("BRIDGE_RESOLVE_TIMEOUT_S", 10.0, minimum=0.1)
 
     # --- Bridge OAuth / webhooks (§10.6–10.7) ---
     BRIDGE_WEBHOOK_BASE_URL: str = os.getenv("BRIDGE_WEBHOOK_BASE_URL", "").rstrip("/")
+    # When true, webhook rate limits use the first X-Forwarded-For hop (trusted proxy only).
+    TRIMCP_WEBHOOK_TRUST_PROXY: bool = _bool_env("TRIMCP_WEBHOOK_TRUST_PROXY", False)
+    WEBHOOK_MAX_BODY_BYTES: int = max(1, int(os.getenv("WEBHOOK_MAX_BODY_BYTES", "1048576")))
+    WEBHOOK_RATE_LIMIT: int = max(1, int(os.getenv("WEBHOOK_RATE_LIMIT", "120")))
+    WEBHOOK_RATE_PERIOD_SECONDS: int = max(1, int(os.getenv("WEBHOOK_RATE_PERIOD_SECONDS", "60")))
+    WEBHOOK_DEDUP_TTL_SECONDS: int = max(60, int(os.getenv("WEBHOOK_DEDUP_TTL_SECONDS", "86400")))
+    WEBHOOK_DEDUP_FAIL_OPEN: bool = _bool_env("WEBHOOK_DEDUP_FAIL_OPEN", False)
+    DROPBOX_APP_SECRET: str = os.getenv("DROPBOX_APP_SECRET", "")
+    GRAPH_CLIENT_STATE: str = os.getenv("GRAPH_CLIENT_STATE", "")
+    DRIVE_CHANNEL_TOKEN: str = os.getenv("DRIVE_CHANNEL_TOKEN", "")
     AZURE_CLIENT_ID: str = os.getenv("AZURE_CLIENT_ID", "")
     AZURE_CLIENT_SECRET: str = os.getenv("AZURE_CLIENT_SECRET", "")
     AZURE_TENANT_ID: str = os.getenv("AZURE_TENANT_ID", "common")
@@ -189,40 +313,60 @@ class _Config:
     GDRIVE_OAUTH_CLIENT_ID: str = os.getenv("GDRIVE_OAUTH_CLIENT_ID", "")
     GDRIVE_OAUTH_CLIENT_SECRET: str = os.getenv("GDRIVE_OAUTH_CLIENT_SECRET", "")
     DROPBOX_OAUTH_CLIENT_ID: str = os.getenv("DROPBOX_OAUTH_CLIENT_ID", "")
-    BRIDGE_RENEWAL_LOOKAHEAD_HOURS: int = int(
-        os.getenv("BRIDGE_RENEWAL_LOOKAHEAD_HOURS", "12")
-    )
-    BRIDGE_CRON_INTERVAL_MINUTES: int = int(
-        os.getenv("BRIDGE_CRON_INTERVAL_MINUTES", "45")
-    )
+    BRIDGE_RENEWAL_LOOKAHEAD_HOURS: int = int(os.getenv("BRIDGE_RENEWAL_LOOKAHEAD_HOURS", "12"))
+    BRIDGE_CRON_INTERVAL_MINUTES: int = int(os.getenv("BRIDGE_CRON_INTERVAL_MINUTES", "45"))
 
     # --- MinIO Object Storage ---
     MINIO_ENDPOINT: str = os.getenv("MINIO_ENDPOINT", "localhost:9000")
     MINIO_ACCESS_KEY: str = os.getenv("MINIO_ACCESS_KEY", "")
     MINIO_SECRET_KEY: str = os.getenv("MINIO_SECRET_KEY", "")
-    MINIO_SECURE: bool = os.getenv("MINIO_SECURE", "false").lower() == "true"
+    MINIO_SECURE: bool = _bool_env("MINIO_SECURE", False)
+    # Set to false to skip MinIO credential validation in validate().
+    # Useful for test environments or deployments that do not use MinIO.
+    TRIMCP_MINIO_REQUIRED: bool = _bool_env("TRIMCP_MINIO_REQUIRED", True)
 
     # --- Phase 0.1 / 0.2: Auth + Signing ---
-    # TRIMCP_API_KEY    — HMAC-SHA256 key for HTTP admin API authentication.
-    #                     Required in production.  Server logs a warning if absent.
+    # TRIMCP_API_KEY        — HMAC-SHA256 key for HTTP admin API authentication.
+    #                         Required in production.  Server logs a warning if absent.
+    # TRIMCP_ADMIN_API_KEY  — Bearer token checked by require_scope("admin") in A2A/MCP.
+    #                         Required in production.
     # TRIMCP_ADMIN_USERNAME / TRIMCP_ADMIN_PASSWORD — HTTP Basic credentials
-    #                     required for non-API admin UI routes.
-    # TRIMCP_MASTER_KEY — AES-256 master key for encrypting signing keys at rest.
-    #                     Importing this module or calling validate() raises RuntimeError
-    #                     if missing or under 32 UTF-8 bytes [D 0.2].
+    #                         required for non-API admin UI routes.
+    # TRIMCP_MASTER_KEY     — AES-256 master key for encrypting signing keys at rest.
+    #                         Importing this module or calling validate() raises RuntimeError
+    #                         if missing or under 32 UTF-8 bytes [D 0.2].
+    # TRIMCP_ADMIN_OVERRIDE — Dev-only bypass of admin scope checks. Must never be
+    #                         true in production.
     TRIMCP_API_KEY: str = os.getenv("TRIMCP_API_KEY", "")
+    # Shared secret for MCP stdio tenant tools (namespace-scoped). Required in production.
+    TRIMCP_MCP_API_KEY: str = os.getenv("TRIMCP_MCP_API_KEY", "")
+    # When set, tenant MCP tools are bound to this namespace UUID (required in prod with MCP key).
+    TRIMCP_MCP_NAMESPACE_ID: str = os.getenv("TRIMCP_MCP_NAMESPACE_ID", "")
+    TRIMCP_ADMIN_API_KEY: str = os.getenv("TRIMCP_ADMIN_API_KEY", "")
+    TRIMCP_ADMIN_OVERRIDE: bool = _bool_env("TRIMCP_ADMIN_OVERRIDE", False)
+    # Startup WORM / RLS probe bypass (dev/support only — rejected when IS_PROD).
+    TRIMCP_BYPASS_WORM: bool = _bool_env("TRIMCP_BYPASS_WORM", False)
+    TRIMCP_BYPASS_RLS: bool = _bool_env("TRIMCP_BYPASS_RLS", False)
+    # Admin UI may persist connector/datastore edits to a local .env file (dev only).
+    TRIMCP_ALLOW_ADMIN_DOTENV_PERSIST: bool = _bool_env(
+        "TRIMCP_ALLOW_ADMIN_DOTENV_PERSIST",
+        ENVIRONMENT not in {"prod", "production"},
+    )
     TRIMCP_ADMIN_USERNAME: str = os.getenv("TRIMCP_ADMIN_USERNAME", "")
     TRIMCP_ADMIN_PASSWORD: str = os.getenv("TRIMCP_ADMIN_PASSWORD", "")
     TRIMCP_MASTER_KEY: str = os.getenv("TRIMCP_MASTER_KEY", "")
     # When true, HTTP admin ``HMACAuthMiddleware`` uses ``NonceStore(cfg.REDIS_URL)``
     # for replay protection across multiple admin replicas (see trimcp.auth).
-    TRIMCP_DISTRIBUTED_REPLAY: bool = os.getenv(
-        "TRIMCP_DISTRIBUTED_REPLAY", ""
-    ).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
+    TRIMCP_DISTRIBUTED_REPLAY: bool = _bool_env("TRIMCP_DISTRIBUTED_REPLAY", False)
+
+    # --- PBKDF2 iteration counts (signing + admin password hashing) ---
+    # TRIMCP_PBKDF2_ITERATIONS    — v2 blob compat path (minimum 100K, NIST minimum).
+    #                               Used by signing.py to decrypt legacy v2 blobs.
+    # TRIMCP_PBKDF2_ITERATIONS_V4 — v4 new-write path (minimum 600K, OWASP 2026).
+    #                               auth.py clamps admin password hashing to max(600K, this).
+    TRIMCP_PBKDF2_ITERATIONS: int = _int_env("TRIMCP_PBKDF2_ITERATIONS", 100_000, minimum=100_000)
+    TRIMCP_PBKDF2_ITERATIONS_V4: int = _int_env(
+        "TRIMCP_PBKDF2_ITERATIONS_V4", 600_000, minimum=600_000
     )
 
     # --- Phase 0.2: JWT Bridge ---
@@ -240,12 +384,12 @@ class _Config:
     #                         Default: "/api/v1/" (agent-facing endpoints).
     TRIMCP_JWT_SECRET: str = os.getenv("TRIMCP_JWT_SECRET", "")
     TRIMCP_JWT_PUBLIC_KEY: str = os.getenv("TRIMCP_JWT_PUBLIC_KEY", "")
-    TRIMCP_JWT_ALGORITHM: str = (
-        (os.getenv("TRIMCP_JWT_ALGORITHM") or "HS256").upper().strip()
-    )
+    TRIMCP_JWT_ALGORITHM: str = (os.getenv("TRIMCP_JWT_ALGORITHM") or "HS256").upper().strip()
     TRIMCP_JWT_ISSUER: str = os.getenv("TRIMCP_JWT_ISSUER", "")
     TRIMCP_JWT_AUDIENCE: str = os.getenv("TRIMCP_JWT_AUDIENCE", "")
     TRIMCP_JWT_PREFIX: str = os.getenv("TRIMCP_JWT_PREFIX", "/api/v1/")
+    TRIMCP_JWT_KEY_DIR: str = os.getenv("TRIMCP_JWT_KEY_DIR", str(Path.cwd()))
+    TRIMCP_JWT_LEEWAY_SECONDS: int = int(os.getenv("TRIMCP_JWT_LEEWAY_SECONDS", "30"))
 
     # --- Phase 3.1: Per-service JWT audience overrides ---
     # Each service (A2A, admin, etc.) can require its own ``aud`` claim value
@@ -277,14 +421,7 @@ class _Config:
     #                                     for X-Forwarded-Client-Cert header.
     #                                     0 = only direct TLS (uvicorn SSL).
     #                                     1 = one reverse proxy (Caddy / nginx).
-    TRIMCP_A2A_MTLS_ENABLED: bool = os.getenv(
-        "TRIMCP_A2A_MTLS_ENABLED", ""
-    ).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    TRIMCP_A2A_MTLS_ENABLED: bool = _bool_env("TRIMCP_A2A_MTLS_ENABLED", False)
     TRIMCP_A2A_MTLS_ALLOWED_SANS: list[str] = [
         s.strip().lower()
         for s in os.getenv("TRIMCP_A2A_MTLS_ALLOWED_SANS", "").split(",")
@@ -295,14 +432,7 @@ class _Config:
         for s in os.getenv("TRIMCP_A2A_MTLS_ALLOWED_FINGERPRINTS", "").split(",")
         if s.strip()
     ]
-    TRIMCP_A2A_MTLS_STRICT: bool = os.getenv(
-        "TRIMCP_A2A_MTLS_STRICT", "true"
-    ).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    TRIMCP_A2A_MTLS_STRICT: bool = _bool_env("TRIMCP_A2A_MTLS_STRICT", True)
     TRIMCP_A2A_MTLS_TRUSTED_PROXY_HOP: int = int(
         os.getenv("TRIMCP_A2A_MTLS_TRUSTED_PROXY_HOP", "1")
     )
@@ -310,12 +440,8 @@ class _Config:
     # --- Admin server mTLS (B6) ---
     # Mirror of the A2A mTLS block but scoped to the admin surface.
     # All vars default to disabled/empty so existing deployments are unaffected.
-    TRIMCP_ADMIN_MTLS_ENABLED: bool = os.getenv(
-        "TRIMCP_ADMIN_MTLS_ENABLED", ""
-    ).strip().lower() in ("1", "true", "yes")
-    TRIMCP_ADMIN_MTLS_STRICT: bool = os.getenv(
-        "TRIMCP_ADMIN_MTLS_STRICT", "true"
-    ).strip().lower() in ("1", "true", "yes")
+    TRIMCP_ADMIN_MTLS_ENABLED: bool = _bool_env("TRIMCP_ADMIN_MTLS_ENABLED", False)
+    TRIMCP_ADMIN_MTLS_STRICT: bool = _bool_env("TRIMCP_ADMIN_MTLS_STRICT", True)
     TRIMCP_ADMIN_MTLS_TRUSTED_PROXY_HOP: int = int(
         os.getenv("TRIMCP_ADMIN_MTLS_TRUSTED_PROXY_HOP", "1")
     )
@@ -330,40 +456,40 @@ class _Config:
         if s.strip()
     ]
 
+    # Per-IP HTTP rate limits on admin_server (/api/* and sensitive POST paths).
+    TRIMCP_ADMIN_HTTP_RATE_LIMIT: int = _int_env("TRIMCP_ADMIN_HTTP_RATE_LIMIT", 120, minimum=1)
+    TRIMCP_ADMIN_HTTP_RATE_PERIOD: int = _int_env("TRIMCP_ADMIN_HTTP_RATE_PERIOD", 60, minimum=1)
+    TRIMCP_ADMIN_HTTP_SENSITIVE_RATE_LIMIT: int = _int_env(
+        "TRIMCP_ADMIN_HTTP_SENSITIVE_RATE_LIMIT", 30, minimum=1
+    )
+    TRIMCP_ADMIN_HTTP_SENSITIVE_RATE_PERIOD: int = _int_env(
+        "TRIMCP_ADMIN_HTTP_SENSITIVE_RATE_PERIOD", 60, minimum=1
+    )
+
     # --- Phase 0.1: HMAC replay-protection clock skew ---
     # Maximum allowed drift between client timestamp and server time (seconds).
     # Requests with timestamps outside this window are rejected as replays.
-    TRIMCP_CLOCK_SKEW_TOLERANCE_S: int = int(
-        os.getenv("TRIMCP_CLOCK_SKEW_TOLERANCE_S", "300")
-    )
+    TRIMCP_CLOCK_SKEW_TOLERANCE_S: int = int(os.getenv("TRIMCP_CLOCK_SKEW_TOLERANCE_S", "300"))
 
     # --- Phase 3.2: Per-namespace / per-agent quotas ---
     # When false, no quota queries run on the tool hot path.
-    TRIMCP_QUOTAS_ENABLED: bool = (
-        os.getenv("TRIMCP_QUOTAS_ENABLED", "true").lower() == "true"
-    )
+    TRIMCP_QUOTAS_ENABLED: bool = _bool_env("TRIMCP_QUOTAS_ENABLED", True)
     # Rough chars-per-token for pre-flight estimates (embedding / LLM analog).
     TRIMCP_QUOTA_TOKEN_ESTIMATE_DIVISOR: int = int(
         os.getenv("TRIMCP_QUOTA_TOKEN_ESTIMATE_DIVISOR", "4")
     )
     # Hot-path quota increments via Redis (avoids row-level UPDATE serialization).
-    TRIMCP_QUOTA_REDIS_COUNTERS: bool = (
-        os.getenv("TRIMCP_QUOTA_REDIS_COUNTERS", "true").lower() == "true"
-    )
+    TRIMCP_QUOTA_REDIS_COUNTERS: bool = _bool_env("TRIMCP_QUOTA_REDIS_COUNTERS", True)
     TRIMCP_QUOTA_REDIS_FLUSH_INTERVAL_S: float = float(
         os.getenv("TRIMCP_QUOTA_REDIS_FLUSH_INTERVAL_S", "60")
     )
 
     # --- Consolidation ---
-    CONSOLIDATION_DECAY_SOURCES: bool = (
-        os.getenv("CONSOLIDATION_DECAY_SOURCES", "false").lower() == "true"
-    )
+    CONSOLIDATION_DECAY_SOURCES: bool = _bool_env("CONSOLIDATION_DECAY_SOURCES", False)
     CONSOLIDATION_CRON_INTERVAL_MINUTES: int = int(
         os.getenv("CONSOLIDATION_CRON_INTERVAL_MINUTES", "360")
     )
-    CONSOLIDATION_HALF_LIFE_DAYS: float = float(
-        os.getenv("CONSOLIDATION_HALF_LIFE_DAYS", "30.0")
-    )
+    CONSOLIDATION_HALF_LIFE_DAYS: float = float(os.getenv("CONSOLIDATION_HALF_LIFE_DAYS", "30.0"))
 
     # --- Cron startup jitter ---
     # Maximum random startup delay (seconds) applied before the first cron
@@ -375,6 +501,22 @@ class _Config:
     CRON_STARTUP_JITTER_MAX_SECONDS: float = float(
         os.getenv("CRON_STARTUP_JITTER_MAX_SECONDS", "60.0")
     )
+    OUTBOX_RELAY_INTERVAL_SECONDS: int = max(
+        1, int(os.getenv("OUTBOX_RELAY_INTERVAL_SECONDS", "5"))
+    )
+
+    # --- Re-embedding worker (Phase 2.1) ---
+    REEMBED_BATCH_SIZE: int = max(1, int(os.getenv("REEMBED_BATCH_SIZE", "32")))
+    REEMBED_BATCHES_PER_MINUTE: int = max(1, int(os.getenv("REEMBED_BATCHES_PER_MINUTE", "20")))
+    REEMBED_MAX_ROWS_PER_RUN: int = max(0, int(os.getenv("REEMBED_MAX_ROWS_PER_RUN", "0")))
+    REEMBED_INCLUDE_KG_NODES: bool = _bool_env("REEMBED_INCLUDE_KG_NODES", False)
+    REEMBED_MAX_TEXT_CHARS: int = max(256, int(os.getenv("REEMBED_MAX_TEXT_CHARS", "4096")))
+    REEMBED_CRON_INTERVAL_MINUTES: int = max(
+        1, int(os.getenv("REEMBED_CRON_INTERVAL_MINUTES", "60"))
+    )
+
+    # --- Orchestrator artifact staging ---
+    TRIMCP_ARTIFACT_STAGING_DIR: str = os.getenv("TRIMCP_ARTIFACT_STAGING_DIR", "")
 
     # --- Phase 1.2: LLM Provider API keys (BYO — no shared platform key [D3]) ---
     # All keys default to empty string; factory logs a warning if the needed
@@ -396,9 +538,7 @@ class _Config:
     TRIMCP_OPENAI_API_KEY: str = os.getenv("TRIMCP_OPENAI_API_KEY", "")
     TRIMCP_AZURE_OPENAI_API_KEY: str = os.getenv("TRIMCP_AZURE_OPENAI_API_KEY", "")
     TRIMCP_AZURE_OPENAI_ENDPOINT: str = os.getenv("TRIMCP_AZURE_OPENAI_ENDPOINT", "")
-    TRIMCP_AZURE_OPENAI_DEPLOYMENT: str = os.getenv(
-        "TRIMCP_AZURE_OPENAI_DEPLOYMENT", ""
-    )
+    TRIMCP_AZURE_OPENAI_DEPLOYMENT: str = os.getenv("TRIMCP_AZURE_OPENAI_DEPLOYMENT", "")
     TRIMCP_GEMINI_API_KEY: str = os.getenv("TRIMCP_GEMINI_API_KEY", "")
     TRIMCP_DEEPSEEK_API_KEY: str = os.getenv("TRIMCP_DEEPSEEK_API_KEY", "")
     TRIMCP_MOONSHOT_API_KEY: str = os.getenv("TRIMCP_MOONSHOT_API_KEY", "")
@@ -411,12 +551,8 @@ class _Config:
     TRIMCP_OTEL_EXPORTER_OTLP_ENDPOINT: str = os.getenv(
         "TRIMCP_OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"
     )
-    TRIMCP_OTEL_SERVICE_NAME: str = os.getenv(
-        "TRIMCP_OTEL_SERVICE_NAME", "trimcp-python"
-    )
-    TRIMCP_OBSERVABILITY_ENABLED: bool = (
-        os.getenv("TRIMCP_OBSERVABILITY_ENABLED", "true").lower() == "true"
-    )
+    TRIMCP_OTEL_SERVICE_NAME: str = os.getenv("TRIMCP_OTEL_SERVICE_NAME", "trimcp-python")
+    TRIMCP_OBSERVABILITY_ENABLED: bool = _bool_env("TRIMCP_OBSERVABILITY_ENABLED", True)
 
     # --- Phase 3: Background Task Poison Pill / Dead Letter Queue ---
     # Maximum times a background task (RQ worker) is retried before the payload
@@ -427,15 +563,11 @@ class _Config:
 
     # --- Migration MCP tools disable switch ---
     # When true, start_migration / commit_migration / abort_migration are excluded
-    # from the MCP tool list and dispatch table.  Recommended for production SaaS
-    # deployments where live migration tools are an unnecessary risk surface.
-    TRIMCP_DISABLE_MIGRATION_MCP: bool = os.getenv(
-        "TRIMCP_DISABLE_MIGRATION_MCP", ""
-    ).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
+    # from the MCP tool list and dispatch table.  Defaults to true in production;
+    # set TRIMCP_DISABLE_MIGRATION_MCP=false explicitly to enable migration tools.
+    TRIMCP_DISABLE_MIGRATION_MCP: bool = _bool_env(
+        "TRIMCP_DISABLE_MIGRATION_MCP",
+        IS_PROD,
     )
     # Redis TTL (seconds) for attempt-count keys.  After this window, a task
     # that has been failing for longer than TTL will restart its attempt
@@ -460,6 +592,50 @@ class _Config:
             )
 
     @classmethod
+    def validate_datastore_config(cls) -> None:
+        """In production, reject missing or default-value datastore connection strings."""
+        if not cls.IS_PROD:
+            return
+
+        missing = [k for k in ("MONGO_URI", "PG_DSN", "REDIS_URL") if not getattr(cls, k)]
+        if missing:
+            raise RuntimeError(
+                "CRITICAL CONFIGURATION FAILURE: Missing required production datastore config: "
+                + ", ".join(missing)
+            )
+
+        _insecure_defaults = {
+            "PG_DSN": "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta",
+            "MONGO_URI": "mongodb://localhost:27017",
+            "REDIS_URL": "redis://localhost:6379/0",
+        }
+        for key, default in _insecure_defaults.items():
+            if getattr(cls, key) == default:
+                raise RuntimeError(
+                    f"CRITICAL CONFIGURATION FAILURE: {key} uses development default in production."
+                )
+
+    @classmethod
+    def validate_jwt_config(cls) -> None:
+        """Validate JWT configuration. Fail in production if no key is set."""
+        if not cls.TRIMCP_JWT_SECRET and not cls.TRIMCP_JWT_PUBLIC_KEY:
+            if cls.IS_PROD:
+                raise RuntimeError(
+                    "CRITICAL CONFIGURATION FAILURE: JWT validation requires "
+                    "TRIMCP_JWT_PUBLIC_KEY or TRIMCP_JWT_SECRET in production."
+                )
+            log.warning(
+                "SECURITY WARNING: Neither TRIMCP_JWT_SECRET nor TRIMCP_JWT_PUBLIC_KEY is set. "
+                "A2A sharing will be disabled."
+            )
+
+        if cls.IS_PROD and cls.TRIMCP_JWT_ALGORITHM == "HS256":
+            log.warning(
+                "SECURITY WARNING: HS256 JWT is configured in production. "
+                "Prefer RS256/ES256 with TRIMCP_JWT_PUBLIC_KEY."
+            )
+
+    @classmethod
     def validate(cls) -> None:
         """
         Validates environment configuration.
@@ -468,35 +644,187 @@ class _Config:
         # P0: Master Key (Required for signing/encryption)
         _fail_unless_trimcp_master_key_ok(cls.TRIMCP_MASTER_KEY)
 
-        # P0: MinIO Credentials (FIX-013)
-        cls.validate_minio_credentials()
+        # P0: Datastore connections — reject dev defaults in production
+        cls.validate_datastore_config()
 
-        # P0: Database connections
-        missing_conns = [
-            k for k in ("MONGO_URI", "PG_DSN", "REDIS_URL") if not getattr(cls, k)
-        ]
+        # P0: MinIO Credentials (FIX-013) — skipped when TRIMCP_MINIO_REQUIRED=false
+        if cls.TRIMCP_MINIO_REQUIRED:
+            cls.validate_minio_credentials()
+
+        # P0: Database connections present in all environments
+        missing_conns = [k for k in ("MONGO_URI", "PG_DSN", "REDIS_URL") if not getattr(cls, k)]
         if missing_conns:
             raise RuntimeError(
                 f"CRITICAL CONFIGURATION FAILURE: Missing required connection strings: {', '.join(missing_conns)}"
             )
 
-        # P1: Auth Warnings (Non-halting but noisy)
+        # P1: HMAC API key
         if not cls.TRIMCP_API_KEY:
+            if cls.IS_PROD:
+                raise RuntimeError(
+                    "CRITICAL CONFIGURATION FAILURE: TRIMCP_API_KEY is required in production."
+                )
             log.warning(
                 "SECURITY WARNING: TRIMCP_API_KEY is not set. "
                 "Admin API routes will be inaccessible."
             )
 
-        if not cls.TRIMCP_JWT_SECRET and not cls.TRIMCP_JWT_PUBLIC_KEY:
+        # P1: JWT
+        cls.validate_jwt_config()
+
+        # P1: MCP stdio tenant plane
+        cls.validate_mcp_api_key()
+        cls.validate_mcp_namespace_binding()
+
+        # P1: Admin plane (HTTP Basic UI + MCP admin scope)
+        cls.validate_admin_credentials()
+
+        # P1: Live migration MCP tools are high-risk in production
+        cls.validate_migration_mcp_surface()
+
+        # P1: Webhook dedup must fail closed when Redis is unavailable
+        cls.validate_webhook_dedup_policy()
+
+    @classmethod
+    def validate_webhook_dedup_policy(cls) -> None:
+        """Reject fail-open webhook dedup in production (duplicate bridge deliveries)."""
+        if not cls.IS_PROD or not cls.WEBHOOK_DEDUP_FAIL_OPEN:
+            return
+        raise RuntimeError(
+            "CRITICAL CONFIGURATION FAILURE: WEBHOOK_DEDUP_FAIL_OPEN must be false in "
+            "production so webhook deduplication fails closed when Redis is unavailable."
+        )
+
+    @classmethod
+    def validate_migration_mcp_surface(cls) -> None:
+        """Disable migration MCP tools in production unless explicitly opted in."""
+        if not cls.IS_PROD or cls.TRIMCP_DISABLE_MIGRATION_MCP:
+            return
+        if _bool_env("TRIMCP_ALLOW_MIGRATION_MCP_IN_PROD", False):
             log.warning(
-                "SECURITY WARNING: Neither TRIMCP_JWT_SECRET nor TRIMCP_JWT_PUBLIC_KEY is set. "
-                "A2A sharing will be disabled."
+                "Migration MCP tools are enabled in production "
+                "(TRIMCP_ALLOW_MIGRATION_MCP_IN_PROD=true). "
+                "Disable after the migration window."
+            )
+            return
+        raise RuntimeError(
+            "CRITICAL CONFIGURATION FAILURE: Migration MCP tools must not run in "
+            "production unless TRIMCP_ALLOW_MIGRATION_MCP_IN_PROD=true is set for a "
+            "controlled window. Otherwise set TRIMCP_DISABLE_MIGRATION_MCP=true."
+        )
+
+    @classmethod
+    def validate_mcp_api_key(cls) -> None:
+        """Require MCP tenant API key in production (stdio tool authentication)."""
+        if (cls.TRIMCP_MCP_API_KEY or "").strip():
+            return
+        if cls.IS_PROD:
+            raise RuntimeError(
+                "CRITICAL CONFIGURATION FAILURE: TRIMCP_MCP_API_KEY is required "
+                "in production for MCP stdio tenant tools."
+            )
+        log.warning(
+            "SECURITY WARNING: TRIMCP_MCP_API_KEY is not set. "
+            "MCP tenant tools are unauthenticated in this environment."
+        )
+
+    @classmethod
+    def validate_mcp_namespace_binding(cls) -> None:
+        """Require a bound tenant namespace when MCP auth is enabled in production."""
+        from uuid import UUID
+
+        bound = (cls.TRIMCP_MCP_NAMESPACE_ID or "").strip()
+        if bound:
+            try:
+                UUID(bound)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "CRITICAL CONFIGURATION FAILURE: TRIMCP_MCP_NAMESPACE_ID must be "
+                    f"a valid UUID, got {bound!r}."
+                ) from exc
+            return
+
+        if cls.IS_PROD and (cls.TRIMCP_MCP_API_KEY or "").strip():
+            raise RuntimeError(
+                "CRITICAL CONFIGURATION FAILURE: TRIMCP_MCP_NAMESPACE_ID is required "
+                "in production when TRIMCP_MCP_API_KEY is set so MCP stdio tools "
+                "cannot target arbitrary tenant UUIDs."
+            )
+        if (cls.TRIMCP_MCP_API_KEY or "").strip():
+            log.warning(
+                "SECURITY WARNING: TRIMCP_MCP_NAMESPACE_ID is not set. "
+                "MCP tenant tools accept caller-supplied namespace_id."
+            )
+
+    @classmethod
+    def validate_admin_credentials(cls) -> None:
+        """Require admin API key and HTTP Basic credentials in production."""
+        missing: list[str] = []
+        if not (cls.TRIMCP_ADMIN_API_KEY or "").strip():
+            missing.append("TRIMCP_ADMIN_API_KEY")
+        if not (cls.TRIMCP_ADMIN_USERNAME or "").strip():
+            missing.append("TRIMCP_ADMIN_USERNAME")
+        if not (cls.TRIMCP_ADMIN_PASSWORD or "").strip():
+            missing.append("TRIMCP_ADMIN_PASSWORD")
+
+        if cls.IS_PROD:
+            if missing:
+                raise RuntimeError(
+                    "CRITICAL CONFIGURATION FAILURE: Missing required admin credentials: "
+                    + ", ".join(missing)
+                )
+            stored = cls.TRIMCP_ADMIN_PASSWORD
+            if not stored.startswith("$pbkdf2$"):
+                raise RuntimeError(
+                    "CRITICAL CONFIGURATION FAILURE: TRIMCP_ADMIN_PASSWORD must be a "
+                    "$pbkdf2$ hash in production (plaintext passwords are forbidden)."
+                )
+            return
+
+        if missing:
+            log.warning(
+                "SECURITY WARNING: Incomplete admin credentials (%s). "
+                "Admin UI and MCP admin tools may be inaccessible.",
+                ", ".join(missing),
             )
 
 
 # Module-level singleton — import `cfg` everywhere inside the package.
 cfg = _Config()
+
+if cfg.IS_PROD and cfg.TRIMCP_BYPASS_WORM:
+    raise RuntimeError("TRIMCP_BYPASS_WORM is forbidden in production")
+if cfg.IS_PROD and cfg.TRIMCP_BYPASS_RLS:
+    raise RuntimeError("TRIMCP_BYPASS_RLS is forbidden in production")
+if cfg.IS_PROD and cfg.TRIMCP_ALLOW_ADMIN_DOTENV_PERSIST:
+    raise RuntimeError("TRIMCP_ALLOW_ADMIN_DOTENV_PERSIST is forbidden in production")
+if cfg.IS_PROD and cfg.TRIMCP_ADMIN_OVERRIDE:
+    raise RuntimeError(
+        "TRIMCP_ADMIN_OVERRIDE is forbidden in production. "
+        "Remove this environment variable from the production configuration."
+    )
+if cfg.IS_PROD and os.environ.get("TRIMCP_LOAD_DOTENV", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}:
+    raise RuntimeError(
+        "TRIMCP_LOAD_DOTENV must be false in production. "
+        "Inject secrets via the orchestrator; do not load a .env file at runtime."
+    )
+
 _fail_unless_trimcp_master_key_ok(cfg.TRIMCP_MASTER_KEY)
+
+
+def assert_admin_override_not_in_production() -> None:
+    """Raise if the dev-only admin override bypass is enabled in production."""
+    if cfg.TRIMCP_ADMIN_OVERRIDE and cfg.IS_PROD:
+        raise RuntimeError(
+            "TRIMCP_ADMIN_OVERRIDE must not be set when TRIMCP_ENV is production. "
+            "Remove this environment variable from the production configuration."
+        )
+
 
 # Keep OrchestratorConfig as an alias so server.py and external code that
 # already imports it by name doesn't break.

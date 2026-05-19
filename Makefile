@@ -2,7 +2,7 @@
 #
 # Standard workflows for developers and operators.
 
-.PHONY: help up down restart status logs clean build verify typecheck lint fmt fmt-check ruff verify-todo
+.PHONY: help up down restart status logs clean build verify typecheck lint fmt fmt-check ruff
 
 help:
 	@echo "TriMCP v1.0 — Infrastructure Orchestration"
@@ -23,7 +23,6 @@ help:
 	@echo "  fmt      Apply ruff formatter to the repo"
 	@echo "  fmt-check  Ruff format in check-only mode"
 	@echo "  ruff      Alias for lint"
-	@echo "  verify-todo  Run verify_todo.py — check for stale tracker items"
 	@echo ""
 	@echo "Local Mode:"
 	@echo "  local-up     Start only the Tri-Stack databases (for host-run development)"
@@ -69,8 +68,8 @@ fmt-check:
 
 ruff: lint
 
-verify-todo:
-	python scripts/verify_todo.py
+lockfile:
+	python scripts/compile_requirements.py
 
 # Local development targets
 local-up:

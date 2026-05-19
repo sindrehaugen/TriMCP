@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -67,9 +67,7 @@ class TestEnforceScopeMultiAgent:
         mem_a = str(uuid.uuid4())
         mem_b = str(uuid.uuid4())
         ns = str(uuid.uuid4())
-        scopes = [
-            A2AScope(resource_type="memory", resource_id=mem_a, permissions=["read"])
-        ]
+        scopes = [A2AScope(resource_type="memory", resource_id=mem_a, permissions=["read"])]
         with pytest.raises(A2AScopeViolationError):
             enforce_scope(scopes, "memory", mem_b, ns)
 
@@ -77,27 +75,21 @@ class TestEnforceScopeMultiAgent:
         node = str(uuid.uuid4())
         mem = str(uuid.uuid4())
         ns = str(uuid.uuid4())
-        scopes = [
-            A2AScope(resource_type="kg_node", resource_id=node, permissions=["read"])
-        ]
+        scopes = [A2AScope(resource_type="kg_node", resource_id=node, permissions=["read"])]
         with pytest.raises(A2AScopeViolationError):
             enforce_scope(scopes, "memory", mem, ns)
 
     def test_namespace_grant_allows_typed_memory_reads(self) -> None:
         """Namespace-shaped grant authorises memory / kg_node / subgraph resource_type checks."""
         ns = str(uuid.uuid4())
-        scopes = [
-            A2AScope(resource_type="namespace", resource_id=ns, permissions=["read"])
-        ]
+        scopes = [A2AScope(resource_type="namespace", resource_id=ns, permissions=["read"])]
         enforce_scope(scopes, "memory", str(uuid.uuid4()), ns)
         enforce_scope(scopes, "kg_node", str(uuid.uuid4()), ns)
 
     def test_exact_memory_grant_allows_that_memory(self) -> None:
         mem = str(uuid.uuid4())
         ns = str(uuid.uuid4())
-        scopes = [
-            A2AScope(resource_type="memory", resource_id=mem, permissions=["read"])
-        ]
+        scopes = [A2AScope(resource_type="memory", resource_id=mem, permissions=["read"])]
         enforce_scope(scopes, "memory", mem, ns)
 
 
@@ -231,6 +223,10 @@ class TestCreateGrantSqlShape:
     async def test_create_grant_executes_insert(self) -> None:
         conn = AsyncMock()
         conn.execute = AsyncMock()
+        tx = AsyncMock()
+        tx.__aenter__ = AsyncMock(return_value=None)
+        tx.__aexit__ = AsyncMock(return_value=None)
+        conn.transaction = MagicMock(return_value=tx)
         owner = NamespaceContext(namespace_id=uuid.uuid4(), agent_id="owner-agent")
         req = A2AGrantRequest(
             target_namespace_id=uuid.uuid4(),
@@ -244,7 +240,11 @@ class TestCreateGrantSqlShape:
             ],
             expires_in_seconds=120,
         )
-        resp = await create_grant(conn, owner, req)
+        with (
+            patch("trimcp.a2a.set_namespace_context", new_callable=AsyncMock),
+            patch("trimcp.event_log.append_event", new_callable=AsyncMock),
+        ):
+            resp = await create_grant(conn, owner, req)
         assert resp.sharing_token.startswith("trimcp_a2a_")
         conn.execute.assert_awaited_once()
 
@@ -477,9 +477,7 @@ class TestValidateMTLSCert:
         with pytest.raises(A2AMTLSError, match="not in allowlist"):
             validate_mtls_cert(
                 cert,
-                allowed_fingerprints=[
-                    "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
-                ],
+                allowed_fingerprints=["aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"],
             )
 
     def test_no_allowlists_configured_raises(self) -> None:
@@ -512,9 +510,7 @@ class TestValidateMTLSCert:
         with pytest.raises(A2AMTLSError, match="not in allowlist"):
             validate_mtls_cert(
                 cert,
-                allowed_fingerprints=[
-                    "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
-                ],
+                allowed_fingerprints=["aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"],
                 allowed_sans=["agent-a.internal"],
             )
 

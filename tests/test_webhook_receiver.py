@@ -1,38 +1,54 @@
 import hashlib
 import hmac
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("DROPBOX_APP_SECRET", "test_dropbox_secret")
 os.environ.setdefault("GRAPH_CLIENT_STATE", "test_graph_state")
 os.environ.setdefault("DRIVE_CHANNEL_TOKEN", "test_drive_token")
 
+import trimcp.webhook_receiver.main as wh
 from trimcp.webhook_receiver.main import (
     DRIVE_CHANNEL_TOKEN,
     DROPBOX_APP_SECRET,
     GRAPH_CLIENT_STATE,
-    app,
 )
 
-client = TestClient(app)
+
+@pytest.fixture
+def client():
+    """Fresh TestClient per test — avoids stale middleware state in long pytest runs."""
+    with TestClient(wh.app) as test_client:
+        yield test_client
 
 
-def test_dropbox_challenge():
+@pytest.fixture(autouse=True)
+def _webhook_test_isolation(monkeypatch):
+    """Isolate webhook tests from shared-process Redis state (dedup + rate keys)."""
+    monkeypatch.setattr(wh, "_ip_windows", {}, raising=False)
+    monkeypatch.setattr(wh, "_allow_webhook_request_redis", lambda *_a, **_k: None)
+    wh._redis_client.cache_clear()
+
+
+def _stub_enqueue(monkeypatch, job_id: str) -> MagicMock:
+    mock = MagicMock(return_value=job_id)
+    monkeypatch.setattr(wh, "enqueue_process_bridge_event", mock)
+    return mock
+
+
+def test_dropbox_challenge(client):
     response = client.get("/webhooks/dropbox?challenge=test_challenge_string")
     assert response.status_code == 200
     assert response.text == "test_challenge_string"
 
 
-@patch(
-    "trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-db-1"
-)
-def test_dropbox_webhook_valid_signature(mock_enqueue):
+def test_dropbox_webhook_valid_signature(client, monkeypatch):
+    mock_enqueue = _stub_enqueue(monkeypatch, "job-db-1")
     body = b'{"list_folder": {"accounts": ["dbid:123"]}}'
-    signature = hmac.new(
-        DROPBOX_APP_SECRET.encode("utf-8"), body, hashlib.sha256
-    ).hexdigest()
+    signature = hmac.new(DROPBOX_APP_SECRET.encode("utf-8"), body, hashlib.sha256).hexdigest()
 
     response = client.post(
         "/webhooks/dropbox",
@@ -42,12 +58,12 @@ def test_dropbox_webhook_valid_signature(mock_enqueue):
     assert response.status_code == 200
     assert response.json() == {"status": "queued", "job_id": "job-db-1"}
     mock_enqueue.assert_called_once()
-    args, kwargs = mock_enqueue.call_args
+    args, _kwargs = mock_enqueue.call_args
     assert args[0] == "dropbox"
     assert args[1]["list_folder"]["accounts"] == ["dbid:123"]
 
 
-def test_dropbox_webhook_invalid_signature():
+def test_dropbox_webhook_invalid_signature(client):
     body = b'{"list_folder": {"accounts": ["dbid:123"]}}'
 
     response = client.post(
@@ -59,7 +75,7 @@ def test_dropbox_webhook_invalid_signature():
     assert "Invalid signature" in response.json()["detail"]
 
 
-def test_dropbox_webhook_missing_signature():
+def test_dropbox_webhook_missing_signature(client):
     body = b'{"list_folder": {"accounts": ["dbid:123"]}}'
 
     response = client.post(
@@ -70,16 +86,14 @@ def test_dropbox_webhook_missing_signature():
     assert "Missing X-Dropbox-Signature" in response.json()["detail"]
 
 
-def test_graph_webhook_challenge():
+def test_graph_webhook_challenge(client):
     response = client.post("/webhooks/graph?validationToken=test_token")
     assert response.status_code == 200
     assert response.text == "test_token"
 
 
-@patch(
-    "trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-sp-1"
-)
-def test_graph_webhook_valid_client_state(mock_enqueue):
+def test_graph_webhook_valid_client_state(client, monkeypatch):
+    mock_enqueue = _stub_enqueue(monkeypatch, "job-sp-1")
     payload = {
         "value": [
             {
@@ -98,7 +112,7 @@ def test_graph_webhook_valid_client_state(mock_enqueue):
     assert len(call_payload["notifications"]) == 1
 
 
-def test_graph_webhook_invalid_client_state():
+def test_graph_webhook_invalid_client_state(client):
     payload = {
         "value": [
             {
@@ -113,10 +127,8 @@ def test_graph_webhook_invalid_client_state():
     assert "Invalid clientState" in response.json()["detail"]
 
 
-@patch(
-    "trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-gd-1"
-)
-def test_drive_webhook_valid(mock_enqueue):
+def test_drive_webhook_valid(client, monkeypatch):
+    mock_enqueue = _stub_enqueue(monkeypatch, "job-gd-1")
     response = client.post(
         "/webhooks/drive",
         headers={
@@ -136,8 +148,8 @@ def test_drive_webhook_valid(mock_enqueue):
     assert payload["resource_state"] == "update"
 
 
-@patch("trimcp.webhook_receiver.main.enqueue_process_bridge_event")
-def test_drive_webhook_sync_no_enqueue(mock_enqueue):
+def test_drive_webhook_sync_no_enqueue(client, monkeypatch):
+    mock_enqueue = _stub_enqueue(monkeypatch, "unused")
     response = client.post(
         "/webhooks/drive",
         headers={
@@ -150,7 +162,7 @@ def test_drive_webhook_sync_no_enqueue(mock_enqueue):
     mock_enqueue.assert_not_called()
 
 
-def test_drive_webhook_invalid_token():
+def test_drive_webhook_invalid_token(client):
     response = client.post(
         "/webhooks/drive",
         headers={
@@ -161,7 +173,7 @@ def test_drive_webhook_invalid_token():
     assert response.status_code == 403
 
 
-def test_drive_webhook_missing_state():
+def test_drive_webhook_missing_state(client):
     response = client.post(
         "/webhooks/drive",
         headers={
@@ -174,11 +186,9 @@ def test_drive_webhook_missing_state():
 # --- SSRF guard: Graph webhook resource URL validation ---
 
 
-@patch(
-    "trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-sp-2"
-)
-def test_graph_webhook_valid_sites_resource(mock_enqueue):
+def test_graph_webhook_valid_sites_resource(client, monkeypatch):
     """Valid Graph /sites/ resource path must be accepted."""
+    _stub_enqueue(monkeypatch, "job-sp-2")
     payload = {
         "value": [
             {
@@ -193,11 +203,9 @@ def test_graph_webhook_valid_sites_resource(mock_enqueue):
     assert response.json()["status"] == "queued"
 
 
-@patch(
-    "trimcp.webhook_receiver.main.enqueue_process_bridge_event", return_value="job-sp-3"
-)
-def test_graph_webhook_valid_drives_resource(mock_enqueue):
+def test_graph_webhook_valid_drives_resource(client, monkeypatch):
     """Valid Graph /drives/ resource path must be accepted."""
+    _stub_enqueue(monkeypatch, "job-sp-3")
     payload = {
         "value": [
             {
@@ -211,7 +219,7 @@ def test_graph_webhook_valid_drives_resource(mock_enqueue):
     assert response.status_code == 200
 
 
-def test_graph_webhook_rejects_internal_resource():
+def test_graph_webhook_rejects_internal_resource(client):
     """SSRF guard must reject a resource path pointing to internal services."""
     payload = {
         "value": [
@@ -227,7 +235,7 @@ def test_graph_webhook_rejects_internal_resource():
     assert "Invalid resource URL" in response.json()["detail"]
 
 
-def test_graph_webhook_rejects_path_traversal_resource():
+def test_graph_webhook_rejects_path_traversal_resource(client):
     """SSRF guard must reject path traversal in resource URLs."""
     payload = {
         "value": [
@@ -243,7 +251,7 @@ def test_graph_webhook_rejects_path_traversal_resource():
     assert "Invalid resource URL" in response.json()["detail"]
 
 
-def test_graph_webhook_rejects_http_resource():
+def test_graph_webhook_rejects_http_resource(client):
     """SSRF guard must reject non-HTTPS fully-qualified resource URLs."""
     payload = {
         "value": [
@@ -256,3 +264,73 @@ def test_graph_webhook_rejects_http_resource():
     }
     response = client.post("/webhooks/graph", json=payload)
     assert response.status_code == 400
+
+
+def test_dropbox_webhook_rejects_oversize_body(client, monkeypatch):
+    monkeypatch.setattr(wh, "_MAX_BODY_BYTES", 32, raising=False)
+    body = b"x" * 64
+    signature = hmac.new(DROPBOX_APP_SECRET.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    response = client.post(
+        "/webhooks/dropbox",
+        content=body,
+        headers={
+            "X-Dropbox-Signature": signature,
+            "Content-Length": str(len(body)),
+        },
+    )
+    assert response.status_code == 413
+
+
+def test_dropbox_webhook_dedup_skips_duplicate(client, monkeypatch):
+    """Second identical Dropbox payload must not enqueue twice."""
+    mock_q = MagicMock()
+    mock_q.enqueue.return_value = MagicMock(id="job-db-dedup")
+    monkeypatch.setattr(wh, "get_priority_queue", lambda *_a, **_k: mock_q)
+    monkeypatch.setattr(wh, "_claim_dedup", MagicMock(side_effect=[True, False]))
+
+    body = b'{"list_folder": {"accounts": ["dbid:dedup"]}}'
+    signature = hmac.new(DROPBOX_APP_SECRET.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    headers = {"X-Dropbox-Signature": signature}
+
+    first = client.post("/webhooks/dropbox", content=body, headers=headers)
+    assert first.status_code == 200
+    assert first.json()["job_id"] == "job-db-dedup"
+
+    second = client.post("/webhooks/dropbox", content=body, headers=headers)
+    assert second.status_code == 200
+    assert second.json()["job_id"] == "dedup-skipped"
+    assert mock_q.enqueue.call_count == 1
+
+
+def test_claim_dedup_fail_closed_when_redis_unavailable(monkeypatch):
+    monkeypatch.setattr(wh, "_DEDUP_FAIL_OPEN", False, raising=False)
+    wh._redis_client.cache_clear()
+    mock_redis = MagicMock()
+    mock_redis.set.side_effect = ConnectionError("redis down")
+    monkeypatch.setattr(wh, "_redis_client", lambda: mock_redis)
+    assert wh._claim_dedup("trimcp:webhook:dedup:test-key") is False
+
+
+def test_claim_dedup_fail_open_when_configured(monkeypatch):
+    monkeypatch.setattr(wh, "_DEDUP_FAIL_OPEN", True, raising=False)
+    wh._redis_client.cache_clear()
+    mock_redis = MagicMock()
+    mock_redis.set.side_effect = ConnectionError("redis down")
+    monkeypatch.setattr(wh, "_redis_client", lambda: mock_redis)
+    assert wh._claim_dedup("trimcp:webhook:dedup:test-key") is True
+
+
+def test_webhook_rate_limit_returns_429(client, monkeypatch):
+    monkeypatch.setattr(wh, "_RATE_LIMIT", 1, raising=False)
+    monkeypatch.setattr(wh, "_RATE_PERIOD_S", 60, raising=False)
+    monkeypatch.setattr(wh, "_ip_windows", {}, raising=False)
+    monkeypatch.setattr(
+        wh,
+        "_allow_webhook_request",
+        lambda ip, path: wh._allow_webhook_request_memory(ip, path),
+    )
+
+    first = client.get("/webhooks/dropbox?challenge=one")
+    assert first.status_code == 200
+    second = client.get("/webhooks/dropbox?challenge=two")
+    assert second.status_code == 429

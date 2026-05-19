@@ -65,9 +65,9 @@ class TestValidateBaseUrl:
             # --- HTTP with allow_http — should pass ---
             ("http://cognitive:11435", True, True, True, None),
             # --- Loopback — should fail without flag ---
-            ("https://127.0.0.1:8000", False, False, False, "private IP|loopback"),
-            ("https://localhost", False, False, False, "private IP|loopback"),
-            ("https://[::1]:8000", False, False, False, "private IP|loopback"),
+            ("https://127.0.0.1:8000", False, False, False, "private IP|non-public IP|loopback"),
+            ("https://localhost", False, False, False, "private IP|non-public IP|loopback"),
+            ("https://[::1]:8000", False, False, False, "private IP|non-public IP|loopback"),
             # --- Loopback with allow_loopback — should pass ---
             ("https://127.0.0.1:8000", False, True, True, None),
             ("https://localhost:11435", False, True, True, None),
@@ -154,9 +154,7 @@ class TestValidateBaseUrl:
             validate_base_url(url, allow_http=allow_http, allow_loopback=allow_loopback)
         else:
             with pytest.raises(LLMProviderError, match=match or ""):
-                validate_base_url(
-                    url, allow_http=allow_http, allow_loopback=allow_loopback
-                )
+                validate_base_url(url, allow_http=allow_http, allow_loopback=allow_loopback)
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +177,7 @@ class TestValidateBaseUrlAsync:
         from trimcp.providers.base import validate_base_url_async
 
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("127.0.0.1"))
-        with pytest.raises(LLMProviderError, match="private IP|loopback"):
+        with pytest.raises(LLMProviderError, match="private IP|non-public IP|loopback"):
             await validate_base_url_async("https://localhost:8000")
 
 
@@ -239,9 +237,7 @@ class TestValidateWebhookPayloadUrl:
 
     def test_accepts_googleapis_url(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("142.250.80.4"))
-        result = validate_webhook_payload_url(
-            "https://www.googleapis.com/drive/v3/changes"
-        )
+        result = validate_webhook_payload_url("https://www.googleapis.com/drive/v3/changes")
         assert result.startswith("https://www.googleapis.com/")
 
     def test_rejects_http_scheme(self):
@@ -260,7 +256,7 @@ class TestValidateWebhookPayloadUrl:
 
     def test_rejects_unknown_url_prefix(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
-        with pytest.raises(BridgeURLValidationError, match="must start with one of"):
+        with pytest.raises(BridgeURLValidationError, match="not within allowed prefixes"):
             validate_webhook_payload_url("https://evil.example.com/hack")
 
     def test_rejects_empty_url(self):
@@ -324,9 +320,7 @@ class TestValidateExtractorUrl:
             ("https://192.168.255.255/api", "192.168.x upper"),
         ],
     )
-    def test_rejects_private_ipv4(
-        self, url: str, label: str, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_rejects_private_ipv4(self, url: str, label: str, monkeypatch: pytest.MonkeyPatch):
         """All RFC 1918 private IPv4 ranges are blocked."""
         from urllib.parse import urlparse
 
@@ -370,9 +364,7 @@ class TestValidateExtractorUrl:
     # --- Private IPv6 ---
 
     def test_rejects_private_ipv6(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(
-            "socket.getaddrinfo", _mock_getaddrinfo("fd00::1", socket.AF_INET6)
-        )
+        monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("fd00::1", socket.AF_INET6))
         with pytest.raises(BridgeURLValidationError, match="non-public"):
             validate_extractor_url("https://[fd00::1]/api")
 
@@ -390,9 +382,7 @@ class TestValidateExtractorUrl:
         self, ip_literal: str, monkeypatch: pytest.MonkeyPatch
     ):
         """ULA, link-local, site-local, documentation, discard prefixes (CIDR denylist)."""
-        monkeypatch.setattr(
-            "socket.getaddrinfo", _mock_getaddrinfo(ip_literal, socket.AF_INET6)
-        )
+        monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo(ip_literal, socket.AF_INET6))
         with pytest.raises(BridgeURLValidationError, match="non-public"):
             validate_extractor_url(f"https://[{ip_literal}]/api")
 
@@ -404,9 +394,7 @@ class TestValidateExtractorUrl:
         with pytest.raises(BridgeURLValidationError, match="non-public"):
             validate_extractor_url("https://internal.example/api")
 
-    def test_accepts_public_ipv6_bracket_sockaddr(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_accepts_public_ipv6_bracket_sockaddr(self, monkeypatch: pytest.MonkeyPatch):
         """Bracket-wrapped IPv6 in sockaddr is normalized and can be non-public-checked."""
 
         def mock_getaddrinfo(
@@ -490,9 +478,7 @@ class TestDiagramApiExtractorSSRF:
         assert any("non-public" in w for w in result.warnings)
 
     @pytest.mark.asyncio
-    async def test_miro_rejects_loopback_base_url(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    async def test_miro_rejects_loopback_base_url(self, monkeypatch: pytest.MonkeyPatch):
         """Miro extractor must reject loopback base_url."""
         from trimcp.extractors.diagram_api import miro_extract_board
 
@@ -536,9 +522,7 @@ class TestDiagramApiExtractorSSRF:
         assert result.skip_reason != "ssrf_blocked"
 
     @pytest.mark.asyncio
-    async def test_lucid_rejects_private_base_url(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    async def test_lucid_rejects_private_base_url(self, monkeypatch: pytest.MonkeyPatch):
         """Lucid extractor must return empty_skipped when base_url resolves to private IP."""
         from trimcp.extractors.diagram_api import lucidchart_extract_document
 
@@ -554,9 +538,7 @@ class TestDiagramApiExtractorSSRF:
         assert any("non-public" in w for w in result.warnings)
 
     @pytest.mark.asyncio
-    async def test_lucid_rejects_aws_metadata_url(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    async def test_lucid_rejects_aws_metadata_url(self, monkeypatch: pytest.MonkeyPatch):
         """Lucid extractor must block AWS metadata endpoint (169.254.169.254)."""
         from trimcp.extractors.diagram_api import lucidchart_extract_document
 
@@ -585,9 +567,7 @@ class TestDiagramApiExtractorSSRF:
         assert result.skip_reason == "ssrf_blocked"
 
     @pytest.mark.asyncio
-    async def test_lucid_accepts_default_base_url(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    async def test_lucid_accepts_default_base_url(self, monkeypatch: pytest.MonkeyPatch):
         """Lucid extractor must accept the default base_url."""
         from trimcp.extractors.diagram_api import lucidchart_extract_document
 

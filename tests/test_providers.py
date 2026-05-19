@@ -162,9 +162,9 @@ class TestRetryPolicy:
             max_delay_ms=60_000,
         )
         delays = {rp.delay_for_attempt(2) for _ in range(50)}
-        assert (
-            len(delays) > 10
-        ), f"Expected jitter to produce varied delays, got only {len(delays)} unique"
+        assert len(delays) > 10, (
+            f"Expected jitter to produce varied delays, got only {len(delays)} unique"
+        )
 
     def test_delay_never_exceeds_cap(self):
         rp = trimcp.providers.base.RetryPolicy(
@@ -472,9 +472,7 @@ class TestExecuteWithRetry:
 
         result = await provider.execute_with_retry(
             ok_op,
-            retry_policy=trimcp.providers.base.RetryPolicy(
-                max_retries=0, base_delay_ms=1
-            ),
+            retry_policy=trimcp.providers.base.RetryPolicy(max_retries=0, base_delay_ms=1),
             circuit_breaker=cb,
         )
         assert result == "recovered"
@@ -546,7 +544,7 @@ class TestHttpErrorClassification:
         assert excinfo.value.status_code == 502
 
     @pytest.mark.asyncio
-    async def test_401_raises_generic_llm_provider_error(self, monkeypatch):
+    async def test_401_raises_llm_authentication_error(self, monkeypatch):
         async def _mock_post(*args, **kwargs):
             class _FakeResp:
                 is_success = False
@@ -563,14 +561,11 @@ class TestHttpErrorClassification:
 
         monkeypatch.setattr("httpx.AsyncClient.post", _mock_post)
 
-        with pytest.raises(trimcp.providers.base.LLMProviderError) as excinfo:
+        with pytest.raises(trimcp.providers.base.LLMAuthenticationError) as excinfo:
             await trimcp.providers._http_utils.post_with_error_handling(
                 url="https://api.test/v1/chat",
                 body={"model": "test"},
                 timeout=10.0,
                 model_id="test/model",
             )
-        # 401 should NOT be LLMRateLimitError or LLMUpstreamError
-        assert not isinstance(excinfo.value, trimcp.providers.base.LLMRateLimitError)
-        assert not isinstance(excinfo.value, trimcp.providers.base.LLMUpstreamError)
         assert excinfo.value.status_code == 401

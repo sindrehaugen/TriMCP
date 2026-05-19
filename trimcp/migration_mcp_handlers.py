@@ -40,6 +40,8 @@ log = logging.getLogger("trimcp.migration_mcp_handlers")
 # System-level namespace sentinel — used for migration audit events that are
 # not tenant-scoped.  The nil UUID is the conventional "no namespace" value.
 _SYSTEM_NAMESPACE: UUID = UUID("00000000-0000-0000-0000-000000000000")
+_MAX_EXTRA_PARAMS_KEYS: int = 16
+_MAX_EXTRA_PARAMS_VALUE_LEN: int = 256
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +73,19 @@ async def _audit_migration_action(
     if target_model_id is not None:
         params["target_model_id"] = target_model_id
     if extra_params:
+        if len(extra_params) > _MAX_EXTRA_PARAMS_KEYS:
+            raise ValueError(f"extra_params exceeds maximum key count ({_MAX_EXTRA_PARAMS_KEYS})")
+        for k, v in extra_params.items():
+            if not isinstance(k, str):
+                raise ValueError("extra_params keys must be strings")
+            if isinstance(v, (dict, list)):
+                raise ValueError(
+                    f"extra_params values must be scalar, got {type(v).__name__!r} for key {k!r}"
+                )
+            if isinstance(v, str) and len(v) > _MAX_EXTRA_PARAMS_VALUE_LEN:
+                raise ValueError(
+                    f"extra_params[{k!r}] value too long (max {_MAX_EXTRA_PARAMS_VALUE_LEN} chars)"
+                )
         params.update(extra_params)
 
     async with pg_pool.acquire(timeout=10.0) as audit_conn:
@@ -82,12 +97,13 @@ async def _audit_migration_action(
                 event_type=event_type,
                 params=params,
             )
+    safe_admin = (admin_identity or "system")[:32]
     log.info(
         "[migration-audit] %s recorded — event_id=%s event_seq=%d admin=%s",
         event_type,
         result.event_id,
         result.event_seq,
-        admin_identity or "system",
+        safe_admin,
     )
 
 
@@ -104,40 +120,57 @@ async def handle_start_migration(
     admin_identity: str | None = None,
 ) -> str:
     """[ADMIN] Start a re-embedding migration to a new model."""
-    target_model_id: str = arguments["target_model_id"]
+    target_model_id = arguments.get("target_model_id")
+    if not target_model_id or not str(target_model_id).strip():
+        raise ValueError("target_model_id is required")
+    target_model_id = str(target_model_id).strip()
+    if len(target_model_id) > 128:
+        raise ValueError(f"target_model_id too long ({len(target_model_id)} chars, max 128)")
 
     # Pre-flight WORM audit — written BEFORE the migration transaction begins.
     # Uses a separate PG connection so the audit survives any migration rollback.
     await _audit_migration_action(
         engine.pg_pool,
-        event_type="migration_started",
+        event_type="migration_start_requested",
         admin_identity=admin_identity,
         migration_id=None,  # generated inside the orchestrator
         target_model_id=target_model_id,
     )
 
     res = await engine.start_migration(target_model_id)
-    return json.dumps(res)
+    return json.dumps(res, default=str)
 
 
 @require_scope("admin")
 @mcp_handler
-async def handle_migration_status(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_migration_status(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """[ADMIN] Check the status of a running migration."""
-    res = await engine.migration_status(arguments["migration_id"])
-    return json.dumps(res)
+    raw_mid = arguments.get("migration_id")
+    if not raw_mid:
+        raise ValueError("migration_id is required")
+    try:
+        migration_id = str(UUID(str(raw_mid).strip()))
+    except (ValueError, AttributeError):
+        raise ValueError("migration_id must be a valid UUID")
+
+    res = await engine.migration_status(migration_id)
+    return json.dumps(res, default=str)
 
 
 @require_scope("admin")
 @mcp_handler
-async def handle_validate_migration(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_validate_migration(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """[ADMIN] Validate the results of a completed migration."""
-    res = await engine.validate_migration(arguments["migration_id"])
-    return json.dumps(res)
+    raw_mid = arguments.get("migration_id")
+    if not raw_mid:
+        raise ValueError("migration_id is required")
+    try:
+        migration_id = str(UUID(str(raw_mid).strip()))
+    except (ValueError, AttributeError):
+        raise ValueError("migration_id must be a valid UUID")
+
+    res = await engine.validate_migration(migration_id)
+    return json.dumps(res, default=str)
 
 
 @require_scope("admin")
@@ -148,19 +181,25 @@ async def handle_commit_migration(
     admin_identity: str | None = None,
 ) -> str:
     """[ADMIN] Commit a validated migration, switching the active model."""
-    migration_id: str = arguments["migration_id"]
+    raw_mid = arguments.get("migration_id")
+    if not raw_mid:
+        raise ValueError("migration_id is required")
+    try:
+        migration_id = str(UUID(str(raw_mid).strip()))
+    except (ValueError, AttributeError):
+        raise ValueError("migration_id must be a valid UUID")
 
     # Pre-flight WORM audit — written BEFORE the schema-switching transaction.
     await _audit_migration_action(
         engine.pg_pool,
-        event_type="migration_committed",
+        event_type="migration_commit_requested",
         admin_identity=admin_identity,
         migration_id=migration_id,
         target_model_id=None,
     )
 
     res = await engine.commit_migration(migration_id)
-    return json.dumps(res)
+    return json.dumps(res, default=str)
 
 
 @require_scope("admin")
@@ -171,16 +210,22 @@ async def handle_abort_migration(
     admin_identity: str | None = None,
 ) -> str:
     """[ADMIN] Abort an in-progress migration."""
-    migration_id: str = arguments["migration_id"]
+    raw_mid = arguments.get("migration_id")
+    if not raw_mid:
+        raise ValueError("migration_id is required")
+    try:
+        migration_id = str(UUID(str(raw_mid).strip()))
+    except (ValueError, AttributeError):
+        raise ValueError("migration_id must be a valid UUID")
 
     # Pre-flight WORM audit — written BEFORE the abort transaction.
     await _audit_migration_action(
         engine.pg_pool,
-        event_type="migration_aborted",
+        event_type="migration_abort_requested",
         admin_identity=admin_identity,
         migration_id=migration_id,
         target_model_id=None,
     )
 
     res = await engine.abort_migration(migration_id)
-    return json.dumps(res)
+    return json.dumps(res, default=str)

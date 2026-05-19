@@ -96,9 +96,7 @@ class TestForgetMemoryRls:
         ns_id = str(uuid4())
         mem_id = str(uuid4())
 
-        with patch(
-            "trimcp.event_log.append_event", new_callable=AsyncMock
-        ) as mock_append:
+        with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
             await orchestrator.forget_memory(
                 memory_id=mem_id,
                 agent_id="test-agent",
@@ -118,9 +116,7 @@ class TestForgetMemoryRls:
         assert kwargs["params"]["memory_id"] == mem_id
 
     @pytest.mark.asyncio
-    async def test_wrapped_in_transaction(
-        self, orchestrator: Any, scoped_conn: AsyncMock
-    ) -> None:
+    async def test_wrapped_in_transaction(self, orchestrator: Any, scoped_conn: AsyncMock) -> None:
         """The INSERT and event log are inside a transaction."""
         with patch("trimcp.event_log.append_event", new_callable=AsyncMock):
             await orchestrator.forget_memory(
@@ -199,9 +195,9 @@ class TestResolveContradictionRls:
             )
 
         sql = scoped_conn.fetchrow.call_args.args[0]
-        assert (
-            "namespace_id = $2::uuid" in sql
-        ), f"Expected explicit namespace_id filter in SQL, got: {sql}"
+        assert "namespace_id = $2::uuid" in sql, (
+            f"Expected explicit namespace_id filter in SQL, got: {sql}"
+        )
 
     @pytest.mark.asyncio
     async def test_null_row_raises_permission_error(
@@ -222,9 +218,7 @@ class TestResolveContradictionRls:
             )
 
     @pytest.mark.asyncio
-    async def test_logs_resolution_event(
-        self, orchestrator: Any, scoped_conn: AsyncMock
-    ) -> None:
+    async def test_logs_resolution_event(self, orchestrator: Any, scoped_conn: AsyncMock) -> None:
         """Resolution is logged via cryptographically signed append_event."""
         ns_id = str(uuid4())
         cont_id = str(uuid4())
@@ -239,9 +233,7 @@ class TestResolveContradictionRls:
             }
         )
 
-        with patch(
-            "trimcp.event_log.append_event", new_callable=AsyncMock
-        ) as mock_append:
+        with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
             await orchestrator.resolve_contradiction(
                 contradiction_id=cont_id,
                 namespace_id=ns_id,
@@ -261,9 +253,7 @@ class TestResolveContradictionRls:
         assert kwargs["result_summary"] == {"status": "success"}
 
     @pytest.mark.asyncio
-    async def test_wrapped_in_transaction(
-        self, orchestrator: Any, scoped_conn: AsyncMock
-    ) -> None:
+    async def test_wrapped_in_transaction(self, orchestrator: Any, scoped_conn: AsyncMock) -> None:
         """The UPDATE + event log are inside a transaction."""
         scoped_conn.fetchrow = AsyncMock(
             return_value={

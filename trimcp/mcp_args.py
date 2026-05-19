@@ -27,7 +27,7 @@ from pydantic import AfterValidator
 log = logging.getLogger(__name__)
 
 # Keys supplied for transport/auth at the MCP layer, not part of domain payloads.
-_MCP_AUTH_KEYS = frozenset({"admin_api_key", "is_admin", "admin_identity"})
+_MCP_AUTH_KEYS = frozenset({"admin_api_key", "mcp_api_key", "is_admin", "admin_identity"})
 
 # Redis key prefix for MCP response cache entries.
 _MCP_CACHE_PREFIX = "mcp_cache"
@@ -39,6 +39,9 @@ _MCP_CACHE_TTL_S: int = 60
 # Redis key for the global cache-generation counter.
 _MCP_CACHE_GENERATION_KEY: str = "mcp_cache_generation"
 
+# Maximum serialized size of arguments when building a cache key.
+_MAX_ARGUMENTS_JSON_SIZE: int = 1_000_000  # 1 MB
+
 # ---------------------------------------------------------------------------
 # Strict nested validation — metadata / context sub-models
 # ---------------------------------------------------------------------------
@@ -48,6 +51,12 @@ _MAX_METADATA_KEYS: int = 512
 
 # Maximum length of a metadata key string.
 _MAX_METADATA_KEY_LEN: int = 256
+
+# Maximum length of a metadata string value.
+_MAX_METADATA_STRING_VALUE_LEN: int = 4096
+
+# Maximum number of items in a metadata list value.
+_MAX_METADATA_LIST_ITEMS: int = 256
 
 
 def _validate_metadata_values(v: dict[str, Any]) -> dict[str, Any]:
@@ -69,9 +78,7 @@ def _validate_metadata_values(v: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("metadata must be a JSON object (dict)")
 
     if len(v) > _MAX_METADATA_KEYS:
-        raise ValueError(
-            f"metadata has {len(v)} keys — maximum {_MAX_METADATA_KEYS} allowed"
-        )
+        raise ValueError(f"metadata has {len(v)} keys — maximum {_MAX_METADATA_KEYS} allowed")
 
     _allowed = (str, int, float, bool, type(None))
     for key, val in v.items():
@@ -84,16 +91,26 @@ def _validate_metadata_values(v: dict[str, Any]) -> dict[str, Any]:
             )
         if isinstance(val, dict):
             raise ValueError(
-                f"metadata['{key}'] is a nested dict — "
-                "only flat key-value pairs are allowed"
+                f"metadata['{key}'] is a nested dict — only flat key-value pairs are allowed"
             )
         if isinstance(val, list):
+            if len(val) > _MAX_METADATA_LIST_ITEMS:
+                raise ValueError(
+                    f"metadata['{key}'] list has {len(val)} items — "
+                    f"maximum {_MAX_METADATA_LIST_ITEMS} allowed"
+                )
             for i, item in enumerate(val):
                 if not isinstance(item, _allowed):
                     raise ValueError(
                         f"metadata['{key}'][{i}] has disallowed type "
                         f"{type(item).__name__} — only str, int, float, bool, None allowed"
                     )
+        elif isinstance(val, str):
+            if len(val) > _MAX_METADATA_STRING_VALUE_LEN:
+                raise ValueError(
+                    f"metadata['{key}'] string value is {len(val)} chars — "
+                    f"maximum {_MAX_METADATA_STRING_VALUE_LEN} allowed"
+                )
         elif not isinstance(val, _allowed):
             raise ValueError(
                 f"metadata['{key}'] has disallowed type {type(val).__name__} — "
@@ -115,7 +132,7 @@ def validate_nested_models(
     arguments: dict[str, Any],
     *,
     nested_fields: dict[str, type] | None = None,
-) -> None:
+) -> dict[str, Any]:
     """Recursively validate nested dict fields in MCP arguments.
 
     This is a defense-in-depth layer applied **before** Pydantic model
@@ -126,14 +143,18 @@ def validate_nested_models(
     When *nested_fields* is ``None`` or a field is not in the mapping,
     the nested value passes through unchanged.
 
+    Returns a **new dict** with validated nested values substituted in.
+    The original *arguments* dict is never modified.
+
     Raises ``ValueError`` (wrapping ``ValidationError``) on failure,
     with the field name and error details included in the message.
     """
     if not nested_fields:
-        return
+        return arguments
 
+    out = dict(arguments)
     for field_name, model_cls in nested_fields.items():
-        nested = arguments.get(field_name)
+        nested = out.get(field_name)
         if nested is None:
             continue
         if not isinstance(nested, dict):
@@ -142,9 +163,10 @@ def validate_nested_models(
             )
         try:
             validated = model_cls(**nested)
-            arguments[field_name] = validated
+            out[field_name] = validated
         except Exception as exc:
             raise ValueError(f"Invalid nested field '{field_name}': {exc}") from exc
+    return out
 
 
 def model_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -158,17 +180,22 @@ def model_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def extract_namespace_id(arguments: dict[str, Any]) -> str | None:
-    """Safely extract ``namespace_id`` (or ``namespace_id`` variant) from MCP tool *arguments*.
+    """Extract and validate ``namespace_id`` from MCP tool *arguments*.
 
-    Returns the value as a string, or ``None`` if not present.
+    Returns the canonical UUID string, or ``None`` when the key is absent.
+
+    Raises:
+        ValueError: If ``namespace_id`` is present but is not a valid UUID.
+                    Absent (key missing) → ``None``.
+                    Present but invalid (bad format) → ``ValueError``.
     """
     raw = arguments.get("namespace_id")
     if raw is None:
         return None
     try:
         return str(UUID(str(raw)))
-    except (ValueError, TypeError):
-        return None
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"Invalid namespace_id: {str(raw)[:64]!r}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -176,10 +203,27 @@ def extract_namespace_id(arguments: dict[str, Any]) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _canonicalize(obj: Any) -> Any:
+    """Recursively normalize a value for deterministic JSON serialization.
+
+    Converts UUID objects to their canonical string form so that
+    ``UUID("abc...")`` and ``"abc..."`` produce the same JSON.
+    Dict keys are sorted at every level (json.dumps sort_keys handles
+    top-level only — this handles nested dicts too).
+    """
+    if isinstance(obj, UUID):
+        return str(obj)
+    if isinstance(obj, dict):
+        return {k: _canonicalize(obj[k]) for k in sorted(obj)}
+    if isinstance(obj, list):
+        return [_canonicalize(v) for v in obj]
+    return obj
+
+
 def build_cache_key(
     tool_name: str,
     arguments: dict[str, Any],
-    generation: str = "0",
+    generation: int = 0,
     *,
     namespace_id: str | None = None,
 ) -> str:
@@ -187,18 +231,31 @@ def build_cache_key(
 
     Key format: ``mcp_cache:v{gen}:{ns}:{tool}:{args_sha256}``
 
-    When *namespace_id* is ``None`` (e.g. admin tools that operate globally),
-    the key omits the namespace component: ``mcp_cache:v{gen}:global:{tool}:{args_md5}``.
+    Arguments are filtered (auth/transport keys removed) and canonicalized
+    before hashing so the same logical request always produces the same key
+    regardless of dict ordering, UUID representation, or auth-key presence.
 
-    The namespace component **scopes the cache to a single tenant**, so
-    mutation events in namespace A never invalidate cache entries for
-    namespace B.  On namespace/document deletion the caller must also call
-    :func:`purge_namespace_cache` to proactively evict orphaned entries.
+    Raises:
+        ValueError: If tool_name exceeds 100 chars, arguments exceed
+                    1 MB when serialized, or namespace_id is present but
+                    not a valid UUID.
     """
-    if namespace_id is None:
-        namespace_id = extract_namespace_id(arguments) or "global"
+    if len(tool_name) > 100:
+        raise ValueError(f"tool_name too long for cache key: {len(tool_name)} chars (max 100)")
 
-    args_str = json.dumps(arguments, sort_keys=True)
+    # Strip auth/transport keys — different API keys must not produce
+    # different cache entries for the same logical request.
+    clean_args = model_kwargs(arguments)
+    if namespace_id is None:
+        namespace_id = extract_namespace_id(clean_args) or "global"
+
+    norm = _canonicalize(clean_args)
+    args_str = json.dumps(norm, separators=(",", ":"), sort_keys=True)
+    if len(args_str) > _MAX_ARGUMENTS_JSON_SIZE:
+        raise ValueError(
+            f"arguments too large for cache key: "
+            f"{len(args_str)} chars (limit {_MAX_ARGUMENTS_JSON_SIZE})"
+        )
     args_hash = hashlib.sha256(args_str.encode()).hexdigest()
     return f"{_MCP_CACHE_PREFIX}:v{generation}:{namespace_id}:{tool_name}:{args_hash}"
 

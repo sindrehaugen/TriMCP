@@ -1,5 +1,10 @@
 terraform {
   required_version = ">= 1.6.0"
+  # Production: configure remote state (example — adjust bucket/prefix per org):
+  # backend "gcs" {
+  #   bucket = "your-terraform-state-bucket"
+  #   prefix = "trimcp/gcp"
+  # }
   required_providers {
     google = {
       source  = "hashicorp/google"
@@ -27,33 +32,36 @@ module "network" {
 }
 
 module "cloudsql" {
-  source          = "./modules/cloudsql"
-  deployment_name = var.deployment_name
-  region          = var.region
-  environment     = var.environment
-  network_id      = module.network.network_id
-  tier            = var.postgres_tier
-  disk_size_gb    = var.postgres_disk_gb
-  labels          = local.common_labels
+  source                       = "./modules/cloudsql"
+  deployment_name              = var.deployment_name
+  region                       = var.region
+  environment                  = var.environment
+  network_id                   = module.network.network_id
+  tier                         = var.postgres_tier
+  disk_size_gb                 = var.postgres_disk_gb
+  labels                       = local.common_labels
+  worker_service_account_email = module.network.worker_sa_email
 
   depends_on = [module.network]
 }
 
 module "memorystore" {
-  source            = "./modules/memorystore"
-  deployment_name   = var.deployment_name
-  region            = var.region
-  network_id      = module.network.network_id
-  memory_size_gb  = local.redis_memory
-  labels          = local.common_labels
-  app_cidr_blocks = [module.network.subnet_cidr_app]
+  source                       = "./modules/memorystore"
+  deployment_name              = var.deployment_name
+  region                       = var.region
+  network_id                   = module.network.network_id
+  memory_size_gb               = local.redis_memory
+  labels                       = local.common_labels
+  app_cidr_blocks              = [module.network.subnet_cidr_app]
+  worker_service_account_email = module.network.worker_sa_email
 
   depends_on = [module.network]
 }
 
 module "mongo" {
-  source          = "./modules/mongo-secret"
-  deployment_name = var.deployment_name
+  source                       = "./modules/mongo-secret"
+  deployment_name              = var.deployment_name
+  worker_service_account_email = module.network.worker_sa_email
 }
 
 module "gcs" {

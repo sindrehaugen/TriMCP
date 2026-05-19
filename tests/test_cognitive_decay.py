@@ -18,18 +18,14 @@ def test_compute_decayed_score_half_life_halves_salience():
     updated_at = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
     reference_now = datetime(2026, 1, 8, 0, 0, tzinfo=timezone.utc)
 
-    out = salience.compute_decayed_score(
-        s_last, updated_at, half_life_days, now=reference_now
-    )
+    out = salience.compute_decayed_score(s_last, updated_at, half_life_days, now=reference_now)
     assert out == pytest.approx(0.5, rel=1e-9)
 
 
 def test_compute_decayed_score_zero_half_life_returns_unchanged():
     ref = datetime(2026, 6, 1, tzinfo=timezone.utc)
     assert (
-        salience.compute_decayed_score(
-            0.8, datetime(2020, 1, 1, tzinfo=timezone.utc), 0.0, now=ref
-        )
+        salience.compute_decayed_score(0.8, datetime(2020, 1, 1, tzinfo=timezone.utc), 0.0, now=ref)
         == 0.8
     )
     assert (
@@ -146,9 +142,7 @@ class TestDeterministicJitter:
         for mid in memory_ids:
             # Call the internal helper directly to verify the range
             factor = salience._jitter_factor(mid)
-            assert (
-                -0.05 <= factor <= 0.05
-            ), f"Jitter factor {factor} out of +/- 5% range for {mid}"
+            assert -0.05 <= factor <= 0.05, f"Jitter factor {factor} out of +/- 5% range for {mid}"
 
     def test_jitter_without_memory_id_is_backward_compatible(self):
         """Omitting memory_id must produce the same result as before."""

@@ -131,9 +131,7 @@ def _pypdf_extract_sync(blob: bytes) -> tuple[str, list[Section], list[str]]:
             warnings.append(f"pypdf_page_{i}:{e}")
         t = t.strip()
         sections.append(
-            Section(
-                text=t, structure_path=f"Page {i}", section_type="body", order=i - 1
-            )
+            Section(text=t, structure_path=f"Page {i}", section_type="body", order=i - 1)
         )
         texts.append(t)
     return "\n\n".join(texts), sections, warnings
@@ -161,17 +159,13 @@ def _pdfminer_extract_sync(blob: bytes) -> tuple[str, list[Section], list[str]]:
             warnings.append(f"pdfminer_page_{i}:{e}")
         t = "".join(parts).strip()
         sections.append(
-            Section(
-                text=t, structure_path=f"Page {i}", section_type="body", order=i - 1
-            )
+            Section(text=t, structure_path=f"Page {i}", section_type="body", order=i - 1)
         )
         texts.append(t)
     return "\n\n".join(texts), sections, warnings
 
 
-def _merge_pdfplumber_tables(
-    blob: bytes, sections: list[Section], warnings: list[str]
-) -> None:
+def _merge_pdfplumber_tables(blob: bytes, sections: list[Section], warnings: list[str]) -> None:
     import pdfplumber
 
     try:
@@ -244,9 +238,7 @@ async def extract_pdf(blob: bytes) -> ExtractionResult:
             text, sections, w3 = await ocr_pdf_to_sections(blob)
             warnings.extend(w3)
             method = (
-                f"{method}+pdfminer+tesseract"
-                if "+pdfminer" in method
-                else f"{method}+tesseract"
+                f"{method}+pdfminer+tesseract" if "+pdfminer" in method else f"{method}+tesseract"
             )
 
         try:

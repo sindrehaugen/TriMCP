@@ -6,10 +6,12 @@ Infrastructure-as-code for **TriMCP Cloud mode** per the Enterprise Deployment P
 
 | Path | Stack |
 |------|--------|
-| `azure/` | Azure Bicep (subscription-level orchestration) |
-| `aws/` | Terraform (`>= 1.6`, AWS provider `~> 5`) |
-| `gcp/` | Terraform (`>= 1.6`, Google provider `~> 5`) |
+| `azure/` | **Deferred** — placeholder Bicep only; not on the v1 production path |
+| `aws/` | Terraform (`>= 1.6`, AWS provider `~> 5`) — v1 production |
+| `gcp/` | Terraform (`>= 1.6`, Google provider `~> 5`) — v1 production |
 | `shared/` | Cross-cloud `.env` template and post-deploy checklist |
+
+**v1 production:** use **AWS** and/or **GCP** modules. Treat `azure/` as reference scaffolding until a dedicated track lands.
 
 ## Network security (Appendix I.6)
 
@@ -33,4 +35,4 @@ After `terraform apply` / `az deployment sub create`, run:
 ./scripts/render-env.sh --cloud aws --infra-dir trimcp-infra/aws
 ```
 
-(or `gcp` / `azure`) to emit a `.env` fragment for the TriMCP client bundle. Requires cloud CLI and credentials that can **read** the provisioned secrets.
+(or `gcp`) to emit a `.env` fragment for the TriMCP client bundle. The script lives at the **repository root** (`scripts/render-env.sh`), not under `trimcp-infra/`. Requires cloud CLI and credentials that can **read** the provisioned secrets.

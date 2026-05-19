@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 log = logging.getLogger("tri-stack-openvino-export")
@@ -20,6 +22,11 @@ DEFAULT_MODEL_ID = "jinaai/jina-embeddings-v2-base-code"
 
 # Model revision pin for trust_remote_code safety (FIX-053)
 OPENVINO_MODEL_REVISION = os.environ.get("TRIMCP_OPENVINO_MODEL_REVISION", "")
+
+_BATCH_SIZE_MIN = 1
+_BATCH_SIZE_MAX = 32
+_SEQ_LEN_MIN = 1
+_SEQ_LEN_MAX = 8192
 
 
 def export_jina_to_openvino_npu(
@@ -60,8 +67,26 @@ def export_jina_to_openvino_npu(
     Path
         Resolved output directory.
     """
+    model_id_or_path = str(model_id_or_path).strip()
+    if not model_id_or_path:
+        raise ValueError("model_id_or_path must not be empty")
+
+    if not (_BATCH_SIZE_MIN <= batch_size <= _BATCH_SIZE_MAX):
+        raise ValueError(
+            f"batch_size must be between {_BATCH_SIZE_MIN} and {_BATCH_SIZE_MAX}, got {batch_size}"
+        )
+    if not (_SEQ_LEN_MIN <= sequence_length <= _SEQ_LEN_MAX):
+        raise ValueError(
+            f"sequence_length must be between {_SEQ_LEN_MIN} and {_SEQ_LEN_MAX}, got {sequence_length}"
+        )
+
     output_dir = Path(output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise RuntimeError(
+            f"output_dir {output_dir} already contains files. "
+            "Pass an empty or non-existent directory to avoid overwriting artifacts."
+        )
 
     try:
         from optimum.intel import OVModelForFeatureExtraction
@@ -71,66 +96,110 @@ def export_jina_to_openvino_npu(
             "Install e.g. pip install 'optimum[openvino-intel]' openvino"
         ) from e
 
-    log.info(
-        "OpenVINO NPU export: model=%r out=%s batch=%s seq=%s local_only=%s",
-        model_id_or_path,
-        output_dir,
-        batch_size,
-        sequence_length,
-        local_files_only,
-    )
-
-    model = OVModelForFeatureExtraction.from_pretrained(
-        model_id_or_path,
-        export=True,
-        compile=False,
-        local_files_only=local_files_only,
-    )
-
-    model.reshape(batch_size=batch_size, sequence_length=sequence_length)
-
-    if compile_for_npu:
-        model.compile()
-
-    model.save_pretrained(output_dir)
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="trimcp_ov_export_", dir=output_dir.parent))
 
     try:
-        from transformers import AutoTokenizer
+        log.info(
+            "OpenVINO NPU export: model=%r out=... batch=%s seq=%s local_only=%s",
+            model_id_or_path[:80] + ("..." if len(model_id_or_path) > 80 else ""),
+            batch_size,
+            sequence_length,
+            local_files_only,
+        )
 
-        # FIX-053: warn if trust_remote_code is set without revision pinning
-        if not OPENVINO_MODEL_REVISION:
-            log.warning(
-                "trust_remote_code=True is set but TRIMCP_OPENVINO_MODEL_REVISION is not pinned. "
-                "This allows arbitrary code execution from the Hub model repo. "
-                "Set TRIMCP_OPENVINO_MODEL_REVISION to a commit SHA to pin the model."
-            )
-
-        tok = AutoTokenizer.from_pretrained(
+        model = OVModelForFeatureExtraction.from_pretrained(
             model_id_or_path,
+            export=True,
+            compile=False,
             local_files_only=local_files_only,
-            trust_remote_code=True,
             revision=OPENVINO_MODEL_REVISION or None,
         )
-        tok.save_pretrained(output_dir)
-    except Exception as e:
-        log.warning(
-            "Tokenizer save_pretrained failed (export may still be usable): %s", e
-        )
 
-    manifest = output_dir / "trimcp_openvino_export_manifest.txt"
-    manifest.write_text(
-        "\n".join(
-            [
-                f"model_source={model_id_or_path}",
-                f"batch_size={batch_size}",
-                f"sequence_length={sequence_length}",
-                f"compile_for_npu={compile_for_npu}",
-                f"local_files_only={local_files_only}",
-                "exporter=trimcp.openvino_npu_export.export_jina_to_openvino_npu",
-            ]
-        ),
-        encoding="utf-8",
-    )
+        model.reshape(batch_size=batch_size, sequence_length=sequence_length)
+
+        if compile_for_npu:
+            model.compile()
+
+        model.save_pretrained(tmp_dir)
+
+        if not OPENVINO_MODEL_REVISION:
+            raise RuntimeError(
+                "TRIMCP_OPENVINO_MODEL_REVISION must be set to a commit SHA before "
+                "exporting models that require trust_remote_code. "
+                "Unset: set TRIMCP_OPENVINO_MODEL_REVISION=<sha> and re-run."
+            )
+
+        try:
+            from transformers import AutoTokenizer
+
+            tok = AutoTokenizer.from_pretrained(
+                model_id_or_path,
+                local_files_only=local_files_only,
+                trust_remote_code=True,
+                revision=OPENVINO_MODEL_REVISION,
+            )
+            tok.save_pretrained(tmp_dir)
+        except (OSError, ImportError) as e:
+            log.warning(
+                "Tokenizer save failed (%s); export IR may still be loadable "
+                "if tokenizer is provided separately: %s",
+                type(e).__name__,
+                e,
+            )
+        except Exception:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+
+        import json as _json
+
+        try:
+            import transformers as _tf
+
+            _tf_version = _tf.__version__
+        except ImportError:
+            _tf_version = "unavailable"
+
+        try:
+            import openvino as _ov
+
+            _ov_version = getattr(_ov, "__version__", "unknown")
+        except ImportError:
+            _ov_version = "unavailable"
+
+        try:
+            import optimum as _opt
+
+            _opt_version = _opt.__version__
+        except ImportError:
+            _opt_version = "unavailable"
+
+        manifest_data = {
+            "model_source": model_id_or_path,
+            "model_revision": OPENVINO_MODEL_REVISION or None,
+            "batch_size": batch_size,
+            "sequence_length": sequence_length,
+            "compile_for_npu": compile_for_npu,
+            "local_files_only": local_files_only,
+            "exporter": "trimcp.openvino_npu_export.export_jina_to_openvino_npu",
+            "dependency_versions": {
+                "transformers": _tf_version,
+                "openvino": _ov_version,
+                "optimum": _opt_version,
+            },
+            "note": (
+                f"Inputs longer than sequence_length={sequence_length} tokens "
+                "will be truncated at inference time."
+            ),
+        }
+
+        manifest = tmp_dir / "trimcp_openvino_export_manifest.json"
+        manifest.write_text(_json.dumps(manifest_data, indent=2), encoding="utf-8")
+
+        tmp_dir.rename(output_dir)
+    except BaseException:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
 
     log.info("OpenVINO export finished: %s", output_dir)
     return output_dir

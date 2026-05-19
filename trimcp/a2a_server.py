@@ -36,7 +36,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import signal
 import uuid
 from contextlib import asynccontextmanager
@@ -166,7 +165,7 @@ _AGENT_CARD: dict[str, Any] = {
         "knowledge graph traversal, session archival, and memory integrity verification. "
         "Memories decay, consolidate, and strengthen over time via bio-inspired algorithms."
     ),
-    "url": os.environ.get("TRIMCP_A2A_URL", "http://localhost:8004"),
+    "url": cfg.TRIMCP_A2A_URL,
     "version": "1.0",
     "capabilities": {
         "streaming": False,
@@ -371,7 +370,6 @@ async def tasks_send(request: Request) -> JSONResponse:
                     verified = await verify_token(conn, sharing_token, caller_ctx)
 
                 # Enforce the namespace scope covers the requested namespace_id
-                params.get("namespace_id") or ""
                 enforce_scope(
                     verified.scopes,
                     "namespace",
@@ -405,9 +403,7 @@ async def tasks_send(request: Request) -> JSONResponse:
             task = _make_task(task_id, "failed", message=str(exc))
             _tasks[task_id] = task
             return JSONResponse(
-                _jsonrpc_err(
-                    A2A_CODE_UNAUTHORIZED, "A2A authorization failure", str(exc)
-                ),
+                _jsonrpc_err(A2A_CODE_UNAUTHORIZED, "A2A authorization failure", str(exc)),
                 status_code=403,
             )
         except A2AScopeViolationError as exc:
@@ -421,16 +417,12 @@ async def tasks_send(request: Request) -> JSONResponse:
             task = _make_task(task_id, "failed", message=str(exc))
             _tasks[task_id] = task
             return JSONResponse(
-                _jsonrpc_err(
-                    A2A_CODE_BAD_REQUEST, "Invalid skill parameters", str(exc)
-                ),
+                _jsonrpc_err(A2A_CODE_BAD_REQUEST, "Invalid skill parameters", str(exc)),
                 status_code=400,
             )
         except Exception as exc:
             log.exception("tasks_send failed task_id=%s skill=%s", task_id, skill)
-            task = _make_task(
-                task_id, "failed", message=f"Internal error: {type(exc).__name__}"
-            )
+            task = _make_task(task_id, "failed", message=f"Internal error: {type(exc).__name__}")
             _tasks[task_id] = task
             return JSONResponse({"error": "Internal error"}, status_code=500)
 
@@ -444,9 +436,7 @@ async def tasks_get(request: Request) -> JSONResponse:
         task_id = request.path_params.get("task_id", "")
         task = _tasks.get(task_id)
         if task is None:
-            return JSONResponse(
-                {"error": "Task not found", "task_id": task_id}, status_code=404
-            )
+            return JSONResponse({"error": "Task not found", "task_id": task_id}, status_code=404)
         return JSONResponse(task)
 
 
@@ -459,9 +449,7 @@ async def tasks_cancel(request: Request) -> JSONResponse:
         task_id = request.path_params.get("task_id", "")
         task = _tasks.get(task_id)
         if task is None:
-            return JSONResponse(
-                {"error": "Task not found", "task_id": task_id}, status_code=404
-            )
+            return JSONResponse({"error": "Task not found", "task_id": task_id}, status_code=404)
 
         current_state = task["status"]["state"]
         if current_state in ("completed", "failed", "canceled"):

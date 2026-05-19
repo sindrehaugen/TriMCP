@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+_SAFE_EXT = re.compile(r"^\.[a-zA-Z0-9]{1,8}$")
+
+
+def _safe_source_ext(source_ext: str) -> str:
+    """Return a safe extension for temp filenames (no path segments)."""
+    ext = source_ext if source_ext.startswith(".") else f".{source_ext}"
+    if not _SAFE_EXT.match(ext):
+        raise ValueError(f"invalid source_ext: {source_ext!r}")
+    return ext
 
 
 def _resolve_soffice() -> str:
@@ -37,7 +48,11 @@ def libreoffice_convert(
     Convert document bytes via `soffice --headless --convert-to`.
     Returns None on failure (partial extraction elsewhere should log and continue).
     """
-    ext = source_ext if source_ext.startswith(".") else f".{source_ext}"
+    try:
+        ext = _safe_source_ext(source_ext)
+    except ValueError as e:
+        log.warning("libreoffice_invalid_ext: %s", e)
+        return None
     target = target_ext.lstrip(".")
     soffice = _resolve_soffice()
     try:

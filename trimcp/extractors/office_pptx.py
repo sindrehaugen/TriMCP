@@ -50,9 +50,7 @@ async def _shape_parts(shape, warnings: list[str]) -> list[str]:
     try:
         if getattr(shape, "has_table", False) and shape.has_table:
             rows = [
-                "| "
-                + " | ".join(cell.text.replace("|", "\\|") for cell in row.cells)
-                + " |"
+                "| " + " | ".join(cell.text.replace("|", "\\|") for cell in row.cells) + " |"
                 for row in shape.table.rows
             ]
             parts.append("\n".join(rows))
@@ -105,9 +103,7 @@ async def extract_pptx(blob: bytes) -> ExtractionResult:
 
         try:
             others = [s for s in slide.shapes if s is not title_shape]
-            sorted_shapes = sorted(
-                others, key=lambda s: (int(s.top or 0), int(s.left or 0))
-            )
+            sorted_shapes = sorted(others, key=lambda s: (int(s.top or 0), int(s.left or 0)))
         except Exception:
             sorted_shapes = list(slide.shapes)
 
@@ -129,10 +125,7 @@ async def extract_pptx(blob: bytes) -> ExtractionResult:
         order += 1
 
         try:
-            if (
-                slide.has_notes_slide
-                and slide.notes_slide.notes_text_frame.text.strip()
-            ):
+            if slide.has_notes_slide and slide.notes_slide.notes_text_frame.text.strip():
                 sections.append(
                     Section(
                         text=slide.notes_slide.notes_text_frame.text,
@@ -170,9 +163,7 @@ async def extract_pptx(blob: bytes) -> ExtractionResult:
 async def extract_ppt(blob: bytes) -> ExtractionResult:
     converted = await asyncio.to_thread(libreoffice_convert, blob, ".ppt", ".pptx")
     if not converted:
-        return empty_skipped(
-            "libreoffice", "conversion_failed", warnings=["ppt conversion failed"]
-        )
+        return empty_skipped("libreoffice", "conversion_failed", warnings=["ppt conversion failed"])
     res = await extract_pptx(converted)
     res.method = "libreoffice→python-pptx"
     res.warnings.insert(0, "Converted from legacy .ppt via LibreOffice")

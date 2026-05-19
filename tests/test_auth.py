@@ -38,6 +38,7 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from trimcp.auth import (
+    MCP_ADMIN_TOOL_NAMES,
     HMACAuthContext,
     HMACAuthMiddleware,
     NamespaceContext,
@@ -47,6 +48,7 @@ from trimcp.auth import (
     _validate_scope,
     assume_namespace,
     audited_session,
+    enforce_mcp_tool_auth,
     require_scope,
     resolve_namespace,
     set_namespace_context,
@@ -98,9 +100,7 @@ def _valid_headers(
 class TestComputeSignature:
     def test_no_body_excludes_hash(self) -> None:
         sig = _compute_signature(_KEY, "GET", "/api/health", 1000, b"")
-        expected = _hmac.new(
-            _KEY.encode(), b"GET\n/api/health\n1000", hashlib.sha256
-        ).hexdigest()
+        expected = _hmac.new(_KEY.encode(), b"GET\n/api/health\n1000", hashlib.sha256).hexdigest()
         assert sig == expected
 
     def test_with_body_includes_sha256(self) -> None:
@@ -108,9 +108,7 @@ class TestComputeSignature:
         body_hash = hashlib.sha256(body).hexdigest()
         sig = _compute_signature(_KEY, "POST", "/api/gc/trigger", 2000, body)
         canonical = f"POST\n/api/gc/trigger\n2000\n{body_hash}"
-        expected = _hmac.new(
-            _KEY.encode(), canonical.encode(), hashlib.sha256
-        ).hexdigest()
+        expected = _hmac.new(_KEY.encode(), canonical.encode(), hashlib.sha256).hexdigest()
         assert sig == expected
 
     def test_method_uppercased(self) -> None:
@@ -290,9 +288,7 @@ def _build_test_app(api_key: str) -> Starlette:
             Route("/api/gc/trigger", endpoint=protected_route, methods=["POST"]),
             Route("/public", endpoint=public_route, methods=["GET"]),
         ],
-        middleware=[
-            Middleware(HMACAuthMiddleware, protected_prefix="/api/", api_key=api_key)
-        ],
+        middleware=[Middleware(HMACAuthMiddleware, protected_prefix="/api/", api_key=api_key)],
     )
 
 
@@ -334,18 +330,14 @@ class TestHMACAuthMiddleware:
         ts = int(time.time())
         sig = _make_signature(_KEY, "GET", "/api/health", ts)
         with TestClient(app, raise_server_exceptions=False) as client:
-            r = client.get(
-                "/api/health", headers={"Authorization": f"HMAC-SHA256 {sig}"}
-            )
+            r = client.get("/api/health", headers={"Authorization": f"HMAC-SHA256 {sig}"})
         assert r.status_code == 401
         assert r.json()["error"]["data"]["reason"] == "missing_auth_headers"
 
     def test_missing_authorization_header_returns_401(self) -> None:
         app = _build_test_app(_KEY)
         with TestClient(app, raise_server_exceptions=False) as client:
-            r = client.get(
-                "/api/health", headers={"X-TriMCP-Timestamp": str(int(time.time()))}
-            )
+            r = client.get("/api/health", headers={"X-TriMCP-Timestamp": str(int(time.time()))})
         assert r.status_code == 401
         assert r.json()["error"]["data"]["reason"] == "missing_auth_headers"
 
@@ -545,9 +537,7 @@ class TestNonceStoreUnit:
 # ============================================================================
 
 
-def _build_test_app_with_nonce(
-    api_key: str, nonce_store: NonceStore | None
-) -> Starlette:
+def _build_test_app_with_nonce(api_key: str, nonce_store: NonceStore | None) -> Starlette:
     """Build a test Starlette app with HMAC auth middleware and optional NonceStore."""
 
     async def protected_route(request: Request) -> PlainTextResponse:
@@ -781,9 +771,7 @@ class TestAssumeNamespace:
         """The audit event uses pool.acquire() — a different connection from the caller's."""
         ns_id = uuid4()
 
-        with patch(
-            "trimcp.event_log.append_event", new_callable=AsyncMock
-        ) as mock_append:
+        with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
             await assume_namespace(
                 conn=caller_conn,
                 namespace_id=ns_id,
@@ -885,9 +873,7 @@ class TestAssumeNamespace:
         """The audit event records who impersonated whom and why."""
         ns_id = uuid4()
 
-        with patch(
-            "trimcp.event_log.append_event", new_callable=AsyncMock
-        ) as mock_append:
+        with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
             await assume_namespace(
                 conn=caller_conn,
                 namespace_id=ns_id,
@@ -913,9 +899,7 @@ class TestAssumeNamespace:
         ns_id = uuid4()
         long_reason = "x" * 500
 
-        with patch(
-            "trimcp.event_log.append_event", new_callable=AsyncMock
-        ) as mock_append:
+        with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
             await assume_namespace(
                 conn=caller_conn,
                 namespace_id=ns_id,
@@ -1122,9 +1106,7 @@ class TestAuditedSession:
     # ------------------------------------------------------------------
 
     @pytest.mark.asyncio
-    async def test_audit_survives_exception_in_with_block(
-        self, mock_pool: MagicMock
-    ) -> None:
+    async def test_audit_survives_exception_in_with_block(self, mock_pool: MagicMock) -> None:
         """When the with-block raises, the audit event is already committed
         on the separate connection — it survives the rollback."""
         ns_id = uuid4()
@@ -1201,9 +1183,7 @@ class TestAuditedSession:
 
         with (
             patch("trimcp.auth._write_audit_event", new_callable=AsyncMock),
-            patch(
-                "trimcp.auth.set_namespace_context", new_callable=AsyncMock
-            ) as mock_set,
+            patch("trimcp.auth.set_namespace_context", new_callable=AsyncMock) as mock_set,
         ):
             async with audited_session(
                 simple_pool,
@@ -1220,16 +1200,12 @@ class TestAuditedSession:
     # ------------------------------------------------------------------
 
     @pytest.mark.asyncio
-    async def test_audit_event_contains_operation_metadata(
-        self, mock_pool: MagicMock
-    ) -> None:
+    async def test_audit_event_contains_operation_metadata(self, mock_pool: MagicMock) -> None:
         """The audit event records the agent, namespace, event_type, params,
         and reason."""
         ns_id = uuid4()
 
-        with patch(
-            "trimcp.auth._write_audit_event", new_callable=AsyncMock
-        ) as mock_write:
+        with patch("trimcp.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
             async with audited_session(
                 mock_pool,
                 ns_id,
@@ -1254,9 +1230,7 @@ class TestAuditedSession:
         ns_id = uuid4()
         long_reason = "y" * 500
 
-        with patch(
-            "trimcp.auth._write_audit_event", new_callable=AsyncMock
-        ) as mock_write:
+        with patch("trimcp.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
             async with audited_session(
                 mock_pool,
                 ns_id,
@@ -1276,9 +1250,7 @@ class TestAuditedSession:
         params under the 'reason' key."""
         ns_id = uuid4()
 
-        with patch(
-            "trimcp.auth._write_audit_event", new_callable=AsyncMock
-        ) as mock_write:
+        with patch("trimcp.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
             async with audited_session(
                 mock_pool,
                 ns_id,
@@ -1294,16 +1266,12 @@ class TestAuditedSession:
         assert kwargs["params"]["reason"] == "security audit"
 
     @pytest.mark.asyncio
-    async def test_default_params_when_none_provided(
-        self, mock_pool: MagicMock
-    ) -> None:
+    async def test_default_params_when_none_provided(self, mock_pool: MagicMock) -> None:
         """When no params are provided, an empty dict is passed to the audit
         write (reason is merged in if provided)."""
         ns_id = uuid4()
 
-        with patch(
-            "trimcp.auth._write_audit_event", new_callable=AsyncMock
-        ) as mock_write:
+        with patch("trimcp.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
             async with audited_session(
                 mock_pool,
                 ns_id,
@@ -1354,6 +1322,16 @@ class TestValidateScope:
         with pytest.raises(ScopeError, match="misconfigured"):
             _validate_scope("admin", {})
 
+    def test_missing_server_key_fails_closed_without_cfg_fallback(self, monkeypatch) -> None:
+        """Regression: delenv must not fall back to import-time cfg snapshot."""
+        monkeypatch.delenv("TRIMCP_ADMIN_OVERRIDE", raising=False)
+        monkeypatch.delenv("TRIMCP_ADMIN_API_KEY", raising=False)
+        from trimcp.config import cfg
+
+        monkeypatch.setattr(cfg, "TRIMCP_ADMIN_API_KEY", "stale-import-time-key")
+        with pytest.raises(ScopeError, match="misconfigured"):
+            _validate_scope("admin", {"admin_api_key": "stale-import-time-key"})
+
     def test_missing_client_key_raises(self, monkeypatch) -> None:
         monkeypatch.delenv("TRIMCP_ADMIN_OVERRIDE", raising=False)
         monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "secret-key")
@@ -1378,14 +1356,68 @@ class TestValidateScope:
         # Should not raise
         _validate_scope("admin", {"admin_api_key": "secret-key"})
 
-    def test_tenant_scope_always_passes(self) -> None:
-        # Tenant scope is implicitly granted
+    def test_tenant_scope_requires_key_when_server_key_set(self, monkeypatch) -> None:
+        monkeypatch.setenv("TRIMCP_MCP_API_KEY", "tenant-secret")
+        with pytest.raises(ScopeError, match="missing mcp_api_key"):
+            _validate_scope("tenant", {})
+        with pytest.raises(ScopeError, match="invalid mcp_api_key"):
+            _validate_scope("tenant", {"mcp_api_key": "wrong"})
+        _validate_scope("tenant", {"mcp_api_key": "tenant-secret"})
+
+    def test_tenant_scope_passes_without_server_key_in_dev(self, monkeypatch) -> None:
+        monkeypatch.delenv("TRIMCP_MCP_API_KEY", raising=False)
         _validate_scope("tenant", {})
-        _validate_scope("tenant", {"admin_api_key": "anything"})
 
     def test_unknown_scope_raises(self) -> None:
         with pytest.raises(ScopeError, match="unknown scope"):
             _validate_scope("superadmin", {})
+
+
+class TestEnforceMcpToolAuth:
+    """stdio MCP dispatch gate — admin vs tenant tools."""
+
+    def test_tenant_tool_requires_mcp_key(self, monkeypatch) -> None:
+        monkeypatch.setenv("TRIMCP_MCP_API_KEY", "mcp-secret")
+        with pytest.raises(ScopeError, match="missing mcp_api_key"):
+            enforce_mcp_tool_auth("semantic_search", {})
+        enforce_mcp_tool_auth("semantic_search", {"mcp_api_key": "mcp-secret"})
+
+    def test_admin_tool_requires_admin_key(self, monkeypatch) -> None:
+        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "admin-secret")
+        with pytest.raises(ScopeError, match="missing admin_api_key"):
+            enforce_mcp_tool_auth("manage_namespace", {})
+        enforce_mcp_tool_auth("manage_namespace", {"admin_api_key": "admin-secret"})
+
+    def test_admin_tool_names_are_registered(self) -> None:
+        assert "manage_namespace" in MCP_ADMIN_TOOL_NAMES
+        assert "semantic_search" not in MCP_ADMIN_TOOL_NAMES
+
+    def test_tenant_namespace_injected_when_bound(self, monkeypatch) -> None:
+        ns = "11111111-2222-4333-8444-555555555555"
+        monkeypatch.setenv("TRIMCP_MCP_API_KEY", "mcp-secret")
+        monkeypatch.setenv("TRIMCP_MCP_NAMESPACE_ID", ns)
+        args: dict = {"mcp_api_key": "mcp-secret"}
+        enforce_mcp_tool_auth("semantic_search", args)
+        assert args["namespace_id"] == ns
+
+    def test_tenant_namespace_mismatch_rejected(self, monkeypatch) -> None:
+        monkeypatch.setenv("TRIMCP_MCP_API_KEY", "mcp-secret")
+        monkeypatch.setenv("TRIMCP_MCP_NAMESPACE_ID", "11111111-2222-4333-8444-555555555555")
+        with pytest.raises(ScopeError, match="namespace_id does not match"):
+            enforce_mcp_tool_auth(
+                "semantic_search",
+                {
+                    "mcp_api_key": "mcp-secret",
+                    "namespace_id": "99999999-9999-4999-8999-999999999999",
+                },
+            )
+
+    def test_admin_tool_skips_namespace_binding(self, monkeypatch) -> None:
+        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "admin-secret")
+        monkeypatch.setenv("TRIMCP_MCP_NAMESPACE_ID", "11111111-2222-4333-8444-555555555555")
+        args = {"admin_api_key": "admin-secret"}
+        enforce_mcp_tool_auth("manage_namespace", args)
+        assert "namespace_id" not in args
 
 
 class TestRequireScopeDecorator:
@@ -1460,9 +1492,7 @@ class TestRequireScopeDecorator:
         assert result["ns"] == "x"
 
     @pytest.mark.asyncio
-    async def test_handler_without_admin_identity_param_works(
-        self, monkeypatch
-    ) -> None:
+    async def test_handler_without_admin_identity_param_works(self, monkeypatch) -> None:
         monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "key123")
 
         @require_scope("admin")
@@ -1611,12 +1641,19 @@ class TestVerifyAdminPassword:
         valid, _ = verify_admin_password("wrong", "plaintext")
         assert valid is False
 
+    def test_plaintext_rejected_in_production(self, monkeypatch) -> None:
+        from trimcp.auth import verify_admin_password
+        from trimcp.config import cfg
+
+        monkeypatch.setattr(cfg, "IS_PROD", True)
+        valid, upgraded = verify_admin_password("plaintext", "plaintext")
+        assert valid is False
+        assert upgraded is None
+
     def test_plaintext_auto_upgrades(self) -> None:
         from trimcp.auth import verify_admin_password
 
-        valid, upgraded = verify_admin_password(
-            "secret123", "secret123", auto_upgrade=True
-        )
+        valid, upgraded = verify_admin_password("secret123", "secret123", auto_upgrade=True)
         assert valid is True
         assert upgraded is not None
         assert upgraded.startswith("$pbkdf2$")

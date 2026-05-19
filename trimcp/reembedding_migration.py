@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import math
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -23,6 +24,8 @@ if sys.version_info >= (3, 11):
 else:
     from strenum import StrEnum  # type: ignore[import-untyped]
 from typing import Protocol
+
+log = logging.getLogger("tri-stack-reembedding-migration")
 
 
 def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
@@ -156,28 +159,87 @@ class ReembeddingMigrationOrchestrator:
         """Dequeue up to *batch_size* IDs, embed with v2, persist without touching v1."""
         if self.phase != MigrationPhase.BACKFILLING:
             return 0
+        batch_size = min(batch_size, _MAX_BATCH_SIZE)
         ids = await self._store.pop_pending_ids(batch_size)
         if not ids:
             return 0
+        valid_rows: list[MemoryEmbeddingRow] = []
         for mid in ids:
             row = await self._store.load_row(mid)
             if row is None:
                 continue
-            vec = self.embed_fn_v2(row.canonical_text, dimension=self.dimension)
-            if len(vec) != self.dimension:
-                raise ValueError(
-                    f"embed_fn_v2 returned dim {len(vec)}, expected {self.dimension}"
+            if row.embedding_v2 is not None:
+                continue
+            text_bytes = len(row.canonical_text.encode("utf-8"))
+            if not row.canonical_text or text_bytes > _MAX_CANONICAL_TEXT_BYTES:
+                log.warning(
+                    "Skipping memory_id=%s: canonical_text is %s",
+                    mid,
+                    "empty"
+                    if not row.canonical_text
+                    else f"{text_bytes} bytes (limit {_MAX_CANONICAL_TEXT_BYTES})",
                 )
-            await self._store.write_embedding_v2(
-                mid, embedding=vec, model_id=self.target_model_id
-            )
+                continue
+            if len(row.embedding_v1) != self.dimension:
+                raise ValueError(
+                    f"memory_id={mid}: embedding_v1 has dim {len(row.embedding_v1)}, "
+                    f"expected {self.dimension}"
+                )
+            valid_rows.append(row)
+
+        _sem = asyncio.Semaphore(_EMBED_MAX_CONCURRENT)
+
+        async def _embed_one(row: MemoryEmbeddingRow) -> tuple[str, list[float]]:
+            async with _sem:
+                last_exc: BaseException | None = None
+                for attempt in range(_EMBED_MAX_RETRIES):
+                    try:
+                        vec = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.embed_fn_v2,
+                                row.canonical_text,
+                                dimension=self.dimension,
+                            ),
+                            timeout=_EMBED_TIMEOUT_SECONDS,
+                        )
+                        break
+                    except (TimeoutError, asyncio.TimeoutError, Exception) as exc:
+                        last_exc = exc
+                        if attempt < _EMBED_MAX_RETRIES - 1:
+                            await asyncio.sleep(0.5 * (attempt + 1))
+                else:
+                    raise last_exc  # type: ignore[misc]
+            if len(vec) != self.dimension:
+                raise ValueError(f"embed_fn_v2 returned dim {len(vec)}, expected {self.dimension}")
+            return row.memory_id, vec
+
+        results = await asyncio.gather(
+            *[_embed_one(r) for r in valid_rows],
+            return_exceptions=True,
+        )
+
+        written = 0
+        for res in results:
+            if isinstance(res, BaseException):
+                log.error(
+                    "Embedding failed for a row in batch: %s: %s",
+                    type(res).__name__,
+                    res,
+                )
+                continue
+            mid, vec = res
+            await self._store.write_embedding_v2(mid, embedding=vec, model_id=self.target_model_id)
+            written += 1
+
         async with self._cv:
             self._cv.notify_all()
-        return len(ids)
+        return written
 
-    def mark_aborted(self) -> None:
+    async def mark_aborted(self) -> None:
         """Align orchestrator state when the store aborts a migration."""
         self.phase = MigrationPhase.ABORTED
+        async with self._cv:
+            self._cv.notify_all()
 
     def mark_committed(self) -> None:
         """Call after :meth:`InMemoryReembeddingStore.commit_primary_to_v2`."""
@@ -260,10 +322,28 @@ class InMemoryReembeddingStore:
             return None
         return row.embedding_v1
 
-    def commit_primary_to_v2(self) -> None:
+    def commit_primary_to_v2(
+        self,
+        *,
+        quality_gate_fn: Callable[[], float] | None = None,
+        quality_threshold: float = 0.7,
+    ) -> None:
         """Atomic logical swap — only after quality gate passes (roadmap §2.1)."""
         if self.phase == MigrationPhase.ABORTED:
             raise RuntimeError("cannot commit an aborted migration")
+        if self._pending.qsize() > 0:
+            raise RuntimeError(
+                f"Cannot commit migration: {self._pending.qsize()} items are still pending. "
+                "Drain the queue with process_batch() before committing."
+            )
+        if quality_gate_fn is not None:
+            score = quality_gate_fn()
+            if score < quality_threshold:
+                raise RuntimeError(
+                    f"Quality gate failed: neighbor overlap {score:.3f} < "
+                    f"threshold {quality_threshold:.3f}. Run abort_and_clear_pending_v2() "
+                    "to revert or investigate the model change."
+                )
         for mid, row in list(self._rows.items()):
             if row.embedding_v2 is None:
                 continue
@@ -294,5 +374,11 @@ class InMemoryReembeddingStore:
                 break
 
 
-EmbeddingFn = Callable[..., list[float]]
-"""Embedder callable: accepts ``text`` plus optional kwargs (e.g. ``dimension=int``)."""
+EmbeddingFn = Callable[[str], list[float]]
+"""Embedder callable: accepts text as positional arg; dimension passed as keyword."""
+
+_MAX_BATCH_SIZE: int = 1_000
+_EMBED_MAX_CONCURRENT: int = 8
+_EMBED_TIMEOUT_SECONDS: float = 30.0
+_MAX_CANONICAL_TEXT_BYTES: int = 32_768
+_EMBED_MAX_RETRIES: int = 3

@@ -152,4 +152,4 @@ graph TB
 - `trimcp-infra/aws/modules/fargate-worker/main.tf` — Module implementation
 - `trimcp-infra/aws/modules/fargate-worker/variables.tf` — Variable definitions
 - `trimcp-infra/aws/main.tf` — Root module call with split configuration
-- `to-do-v1-phase2.md` — Kaizen entry for this hardening
+- Internal phase-2 kaizen tracker (local `_internal/work-docs/todos/`) — entry for this hardening

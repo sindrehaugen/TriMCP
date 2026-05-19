@@ -56,9 +56,7 @@ def traverser(mock_pg_pool, mock_mongo_client):
     async def dummy_embed(query: str):
         return [0.1, 0.2, 0.3]
 
-    return GraphRAGTraverser(
-        pg_pool=pool, mongo_client=client, embedding_fn=dummy_embed
-    )
+    return GraphRAGTraverser(pg_pool=pool, mongo_client=client, embedding_fn=dummy_embed)
 
 
 @pytest.mark.asyncio
@@ -98,9 +96,7 @@ async def test_bfs(traverser, mock_pg_pool):
         ],
     ]
 
-    visited, edges = await traverser._bfs(
-        "Redis", max_depth=1, _allow_global_sweep=True
-    )
+    visited, edges = await traverser._bfs("Redis", max_depth=1, _allow_global_sweep=True)
 
     assert "Redis" in visited
     assert "Data" in visited
@@ -137,11 +133,7 @@ async def test_search_full_pipeline(traverser, mock_pg_pool, mock_mongo_client):
 
     # Setup step 1: find anchor
     async def mock_find_anchor(*args, **kwargs):
-        return [
-            GraphNode(
-                label="Anchor", entity_type="CONCEPT", payload_ref="abc", distance=0.0
-            )
-        ]
+        return [GraphNode(label="Anchor", entity_type="CONCEPT", payload_ref="abc", distance=0.0)]
 
     traverser._find_anchor = mock_find_anchor
 
@@ -189,21 +181,13 @@ async def test_search_edge_pagination(traverser, mock_pg_pool, mock_mongo_client
     _, conn = mock_pg_pool
 
     async def mock_find_anchor(*args, **kwargs):
-        return [
-            GraphNode(label="A", entity_type="CONCEPT", payload_ref="p1", distance=0.0)
-        ]
+        return [GraphNode(label="A", entity_type="CONCEPT", payload_ref="p1", distance=0.0)]
 
     async def mock_bfs(*args, **kwargs):
         edges = [
-            GraphEdge(
-                subject="A", predicate="r", obj="B", confidence=1.0, payload_ref=None
-            ),
-            GraphEdge(
-                subject="A", predicate="r2", obj="C", confidence=0.9, payload_ref=None
-            ),
-            GraphEdge(
-                subject="B", predicate="r3", obj="D", confidence=0.8, payload_ref=None
-            ),
+            GraphEdge(subject="A", predicate="r", obj="B", confidence=1.0, payload_ref=None),
+            GraphEdge(subject="A", predicate="r2", obj="C", confidence=0.9, payload_ref=None),
+            GraphEdge(subject="B", predicate="r3", obj="D", confidence=0.8, payload_ref=None),
         ]
         return {"A", "B", "C", "D"}, edges
 
@@ -541,7 +525,5 @@ async def test_search_allows_none_namespace_with_flag(
 
     traverser._hydrate_sources = mock_hydrate
 
-    subgraph = await traverser.search(
-        "query", namespace_id=None, _allow_global_sweep=True
-    )
+    subgraph = await traverser.search("query", namespace_id=None, _allow_global_sweep=True)
     assert subgraph.anchor == "Redis"

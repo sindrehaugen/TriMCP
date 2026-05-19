@@ -30,9 +30,7 @@ _KEY = "fixture-hmac-shared-secret-32b+"
 def _app() -> Starlette:
     async def echo(request: Request) -> JSONResponse:
         body = await request.body()
-        return JSONResponse(
-            {"len": len(body), "raw": body.decode("utf-8", errors="replace")}
-        )
+        return JSONResponse({"len": len(body), "raw": body.decode("utf-8", errors="replace")})
 
     async def health(_: Request) -> PlainTextResponse:
         return PlainTextResponse("ok")

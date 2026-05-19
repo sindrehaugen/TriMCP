@@ -1,5 +1,15 @@
 # Secrets — never commit
 .env
+mcp_config.json
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+serviceAccountKey.json
+deploy/compose.stack.env.generated
+# Local overrides — track deploy/compose.stack.env.example instead (placeholders only).
+deploy/compose.stack.env
 
 # Python
 .venv/
@@ -31,8 +41,18 @@ Thumbs.db
 .pytest_cache/
 htmlcov/
 .coverage
+.pytest_last.txt
+.pytest_failures.txt
+.pytest_failures_full.txt
+pytest-last.txt
+file_tree.txt
 
-# Local agent runner prompts/scripts — keep out of remote repo
+# Internal work docs — planning, prompts, audits, roadmaps (local only)
+_internal/
+
+# Legacy paths (content lives under _internal/work-docs/)
+prompts/
+Instructions/
 phase6-runners/
 
 # Scratch / temp / session artifacts
@@ -50,7 +70,8 @@ TriMCP\ (1)/
 .ruff_cache/
 
 # Planning, to-dos, roadmaps, and audit docs — internal only
-to-do-*.md
+to-do-*
+to_do_*
 *REMEDIATION_PLAN.md
 *DEPLOYMENT_PHASE*.md
 Phase6*.md
@@ -64,6 +85,11 @@ TriMCP\ Enterprise\ Deployment\ Plan.md
 TriMCP_Innovation_Roadmap*.md
 TriMCP\ CodebaseVSRoadmap.md
 last-work-done-*.md
+verify_remediation.py
+scripts/_*.py
+scripts/verify_todo.py
+docs/background_task_manager_fix.md
+docs/architecture-phase-*.md
 
 # Node/npm dependencies
 node_modules/

@@ -329,9 +329,7 @@ class TestAdminToolHandlerArgumentFiltering(unittest.TestCase):
 if __name__ == "__main__":
     # Run with verbose output
     runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(
-        unittest.TestLoader().loadTestsFromModule(sys.modules[__name__])
-    )
+    result = runner.run(unittest.TestLoader().loadTestsFromModule(sys.modules[__name__]))
 
     # Print summary
     print(f"\n{'=' * 60}")
@@ -341,9 +339,7 @@ if __name__ == "__main__":
     print(f"Skipped:   {len(result.skipped)}")
 
     if result.wasSuccessful():
-        print(
-            "\n✅ ALL TESTS PASSED — Client-side privilege escalation vector is CLOSED."
-        )
+        print("\n✅ ALL TESTS PASSED — Client-side privilege escalation vector is CLOSED.")
         sys.exit(0)
     else:
         print("\n❌ SOME TESTS FAILED — See output above for details.")

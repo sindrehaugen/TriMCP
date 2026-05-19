@@ -27,9 +27,9 @@ from trimcp import embeddings as _embeddings
 from trimcp.auth import set_namespace_context
 from trimcp.config import cfg
 from trimcp.db_utils import scoped_pg_session
-from trimcp.mongo_bulk import fetch_episodes_raw_by_ref, normalize_payload_ref
 from trimcp.models import (
     _SAFE_ID_RE,
+    ArtifactPayload,
     AssertionType,
     MediaPayload,
     MemoryType,
@@ -37,6 +37,7 @@ from trimcp.models import (
     SagaState,
     StoreMemoryRequest,
 )
+from trimcp.mongo_bulk import fetch_episodes_raw_by_ref, normalize_payload_ref
 from trimcp.observability import SagaMetrics, get_tracer
 
 log = logging.getLogger("tri-stack-orchestrator.memory")
@@ -226,6 +227,7 @@ class MemoryOrchestrator:
         inserted_mongo_id,
         target_model_ids,
         memory_id,
+        saga_id,
     ):
         """Insert kg_nodes, kg_node_embeddings, kg_edges, and event_log (inside PG tx).
 
@@ -284,7 +286,7 @@ class MemoryOrchestrator:
                     await conn.execute(
                         """
                         INSERT INTO kg_node_embeddings (node_id, model_id, embedding)
-                        SELECT unnest($1::uuid[]), unnest($2::text[]), unnest($3::text[])::vector
+                        SELECT unnest($1::uuid[]), unnest($2::uuid[]), unnest($3::text[])::vector
                         ON CONFLICT DO NOTHING
                         """,
                         emb_node_ids,
@@ -318,9 +320,7 @@ class MemoryOrchestrator:
         # Phase 2.2: Append to event log
         from trimcp.event_log import append_event
 
-        serialized_entities = [
-            {"label": e.label, "entity_type": e.entity_type} for e in entities
-        ]
+        serialized_entities = [{"label": e.label, "entity_type": e.entity_type} for e in entities]
         serialized_triplets = [
             {
                 "subject_label": t.subject_label,
@@ -337,7 +337,9 @@ class MemoryOrchestrator:
             agent_id=payload.agent_id,
             event_type="store_memory",
             params={
+                "saga_id": str(saga_id),
                 "memory_id": str(memory_id),
+                "payload_ref": inserted_mongo_id,
                 "assertion_type": payload.assertion_type.value,
                 "entities": serialized_entities,
                 "triplets": serialized_triplets,
@@ -348,9 +350,7 @@ class MemoryOrchestrator:
     # Saga Execution Log helpers (Item A — crash-recovery)
     # ------------------------------------------------------------------
 
-    async def _saga_log_start(
-        self, saga_type: str, payload: StoreMemoryRequest
-    ) -> str:
+    async def _saga_log_start(self, saga_type: str, payload: StoreMemoryRequest) -> str:
         """Insert a 'started' saga row on an independent connection."""
         async with self.pg_pool.acquire(timeout=10.0) as conn:
             async with conn.transaction():
@@ -468,9 +468,10 @@ class MemoryOrchestrator:
                             agent_id=payload.agent_id,
                             event_type="store_memory_rolled_back",
                             params={
+                                "saga_id": str(saga_id) if saga_id else "",
                                 "memory_id": str(memory_id),
                                 "reason": str(e)[:256],
-                                "payload_ref": inserted_mongo_id,
+                                "payload_ref": inserted_mongo_id or "",
                             },
                         )
                         await conn.execute(
@@ -501,9 +502,7 @@ class MemoryOrchestrator:
                             inserted_mongo_id,
                         )
             except Exception as pg_exc:
-                log.error(
-                    "[ROLLBACK] PG safety cleanup failed (GC will reap): %s", pg_exc
-                )
+                log.error("[ROLLBACK] PG safety cleanup failed (GC will reap): %s", pg_exc)
                 SagaMetrics.record_failure("pg_rollback")
 
         if saga_id:
@@ -549,9 +548,7 @@ class MemoryOrchestrator:
                         ) = await self._apply_pii_pipeline(payload, conn=conn)
 
                         # STEP 1: Episodic Commit (MongoDB)
-                        user_id = (
-                            payload.metadata.get("user_id") if payload.metadata else None
-                        )
+                        user_id = payload.metadata.get("user_id") if payload.metadata else None
                         session_id = (
                             payload.metadata.get("session_id") if payload.metadata else None
                         )
@@ -607,6 +604,7 @@ class MemoryOrchestrator:
                                 inserted_mongo_id=inserted_mongo_id,
                                 target_model_ids=target_model_ids,
                                 memory_id=memory_id,
+                                saga_id=saga_id,
                             )
 
                             # STEP 2c: Transactional Outbox — atomically publish
@@ -617,6 +615,7 @@ class MemoryOrchestrator:
                                 aggregate_id=str(memory_id),
                                 event_type="memory.stored",
                                 payload={
+                                    "saga_id": str(saga_id),
                                     "memory_id": str(memory_id),
                                     "payload_ref": inserted_mongo_id,
                                     "assertion_type": payload.assertion_type.value,
@@ -634,48 +633,6 @@ class MemoryOrchestrator:
                         inserted_mongo_id,
                     )
 
-                    pg_committed = True
-                    await self._saga_log_transition(
-                        saga_id, SagaState.PG_COMMITTED, payload_patch={"memory_id": str(memory_id)}
-                    )
-
-                    # STEP 3: Working Memory (Redis)
-                    if user_id and session_id:
-                        redis_key = (
-                            f"cache:{payload.namespace_id}:{user_id}:{session_id}"
-                        )
-                        await self.redis_client.setex(
-                            redis_key, cfg.REDIS_TTL, sanitized_summary
-                        )
-                        log.debug("[Redis] Summary cached. key=%s", redis_key)
-
-                    # STEP 4: Contradiction Detection
-                    contradiction_result = None
-                    if payload.check_contradictions:
-                        from trimcp.contradictions import detect_contradictions
-
-                        try:
-                            contradiction_result = await detect_contradictions(
-                                self.pg_pool,
-                                self.mongo_client,
-                                str(payload.namespace_id),
-                                str(memory_id),
-                                sanitized_summary,
-                                payload.assertion_type.value,
-                                vector,
-                                payload.agent_id,
-                                triplets,
-                                detection_path="sync",
-                            )
-                        except Exception as e:
-                            log.error("Contradiction detection failed: %s", e)
-
-                    await self._saga_log_transition(saga_id, SagaState.COMPLETED)
-                    return {
-                        "payload_ref": inserted_mongo_id,
-                        "contradiction": contradiction_result,
-                    }
-
                 except Exception as e:
                     await self._apply_rollback_on_failure(
                         e=e,
@@ -689,6 +646,57 @@ class MemoryOrchestrator:
                     )
                     raise
 
+                # --- PG committed; all subsequent failures are advisory ---
+                pg_committed = True
+                try:
+                    await self._saga_log_transition(
+                        saga_id, SagaState.PG_COMMITTED, payload_patch={"memory_id": str(memory_id)}
+                    )
+                except Exception:
+                    log.warning("[SAGA] PG_COMMITTED transition failed.", exc_info=True)
+
+                # STEP 3: Working Memory (Redis)
+                if user_id and session_id:
+                    try:
+                        redis_key = f"cache:{payload.namespace_id}:{user_id}:{session_id}"
+                        await self.redis_client.setex(redis_key, cfg.REDIS_TTL, sanitized_summary)
+                        log.debug("[Redis] Summary cached. key=%s", redis_key)
+                    except Exception:
+                        log.warning(
+                            "[Redis] Cache write failed; core write remains valid.", exc_info=True
+                        )
+
+                # STEP 4: Contradiction Detection
+                contradiction_result = None
+                if payload.check_contradictions:
+                    from trimcp.contradictions import detect_contradictions
+
+                    try:
+                        contradiction_result = await detect_contradictions(
+                            self.pg_pool,
+                            self.mongo_client,
+                            str(payload.namespace_id),
+                            str(memory_id),
+                            sanitized_summary,
+                            payload.assertion_type.value,
+                            vector,
+                            payload.agent_id,
+                            triplets,
+                            detection_path="sync",
+                        )
+                    except Exception as e:
+                        log.error("Contradiction detection failed: %s", e)
+
+                try:
+                    await self._saga_log_transition(saga_id, SagaState.COMPLETED)
+                except Exception:
+                    log.warning("[SAGA] COMPLETED transition failed.", exc_info=True)
+
+                return {
+                    "payload_ref": inserted_mongo_id,
+                    "contradiction": contradiction_result,
+                }
+
     # ------------------------------------------------------------------
     # store_artifact (formerly store_media)
     # ------------------------------------------------------------------
@@ -699,17 +707,26 @@ class MemoryOrchestrator:
         with tracer.start_as_current_span("orchestrator.store_artifact") as span:
             span.set_attribute("trimcp.artifact_type", payload.media_type)
             with SagaMetrics("store_artifact"):
-                safe_path = os.path.basename(payload.file_path_on_disk)
+                import pathlib
 
-                if not os.path.exists(safe_path):
-                    raise FileNotFoundError(
-                        f"Media file not found: {safe_path}"
-                    )
+                staging_root = cfg.TRIMCP_ARTIFACT_STAGING_DIR
+                if staging_root:
+                    base = pathlib.Path(staging_root).resolve()
+                    candidate = (base / pathlib.Path(payload.file_path_on_disk).name).resolve()
+                    if not (candidate.is_file() and base in candidate.parents):
+                        raise FileNotFoundError(
+                            f"Artifact not found or outside staging dir: {payload.file_path_on_disk!r}"
+                        )
+                else:
+                    candidate = pathlib.Path(payload.file_path_on_disk).resolve()
+                    if not candidate.is_file():
+                        raise FileNotFoundError(
+                            f"Artifact file not found: {payload.file_path_on_disk!r}"
+                        )
+                safe_path = str(candidate)
 
                 if self.minio_client is None:
-                    raise RuntimeError(
-                        "MinIO client not configured — cannot store media."
-                    )
+                    raise RuntimeError("MinIO client not configured — cannot store media.")
 
                 bucket_name = f"mcp-{payload.media_type}"
                 file_ext = os.path.splitext(safe_path)[1]
@@ -721,11 +738,11 @@ class MemoryOrchestrator:
                     object_name,
                     safe_path,
                 )
-                    log.info(
-                        "[MinIO] Uploaded artifact to %s/%s",
-                        bucket_name,
-                        object_name,
-                    )
+                log.info(
+                    "[MinIO] Uploaded artifact to %s/%s",
+                    bucket_name,
+                    object_name,
+                )
 
                 media_metadata = {
                     "bucket": bucket_name,
@@ -770,6 +787,7 @@ class MemoryOrchestrator:
                             minio_exc,
                         )
                         from trimcp.observability import MINIO_ORPHAN_CLEANUP_FAILURES_TOTAL
+
                         MINIO_ORPHAN_CLEANUP_FAILURES_TOTAL.inc()
                     raise
                 return res["payload_ref"]
@@ -788,9 +806,7 @@ class MemoryOrchestrator:
             return self.pg_read_pool
         return self.pg_pool
 
-    async def verify_memory(
-        self, memory_id: str, as_of: datetime | None = None
-    ) -> dict:
+    async def verify_memory(self, memory_id: str, as_of: datetime | None = None) -> dict:
         """[Phase 0.2] Verify integrity and causal provenance of a memory."""
         from trimcp.signing import (
             decrypt_signing_key,
@@ -804,7 +820,7 @@ class MemoryOrchestrator:
                     """
                     SELECT m.*, sk.encrypted_key, sk.key_id as signing_key_id
                     FROM memories m
-                    JOIN signing_keys sk ON sk.key_id = m.signature_key_id
+                    LEFT JOIN signing_keys sk ON sk.key_id = m.signature_key_id
                     WHERE m.id = $1 AND m.valid_from <= $2
                       AND (m.valid_to IS NULL OR m.valid_to > $2)
                     ORDER BY m.valid_from DESC LIMIT 1
@@ -817,7 +833,7 @@ class MemoryOrchestrator:
                     """
                     SELECT m.*, sk.encrypted_key, sk.key_id as signing_key_id
                     FROM memories m
-                    JOIN signing_keys sk ON sk.key_id = m.signature_key_id
+                    LEFT JOIN signing_keys sk ON sk.key_id = m.signature_key_id
                     WHERE m.id = $1 AND m.valid_to IS NULL
                     """,
                     UUID(memory_id),
@@ -825,6 +841,9 @@ class MemoryOrchestrator:
 
             if not row:
                 return {"valid": False, "reason": "memory_not_found"}
+
+            if row["signature_key_id"] is None:
+                return {"valid": None, "reason": "not_signed", "payload_hash": None}
 
             with require_master_key() as master_key:
                 raw_key = decrypt_signing_key(bytes(row["encrypted_key"]), master_key)
@@ -857,9 +876,7 @@ class MemoryOrchestrator:
                     content = doc.get("raw_data", "")
                     payload_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
                     try:
-                        await self.redis_client.setex(
-                            cache_key, cfg.REDIS_TTL, payload_hash
-                        )
+                        await self.redis_client.setex(cache_key, cfg.REDIS_TTL, payload_hash)
                     except Exception:
                         pass  # Non-critical cache write
 
@@ -875,9 +892,7 @@ class MemoryOrchestrator:
     # unredact_memory
     # ------------------------------------------------------------------
 
-    async def unredact_memory(
-        self, memory_id: str, namespace_id: str, agent_id: str
-    ) -> dict:
+    async def unredact_memory(self, memory_id: str, namespace_id: str, agent_id: str) -> dict:
         """[Phase 0.3] Reverse pseudonymisation for a given memory (admin-only)."""
         from trimcp.event_log import append_event
         from trimcp.signing import decrypt_signing_key, require_master_key
@@ -914,8 +929,7 @@ class MemoryOrchestrator:
 
             payload_ref = mem_row["payload_ref"]
             vault_list = [
-                {"token": r["token"], "encrypted_value": r["encrypted_value"]}
-                for r in vault_rows
+                {"token": r["token"], "encrypted_value": r["encrypted_value"]} for r in vault_rows
             ]
 
         # Phase 2 — Mongo + local crypto (no DB connection held).
@@ -933,26 +947,25 @@ class MemoryOrchestrator:
                 token = v_row["token"]
                 encrypted_val = v_row["encrypted_value"]
                 try:
-                    original_val = decrypt_signing_key(encrypted_val, mk).decode(
-                        "utf-8"
-                    )
+                    original_val = decrypt_signing_key(encrypted_val, mk).decode("utf-8")
                     raw_data = raw_data.replace(token, original_val)
                 except Exception as e:
                     log.warning("Failed to decrypt token %s: %s", token, e)
 
         # Phase 3 — append audit event under RLS.
         async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
-            await append_event(
-                conn=conn,
-                namespace_id=UUID(namespace_id),
-                agent_id=agent_id,
-                event_type="unredact",
-                params={"memory_id": memory_id},
-                result_summary={
-                    "status": "success",
-                    "tokens_unredacted": len(vault_list),
-                },
-            )
+            async with conn.transaction():
+                await append_event(
+                    conn=conn,
+                    namespace_id=UUID(namespace_id),
+                    agent_id=agent_id,
+                    event_type="unredact",
+                    params={"memory_id": memory_id},
+                    result_summary={
+                        "status": "success",
+                        "tokens_unredacted": len(vault_list),
+                    },
+                )
 
         return {"status": "success", "unredacted_text": raw_data}
 
@@ -1058,14 +1071,7 @@ class MemoryOrchestrator:
             if txt:
                 results.append(str(txt))
 
-        if (
-            not as_of
-            and limit == 1
-            and offset == 0
-            and results
-            and not user_id
-            and not session_id
-        ):
+        if not as_of and limit == 1 and offset == 0 and results and not user_id and not session_id:
             redis_key = f"cache:{namespace_id}:{agent_id}"
             await self.redis_client.setex(redis_key, cfg.REDIS_TTL, results[0])
 
@@ -1098,4 +1104,3 @@ class MemoryOrchestrator:
             offset=offset,
             as_of=as_of,
         )
-

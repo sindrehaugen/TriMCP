@@ -73,13 +73,8 @@ _NONCE_KEY_PREFIX: str = "trimcp:nonce:"
 # ---------------------------------------------------------------------------
 # OWASP 2026 recommended minimum: 600,000 iterations for PBKDF2-HMAC-SHA256.
 # Used by :func:`hash_admin_password` / :func:`verify_admin_password`.
-_PBKDF2_ITERATIONS: int = max(
-    600_000,
-    int(os.environ.get("TRIMCP_PBKDF2_ITERATIONS", "600000")),
-)
-_PBKDF2_HASH_FORMAT_PREFIX: str = (
-    "$pbkdf2$"  # format: $pbkdf2$iterations$salt_hex$hash_hex
-)
+_PBKDF2_ITERATIONS: int = max(600_000, cfg.TRIMCP_PBKDF2_ITERATIONS)
+_PBKDF2_HASH_FORMAT_PREFIX: str = "$pbkdf2$"  # format: $pbkdf2$iterations$salt_hex$hash_hex
 _PBKDF2_SALT_LEN: int = 16
 _PBKDF2_DKLEN: int = 32
 
@@ -154,8 +149,13 @@ def verify_admin_password(
     if not stored_hash:
         return False, None
 
-    # Backward compat: plaintext comparison (DEPRECATED)
+    # Backward compat: plaintext comparison (DEPRECATED) — never in production
     if not stored_hash.startswith(_PBKDF2_HASH_FORMAT_PREFIX):
+        if cfg.IS_PROD:
+            log.error(
+                "Plaintext TRIMCP_ADMIN_PASSWORD is forbidden in production; store a $pbkdf2$ hash."
+            )
+            return False, None
         valid = secrets.compare_digest(password, stored_hash)
         if valid and auto_upgrade:
             upgraded = hash_admin_password(password)
@@ -170,9 +170,7 @@ def verify_admin_password(
     rest = stored_hash[len(_PBKDF2_HASH_FORMAT_PREFIX) :]
     parts = rest.split("$", 2)
     if len(parts) != 3:
-        log.warning(
-            "Invalid PBKDF2 hash format (expected 3 parts, got %d).", len(parts)
-        )
+        log.warning("Invalid PBKDF2 hash format (expected 3 parts, got %d).", len(parts))
         return False, None
 
     iterations_str, salt_hex, hash_hex = parts
@@ -232,9 +230,7 @@ def verify_admin_password(
     return True, None
 
 
-async def hash_admin_password_async(
-    password: str, iterations: int | None = None
-) -> str:
+async def hash_admin_password_async(password: str, iterations: int | None = None) -> str:
     """Async wrapper: runs :func:`hash_admin_password` in a worker thread."""
     return await asyncio.to_thread(hash_admin_password, password, iterations)
 
@@ -272,9 +268,7 @@ def _jsonrpc_error(
       400 — malformed namespace / agent_id
     """
     http_status = (
-        _HTTP_UNAUTHORIZED
-        if code in (_CODE_AUTH_FAILED, _CODE_REPLAY)
-        else _HTTP_BAD_REQUEST
+        _HTTP_UNAUTHORIZED if code in (_CODE_AUTH_FAILED, _CODE_REPLAY) else _HTTP_BAD_REQUEST
     )
     return JSONResponse(
         status_code=http_status,
@@ -313,6 +307,99 @@ class ScopeError(Exception):
         super().__init__(f"MCP scope '{required_scope}' required: {reason}")
 
 
+def _admin_override_enabled() -> bool:
+    from trimcp.config import live_admin_override_enabled
+
+    return live_admin_override_enabled()
+
+
+def _admin_server_api_key() -> str:
+    from trimcp.config import live_admin_api_key
+
+    return live_admin_api_key()
+
+
+def _mcp_server_api_key() -> str:
+    from trimcp.config import live_mcp_api_key
+
+    return live_mcp_api_key()
+
+
+def _mcp_bound_namespace_id() -> str:
+    from trimcp.config import live_mcp_namespace_id
+
+    return live_mcp_namespace_id()
+
+
+# MCP tools that require admin scope (handlers also use @require_scope("admin")).
+MCP_ADMIN_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "unredact_memory",
+        "replay_observe",
+        "replay_reconstruct",
+        "replay_fork",
+        "replay_status",
+        "start_migration",
+        "migration_status",
+        "validate_migration",
+        "commit_migration",
+        "abort_migration",
+        "manage_namespace",
+        "verify_memory",
+        "trigger_consolidation",
+        "consolidation_status",
+        "manage_quotas",
+        "rotate_signing_key",
+        "get_health",
+        "list_dlq",
+        "replay_dlq",
+        "purge_dlq",
+        "resolve_contradiction",
+    }
+)
+
+
+def enforce_mcp_tool_auth(tool_name: str, arguments: dict[str, Any]) -> None:
+    """Enforce admin or tenant scope before MCP tool dispatch in ``server.call_tool``."""
+    if tool_name in MCP_ADMIN_TOOL_NAMES or arguments.get("admin_api_key"):
+        _validate_scope("admin", arguments)
+    else:
+        _validate_scope("tenant", arguments)
+        _bind_mcp_tenant_namespace(arguments)
+
+
+def _bind_mcp_tenant_namespace(arguments: dict[str, Any]) -> None:
+    """Pin or validate ``namespace_id`` when ``TRIMCP_MCP_NAMESPACE_ID`` is configured."""
+    from uuid import UUID
+
+    bound = _mcp_bound_namespace_id()
+    if not bound:
+        return
+
+    try:
+        bound_uuid = str(UUID(bound))
+    except ValueError:
+        raise ScopeError("tenant", "invalid server TRIMCP_MCP_NAMESPACE_ID") from None
+
+    provided = arguments.get("namespace_id")
+    if provided is None or provided == "":
+        arguments["namespace_id"] = bound_uuid
+        return
+
+    try:
+        provided_uuid = str(UUID(str(provided)))
+    except ValueError:
+        raise ScopeError("tenant", "invalid namespace_id") from None
+
+    if provided_uuid != bound_uuid:
+        log.warning(
+            "Tenant scope rejected: namespace_id mismatch (bound=%s provided=%s)",
+            bound_uuid,
+            provided_uuid,
+        )
+        raise ScopeError("tenant", "namespace_id does not match configured MCP tenant")
+
+
 def _validate_scope(scope: str, arguments: dict[str, Any]) -> None:
     """Validate that the caller possesses the required RBAC scope.
 
@@ -329,10 +416,10 @@ def _validate_scope(scope: str, arguments: dict[str, Any]) -> None:
     """
     if scope == "admin":
         # Dev override — intentionally first so local dev is frictionless
-        if os.environ.get("TRIMCP_ADMIN_OVERRIDE") == "true":
+        if _admin_override_enabled():
             return
 
-        server_key = os.environ.get("TRIMCP_ADMIN_API_KEY", "")
+        server_key = _admin_server_api_key()
         if not server_key:
             raise ScopeError(
                 "admin",
@@ -341,11 +428,7 @@ def _validate_scope(scope: str, arguments: dict[str, Any]) -> None:
             )
 
         provided_key: str | None = arguments.get("admin_api_key")
-        if (
-            not provided_key
-            or not isinstance(provided_key, str)
-            or not provided_key.strip()
-        ):
+        if not provided_key or not isinstance(provided_key, str) or not provided_key.strip():
             raise ScopeError("admin", "missing admin_api_key")
 
         if not secrets.compare_digest(provided_key.strip(), server_key):
@@ -353,9 +436,24 @@ def _validate_scope(scope: str, arguments: dict[str, Any]) -> None:
             raise ScopeError("admin", "invalid admin_api_key")
 
     elif scope == "tenant":
-        # Future: validate tenant-level JWT / token.
-        # Implicitly granted to all authenticated callers for now.
-        pass
+        server_key = _mcp_server_api_key()
+        if not server_key:
+            from trimcp.config import cfg
+
+            if cfg.IS_PROD:
+                raise ScopeError(
+                    "tenant",
+                    "Server misconfigured: TRIMCP_MCP_API_KEY is not set.",
+                )
+            return
+
+        provided_key = arguments.get("mcp_api_key")
+        if not provided_key or not isinstance(provided_key, str) or not provided_key.strip():
+            raise ScopeError("tenant", "missing mcp_api_key")
+
+        if not secrets.compare_digest(provided_key.strip(), server_key):
+            log.warning("Tenant scope rejected: invalid mcp_api_key")
+            raise ScopeError("tenant", "invalid mcp_api_key")
 
     else:
         raise ScopeError(scope, f"unknown scope '{scope}'")
@@ -486,6 +584,7 @@ def admin_rate_limit(limit: int = 10, period: int = 60):
     Uses Redis sorted sets (ZSET) with automatic expiration, gracefully falling
     back to thread-safe in-memory sliding windows on any Redis failure or omission.
     """
+
     def decorator(func):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
@@ -500,9 +599,7 @@ def admin_rate_limit(limit: int = 10, period: int = 60):
 
             # Resolve key suffix
             namespace_id = arguments.get("namespace_id")
-            admin_identity = arguments.get("admin_identity") or kwargs.get(
-                "admin_identity"
-            )
+            admin_identity = arguments.get("admin_identity") or kwargs.get("admin_identity")
 
             if namespace_id:
                 key_suffix = f"tenant:{namespace_id}"
@@ -532,17 +629,13 @@ def admin_rate_limit(limit: int = 10, period: int = 60):
                     )
                     allowed = bool(result)
                 except Exception as exc:
-                    log.warning(
-                        "Redis rate limiter failed, falling back to RAM: %s", exc
-                    )
+                    log.warning("Redis rate limiter failed, falling back to RAM: %s", exc)
                     allowed = _check_in_memory_rate_limit(key, limit, period)
             else:
                 allowed = _check_in_memory_rate_limit(key, limit, period)
 
             if not allowed:
-                log.warning(
-                    "Rate limit exceeded for key %s (limit: %d/%ds)", key, limit, period
-                )
+                log.warning("Rate limit exceeded for key %s (limit: %d/%ds)", key, limit, period)
                 raise RateLimitError(key_suffix, limit, period)
 
             return await func(*args, **kwargs)
@@ -565,12 +658,8 @@ class HMACAuthContext(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    timestamp: int = Field(
-        ..., description="Unix epoch seconds (from X-TriMCP-Timestamp)"
-    )
-    signature: str = Field(
-        ..., description="Lowercase hex HMAC (from Authorization header)"
-    )
+    timestamp: int = Field(..., description="Unix epoch seconds (from X-TriMCP-Timestamp)")
+    signature: str = Field(..., description="Lowercase hex HMAC (from Authorization header)")
 
     @field_validator("timestamp")
     @classmethod
@@ -1130,9 +1219,7 @@ class HMACAuthMiddleware(BaseHTTPMiddleware):
     # Dispatch helpers (extracted per Clean Code — Prompt 24)
     # ------------------------------------------------------------------
 
-    async def _extract_hmac_context(
-        self, request: Request
-    ) -> HMACAuthContext | JSONResponse:
+    async def _extract_hmac_context(self, request: Request) -> HMACAuthContext | JSONResponse:
         """Extract and validate X-TriMCP-Timestamp + Authorization headers.
 
         Returns an ``HMACAuthContext`` on success, or a JSON-RPC error response.
@@ -1201,18 +1288,14 @@ class HMACAuthMiddleware(BaseHTTPMiddleware):
                 request.method,
                 request.url.path,
             )
-            return _jsonrpc_error(
-                _CODE_AUTH_FAILED, "Authentication failed", "invalid_signature"
-            )
+            return _jsonrpc_error(_CODE_AUTH_FAILED, "Authentication failed", "invalid_signature")
         return None
 
     async def _check_nonce(self, ctx: HMACAuthContext) -> JSONResponse | None:
         """Distributed nonce check via Redis SETNX (if NonceStore is configured)."""
         if self._nonce_store is not None:
             if not await self._nonce_store.check_and_store(ctx.signature):
-                log.warning(
-                    "HMAC nonce replay detected: signature=%s...", ctx.signature[:16]
-                )
+                log.warning("HMAC nonce replay detected: signature=%s...", ctx.signature[:16])
                 return _jsonrpc_error(
                     _CODE_REPLAY,
                     "Request already processed (replay detected)",
@@ -1220,23 +1303,17 @@ class HMACAuthMiddleware(BaseHTTPMiddleware):
                 )
         return None
 
-    def _resolve_namespace_context(
-        self, request: Request
-    ) -> NamespaceContext | JSONResponse:
+    def _resolve_namespace_context(self, request: Request) -> NamespaceContext | JSONResponse:
         """Extract namespace_id + agent_id from headers, store on request.state."""
         try:
             ns_id = resolve_namespace(dict(request.headers))
-            agent_id = validate_agent_id(
-                request.headers.get("x-trimcp-agent-id", "default")
-            )
+            agent_id = validate_agent_id(request.headers.get("x-trimcp-agent-id", "default"))
             ns_ctx = NamespaceContext(namespace_id=ns_id, agent_id=agent_id)
             request.state.namespace_ctx = ns_ctx
             return ns_ctx
         except (ValueError, ValidationError) as exc:
             log.warning("Namespace resolution failed: %s", exc)
-            return _jsonrpc_error(
-                _CODE_INVALID_NAMESPACE, "Invalid namespace context", str(exc)
-            )
+            return _jsonrpc_error(_CODE_INVALID_NAMESPACE, "Invalid namespace context", str(exc))
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
         """HMAC-SHA256 authentication middleware entry point."""
@@ -1244,9 +1321,7 @@ class HMACAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if not self._api_key:
-            log.error(
-                "HMAC auth rejected: TRIMCP_API_KEY is empty (server misconfigured)"
-            )
+            log.error("HMAC auth rejected: TRIMCP_API_KEY is empty (server misconfigured)")
             return _jsonrpc_error(
                 _CODE_AUTH_FAILED, "Authentication failed", "server_misconfigured"
             )
@@ -1321,7 +1396,7 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         )
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
-        if os.getenv("TRIMCP_ADMIN_OVERRIDE") == "true":
+        if cfg.TRIMCP_ADMIN_OVERRIDE:
             return await call_next(request)
 
         path = request.url.path
@@ -1347,10 +1422,98 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         valid_pw, _ = await verify_admin_password_async(
             password, self._password, auto_upgrade=False
         )
-        if not (
-            secrets.compare_digest(username, self._username)
-            and valid_pw
-        ):
+        if not (secrets.compare_digest(username, self._username) and valid_pw):
             return self._challenge()
+
+        return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# Admin HTTP rate limiting (Starlette admin_server)
+# ---------------------------------------------------------------------------
+
+_ADMIN_HTTP_SENSITIVE_PREFIXES: tuple[str, ...] = (
+    "/api/admin/",
+    "/api/gc/",
+    "/api/replay/",
+    "/api/snapshot/",
+    "/api/a2a/",
+    "/api/search",
+)
+
+
+def _admin_http_client_ip(request: Request) -> str:
+    """Client IP for admin HTTP rate limiting (direct connection only)."""
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _admin_http_is_sensitive(path: str, method: str) -> bool:
+    if method.upper() != "POST":
+        return False
+    return any(path.startswith(prefix) for prefix in _ADMIN_HTTP_SENSITIVE_PREFIXES)
+
+
+async def _check_admin_http_rate_limit(
+    redis_client: Any | None,
+    key: str,
+    limit: int,
+    period: int,
+) -> bool:
+    if redis_client is not None:
+        try:
+            now = time.time()
+            clear_before = now - period
+            result = await redis_client.eval(
+                _RATE_LIMIT_LUA,
+                1,
+                key,
+                str(clear_before),
+                str(now),
+                str(limit),
+                str(period),
+            )
+            return bool(result)
+        except Exception as exc:
+            log.warning("Admin HTTP Redis rate limiter failed, falling back to RAM: %s", exc)
+    return _check_in_memory_rate_limit(key, limit, period)
+
+
+class AdminHTTPRateLimitMiddleware(BaseHTTPMiddleware):
+    """Per-IP sliding-window rate limits for admin_server HTTP routes."""
+
+    async def dispatch(self, request: Request, call_next: Any) -> Any:
+        path = request.url.path
+        if path == "/healthz":
+            return await call_next(request)
+
+        sensitive = _admin_http_is_sensitive(path, request.method)
+        limit = (
+            cfg.TRIMCP_ADMIN_HTTP_SENSITIVE_RATE_LIMIT
+            if sensitive
+            else cfg.TRIMCP_ADMIN_HTTP_RATE_LIMIT
+        )
+        period = (
+            cfg.TRIMCP_ADMIN_HTTP_SENSITIVE_RATE_PERIOD
+            if sensitive
+            else cfg.TRIMCP_ADMIN_HTTP_RATE_PERIOD
+        )
+        client_ip = _admin_http_client_ip(request)
+        key = f"trimcp:ratelimit:admin:http:{client_ip}:{'sensitive' if sensitive else 'general'}"
+
+        redis_client = getattr(request.app.state, "redis_client", None)
+        allowed = await _check_admin_http_rate_limit(redis_client, key, limit, period)
+        if not allowed:
+            log.warning(
+                "Admin HTTP rate limit exceeded ip=%s path=%s method=%s",
+                client_ip,
+                path,
+                request.method,
+            )
+            return JSONResponse(
+                status_code=429,
+                content={"error": "Rate limit exceeded"},
+            )
 
         return await call_next(request)

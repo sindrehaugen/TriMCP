@@ -94,9 +94,7 @@ async def test_ensure_fresh_oauth_token_background_warning_refresh() -> None:
     row = {"id": uuid.uuid4(), "provider": "sharepoint", "oauth_access_token_enc": enc}
 
     # Use patch to check if bg refresh was scheduled
-    with patch(
-        "trimcp.bridge_renewal._bg_refresh_token", new_callable=AsyncMock
-    ) as mock_bg:
+    with patch("trimcp.bridge_renewal._bg_refresh_token", new_callable=AsyncMock) as mock_bg:
         res = await ensure_fresh_oauth_token(pool, row, "")
         # Returns current access token immediately
         assert res == "warning_access_123"
@@ -113,9 +111,7 @@ async def test_ensure_fresh_oauth_token_expired_synchronous_refresh() -> None:
         "refresh_token": "my_refresh_token_789",
         "expires_at": expires_at.timestamp(),
     }
-    enc_original = encrypt_signing_key(
-        json.dumps(payload).encode("utf-8"), require_master_key()
-    )
+    enc_original = encrypt_signing_key(json.dumps(payload).encode("utf-8"), require_master_key())
     row_id = uuid.uuid4()
     row = {
         "id": row_id,
@@ -125,9 +121,7 @@ async def test_ensure_fresh_oauth_token_expired_synchronous_refresh() -> None:
 
     # Mock DB Connection & Transactions
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(
-        return_value={"id": row_id, "oauth_access_token_enc": enc_original}
-    )
+    conn.fetchrow = AsyncMock(return_value={"id": row_id, "oauth_access_token_enc": enc_original})
     conn.execute = AsyncMock()
 
     # Context manager mock for connection transaction
@@ -168,9 +162,7 @@ async def test_ensure_fresh_oauth_token_expired_synchronous_refresh() -> None:
         assert "oauth_access_token_enc" in update_args[0]
         assert update_args[1] == row_id
         # Decrypt stored enc payload and verify its content matches expected updated payload
-        decrypted = decrypt_signing_key(
-            bytes(update_args[2]), require_master_key()
-        ).decode("utf-8")
+        decrypted = decrypt_signing_key(bytes(update_args[2]), require_master_key()).decode("utf-8")
         decrypted_payload = json.loads(decrypted)
         assert decrypted_payload["access_token"] == "brand_new_access_token_abc"
         assert decrypted_payload["refresh_token"] == "my_refresh_token_789"
@@ -328,4 +320,3 @@ async def test_release_refresh_lock_closes_client():
 async def test_release_refresh_lock_none_client_is_noop():
     """Releasing with None client is a safe no-op."""
     await _release_refresh_lock(None, "sharepoint", "bridge-000")
-

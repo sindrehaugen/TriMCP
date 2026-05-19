@@ -58,6 +58,7 @@ async def _release_refresh_lock(redis_client: Any, provider: str, bridge_id: Any
     finally:
         await redis_client.close()
 
+
 log = logging.getLogger("trimcp.bridge_renewal")
 
 GRAPH = "https://graph.microsoft.com/v1.0"
@@ -78,7 +79,11 @@ def _graph_expiration_iso(minutes: int = 4200) -> str:
 def get_token_expiry(token: str) -> datetime | None:
     try:
         if token.startswith("eyJ") and "." in token:
-            decoded = jwt.decode(token, options={"verify_signature": False}, algorithms=["HS256", "RS256", "RS384", "ES256"])
+            decoded = jwt.decode(
+                token,
+                options={"verify_signature": False},
+                algorithms=["HS256", "RS256", "RS384", "ES256"],
+            )
             exp = decoded.get("exp")
             if exp:
                 return datetime.fromtimestamp(exp, tz=timezone.utc)
@@ -91,9 +96,7 @@ async def _perform_oauth_refresh(provider: str, refresh_token: str) -> dict[str,
     """Call provider token endpoint to refresh the access token."""
     if provider == "sharepoint":
         if not cfg.AZURE_CLIENT_ID or not cfg.AZURE_CLIENT_SECRET:
-            raise ValueError(
-                "AZURE_CLIENT_ID and AZURE_CLIENT_SECRET required for token refresh"
-            )
+            raise ValueError("AZURE_CLIENT_ID and AZURE_CLIENT_SECRET required for token refresh")
         tenant = cfg.AZURE_TENANT_ID or "common"
         tok = await oauth_token_post_form(
             f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
@@ -197,9 +200,10 @@ async def _bg_refresh_token(
                 latest_raw = locked_row.get("oauth_access_token_enc")
                 if latest_raw:
                     try:
-                        latest_decrypted = decrypt_signing_key(
-                            bytes(latest_raw), require_master_key()
-                        ).decode("utf-8")
+                        with require_master_key() as mk:
+                            latest_decrypted = decrypt_signing_key(bytes(latest_raw), mk).decode(
+                                "utf-8"
+                            )
                         latest_data = json.loads(latest_decrypted)
                         latest_expires_at_ts = latest_data.get("expires_at")
                         latest_expires_at = (
@@ -222,22 +226,17 @@ async def _bg_refresh_token(
                 refreshed_data = await _perform_oauth_refresh(provider, refresh_token)
                 new_payload = {
                     "access_token": refreshed_data["access_token"],
-                    "refresh_token": refreshed_data.get("refresh_token")
-                    or refresh_token,
+                    "refresh_token": refreshed_data.get("refresh_token") or refresh_token,
                     "expires_at": refreshed_data["expires_at"],
                 }
                 await bridge_repo.save_token(conn, bridge_id, new_payload)
     except Exception as exc:
-        log.error(
-            "Background OAuth token refresh failed for bridge_id=%s: %s", bridge_id, exc
-        )
+        log.error("Background OAuth token refresh failed for bridge_id=%s: %s", bridge_id, exc)
     finally:
         await _release_refresh_lock(redis_client, provider, bridge_id)
 
 
-async def ensure_fresh_oauth_token(
-    pool: asyncpg.Pool, row: asyncpg.Record, env_token: str
-) -> str:
+async def ensure_fresh_oauth_token(pool: asyncpg.Pool, row: asyncpg.Record, env_token: str) -> str:
     """Return a valid, fresh access token for the given bridge subscription.
 
     If the env_token is provided, use that immediately.
@@ -258,13 +257,9 @@ async def ensure_fresh_oauth_token(
 
     try:
         with require_master_key() as mk:
-            decrypted = decrypt_signing_key(bytes(raw), mk).decode(
-                "utf-8"
-            )
+            decrypted = decrypt_signing_key(bytes(raw), mk).decode("utf-8")
     except Exception as e:
-        log.warning(
-            "Stored bridge OAuth decrypt failed for bridge_id=%s: %s", bridge_id, e
-        )
+        log.warning("Stored bridge OAuth decrypt failed for bridge_id=%s: %s", bridge_id, e)
         return ""
 
     try:
@@ -290,9 +285,7 @@ async def ensure_fresh_oauth_token(
         return access_token
 
     now = datetime.now(timezone.utc)
-    expires_at = (
-        datetime.fromtimestamp(expires_at_ts, tz=timezone.utc) if expires_at_ts else None
-    )
+    expires_at = datetime.fromtimestamp(expires_at_ts, tz=timezone.utc) if expires_at_ts else None
 
     if expires_at is None or expires_at < now + timedelta(minutes=5):
         if expires_at and now < expires_at < now + timedelta(minutes=5):
@@ -300,7 +293,10 @@ async def ensure_fresh_oauth_token(
                 "Token for bridge_id=%s is still valid but within 5-min warning window. Spawning background refresh.",
                 bridge_id,
             )
-            await create_tracked_task(_bg_refresh_token(pool, row, provider, refresh_token), name=f"token-refresh-{bridge_id}")
+            create_tracked_task(
+                _bg_refresh_token(pool, row, provider, refresh_token),
+                name=f"token-refresh-{bridge_id}",
+            )
             return access_token
 
         # Completely expired (or missing expires_at), must refresh synchronously
@@ -318,9 +314,10 @@ async def ensure_fresh_oauth_token(
                     return access_token
 
                 try:
-                    latest_decrypted = decrypt_signing_key(
-                        bytes(latest_raw), require_master_key()
-                    ).decode("utf-8")
+                    with require_master_key() as mk:
+                        latest_decrypted = decrypt_signing_key(bytes(latest_raw), mk).decode(
+                            "utf-8"
+                        )
                     latest_data = json.loads(latest_decrypted)
                 except Exception:
                     return access_token
@@ -343,13 +340,10 @@ async def ensure_fresh_oauth_token(
                     provider,
                 )
                 try:
-                    refreshed_data = await _perform_oauth_refresh(
-                        provider, refresh_token
-                    )
+                    refreshed_data = await _perform_oauth_refresh(provider, refresh_token)
                     new_payload = {
                         "access_token": refreshed_data["access_token"],
-                        "refresh_token": refreshed_data.get("refresh_token")
-                        or refresh_token,
+                        "refresh_token": refreshed_data.get("refresh_token") or refresh_token,
                         "expires_at": refreshed_data["expires_at"],
                     }
                     await bridge_repo.save_token(conn, bridge_id, new_payload)
@@ -373,9 +367,8 @@ def _oauth_bearer_for_row(row: asyncpg.Record, env_token: str) -> str:
     if not raw:
         return ""
     try:
-        decrypted = decrypt_signing_key(bytes(raw), require_master_key()).decode(
-            "utf-8"
-        )
+        with require_master_key() as mk:
+            decrypted = decrypt_signing_key(bytes(raw), mk).decode("utf-8")
         try:
             data = json.loads(decrypted)
             if isinstance(data, dict) and "access_token" in data:
@@ -384,18 +377,14 @@ def _oauth_bearer_for_row(row: asyncpg.Record, env_token: str) -> str:
             pass
         return decrypted
     except Exception as e:
-        log.warning(
-            "Stored bridge OAuth decrypt failed for bridge_id=%s: %s", row.get("id"), e
-        )
+        log.warning("Stored bridge OAuth decrypt failed for bridge_id=%s: %s", row.get("id"), e)
         return ""
 
 
 async def renew_sharepoint(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
     sub_ext = row["subscription_id"]
     if not sub_ext:
-        raise RuntimeError(
-            "sharepoint renewal requires subscription_id (Graph subscription id)"
-        )
+        raise RuntimeError("sharepoint renewal requires subscription_id (Graph subscription id)")
     token = await ensure_fresh_oauth_token(pool, row, cfg.GRAPH_BRIDGE_TOKEN or "")
     if not token:
         raise RuntimeError(
@@ -433,9 +422,7 @@ async def renew_sharepoint(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
             row["id"],
             expires_at,
         )
-    log.info(
-        "Renewed SharePoint subscription bridge_id=%s until %s", row["id"], new_exp
-    )
+    log.info("Renewed SharePoint subscription bridge_id=%s until %s", row["id"], new_exp)
 
 
 async def renew_gdrive(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
@@ -502,9 +489,7 @@ async def renew_gdrive(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
             json=watch_payload,
         )
         if r.status_code >= 400:
-            raise RuntimeError(
-                f"Drive changes/watch failed: {r.status_code} {r.text[:300]}"
-            )
+            raise RuntimeError(f"Drive changes/watch failed: {r.status_code} {r.text[:300]}")
 
         data = r.json()
         new_resource = data.get("resourceId")

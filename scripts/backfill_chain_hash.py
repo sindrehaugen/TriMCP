@@ -53,6 +53,37 @@ logger = logging.getLogger("backfill-chain-hash")
 
 BATCH_SIZE = 500
 
+_WORM_TRIGGER = "trg_event_log_worm"
+
+
+async def _worm_trigger_enabled(conn: asyncpg.Connection) -> bool:
+    """Return True when the WORM trigger is enabled (not DISABLED)."""
+    row = await conn.fetchrow(
+        """
+        SELECT t.tgenabled
+        FROM   pg_trigger t
+        JOIN   pg_class c ON c.oid = t.tgrelid
+        WHERE  c.relname = 'event_log'
+          AND  NOT t.tgisinternal
+          AND  t.tgname = $1
+        """,
+        _WORM_TRIGGER,
+    )
+    if row is None:
+        raise RuntimeError(f"WORM trigger {_WORM_TRIGGER!r} not found on event_log")
+    # tgenabled: O=origin enabled, D=disabled, A=always, R=replica
+    return row["tgenabled"] != "D"
+
+
+async def _set_worm_trigger(conn: asyncpg.Connection, *, enabled: bool) -> None:
+    state = "ENABLE" if enabled else "DISABLE"
+    await conn.execute(f"ALTER TABLE event_log {state} TRIGGER {_WORM_TRIGGER}")
+    if await _worm_trigger_enabled(conn) != enabled:
+        raise RuntimeError(
+            f"Failed to {state.lower()} WORM trigger {_WORM_TRIGGER!r}; "
+            "aborting to protect audit integrity."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Backfill logic
@@ -125,14 +156,10 @@ def _recompute_chain_hash(row: asyncpg.Record, previous_chain_hash: bytes) -> by
         parent_event_id=row.get("parent_event_id"),
     )
     content_hash = _compute_content_hash(signing_fields=signing_fields)
-    return _compute_chain_hash(
-        content_hash=content_hash, previous_chain_hash=previous_chain_hash
-    )
+    return _compute_chain_hash(content_hash=content_hash, previous_chain_hash=previous_chain_hash)
 
 
-async def _backfill_namespace(
-    conn: asyncpg.Connection, namespace_id: uuid.UUID
-) -> tuple[int, int]:
+async def _backfill_namespace(conn: asyncpg.Connection, namespace_id: uuid.UUID) -> tuple[int, int]:
     """
     Backfill chain_hash for every event in *namespace_id*.
 
@@ -186,11 +213,12 @@ async def _main() -> int:
 
         logger.info("Found %d namespace(s) needing backfill.", len(namespaces))
 
-        # Temporarily disable WORM trigger so we can UPDATE chain_hash.
-        logger.info("Disabling WORM trigger trg_event_log_worm …")
-        await conn.execute(
-            "ALTER TABLE event_log DISABLE TRIGGER trg_event_log_worm"
-        )
+        if await _worm_trigger_enabled(conn):
+            logger.warning(
+                "WORM trigger is enabled; disabling temporarily for chain_hash backfill."
+            )
+        logger.info("Disabling WORM trigger %s …", _WORM_TRIGGER)
+        await _set_worm_trigger(conn, enabled=False)
 
         total_checked = 0
         total_updated = 0
@@ -212,25 +240,19 @@ async def _main() -> int:
             total_updated,
         )
 
-        # Re-enable WORM trigger
-        logger.info("Re-enabling WORM trigger trg_event_log_worm …")
-        await conn.execute(
-            "ALTER TABLE event_log ENABLE TRIGGER trg_event_log_worm"
-        )
+        logger.info("Re-enabling WORM trigger %s …", _WORM_TRIGGER)
+        await _set_worm_trigger(conn, enabled=True)
 
         return 0
     except Exception as exc:
         logger.exception("Backfill failed: %s", exc)
-        # Best-effort re-enable trigger even on failure
         try:
-            await conn.execute(
-                "ALTER TABLE event_log ENABLE TRIGGER trg_event_log_worm"
-            )
+            await _set_worm_trigger(conn, enabled=True)
             logger.info("WORM trigger re-enabled after error.")
         except Exception:
             logger.critical(
-                "CRITICAL: Could not re-enable WORM trigger. "
-                "Manual intervention required."
+                "CRITICAL: Could not re-enable WORM trigger %s. Manual intervention required.",
+                _WORM_TRIGGER,
             )
         return 1
     finally:

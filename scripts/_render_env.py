@@ -35,9 +35,7 @@ def main() -> None:
 
     ctx = {
         "cloud": cloud,
-        "deployment_name": val(
-            "deployment_name", os.environ.get("TRIMCP_DEPLOYMENT_NAME", "")
-        ),
+        "deployment_name": val("deployment_name", os.environ.get("TRIMCP_DEPLOYMENT_NAME", "")),
         "region": val("region", os.environ.get("TRIMCP_REGION", "")),
         "postgres_secret_ref": val("postgres_secret_arn")
         or val("postgres_secret_id")
@@ -60,9 +58,7 @@ def main() -> None:
         "blob_endpoint": val("blob_endpoint")
         or val("s3_bucket_regional_domain_name")
         or ("https://storage.googleapis.com" if val("gcs_bucket_name") else ""),
-        "blob_bucket": val("blob_bucket_name")
-        or val("s3_bucket_id")
-        or val("gcs_bucket_name"),
+        "blob_bucket": val("blob_bucket_name") or val("s3_bucket_id") or val("gcs_bucket_name"),
         "webhook_public_base_url": val("webhook_public_base_url")
         or val("webhook_invoke_url")
         or val("webhook_public_url", "https://REPLACE_ME"),

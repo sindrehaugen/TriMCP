@@ -1,4 +1,5 @@
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -171,16 +172,17 @@ async def test_server_call_tool_translates_rate_limit_error():
     mock_reservation.rollback = AsyncMock()
 
     with patch("server.engine", engine):
-        with patch(
-            "trimcp.quotas.consume_for_tool", AsyncMock(return_value=mock_reservation)
-        ):
+        with patch("trimcp.quotas.consume_for_tool", AsyncMock(return_value=mock_reservation)):
             with patch(
                 "trimcp.admin_mcp_handlers.handle_get_health",
                 side_effect=RateLimitError("test", 1, 60),
             ):
                 # call_tool now returns JSON-RPC 2.0 error responses as TextContent
                 # instead of raising ValueError.
-                result = await call_tool("get_health", {"admin_api_key": "some_key"})
+                result = await call_tool(
+                    "get_health",
+                    {"admin_api_key": os.environ["TRIMCP_ADMIN_API_KEY"]},
+                )
 
             assert len(result) == 1
             payload = json.loads(result[0].text)

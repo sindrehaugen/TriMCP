@@ -9,10 +9,16 @@ Operational defaults for TriMCP v1.0 assume **self-hosted Docker Compose** on on
 **Quick start (zero-copy):**
 
 ```bash
+# If deploy/compose.stack.env is missing, copy the template:
+#   cp deploy/compose.stack.env.example deploy/compose.stack.env
+
+# Generate strong secrets (required before any non-local deployment):
+python scripts/bootstrap-compose-secrets.py
+
 docker compose up -d --build
 ```
 
-This loads committed **`deploy/compose.stack.env`**, handles automated PostgreSQL schema initialization (extensions + RLS), bundles required spaCy models, and starts:
+This loads **`deploy/compose.stack.env`** (dev placeholders only; copy from **`deploy/compose.stack.env.example`** on first clone) plus optional **`deploy/compose.stack.env.generated`** from the bootstrap script above. The stack handles automated PostgreSQL schema initialization (extensions + RLS), bundles required spaCy models, and starts:
 
 | Service | Role |
 |---------|------|
@@ -22,7 +28,7 @@ This loads committed **`deploy/compose.stack.env`**, handles automated PostgreSQ
 | **minio** | Media + replay payload cache (host **9002** / **9003**) |
 | **cognitive** | Embeddings sidecar [D7] (**11435**) |
 | **worker** | RQ consumer — async `index_code_file`, bridge jobs |
-| **cron** | APScheduler — bridge renewal + **ReembeddingWorker** sweeps |
+| **cron** | APScheduler — bridge renewal, **outbox relay**, **ReembeddingWorker** sweeps, consolidation |
 | **admin** | **Starlette** Admin UI + REST (**8003**) — health `/api/health` |
 | **a2a** | A2A JSON-RPC / agent card (**8004**) |
 | **webhook-receiver** | FastAPI bridge webhooks (**8080**) |
@@ -46,8 +52,9 @@ Optional: create a project **`.env`** for Compose **interpolation** only (`POSTG
 
 | File | Purpose |
 |------|---------|
-| **`deploy/compose.stack.env`** | Container defaults (service DNS names, dev secrets) — **review before production** |
-| **`deploy/compose.stack.env.generated`** | **Generated only** (e.g. `python scripts/bootstrap-compose-secrets.py`) — holds populated secrets. **Do not commit this file to VCS**; add to `.gitignore` locally if your workflow creates it. Rotate any secret that was ever committed by mistake. |
+| **`deploy/compose.stack.env.example`** | Tracked template (placeholders only) — copy to `compose.stack.env` locally |
+| **`deploy/compose.stack.env`** | Local container defaults (gitignored) — never deploy unchanged outside local dev |
+| **`deploy/compose.stack.env.generated`** | **Required for production-like stacks** — run `python scripts/bootstrap-compose-secrets.py` before `docker compose up`. **Do not commit**; rotate any secret that was ever committed by mistake. |
 | **`.env.example`** | Documented template for **host** MCP + production notes |
 | **`deploy/multiuser/docker-compose.yml`** | Alternate layout; prefer root compose for v1.0 |
 | **`Caddyfile`** (repo root) | Edge routing for v1.0 stack |
@@ -67,6 +74,18 @@ The multiuser compose file publishes MinIO on host **9000** (API) and **9001** (
 
 - **Backups**: volumes `pg_data`, `mongo_data`, `redis_data`, `minio_data`, `caddy_*` + rotate secrets in **`deploy/compose.stack.env`**.
 - **Consolidation**: `trimcp/cron.py` runs `ConsolidationWorker` on an interval for namespaces whose metadata sets `consolidation.enabled=true`. Use the MCP `trigger_consolidation` tool for ad-hoc runs.
+- **Outbox relay**: `trimcp/cron.py` polls `outbox_events` on `OUTBOX_RELAY_INTERVAL_SECONDS` (default 5s) and delivers to the RQ worker queue. The MCP stdio process (`server.py` / `trimcp/mcp_stdio_main.py`) runs the same relay loop for single-process dev setups.
+
+### Webhook receiver hardening
+
+The **webhook-receiver** service depends on **Redis** for sliding-window rate limits and idempotent deduplication keys.
+
+| Variable | Production guidance |
+|----------|---------------------|
+| `WEBHOOK_DEDUP_FAIL_OPEN` | Keep **`false`** (default). When Redis is down, dedup must **not** enqueue duplicate bridge jobs. |
+| `TRIMCP_WEBHOOK_TRUST_PROXY` | Set **`true`** only when **Caddy** (or another trusted reverse proxy) terminates TLS and sets `X-Forwarded-For`. Leave **`false`** if clients connect directly to the receiver. |
+
+Bridge webhook secrets (`DROPBOX_APP_SECRET`, `GRAPH_CLIENT_STATE`, `DRIVE_CHANNEL_TOKEN`) are required at process start — generate them via `scripts/bootstrap-compose-secrets.py` and store them in **`deploy/compose.stack.env.generated`** (never commit).
 
 ---
 
@@ -102,4 +121,4 @@ The **mode-aware MCP stdio shim** is built from `go/cmd/trimcp-launch/` (Enterpr
 
 **docs/architecture-v1.md** — runtime topology, temporal queries, A2A, workers.
 
-**docs/architecture-phase-0-1-0-2.md** — namespaces, signing.
+**docs/multi_tenancy.md** and **docs/signing.md** — namespaces, signing.

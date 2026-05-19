@@ -1,0 +1,85 @@
+"""Postgres RLS integration: fail-fast namespace + cross-tenant isolation."""
+
+from __future__ import annotations
+
+from uuid import uuid4
+
+import asyncpg
+import pytest
+
+from trimcp.auth import _reset_rls_context, set_namespace_context
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_trimcp_namespace_fails_without_context(pg_pool) -> None:
+    async with pg_pool.acquire() as conn:
+        async with conn.transaction():
+            await _reset_rls_context(conn)
+            with pytest.raises(asyncpg.PostgresError, match="trimcp.namespace_id"):
+                await conn.fetchval("SELECT get_trimcp_namespace()")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_resource_quotas_cross_namespace_isolation(
+    pg_pool,
+    make_namespace,
+) -> None:
+    ns_a = await make_namespace()
+    ns_b = await make_namespace()
+    resource_type = f"pytest-rls-{uuid4().hex}"
+
+    async with pg_pool.acquire() as conn:
+        async with conn.transaction():
+            await set_namespace_context(conn, ns_a)
+            row_id = await conn.fetchval(
+                """
+                INSERT INTO resource_quotas (
+                    namespace_id, resource_type, limit_amount
+                )
+                VALUES ($1, $2, 10)
+                RETURNING id
+                """,
+                ns_a,
+                resource_type,
+            )
+
+    assert row_id is not None
+
+    async with pg_pool.acquire() as conn:
+        async with conn.transaction():
+            await set_namespace_context(conn, ns_b)
+            visible = await conn.fetchval(
+                "SELECT count(*) FROM resource_quotas WHERE id = $1",
+                row_id,
+            )
+            assert visible == 0
+
+    async with pg_pool.acquire() as conn:
+        async with conn.transaction():
+            await set_namespace_context(conn, ns_a)
+            visible = await conn.fetchval(
+                "SELECT count(*) FROM resource_quotas WHERE id = $1",
+                row_id,
+            )
+            assert visible == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_rls_catalog_force_enabled(pg_app_conn) -> None:
+    """FORCE ROW LEVEL SECURITY must be on for tenant tables (catalog probe)."""
+    from trimcp.event_log import EXPECTED_TENANT_RLS_TABLES
+
+    for table in EXPECTED_TENANT_RLS_TABLES:
+        force_on = await pg_app_conn.fetchval(
+            """
+            SELECT c.relforcerowsecurity
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public' AND c.relname = $1
+            """,
+            table,
+        )
+        assert force_on is True, f"{table}: FORCE RLS expected"

@@ -5,21 +5,14 @@ Regression tests for async background task managers, metrics, and safety fallbac
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
-from typing import Any
-from unittest import mock
 
 import pytest
 
 from trimcp.background_task_manager import (
-    TrackedTask,
     TaskRegistry,
-    create_tracked_task,
-    get_active_background_tasks,
-    get_background_task_stats,
+    TrackedTask,
     _mark_complete_sync,
-    _mark_complete_async,
 )
 
 
@@ -48,22 +41,22 @@ async def test_task_registry_operations() -> None:
     tracked = TrackedTask(name="registry-test", task=task)
 
     # Register task
-    await registry.register(tracked)
+    registry.register(tracked)
 
-    active = await registry.get_active_tasks()
+    active = registry.get_active_tasks()
     assert tracked in active
 
-    active_filtered = await registry.get_active_tasks(task_name="registry-test")
+    active_filtered = registry.get_active_tasks(task_name="registry-test")
     assert tracked in active_filtered
 
-    active_filtered_miss = await registry.get_active_tasks(task_name="no-such-task")
+    active_filtered_miss = registry.get_active_tasks(task_name="no-such-task")
     assert tracked not in active_filtered_miss
 
     # Mark as complete (success)
     await task
-    await registry.mark_complete(tracked, success=True)
+    registry.mark_complete(tracked, success=True)
 
-    stats = await registry.get_task_stats()
+    stats = registry.get_task_stats()
     assert "registry-test" in stats
     assert stats["registry-test"]["total"] == 1
     assert stats["registry-test"]["succeeded"] == 1
@@ -78,13 +71,13 @@ async def test_task_registry_stats_failure() -> None:
     task = asyncio.create_task(asyncio.sleep(0.01))
     tracked = TrackedTask(name="registry-fail-test", task=task)
 
-    await registry.register(tracked)
+    registry.register(tracked)
 
     await task
     exc = ValueError("Simulated operational failure")
-    await registry.mark_complete(tracked, success=False, exception=exc)
+    registry.mark_complete(tracked, success=False, exception=exc)
 
-    stats = await registry.get_task_stats()
+    stats = registry.get_task_stats()
     assert stats["registry-fail-test"]["total"] == 1
     assert stats["registry-fail-test"]["succeeded"] == 0
     assert stats["registry-fail-test"]["failed"] == 1

@@ -26,7 +26,7 @@ async def test_unmanaged_pg_connection_passes_acquire_timeout() -> None:
     pool = MagicMock()
     pool.acquire = acquire
 
-    async with unmanaged_pg_connection(pool):
+    async with unmanaged_pg_connection(pool, site="tasks.code_indexing.legacy_no_namespace"):
         pass
 
     assert captured.get("timeout") == POOL_ACQUIRE_TIMEOUT
@@ -97,4 +97,5 @@ async def test_scoped_pg_session_opens_transaction_before_namespace_and_body() -
                 assert c is conn
                 order.append("body")
 
-    assert order == ["tx_enter", "set_ns", "body", "reset"]
+    # SET LOCAL is cleared at transaction end — scoped_pg_session does not reset RLS.
+    assert order == ["tx_enter", "set_ns", "body"]

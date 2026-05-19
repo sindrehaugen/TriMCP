@@ -12,7 +12,7 @@ services:
     image: redis:7.4-alpine
     container_name: tri-stack-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     restart: unless-stopped
@@ -30,7 +30,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mcp_password}
       POSTGRES_DB: memory_meta
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       # Initialize schema on first boot (idempotent)
@@ -46,7 +46,7 @@ services:
     image: mongo:7.0
     container_name: tri-stack-mongo
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"
     volumes:
       - mongo_data:/data/db
     restart: unless-stopped
@@ -63,8 +63,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
     ports:
-      - "9002:9000"
-      - "9003:9001"
+      - "127.0.0.1:9002:9000"
+      - "127.0.0.1:9003:9001"
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"

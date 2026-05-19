@@ -1,21 +1,21 @@
-"""Tests for Datastore Connection Parameters Config REST Endpoints."""
+﻿"""Tests for Datastore Connection Parameters Config REST Endpoints."""
 
 from __future__ import annotations
 
 import json
-from unittest.mock import patch, mock_open, MagicMock
+import os
+from unittest.mock import MagicMock, patch
+
 import pytest
 from starlette.requests import Request
-from starlette.datastructures import Headers
 
-import os
 os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-test-key-32chars-long!!")
 
 
 @pytest.mark.asyncio
 async def test_datastores_status_endpoint():
     """Verify datastore status fetches correctly and masks secrets."""
-    with patch("admin_server.cfg") as mock_cfg:
+    with patch("trimcp.admin_handlers._shared.cfg") as mock_cfg:
         mock_cfg.PG_DSN = "postgresql://user:password@localhost/trimcp"
         mock_cfg.DB_READ_URL = "postgresql://user:password@localhost/trimcp_replica"
         mock_cfg.DB_WRITE_URL = "postgresql://user:password@localhost/trimcp"
@@ -54,14 +54,13 @@ async def test_datastores_status_endpoint():
 @pytest.mark.asyncio
 async def test_datastores_save_endpoint_with_secret_masked():
     """Verify saving connection parameters respects masked values and writes env file."""
-    # Mocking standard open() call for .env updates
-    env_content = "MINIO_ENDPOINT=localhost:9000\nMINIO_SECRET_KEY=real_password\nREDIS_TTL=3600\n"
-    
     mock_engine = MagicMock()
+    mock_update_dotenv = MagicMock()
     with (
-        patch("admin_server.engine", mock_engine),
-        patch("admin_server.cfg") as mock_cfg,
-        patch("builtins.open", mock_open(read_data=env_content)) as mock_file_open,
+        patch("trimcp.admin_state.engine", mock_engine),
+        patch("trimcp.admin_handlers._shared.cfg") as mock_cfg,
+        patch("trimcp.admin_handlers._shared.update_dotenv", mock_update_dotenv),
+        patch("trimcp.admin_handlers.fleet.update_dotenv", mock_update_dotenv),
     ):
         mock_cfg.PG_DSN = "postgresql://user:password@localhost/trimcp"
         mock_cfg.DB_READ_URL = "postgresql://user:password@localhost/trimcp_replica"
@@ -76,6 +75,7 @@ async def test_datastores_save_endpoint_with_secret_masked():
         mock_cfg.MINIO_ACCESS_KEY = "minio_user"
         mock_cfg.MINIO_SECRET_KEY = "real_password"
         mock_cfg.MINIO_SECURE = False
+        mock_cfg.TRIMCP_ALLOW_ADMIN_DOTENV_PERSIST = True
 
         from admin_server import api_admin_datastores_save
 
@@ -84,7 +84,7 @@ async def test_datastores_save_endpoint_with_secret_masked():
                 "minio_endpoint": "s3.amazonaws.com",
                 "minio_access_key": "aws_key",
                 "minio_secret_key": "••••••••",  # Masked! Should not update the actual password.
-                "minio_secure": True
+                "minio_secure": True,
             }
         }
 
@@ -92,19 +92,19 @@ async def test_datastores_save_endpoint_with_secret_masked():
         async def receive():
             return {"type": "http.request", "body": json.dumps(payload).encode()}
 
-        request = Request({"type": "http", "method": "POST", "path": "/api/admin/datastores/save"}, receive=receive)
+        request = Request(
+            {"type": "http", "method": "POST", "path": "/api/admin/datastores/save"},
+            receive=receive,
+        )
         response = await api_admin_datastores_save(request)
 
         assert response.status_code == 200
         data = json.loads(response.body.decode())
         assert data["status"] == "success"
 
-        # Check mock open calls to verify written data
-        written_lines = []
-        for call in mock_file_open().writelines.call_args_list:
-            written_lines.extend(call[0][0])
-        written = "".join(written_lines)
-
-        # MINIO_ENDPOINT must have updated, but MINIO_SECRET_KEY must have stayed real_password!
-        assert "MINIO_ENDPOINT=s3.amazonaws.com\n" in written
-        assert "MINIO_SECRET_KEY=real_password\n" in written or not any("MINIO_SECRET_KEY=" in l for l in written_lines) # If left unchanged in-place
+        mock_update_dotenv.assert_called_once()
+        written = mock_update_dotenv.call_args[0][0]
+        assert written["MINIO_ENDPOINT"] == "s3.amazonaws.com"
+        assert written["MINIO_ACCESS_KEY"] == "aws_key"
+        assert written["MINIO_SECURE"] == "true"
+        assert "MINIO_SECRET_KEY" not in written

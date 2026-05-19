@@ -69,7 +69,7 @@ class CognitiveOrchestrator:
 
                 await append_event(
                     conn=conn,
-                    namespace_id=UUID(namespace_id),
+                    namespace_id=self._ensure_uuid(namespace_id),
                     agent_id=agent_id,
                     event_type="boost_memory",
                     params={"memory_id": memory_id, "factor": factor},

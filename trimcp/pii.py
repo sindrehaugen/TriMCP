@@ -27,6 +27,26 @@ log = logging.getLogger("tri-stack-pii")
 # (UTF-8 length ≥ 8).  128-bit collision resistance (2^64 birthday bound) is
 # adequate for pseudonyms within a single namespace.
 _MIN_PSEUDONYM_SECRET_BYTES = 8
+_MAX_TEXT_BYTES: int = 1_000_000
+_MAX_ENTITIES: int = 1_000
+
+
+def _luhn_valid(digits: str) -> bool:
+    """Luhn algorithm check — rejects non-card numeric sequences."""
+    stripped = re.sub(r"[ -]", "", digits)
+    total = 0
+    reverse_digits = stripped[::-1]
+    for i, ch in enumerate(reverse_digits):
+        if not ch.isdigit():
+            return False
+        n = int(ch)
+        if i % 2 == 1:
+            n *= 2
+            if n > 9:
+                n -= 9
+        total += n
+    return total % 10 == 0
+
 
 # Simple regex fallback for environments without Presidio installed
 _FALLBACK_REGEXES = {
@@ -36,27 +56,63 @@ _FALLBACK_REGEXES = {
 }
 
 
+def _merge_overlapping_entities(entities: list[PIIEntity]) -> list[PIIEntity]:
+    """Remove or trim overlapping entity spans, keeping the highest-score span.
+
+    Input must be sorted by start ascending. Returns list sorted by start
+    descending (ready for reverse-order string replacement).
+    """
+    if not entities:
+        return []
+    entities = sorted(entities, key=lambda e: (e.start, -(e.end - e.start)))
+    merged: list[PIIEntity] = []
+    last_end = -1
+    for ent in entities:
+        if ent.start >= last_end:
+            merged.append(ent)
+            last_end = ent.end
+    merged.sort(key=lambda e: e.start, reverse=True)
+    return merged
+
+
+_ANALYZER: object | None = None
+
+
+def _get_analyzer() -> object:
+    global _ANALYZER
+    if _ANALYZER is None:
+        from presidio_analyzer import AnalyzerEngine
+
+        _ANALYZER = AnalyzerEngine()
+    return _ANALYZER
+
+
 def _scan_sync(text: str, config: NamespacePIIConfig) -> list[PIIEntity]:
     """
     Synchronous PII scan — executed in a thread pool so the regex/Presidio
     work does not block the async event loop.
     """
+    if len(text.encode("utf-8")) > _MAX_TEXT_BYTES:
+        raise ValueError(
+            f"text exceeds maximum size for PII scanning "
+            f"({len(text.encode('utf-8'))} bytes, limit {_MAX_TEXT_BYTES})"
+        )
+
     if not config.entity_types:
         return []
 
     entities: list[PIIEntity] = []
+    _allowlist_lower = {v.lower() for v in config.allowlist}
 
     try:
         try:
-            from presidio_analyzer import AnalyzerEngine
+            from presidio_analyzer import AnalyzerEngine  # noqa: F401
 
-            analyzer = AnalyzerEngine()
-            results = analyzer.analyze(
-                text=text, entities=config.entity_types, language="en"
-            )
+            analyzer = _get_analyzer()
+            results = analyzer.analyze(text=text, entities=config.entity_types, language="en")
             for r in results:
                 value = text[r.start : r.end]
-                if value not in config.allowlist:
+                if value.lower() not in _allowlist_lower:
                     entities.append(
                         PIIEntity(
                             start=r.start,
@@ -81,7 +137,9 @@ def _scan_sync(text: str, config: NamespacePIIConfig) -> list[PIIEntity]:
                     value = None  # type: ignore[no-redef]
                     try:
                         value = match.group(0)
-                        if value not in config.allowlist:
+                        if entity_type == "CREDIT_CARD" and not _luhn_valid(value):
+                            continue
+                        if value.lower() not in _allowlist_lower:
                             entities.append(
                                 PIIEntity(
                                     start=match.start(),
@@ -113,9 +171,15 @@ def _scan_sync(text: str, config: NamespacePIIConfig) -> list[PIIEntity]:
                         value = None
                         del value
 
-        # Sort entities by start index descending to allow safe string replacement
-        entities.sort(key=lambda x: x.start, reverse=True)
-        return entities
+        if len(entities) > _MAX_ENTITIES:
+            for entity in entities:
+                entity.clear_raw_value()
+            raise ValueError(
+                f"PII scan produced {len(entities)} entities, exceeding the limit of {_MAX_ENTITIES}. "
+                "Split the text into smaller chunks."
+            )
+
+        return _merge_overlapping_entities(entities)
     except Exception:
         # If scan() fails partway through, clear raw PII values from any
         # entities already created so they never leak into tracebacks.
@@ -133,7 +197,7 @@ async def scan(text: str, config: NamespacePIIConfig) -> list[PIIEntity]:
     return await asyncio.to_thread(_scan_sync, text, config)
 
 
-def _pseudonym_hmac_key_material(config: NamespacePIIConfig) -> bytes:
+def _pseudonym_hmac_key_material(config: NamespacePIIConfig, *, namespace_id: str) -> bytes:
     """Return HMAC key bytes for pseudonym generation."""
     if config.pseudonym_hmac_key is not None:
         key = config.pseudonym_hmac_key.encode("utf-8")
@@ -149,7 +213,7 @@ def _pseudonym_hmac_key_material(config: NamespacePIIConfig) -> bytes:
             "Pseudonymisation requires TRIMCP_MASTER_KEY (≥32 UTF-8 bytes) or "
             f"a namespace pseudonym_hmac_key (≥{_MIN_PSEUDONYM_SECRET_BYTES} bytes)."
         )
-    return mk
+    return hmac.new(mk, namespace_id.encode("utf-8"), hashlib.sha256).digest()
 
 
 def _pseudonym_token_suffix(entity_type: str, value: str, hmac_key: bytes) -> str:
@@ -206,12 +270,24 @@ async def process(text: str, config: NamespacePIIConfig) -> PIIProcessResult:
     vault_entries = []
     pseudonym_key: bytes | None = None
     if config.policy == PIIPolicy.pseudonymise:
-        pseudonym_key = _pseudonym_hmac_key_material(config)
+        pseudonym_key = _pseudonym_hmac_key_material(config, namespace_id=str(config.namespace_id))
 
     from contextlib import nullcontext
+
     cm = require_master_key() if config.reversible else nullcontext()
-    
+
+    replacement_triples: list[tuple[int, int, str]] = []
+
     with cm as mk:
+        for entity in entities:
+            if entity.start < 0 or entity.end > len(sanitized_text) or entity.start > entity.end:
+                for e in entities:
+                    e.clear_raw_value()
+                raise ValueError(
+                    f"Invalid entity span ({entity.start}, {entity.end}) "
+                    f"for text of length {len(sanitized_text)}"
+                )
+
         for entity in entities:
             if config.policy == PIIPolicy.pseudonymise:
                 digest = _pseudonym_token_suffix(
@@ -224,7 +300,8 @@ async def process(text: str, config: NamespacePIIConfig) -> PIIProcessResult:
                 if config.reversible:
                     # We reuse encrypt_signing_key as it provides AES-256-GCM encryption
                     encrypted_val = encrypt_signing_key(
-                        entity.value.encode("utf-8"), mk  # type: ignore[arg-type]
+                        entity.value.encode("utf-8"),
+                        mk,  # type: ignore[arg-type]
                     )
                     vault_entries.append(
                         {
@@ -237,16 +314,18 @@ async def process(text: str, config: NamespacePIIConfig) -> PIIProcessResult:
                 # Standard redact
                 token = f"<{entity.entity_type}>"
 
-            # Store the token on the entity for traceability
             entity.token = token
-
-            # Replace in text (safe because we iterate in reverse order of start index)
-            sanitized_text = (
-                sanitized_text[: entity.start] + token + sanitized_text[entity.end :]
-            )
-
-            # Clear the raw PII value now that it has been consumed
+            replacement_triples.append((entity.start, entity.end, token))
             entity.clear_raw_value()
+
+        pieces: list[str] = []
+        cursor = len(text)
+        for start, end, token in sorted(replacement_triples, key=lambda x: x[0], reverse=True):
+            pieces.append(text[end:cursor])
+            pieces.append(token)
+            cursor = start
+        pieces.append(text[:cursor])
+        sanitized_text = "".join(reversed(pieces))
 
     return PIIProcessResult(
         sanitized_text=sanitized_text,

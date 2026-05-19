@@ -5,10 +5,9 @@ import math
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Any
-from uuid import UUID
 
 import asyncpg
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from trimcp.config import cfg
 from trimcp.db_utils import scoped_pg_session
@@ -23,6 +22,15 @@ log = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trimcp-nli")
 
+# ---------------------------------------------------------------------------
+# Config-driven thresholds (move to cfg when ready)
+# ---------------------------------------------------------------------------
+_CONTRADICTION_SIMILARITY_THRESHOLD: float = 0.85
+_CONTRADICTION_MAX_CANDIDATES: int = 3
+_CONTRADICTION_NLI_THRESHOLD: float = 0.8
+_CONTRADICTION_LLM_MIN_CONFIDENCE: float = 0.6
+_NLI_CONTRADICTION_LABEL_INDEX: int = 2  # DeBERTa NLI: 0=entail, 1=neutral, 2=contradiction
+
 
 @lru_cache(maxsize=1)
 def _load_nli_model():
@@ -31,9 +39,7 @@ def _load_nli_model():
         import torch
         from sentence_transformers import CrossEncoder
     except ImportError:
-        log.warning(
-            "sentence_transformers or torch not installed. NLI check will be disabled."
-        )
+        log.warning("sentence_transformers or torch not installed. NLI check will be disabled.")
         return None
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -54,24 +60,18 @@ def _sync_nli_predict(premise: str, hypothesis: str) -> float:
     """
     Blocking NLI prediction.
     Returns the score for 'contradiction' class.
-    Assumes label mapping: 0: entailment, 1: neutral, 2: contradiction (standard for DeBERTa NLI).
+    Label index is config-driven (default: 2 for DeBERTa NLI).
     """
     model = _load_nli_model()
     if model is None:
         raise NLIUnavailableError("NLI model not loaded")
 
     try:
-        # CrossEncoder.predict returns raw scores (logits) or probabilities depending on model.
-        # Most NLI cross-encoders return logits. We want probabilities.
-        # Fortunately, CrossEncoder.predict often handles this or we can apply softmax.
-        # For nli-deberta-v3-small, it returns logits by default.
         import torch
 
         scores = model.predict([(premise, hypothesis)])
-        # scores is a numpy array of shape (1, 3)
         probs = torch.nn.functional.softmax(torch.from_numpy(scores), dim=1).numpy()[0]
-        # Label 2 is contradiction
-        score = float(probs[2])
+        score = float(probs[_NLI_CONTRADICTION_LABEL_INDEX])
         if math.isnan(score) or not (0.0 <= score <= 1.0):
             raise NLIUnavailableError(f"NLI score out of bounds: {score} (probs={probs})")
         return score
@@ -91,15 +91,15 @@ class ContradictionSignal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str
-    confidence: float
+    confidence: float = Field(ge=0.0, le=1.0)
 
 
 class ContradictionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     is_contradiction: bool
-    confidence: float
-    explanation: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    explanation: str = Field(max_length=2048)
 
 
 _CONTRADICTION_SYSTEM = (
@@ -132,7 +132,8 @@ def _namespace_provider_metadata(ns_row: Any) -> dict[str, Any]:
         ns_meta = md if isinstance(md, dict) else {}
     consolidation = dict(ns_meta.get("consolidation") or {})
     if not consolidation.get("llm_provider"):
-        consolidation["llm_provider"] = "google_gemini"
+        # Use config default instead of hardcoding a provider name.
+        consolidation["llm_provider"] = cfg.TRIMCP_LLM_PROVIDER
     ns_for_factory = dict(ns_meta)
     ns_for_factory["consolidation"] = consolidation
     return ns_for_factory
@@ -144,7 +145,11 @@ async def _select_candidates(
     namespace_id: str,
     memory_id: str,
 ) -> list:
-    """Fetch top-3 fact memories with cosine similarity >= 0.85."""
+    """Fetch top-N fact memories with cosine similarity >= threshold.
+
+    Excludes invalidated memories (valid_to IS NULL) and uses config-driven
+    similarity threshold and candidate limit.
+    """
     return await conn.fetch(
         """
         SELECT id, payload_ref, 1 - (embedding <=> $1::vector) AS similarity
@@ -152,14 +157,18 @@ async def _select_candidates(
         WHERE namespace_id = $2::uuid
           AND memory_type = 'episodic'
           AND assertion_type = 'fact'
+          AND valid_to IS NULL
           AND id != $3::uuid
-          AND 1 - (embedding <=> $1::vector) >= 0.85
+          AND embedding IS NOT NULL
+          AND 1 - (embedding <=> $1::vector) >= $4
         ORDER BY similarity DESC
-        LIMIT 3
+        LIMIT $5
         """,
         json.dumps(embedding),
         namespace_id,
         memory_id,
+        _CONTRADICTION_SIMILARITY_THRESHOLD,
+        _CONTRADICTION_MAX_CANDIDATES,
     )
 
 
@@ -173,6 +182,7 @@ async def _check_kg_contradiction(
     Uses one round-trip instead of ``len(triplets)`` ``fetchrow`` calls.
     Equivalent to OR-ing the legacy per-triplet predicates; batched via
     ``unnest`` (parallel arrays — same asymptotics as ``text[][]`` + ``ANY``).
+    Explicitly joins on namespace_id for defense-in-depth (RLS is primary layer).
     """
     if not triplets:
         return False
@@ -183,7 +193,9 @@ async def _check_kg_contradiction(
         """
         SELECT TRUE AS conflict
         FROM kg_edges e
-        JOIN memories m ON e.payload_ref = m.payload_ref
+        JOIN memories m
+          ON e.payload_ref = m.payload_ref
+         AND e.namespace_id = m.namespace_id
         WHERE m.id = $1::uuid
           AND EXISTS (
             SELECT 1
@@ -218,7 +230,7 @@ async def _check_nli_contradiction(
         SAGA_FAILURES.labels(stage="nli_unavailable").inc()
         return 0.0, cand_text, False, []
 
-    nli_hit = nli_score >= 0.8
+    nli_hit = nli_score >= _CONTRADICTION_NLI_THRESHOLD
     signals = [{"source": "nli", "confidence": nli_score}] if nli_hit else []
     return nli_score, cand_text, nli_hit, signals
 
@@ -260,22 +272,33 @@ async def _resolve_with_llm(
         llm_result = await provider.complete(messages, ContradictionResult)
 
         if llm_result.is_contradiction:
+            # Apply minimum confidence threshold — don't record weak LLM signals.
+            if llm_result.confidence < _CONTRADICTION_LLM_MIN_CONFIDENCE:
+                log.debug(
+                    "LLM contradiction confidence %.2f below threshold %.2f — discarding.",
+                    llm_result.confidence,
+                    _CONTRADICTION_LLM_MIN_CONFIDENCE,
+                )
+                if not signals:
+                    return 0.0, "", False
+                # Fall back to signal-only if other signals exist.
+                return (
+                    final_confidence,
+                    f"Detected via {', '.join(s['source'] for s in signals)} "
+                    f"(LLM confidence too low: {llm_result.confidence:.2f}).",
+                    True,
+                )
             signals.append({"source": "llm", "confidence": llm_result.confidence})
             return llm_result.confidence, llm_result.explanation, True
         else:
             if kg_hit:
                 # LLM disagrees with KG structural detection —
-                # trust the KG signal at reduced confidence.  KG-only
-                # contradictions (e.g. implicit triple conflicts) are
-                # statistically unlikely to be caught by surface-level
-                # NLI or LLM text analysis — discarding them would
-                # permanently silence the KG pipeline.
+                # trust the KG signal at reduced confidence.
                 return (
                     0.6,
                     "KG structural conflict detected (LLM tiebreaker disagreed).",
                     True,
                 )
-            # LLM and KG agree: no contradiction
             return 0.0, "", False
     except LLMTimeoutError:
         log.warning(
@@ -326,32 +349,33 @@ async def enqueue_contradiction_check(
     conn: asyncpg.Connection,
     namespace_id: str,
     memory_id: str,
-    memory_text: str,
-    assertion_type: str,
-    embedding: list[float],
     agent_id: str,
-    triplets: list[KGEdge],
+    assertion_type: str,
 ) -> None:
-    """Insert a deferred contradiction check into the transactional outbox."""
+    """Insert a deferred contradiction check into the transactional outbox.
+
+    Payload is minimal: only identifiers. The background worker resolves
+    memory text, embedding, and triplets from the primary stores to avoid
+    large outbox row payloads.
+    """
     import uuid
 
     await conn.execute(
         """
         INSERT INTO outbox_events (
             id, namespace_id, aggregate_type, aggregate_id, event_type, payload, headers
-        ) VALUES ($1, $2, 'contradiction_check', $3, 'contradiction_check', $4, $5)
+        ) VALUES ($1, $2, 'memory', $3, 'memory.contradiction_check_requested', $4, $5)
         """,
         uuid.uuid4(),
         namespace_id,
         memory_id,
-        json.dumps({
-            "memory_id": memory_id,
-            "memory_text": memory_text,
-            "assertion_type": assertion_type,
-            "embedding": embedding,
-            "agent_id": agent_id,
-            "triplets": [t.model_dump() for t in triplets],
-        }),
+        json.dumps(
+            {
+                "memory_id": memory_id,
+                "assertion_type": assertion_type,
+                "agent_id": agent_id,
+            }
+        ),
         json.dumps({"agent_id": agent_id}),
     )
 
@@ -378,6 +402,8 @@ async def detect_contradictions(
     * ``detection_path="deferred"`` — enqueues to the transactional outbox for
       background processing; returns ``{"deferred": True}``.  Requires
       *enqueue_conn*: the same transactional connection as the Saga outbox insert.
+      The outbox INSERT participates in the CALLER'S transaction — this function
+      does NOT open a new transaction on enqueue_conn.
 
     All exceptions are caught and logged — contradiction detection is a
     best-effort cognitive layer.  System availability trumps cognitive
@@ -390,20 +416,16 @@ async def detect_contradictions(
                     "detection_path='deferred' requires enqueue_conn "
                     "(same transaction as the coordinating saga)"
                 )
-            from trimcp.auth import set_namespace_context
-
-            async with enqueue_conn.transaction():
-                await set_namespace_context(enqueue_conn, UUID(namespace_id))
-                await enqueue_contradiction_check(
-                    enqueue_conn,
-                    namespace_id,
-                    memory_id,
-                    memory_text,
-                    assertion_type,
-                    embedding,
-                    agent_id,
-                    triplets,
-                )
+            # Insert directly into the caller's existing transaction.
+            # Do NOT open a nested transaction — that violates the saga contract.
+            # Namespace context should already be set by the caller's scoped session.
+            await enqueue_contradiction_check(
+                enqueue_conn,
+                namespace_id,
+                memory_id,
+                agent_id,
+                assertion_type,
+            )
             return {"deferred": True}
 
         return await _detect_contradictions_impl(
@@ -451,9 +473,7 @@ async def _detect_contradictions_impl(
         return None
 
     async with scoped_pg_session(pg_pool, namespace_id) as conn:
-        ns_row = await conn.fetchrow(
-            "SELECT metadata FROM namespaces WHERE id = $1", namespace_id
-        )
+        ns_row = await conn.fetchrow("SELECT metadata FROM namespaces WHERE id = $1", namespace_id)
     ns_for_factory = _namespace_provider_metadata(ns_row)
 
     db = mongo_client.memory_archive
@@ -462,6 +482,8 @@ async def _detect_contradictions_impl(
         db,
         [c["payload_ref"] for c in candidates],
     )
+
+    detected: list[dict] = []
 
     for candidate in candidates:
         cand_id = str(candidate["id"])
@@ -497,6 +519,18 @@ async def _detect_contradictions_impl(
         if not should_record:
             continue
 
+        # Normalize pair to (low, high) UUIDs for duplicate prevention.
+        a_id, b_id = sorted([cand_id, memory_id])
+
+        signals_payload = json.dumps(
+            {
+                "signals": signals,
+                "explanation": final_explanation,
+                "candidate_similarity": float(candidate["similarity"]),
+            },
+            sort_keys=True,
+        )
+
         async with scoped_pg_session(pg_pool, namespace_id) as conn:
             await conn.execute(
                 """
@@ -504,23 +538,30 @@ async def _detect_contradictions_impl(
                     namespace_id, memory_a_id, memory_b_id, agent_id,
                     detection_path, signals, confidence, resolution
                 )
-                VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::jsonb, $7, 'unresolved')
+                VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6::jsonb, $7, NULL)
+                ON CONFLICT DO NOTHING
                 """,
                 namespace_id,
-                cand_id,
-                memory_id,
+                a_id,
+                b_id,
                 agent_id,
                 detection_path,
-                json.dumps(signals),
+                signals_payload,
                 final_confidence,
             )
 
-        return {
-            "memory_a_id": cand_id,
-            "memory_b_id": memory_id,
-            "confidence": final_confidence,
-            "signals": signals,
-            "explanation": final_explanation,
-        }
+        detected.append(
+            {
+                "memory_a_id": a_id,
+                "memory_b_id": b_id,
+                "confidence": final_confidence,
+                "signals": signals,
+                "explanation": final_explanation,
+            }
+        )
 
-    return None
+    if not detected:
+        return None
+
+    # Return all detected contradictions, not just the first.
+    return {"contradictions": detected}

@@ -224,9 +224,7 @@ def test_update_kg_nodes_batch_calls_executemany():
     conn = _make_conn()
     node_id = uuid.uuid4()
 
-    asyncio.run(
-        _update_kg_nodes_batch(conn, [(node_id, _FAKE_VEC)], current_model_uuid())
-    )
+    asyncio.run(_update_kg_nodes_batch(conn, [(node_id, _FAKE_VEC)], current_model_uuid()))
 
     conn.executemany.assert_awaited_once()
     sql = conn.executemany.await_args.args[0].lower()
@@ -264,9 +262,7 @@ def test_resolve_texts_returns_episodic_raw_data():
     # ObjectId is imported *locally* inside the function; patch it at its
     # source so that ObjectId(ref) just returns the string ref unchanged.
     with patch("bson.ObjectId", side_effect=lambda x: _FakeId(x)):
-        result = asyncio.run(
-            _resolve_texts_from_mongo(mongo_client, [rec], max_text_chars=512)
-        )
+        result = asyncio.run(_resolve_texts_from_mongo(mongo_client, [rec], max_text_chars=512))
 
     assert result.get(ref) == "hello world"
 
@@ -288,9 +284,7 @@ def test_worker_run_once_no_stale_rows():
 
     with patch.object(rw, "_embeddings") as mock_emb:
         mock_emb.embed_batch = AsyncMock(return_value=[])
-        result = asyncio.run(
-            ReembeddingWorker(batch_size=8, batches_per_minute=600).run_once(pool)
-        )
+        result = asyncio.run(ReembeddingWorker(batch_size=8, batches_per_minute=600).run_once(pool))
 
     assert result["status"] == "completed"
     assert result["memories_done"] == 0
@@ -386,9 +380,9 @@ def test_worker_marks_run_failed_on_embed_error():
 
     # The final UPDATE must set status='failed'
     final_execute_calls = conn.execute.await_args_list
-    assert any(
-        "failed" in str(call) for call in final_execute_calls
-    ), "Expected status='failed' in final UPDATE"
+    assert any("failed" in str(call) for call in final_execute_calls), (
+        "Expected status='failed' in final UPDATE"
+    )
 
 
 # --------------------------------------------------------------------------- #

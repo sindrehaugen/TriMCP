@@ -58,6 +58,8 @@ _MAX_DEPTH: int = 3
 # Subgraph / GraphRAG — keep max_edges_per_node default aligned with ``trimcp.graph_query.MAX_EDGES_PER_NODE``.
 _MAX_GRAPH_EDGES_PER_NODE: int = 2048
 _MAX_GRAPH_EDGE_PAGE: int = 5000
+_MAX_CONTENT_LEN: int = 1_000_000  # 1 MB of text for embedding
+_MAX_QUERY_LEN: int = 10_000  # search and graph query strings
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -71,9 +73,7 @@ def _validate_agent_id(v: str) -> str:
     if len(v) > 128:
         raise ValueError("agent_id must be ≤ 128 characters")
     if not _SAFE_ID_RE.match(v):
-        raise ValueError(
-            "agent_id may only contain alphanumerics, hyphens, and underscores"
-        )
+        raise ValueError("agent_id may only contain alphanumerics, hyphens, and underscores")
     return v
 
 
@@ -150,14 +150,10 @@ class ManageQuotasRequest(BaseModel):
         cmd = self.command
         if cmd == ManageQuotasCommand.set:
             if self.resource_type is None or self.limit is None:
-                raise ValueError(
-                    "resource_type and limit are required for command='set'"
-                )
+                raise ValueError("resource_type and limit are required for command='set'")
         if cmd == ManageQuotasCommand.delete or cmd == ManageQuotasCommand.reset:
             if self.resource_type is None:
-                raise ValueError(
-                    "resource_type is required for command='delete'/'reset'"
-                )
+                raise ValueError("resource_type is required for command='delete'/'reset'")
         return self
 
 
@@ -207,6 +203,17 @@ class NamespacePIIConfig(BaseModel):
         description="Per-namespace secret for HMAC-SHA256 pseudonym tokens (≥8 UTF-8 bytes when set). "
         "If omitted, ``TRIMCP_MASTER_KEY`` (UTF-8, ≥32 chars) is used as the HMAC key.",
     )
+    namespace_id: str = Field(
+        default="",
+        description="Namespace identifier; scopes master-key pseudonym derivation per tenant.",
+    )
+
+    @field_validator("pseudonym_hmac_key")
+    @classmethod
+    def _validate_hmac_key(cls, v: str | None) -> str | None:
+        if v is not None and len(v.encode("utf-8")) < 8:
+            raise ValueError("pseudonym_hmac_key must be at least 8 UTF-8 bytes when set")
+        return v
 
 
 class PIIEntity(BaseModel):
@@ -338,12 +345,17 @@ class NamespaceMetadata(BaseModel):
         default_factory=NamespaceConsolidationConfig
     )
     pii: NamespacePIIConfig = Field(default_factory=NamespacePIIConfig)
-    cognitive: NamespaceCognitiveConfig = Field(
-        default_factory=NamespaceCognitiveConfig
-    )
+    cognitive: NamespaceCognitiveConfig = Field(default_factory=NamespaceCognitiveConfig)
     fork_config: NamespaceForkConfig | None = Field(
         default=None,
         description="[Phase 2.3] Configuration if this namespace is a fork of another.",
+    )
+    disabled: bool = Field(
+        default=False,
+        description=(
+            "Soft-delete flag: tenant is logically retired without physical row purge. "
+            "When toggled True via metadata patch emits a ``namespace_disabled`` audit event."
+        ),
     )
 
 
@@ -374,6 +386,7 @@ class NamespaceMetadataPatch(BaseModel):
     pii: NamespacePIIConfig | None = None
     cognitive: NamespaceCognitiveConfig | None = None
     fork_config: NamespaceForkConfig | None = None
+    disabled: bool | None = None
 
 
 # ── Namespace CRUD models ─────────────────────────────────────────────────────
@@ -500,9 +513,14 @@ class StoreMemoryRequest(BaseModel):
     @classmethod
     def _payload_size(cls, v: str) -> str:
         if len(v.encode("utf-8")) > _MAX_PAYLOAD_LEN:
-            raise ValueError(
-                f"heavy_payload exceeds {_MAX_PAYLOAD_LEN // 1_048_576} MB limit"
-            )
+            raise ValueError(f"heavy_payload exceeds {_MAX_PAYLOAD_LEN // 1_048_576} MB limit")
+        return v
+
+    @field_validator("content")
+    @classmethod
+    def _content_size(cls, v: str) -> str:
+        if len(v.encode("utf-8")) > _MAX_CONTENT_LEN:
+            raise ValueError(f"content exceeds maximum size ({_MAX_CONTENT_LEN // 1_000} KB limit)")
         return v
 
     @model_validator(mode="after")
@@ -544,9 +562,7 @@ class MemoryRecord(BaseModel):
     payload_ref: str = Field(description="MongoDB document _id (string form)")
     embedding_model_id: UUID4 | None = None
     derived_from: list[UUID4] | None = None
-    valid_from: datetime = Field(
-        description="[D8] Server-assigned; never user-supplied"
-    )
+    valid_from: datetime = Field(description="[D8] Server-assigned; never user-supplied")
     valid_to: datetime | None = Field(
         default=None,
         description="NULL = current row (latest version)",
@@ -599,7 +615,7 @@ class KGEdge(BaseModel):
     object_label: str = Field(min_length=1)
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     payload_ref: str | None = None
-    metadata: dict = Field(default_factory=dict)
+    metadata: SafeMetadataDict = Field(default_factory=dict)
 
     @field_validator("subject_label", "predicate", "object_label")
     @classmethod
@@ -692,6 +708,13 @@ class SemanticSearchRequest(BaseModel):
     def _validate_agent_id(cls, v: str | None) -> str | None:
         return _validate_agent_id(v) if v is not None else None
 
+    @field_validator("query")
+    @classmethod
+    def _query_size(cls, v: str) -> str:
+        if len(v) > _MAX_QUERY_LEN:
+            raise ValueError(f"query exceeds maximum length ({_MAX_QUERY_LEN} characters)")
+        return v
+
 
 class SemanticSearchResult(BaseModel):
     """A single hit returned from a semantic search."""
@@ -729,6 +752,12 @@ class GraphSearchRequest(BaseModel):
     )
     query: str = Field(min_length=1)
     max_depth: int = Field(default=2, ge=1, le=_MAX_DEPTH)
+    anchor_top_k: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Number of semantic anchor nodes to seed BFS traversal.",
+    )
     as_of: datetime | None = None
     max_edges_per_node: int = Field(
         default=512,
@@ -756,15 +785,22 @@ class GraphSearchRequest(BaseModel):
     def _validate_agent_id(cls, v: str | None) -> str | None:
         return _validate_agent_id(v) if v is not None else None
 
+    @field_validator("query")
+    @classmethod
+    def _query_size(cls, v: str) -> str:
+        if len(v) > _MAX_QUERY_LEN:
+            raise ValueError(f"query exceeds maximum length ({_MAX_QUERY_LEN} characters)")
+        return v
+
 
 class BoostMemoryRequest(BaseModel):
     """Input for the boost_memory MCP tool (Phase 1.1)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    memory_id: str = Field(min_length=1)
+    memory_id: UUID4
     agent_id: str
-    namespace_id: str
+    namespace_id: UUID4
     factor: float = Field(default=0.2, ge=-1.0, le=1.0)
 
     @field_validator("agent_id")
@@ -778,9 +814,9 @@ class ForgetMemoryRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    memory_id: str = Field(min_length=1)
+    memory_id: UUID4
     agent_id: str
-    namespace_id: str
+    namespace_id: UUID4
 
     @field_validator("agent_id")
     @classmethod
@@ -793,8 +829,8 @@ class UnredactMemoryRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    memory_id: str = Field(min_length=1)
-    namespace_id: str
+    memory_id: UUID4
+    namespace_id: UUID4
     agent_id: str
 
     @field_validator("agent_id")
@@ -809,7 +845,14 @@ class GetRecentContextRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     namespace_id: UUID4
-    user_id: str = Field(default="default")
+    agent_id: str | None = Field(
+        default=None,
+        description="Calling agent identity. None falls back to 'default' in the handler.",
+    )
+    user_id: str = Field(
+        default="default",
+        description="[DEPRECATED] Use agent_id instead.",
+    )
     session_id: str = Field(default="default")
     limit: int = Field(default=10, ge=1, le=_MAX_TOP_K)
     offset: int = Field(
@@ -819,17 +862,10 @@ class GetRecentContextRequest(BaseModel):
     )
     as_of: datetime | None = None
 
-    @model_validator(mode="before")
+    @field_validator("agent_id")
     @classmethod
-    def _agent_id_alias_to_user_id(cls, data: Any) -> Any:
-        """MCP tool schema exposes ``agent_id``; model stores the same value as ``user_id``."""
-        if not isinstance(data, dict):
-            return data
-        merged = dict(data)
-        agent_alias = merged.pop("agent_id", None)
-        if agent_alias is not None and merged.get("user_id") in (None, "default"):
-            merged["user_id"] = agent_alias
-        return merged
+    def _validate_get_recent_agent_id(cls, v: str | None) -> str | None:
+        return _validate_agent_id(v) if v is not None else None
 
     @field_validator("user_id", "session_id")
     @classmethod
@@ -837,6 +873,18 @@ class GetRecentContextRequest(BaseModel):
         if not _SAFE_ID_RE.match(v):
             raise ValueError("user_id/session_id contains invalid characters")
         return v
+
+    @model_validator(mode="after")
+    def _resolve_agent_id_from_user_id(self) -> GetRecentContextRequest:
+        """Promote user_id to agent_id when agent_id is not explicitly set.
+
+        user_id is a deprecated alias. Callers should migrate to agent_id.
+        After this validator, handlers always use req.agent_id as the
+        canonical identity — req.user_id is never passed to engine methods.
+        """
+        if self.agent_id is None and self.user_id != "default":
+            self.agent_id = self.user_id
+        return self
 
 
 # ── Code Indexing ─────────────────────────────────────────────────────────────
@@ -910,9 +958,7 @@ def normalize_replay_config_overrides(
     """Validate replay override dict; return JSON-compatible dict or ``None``."""
     if raw is None:
         return None
-    return ReplayConfigOverrides.model_validate(raw).model_dump(
-        mode="json", exclude_none=True
-    )
+    return ReplayConfigOverrides.model_validate(raw).model_dump(mode="json", exclude_none=True)
 
 
 class FrozenForkConfig(BaseModel):
@@ -1036,10 +1082,14 @@ class FrozenForkConfig(BaseModel):
         }
         computed = hashlib.sha256(canonical_json(payload_for_hash)).hexdigest()
         if computed != req.expected_sha256:
-            raise ReplayChecksumError(
-                f"Payload checksum mismatch: expected "
-                f"{req.expected_sha256[:16]}..., computed {computed[:16]}..."
+            import logging as _log
+
+            _log.getLogger("trimcp.models").debug(
+                "Replay checksum mismatch: expected=%s computed=%s",
+                req.expected_sha256,
+                computed,
             )
+            raise ReplayChecksumError("Payload checksum mismatch")
 
 
 class ReplayObserveRequest(BaseModel):
@@ -1079,6 +1129,13 @@ class ReplayForkRequest(BaseModel):
         max_length=64,
         description="sha256(canonical_json(all_other_fields)).hexdigest()",
     )
+
+    @field_validator("expected_sha256")
+    @classmethod
+    def _validate_hex(cls, v: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{64}", v):
+            raise ValueError("expected_sha256 must be exactly 64 lowercase hex characters")
+        return v
 
 
 # ── Embedding Migrations (Phase 2.1) ──────────────────────────────────────────
@@ -1201,9 +1258,7 @@ class ManageNamespaceRequest(BaseModel):
             if self.namespace_id is None:
                 raise ValueError("namespace_id required for command='update_metadata'")
             if self.metadata_patch is None:
-                raise ValueError(
-                    "metadata_patch required for command='update_metadata'"
-                )
+                raise ValueError("metadata_patch required for command='update_metadata'")
         if cmd in (ManageNamespaceCommand.grant, ManageNamespaceCommand.revoke):
             if self.namespace_id is None or self.grantee_namespace_id is None:
                 raise ValueError(
@@ -1400,9 +1455,7 @@ if __name__ == "__main__":
 
     try:
         nc_upper = NamespaceCreate(slug="ACME-Corp")
-        assert (
-            nc_upper.slug == "acme-corp"
-        ), f"Expected 'acme-corp', got {nc_upper.slug!r}"
+        assert nc_upper.slug == "acme-corp", f"Expected 'acme-corp', got {nc_upper.slug!r}"
         _ok("NamespaceCreate: uppercase slug normalised to lowercase")
     except Exception as e:
         _fail("NamespaceCreate: uppercase slug normalised to lowercase", e)

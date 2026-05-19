@@ -10,7 +10,7 @@ which automatically attaches done callbacks to extract and log exceptions.
 
 Usage:
     from trimcp.background_task_manager import create_tracked_task
-    
+
     # Instead of: asyncio.create_task(my_coroutine())
     # Do this:
     create_tracked_task(my_coroutine(), name="my-task")
@@ -20,7 +20,7 @@ Exception Handling:
     1. Logged to logger.exception() → visible in logs
     2. Recorded as metric trimcp_background_task_failures_total
     3. Exposed via Prometheus for alerting
-    
+
 This ensures failures in background jobs are never silent — they surface
 through the central monitoring layer.
 """
@@ -31,14 +31,14 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from trimcp.observability import HAS_PROMETHEUS
 
 if HAS_PROMETHEUS:
     from prometheus_client import Counter, Gauge, Histogram
 else:
-    # Stub metrics
+    # Stub metrics — no-op when Prometheus is not installed
     class _StubMetric:
         def __init__(self, *args, **kwargs):
             pass
@@ -90,8 +90,13 @@ BACKGROUND_TASK_ACTIVE = Gauge(
     ["task_name"],
 )
 
+# Max completed entries retained per task name — prevents unbounded growth for
+# long-running processes that spawn many short-lived tasks (e.g. token-refresh).
+_MAX_COMPLETED_HISTORY: int = 200
+
 
 # --- Task Registry ---
+
 
 @dataclass
 class TrackedTask:
@@ -100,8 +105,8 @@ class TrackedTask:
     name: str
     task: asyncio.Task[Any]
     created_at: float = field(default_factory=time.time)
-    completed_at: Optional[float] = None
-    exception: Optional[BaseException] = None
+    completed_at: float | None = None
+    exception: BaseException | None = None
     success: bool = False
 
     @property
@@ -114,136 +119,139 @@ class TrackedTask:
 
 
 class TaskRegistry:
-    """Global registry of tracked background tasks for lifecycle tracking."""
+    """Global registry of tracked background tasks for lifecycle tracking.
+
+    All methods are synchronous — asyncio is cooperative/single-threaded so
+    plain dict operations are safe without an asyncio.Lock.
+    """
 
     def __init__(self):
         self._tasks: dict[str, list[TrackedTask]] = {}
-        self._lock = asyncio.Lock()
 
-    async def register(self, tracked_task: TrackedTask) -> None:
+    def register(self, tracked_task: TrackedTask) -> None:
         """Register a new tracked task."""
-        async with self._lock:
-            if tracked_task.name not in self._tasks:
-                self._tasks[tracked_task.name] = []
-            self._tasks[tracked_task.name].append(tracked_task)
-            BACKGROUND_TASK_ACTIVE.labels(task_name=tracked_task.name).inc()
+        name = tracked_task.name
+        if name not in self._tasks:
+            self._tasks[name] = []
+        self._tasks[name].append(tracked_task)
+        BACKGROUND_TASK_ACTIVE.labels(task_name=name).inc()
 
-    async def mark_complete(
+    def mark_complete(
         self,
         tracked_task: TrackedTask,
         success: bool,
-        exception: Optional[BaseException] = None,
+        exception: BaseException | None = None,
     ) -> None:
-        """Mark a task as complete and record final state."""
-        async with self._lock:
-            tracked_task.completed_at = time.time()
-            tracked_task.success = success
-            tracked_task.exception = exception
+        """Mark a task as complete, record metrics, and prune old history."""
+        tracked_task.completed_at = time.time()
+        tracked_task.success = success
+        tracked_task.exception = exception
 
-            # Record metrics
-            BACKGROUND_TASK_DURATION.labels(task_name=tracked_task.name).observe(
-                tracked_task.duration
-            )
-            BACKGROUND_TASKS_TOTAL.labels(
-                task_name=tracked_task.name, status="completed" if success else "failed"
+        BACKGROUND_TASK_DURATION.labels(task_name=tracked_task.name).observe(tracked_task.duration)
+        BACKGROUND_TASKS_TOTAL.labels(
+            task_name=tracked_task.name, status="completed" if success else "failed"
+        ).inc()
+        if exception:
+            BACKGROUND_TASK_FAILURES_TOTAL.labels(
+                task_name=tracked_task.name,
+                exception_type=type(exception).__name__,
             ).inc()
-            if exception:
-                BACKGROUND_TASK_FAILURES_TOTAL.labels(
-                    task_name=tracked_task.name,
-                    exception_type=type(exception).__name__,
-                ).inc()
+        BACKGROUND_TASK_ACTIVE.labels(task_name=tracked_task.name).dec()
 
-            BACKGROUND_TASK_ACTIVE.labels(task_name=tracked_task.name).dec()
+        # Prune completed entries to prevent unbounded memory growth.
+        tasks = self._tasks.get(tracked_task.name, [])
+        completed = [t for t in tasks if not t.is_active()]
+        if len(completed) > _MAX_COMPLETED_HISTORY:
+            active = [t for t in tasks if t.is_active()]
+            self._tasks[tracked_task.name] = active + completed[-_MAX_COMPLETED_HISTORY:]
 
-    async def get_active_tasks(self, task_name: Optional[str] = None) -> list[TrackedTask]:
-        """Get list of active tasks (optionally filtered by name)."""
-        async with self._lock:
-            if task_name:
-                return [
-                    t for t in self._tasks.get(task_name, []) if t.is_active()
-                ]
-            all_tasks = []
-            for tasks in self._tasks.values():
-                all_tasks.extend([t for t in tasks if t.is_active()])
-            return all_tasks
+    def get_active_tasks(self, task_name: str | None = None) -> list[TrackedTask]:
+        """Get list of active tasks, optionally filtered by name."""
+        if task_name:
+            return [t for t in self._tasks.get(task_name, []) if t.is_active()]
+        result: list[TrackedTask] = []
+        for tasks in self._tasks.values():
+            result.extend(t for t in tasks if t.is_active())
+        return result
 
-    async def get_task_stats(self) -> dict[str, Any]:
-        """Get statistics about tracked tasks."""
-        async with self._lock:
-            stats = {}
-            for task_name, tasks in self._tasks.items():
-                active = [t for t in tasks if t.is_active()]
-                failed = [t for t in tasks if t.exception is not None]
-                stats[task_name] = {
-                    "total": len(tasks),
-                    "active": len(active),
-                    "failed": len(failed),
-                    "succeeded": len([t for t in tasks if t.success]),
-                }
-            return stats
+    def get_task_stats(self) -> dict[str, Any]:
+        """Get per-name statistics about tracked tasks."""
+        stats = {}
+        for task_name, tasks in self._tasks.items():
+            active = [t for t in tasks if t.is_active()]
+            failed = [t for t in tasks if t.exception is not None]
+            stats[task_name] = {
+                "total": len(tasks),
+                "active": len(active),
+                "failed": len(failed),
+                "succeeded": len([t for t in tasks if t.success]),
+            }
+        return stats
 
 
 # Global registry instance
 _registry = TaskRegistry()
 
 
-async def create_tracked_task(
+def _mark_complete_sync(
+    tracked_task: TrackedTask,
+    success: bool,
+    exception: BaseException | None = None,
+) -> None:
+    """Record completion on the global registry (sync; used by tests and edge paths)."""
+
+    _registry.mark_complete(tracked_task, success, exception)
+
+
+async def _mark_complete_async(
+    tracked_task: TrackedTask,
+    success: bool,
+    exception: BaseException | None = None,
+) -> None:
+    """Async façade over :func:`_mark_complete_sync` for call sites that ``await`` bookkeeping."""
+
+    _registry.mark_complete(tracked_task, success, exception)
+
+
+def create_tracked_task(
     coro: Any,
     name: str,
 ) -> asyncio.Task[Any]:
     """
     Create a tracked background task with automatic exception logging.
 
+    Synchronous — returns the asyncio.Task immediately without requiring
+    ``await``.  Using ``await create_tracked_task(...)`` is an error (the
+    return value is a Task, not a coroutine).
+
     Args:
         coro: The coroutine to run in the background.
-        name: Unique name for the task (used in metrics and logs).
-              Recommend: "{operation}-{id}" format, e.g., "fork-abc123".
+        name: Stable low-cardinality name for the task (used in metrics).
+              Use module-level constants such as ``"gc_loop"`` or
+              ``"outbox_relay"`` — never embed IDs or namespace UUIDs here.
 
     Returns:
-        The created asyncio.Task. (You typically don't need to store this.)
-
-    Behavior:
-        - Task is wrapped with a done callback
-        - Any exception raised in the coroutine is logged via logger.exception()
-        - Task completion/failure is recorded in metrics and task registry
-        - Central monitoring layer receives exception events
+        The created asyncio.Task.
 
     Example:
-        >>> async def my_long_job():
-        ...     await asyncio.sleep(10)
-        ...     if some_error:
-        ...         raise ValueError("Something went wrong")
-        ...
-        >>> # Instead of: asyncio.create_task(my_long_job())
-        >>> await create_tracked_task(my_long_job(), name="long-job-123")
+        >>> task = create_tracked_task(my_long_job(), name="long-job")
     """
-    # Create the task
     task = asyncio.create_task(coro, name=name)
-
-    # Create tracking metadata
     tracked_task = TrackedTask(name=name, task=task)
-
-    # Register in global registry
-    await _registry.register(tracked_task)
-
-    # Increment metrics
+    _registry.register(tracked_task)
     BACKGROUND_TASKS_TOTAL.labels(task_name=name, status="created").inc()
 
     def _done_callback(t: asyncio.Task[Any]) -> None:
-        """Called when task completes (success or exception)."""
+        """Called when task completes (success, failure, or cancellation)."""
         exception = None
         success = False
 
         try:
-            # Attempt to extract the result
             t.result()
             success = True
         except asyncio.CancelledError:
-            # Task was cancelled; don't log as error
-            exception = None
             log.info("Background task cancelled: name=%s", name)
         except Exception as exc:
-            # Extract and log the exception
             exception = exc
             log.exception(
                 "Background task failed with exception: name=%s",
@@ -251,56 +259,14 @@ async def create_tracked_task(
                 exc_info=exc,
             )
 
-        # Mark complete in registry (non-blocking)
-        try:
-            asyncio.create_task(_mark_complete_async(tracked_task, success, exception))
-        except RuntimeError:
-            # Event loop may be closed; attempt synchronous fallback
-            _mark_complete_sync(tracked_task, success, exception)
+        _registry.mark_complete(tracked_task, success, exception)
 
-    # Attach the callback
     task.add_done_callback(_done_callback)
-
     return task
 
 
-async def _mark_complete_async(
-    tracked_task: TrackedTask,
-    success: bool,
-    exception: Optional[BaseException],
-) -> None:
-    """Async path for marking task complete (prefers this for registry updates)."""
-    await _registry.mark_complete(tracked_task, success, exception)
-
-
-def _mark_complete_sync(
-    tracked_task: TrackedTask,
-    success: bool,
-    exception: Optional[BaseException],
-) -> None:
-    """Synchronous fallback for marking task complete."""
-    tracked_task.completed_at = time.time()
-    tracked_task.success = success
-    tracked_task.exception = exception
-
-    # Record metrics directly (don't await)
-    BACKGROUND_TASK_DURATION.labels(task_name=tracked_task.name).observe(
-        tracked_task.duration
-    )
-    BACKGROUND_TASKS_TOTAL.labels(
-        task_name=tracked_task.name,
-        status="completed" if success else "failed",
-    ).inc()
-    if exception:
-        BACKGROUND_TASK_FAILURES_TOTAL.labels(
-            task_name=tracked_task.name,
-            exception_type=type(exception).__name__,
-        ).inc()
-    BACKGROUND_TASK_ACTIVE.labels(task_name=tracked_task.name).dec()
-
-
 async def get_active_background_tasks(
-    task_name: Optional[str] = None,
+    task_name: str | None = None,
 ) -> list[TrackedTask]:
     """
     Get list of currently active background tasks.
@@ -310,13 +276,8 @@ async def get_active_background_tasks(
 
     Returns:
         List of TrackedTask instances that are still running.
-
-    Usage:
-        >>> active = await get_active_background_tasks()
-        >>> for task in active:
-        ...     print(f"{task.name}: {task.duration:.1f}s")
     """
-    return await _registry.get_active_tasks(task_name)
+    return _registry.get_active_tasks(task_name)
 
 
 async def get_background_task_stats() -> dict[str, Any]:
@@ -326,12 +287,7 @@ async def get_background_task_stats() -> dict[str, Any]:
     Returns:
         Dictionary with per-task-name stats:
         {
-            "fork-abc123": {"total": 1, "active": 0, "failed": 1, "succeeded": 0},
             "gc_loop": {"total": 1, "active": 1, "failed": 0, "succeeded": 0},
         }
-
-    Usage:
-        >>> stats = await get_background_task_stats()
-        >>> print(f"Total failures: {sum(s['failed'] for s in stats.values())}")
     """
-    return await _registry.get_task_stats()
+    return _registry.get_task_stats()

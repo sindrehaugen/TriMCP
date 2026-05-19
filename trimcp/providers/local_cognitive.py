@@ -88,12 +88,9 @@ class LocalCognitiveProvider(LLMProvider):
         messages: list[Message],
         response_model: type[ResponseModelT],
     ) -> ResponseModelT:
-        json.dumps(response_model.model_json_schema(), indent=2)
         payload = {
             "model": self._model,
-            "messages": [
-                {"role": m.role.value, "content": m.content} for m in messages
-            ],
+            "messages": [{"role": m.role.value, "content": m.content} for m in messages],
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {

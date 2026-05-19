@@ -17,6 +17,8 @@ log = logging.getLogger("trimcp.mtls")
 # Default JSON-RPC error code for mTLS failures
 DEFAULT_MTLS_ERROR_CODE = -32010
 
+_MAX_HEADER_VALUE_BYTES: int = 16_384  # 16 KB — generous for base64-encoded DER certs
+
 
 class MTLSAuthMiddleware:
     """
@@ -63,9 +65,21 @@ class MTLSAuthMiddleware:
         self.enabled = enabled
         self.strict = strict
         self.trusted_proxy_hops = trusted_proxy_hops
-        self.allowed_sans = allowed_sans or []
-        self.allowed_fingerprints = allowed_fingerprints or []
+        self.allowed_sans = [s.lower().strip() for s in (allowed_sans or [])]
+        self.allowed_fingerprints = [f.lower().strip() for f in (allowed_fingerprints or [])]
         self.error_code = error_code
+
+        if self.enabled and not self.allowed_sans and not self.allowed_fingerprints:
+            raise ValueError(
+                "MTLSAuthMiddleware: enabled=True but no trust anchors configured. "
+                "Provide at least one allowed_sans or allowed_fingerprints entry."
+            )
+        if not self.enabled:
+            log.warning(
+                "MTLSAuthMiddleware: mTLS is DISABLED for prefix %s — "
+                "all requests will pass through without certificate validation",
+                self.protected_prefix,
+            )
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http" or not self.enabled:
@@ -73,12 +87,21 @@ class MTLSAuthMiddleware:
             return
 
         path = scope.get("path", "")
-        if not path.startswith(self.protected_prefix):
+        prefix = self.protected_prefix
+        if not (path == prefix or path.startswith(prefix.rstrip("/") + "/")):
             await self.app(scope, receive, send)
             return
 
         headers: dict[str, str] = {}
         for key, value in scope.get("headers", []):
+            if len(value) > _MAX_HEADER_VALUE_BYTES:
+                log.warning(
+                    "mTLS: oversized header dropped name=%s len=%d path=%s",
+                    key.decode("latin-1", errors="replace")[:32],
+                    len(value),
+                    path,
+                )
+                continue
             headers[key.decode("latin-1").lower()] = value.decode("latin-1")
 
         try:
@@ -92,18 +115,25 @@ class MTLSAuthMiddleware:
                 allowed_fingerprints=self.allowed_fingerprints,
             )
         except A2AMTLSError as exc:
-            log.warning("mTLS rejection: path=%s reason=%s", path, exc)
+            log.warning(
+                "mTLS rejection: path=%s reason=%s client_ip=%s",
+                path,
+                exc,
+                scope.get("client", ("unknown", 0))[0],
+            )
+            request_id = headers.get("x-request-id")
             response = JSONResponse(
                 {
                     "jsonrpc": "2.0",
                     "error": {
                         "code": self.error_code,
                         "message": "mTLS client certificate validation failed",
-                        "data": {"reason": str(exc)},
+                        "data": {"reason": "mtls_validation_failed"},
                     },
-                    "id": None,
+                    "id": request_id,
                 },
                 status_code=401,
+                headers={"WWW-Authenticate": "TLS"},
             )
             await response(scope, receive, send)
             return

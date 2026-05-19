@@ -15,6 +15,8 @@ import httpx
 from trimcp._http_utils import SafeAsyncClient
 from trimcp.observability import inject_trace_headers
 from trimcp.providers.base import (
+    LLMAuthenticationError,
+    LLMBadRequestError,
     LLMProviderError,
     LLMRateLimitError,
     LLMTimeoutError,
@@ -88,7 +90,23 @@ async def post_with_error_handling(
                 upstream_message=upstream,
             )
 
-        # All other non-success statuses (400, 401, 403, 404, …)
+        if status in (401, 403):
+            raise LLMAuthenticationError(
+                f"{model_id} authentication failed (HTTP {status})",
+                provider=model_id,
+                status_code=status,
+                upstream_message=upstream,
+            )
+
+        if status == 400:
+            raise LLMBadRequestError(
+                f"{model_id} rejected request (HTTP 400)",
+                provider=model_id,
+                status_code=status,
+                upstream_message=upstream,
+            )
+
+        # All other non-success statuses (404, 422, …)
         raise LLMProviderError(
             f"{model_id} returned HTTP {status}",
             provider=model_id,

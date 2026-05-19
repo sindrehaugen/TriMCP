@@ -391,6 +391,7 @@ CREATE TABLE IF NOT EXISTS contradictions (
     resolution     TEXT,
     resolved_at    TIMESTAMPTZ,
     resolved_by    TEXT,
+    note           TEXT,
     PRIMARY KEY (id, detected_at)
 ) PARTITION BY RANGE (detected_at);
 
@@ -410,10 +411,11 @@ CREATE TABLE IF NOT EXISTS embedding_models (
 );
 
 CREATE TABLE IF NOT EXISTS memory_embeddings (
-    memory_id  UUID NOT NULL,
-    model_id   UUID NOT NULL REFERENCES embedding_models(id),
-    embedding  vector, -- Unconstrained dimension to support any model
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    memory_id    UUID NOT NULL,
+    model_id     UUID NOT NULL REFERENCES embedding_models(id),
+    embedding    vector, -- Unconstrained dimension to support any model
+    namespace_id UUID REFERENCES namespaces(id),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (memory_id, model_id)
 ) PARTITION BY HASH (memory_id);
 
@@ -438,7 +440,6 @@ CREATE TABLE IF NOT EXISTS kg_node_embeddings_1 PARTITION OF kg_node_embeddings 
 CREATE TABLE IF NOT EXISTS kg_node_embeddings_2 PARTITION OF kg_node_embeddings FOR VALUES WITH (MODULUS 4, REMAINDER 2);
 CREATE TABLE IF NOT EXISTS kg_node_embeddings_3 PARTITION OF kg_node_embeddings FOR VALUES WITH (MODULUS 4, REMAINDER 3);
 
-ALTER TABLE embedding_migrations ADD COLUMN IF NOT EXISTS namespace_id UUID REFERENCES namespaces(id);
 CREATE TABLE IF NOT EXISTS embedding_migrations (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     namespace_id     UUID REFERENCES namespaces(id),
@@ -594,17 +595,39 @@ BEGIN
     END IF;
 END $$;
 
-ALTER TABLE replay_runs ENABLE ROW LEVEL SECURITY;
-
-DO $$
+-- Fail-fast session namespace for RLS policies (see trimcp/auth.set_namespace_context).
+CREATE OR REPLACE FUNCTION get_trimcp_namespace() RETURNS uuid AS $$
+DECLARE
+    val text;
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'replay_runs' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON replay_runs FOR ALL USING (replay_runs.source_namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
+    val := nullif(trim(current_setting('trimcp.namespace_id', true)), '');
+    IF val IS NULL THEN
+        RAISE EXCEPTION 'trimcp.namespace_id is not set for this transaction';
     END IF;
-END $$;
+    BEGIN
+        RETURN val::uuid;
+    EXCEPTION
+        WHEN invalid_text_representation THEN
+            RAISE EXCEPTION 'trimcp.namespace_id is not a valid UUID: %', val;
+    END;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+ALTER TABLE replay_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE replay_runs FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS namespace_isolation_policy ON replay_runs;
+DROP POLICY IF EXISTS tenant_isolation_policy ON replay_runs;
+CREATE POLICY tenant_isolation_policy ON replay_runs
+    FOR ALL TO trimcp_app
+    USING (
+        source_namespace_id IS NOT NULL
+        AND source_namespace_id = get_trimcp_namespace()
+    )
+    WITH CHECK (
+        source_namespace_id IS NOT NULL
+        AND source_namespace_id = get_trimcp_namespace()
+    );
 
 
 CREATE INDEX IF NOT EXISTS idx_event_log_ns_time ON event_log (namespace_id, occurred_at);
@@ -911,16 +934,14 @@ CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
     WHERE published_at IS NULL;
 
 ALTER TABLE outbox_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE outbox_events FORCE ROW LEVEL SECURITY;
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'outbox_events' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON outbox_events FOR ALL USING (outbox_events.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
+DROP POLICY IF EXISTS namespace_isolation_policy ON outbox_events;
+DROP POLICY IF EXISTS tenant_isolation_policy ON outbox_events;
+CREATE POLICY tenant_isolation_policy ON outbox_events
+    FOR ALL TO trimcp_app
+    USING (namespace_id IS NOT NULL AND namespace_id = get_trimcp_namespace())
+    WITH CHECK (namespace_id IS NOT NULL AND namespace_id = get_trimcp_namespace());
 
 DO $$
 BEGIN
@@ -953,16 +974,14 @@ CREATE INDEX IF NOT EXISTS idx_saga_state_created
     WHERE state IN ('started', 'pg_committed', 'recovery_needed');
 
 ALTER TABLE saga_execution_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE saga_execution_log FORCE ROW LEVEL SECURITY;
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'saga_execution_log' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON saga_execution_log FOR ALL USING (saga_execution_log.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
+DROP POLICY IF EXISTS namespace_isolation_policy ON saga_execution_log;
+DROP POLICY IF EXISTS tenant_isolation_policy ON saga_execution_log;
+CREATE POLICY tenant_isolation_policy ON saga_execution_log
+    FOR ALL TO trimcp_app
+    USING (namespace_id IS NOT NULL AND namespace_id = get_trimcp_namespace())
+    WITH CHECK (namespace_id IS NOT NULL AND namespace_id = get_trimcp_namespace());
 
 DO $$
 BEGIN
@@ -977,181 +996,95 @@ END $$;
 
 
 -- --- Row Level Security (Phase 0.1 Hardening) ---
--- Applied after all tenant tables exist (EARLY ALTER TABLE ... RLS would fail on empty DBs).
--- Enable RLS on all multi-tenant tables.
-ALTER TABLE memories ENABLE ROW LEVEL SECURITY;
-ALTER TABLE kg_nodes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE kg_edges ENABLE ROW LEVEL SECURITY;
-ALTER TABLE pii_redactions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE memory_salience ENABLE ROW LEVEL SECURITY;
-ALTER TABLE contradictions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE snapshots ENABLE ROW LEVEL SECURITY;
-ALTER TABLE event_log ENABLE ROW LEVEL SECURITY;
-ALTER TABLE a2a_grants ENABLE ROW LEVEL SECURITY;
-ALTER TABLE resource_quotas ENABLE ROW LEVEL SECURITY;
-ALTER TABLE bridge_subscriptions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE consolidation_runs ENABLE ROW LEVEL SECURITY;
-ALTER TABLE embedding_migrations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dead_letter_queue ENABLE ROW LEVEL SECURITY;
-ALTER TABLE memory_embeddings DISABLE ROW LEVEL SECURITY;
+-- Applied after all tenant tables exist. Policies use get_trimcp_namespace() (fail-fast).
+-- kg_node_embeddings remain global (no namespace_id). kg_nodes/kg_edges are tenant-scoped.
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
+        CREATE ROLE trimcp_app;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_gc') THEN
+        CREATE ROLE trimcp_gc BYPASSRLS NOLOGIN;
+    ELSE
+        ALTER ROLE trimcp_gc BYPASSRLS NOLOGIN;
+    END IF;
+END $$;
+
+-- Backfill nullable namespace_id on tables that gained the column after first deploy.
+DO $$
+DECLARE
+    legacy_ns UUID;
+BEGIN
+    SELECT id INTO legacy_ns FROM namespaces WHERE slug = '_global_legacy' LIMIT 1;
+    IF legacy_ns IS NOT NULL THEN
+        UPDATE bridge_subscriptions SET namespace_id = legacy_ns WHERE namespace_id IS NULL;
+        UPDATE dead_letter_queue SET namespace_id = legacy_ns WHERE namespace_id IS NULL;
+        UPDATE embedding_migrations SET namespace_id = legacy_ns WHERE namespace_id IS NULL;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_dead_letter_queue_namespace_id
+    ON dead_letter_queue (namespace_id);
+CREATE INDEX IF NOT EXISTS idx_embedding_migrations_namespace_id
+    ON embedding_migrations (namespace_id);
 
 -- FIX-055: kg_node_embeddings are global (not namespace-scoped).
--- Disabling RLS is intentional; the table has no namespace_id column.
 ALTER TABLE kg_node_embeddings DISABLE ROW LEVEL SECURITY;
 
--- Standard Isolation Policy: filter by session variable 'trimcp.namespace_id'
--- Use DO blocks to create policies idempotently and prevent block propagation errors.
-
--- memories
 DO $$
+DECLARE
+    t text;
+    tenant_tables text[] := ARRAY[
+        'memories',
+        'kg_nodes',
+        'kg_edges',
+        'pii_redactions',
+        'memory_salience',
+        'contradictions',
+        'snapshots',
+        'event_log',
+        'resource_quotas',
+        'consolidation_runs',
+        'bridge_subscriptions',
+        'dead_letter_queue',
+        'embedding_migrations',
+        'memory_embeddings'
+    ];
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'memories' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON memories FOR ALL USING (memories.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
+    FOREACH t IN ARRAY tenant_tables
+    LOOP
+        EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
+        EXECUTE format('ALTER TABLE public.%I FORCE ROW LEVEL SECURITY', t);
+        EXECUTE format('DROP POLICY IF EXISTS namespace_isolation_policy ON public.%I', t);
+        EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_policy ON public.%I', t);
+        EXECUTE format(
+            'CREATE POLICY tenant_isolation_policy ON public.%I '
+            'FOR ALL TO trimcp_app '
+            'USING (namespace_id IS NOT NULL AND namespace_id = get_trimcp_namespace()) '
+            'WITH CHECK (namespace_id IS NOT NULL AND namespace_id = get_trimcp_namespace())',
+            t
+        );
+        EXECUTE format(
+            'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.%I TO trimcp_app',
+            t
+        );
+    END LOOP;
 END $$;
 
--- pii_redactions
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'pii_redactions' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON pii_redactions FOR ALL USING (pii_redactions.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
--- memory_salience
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'memory_salience' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON memory_salience FOR ALL USING (memory_salience.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
--- contradictions
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'contradictions' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON contradictions FOR ALL USING (contradictions.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
--- snapshots
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'snapshots' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON snapshots FOR ALL USING (snapshots.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
--- event_log
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'event_log' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON event_log FOR ALL USING (event_log.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
--- a2a_grants
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'a2a_grants' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON a2a_grants FOR ALL USING (a2a_grants.owner_namespace_id = current_setting('trimcp.namespace_id', true)::uuid OR a2a_grants.target_namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
--- resource_quotas
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'resource_quotas' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON resource_quotas FOR ALL USING (resource_quotas.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
--- kg_nodes
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'kg_nodes' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON kg_nodes FOR ALL USING (kg_nodes.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
--- kg_edges
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'kg_edges' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON kg_edges FOR ALL USING (kg_edges.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
--- bridge_subscriptions
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'bridge_subscriptions' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON bridge_subscriptions FOR ALL USING (bridge_subscriptions.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
--- consolidation_runs
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'consolidation_runs' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON consolidation_runs FOR ALL USING (consolidation_runs.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
--- dead_letter_queue
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'dead_letter_queue' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON dead_letter_queue FOR ALL USING (dead_letter_queue.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
-
--- embedding_migrations
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies 
-        WHERE tablename = 'embedding_migrations' AND policyname = 'namespace_isolation_policy'
-    ) THEN
-        CREATE POLICY namespace_isolation_policy ON embedding_migrations FOR ALL USING (embedding_migrations.namespace_id = current_setting('trimcp.namespace_id', true)::uuid);
-    END IF;
-END $$;
+ALTER TABLE a2a_grants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE a2a_grants FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS namespace_isolation_policy ON a2a_grants;
+DROP POLICY IF EXISTS tenant_isolation_policy ON a2a_grants;
+CREATE POLICY tenant_isolation_policy ON a2a_grants
+    FOR ALL TO trimcp_app
+    USING (
+        owner_namespace_id = get_trimcp_namespace()
+        OR target_namespace_id = get_trimcp_namespace()
+    )
+    WITH CHECK (owner_namespace_id = get_trimcp_namespace());
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE a2a_grants TO trimcp_app;

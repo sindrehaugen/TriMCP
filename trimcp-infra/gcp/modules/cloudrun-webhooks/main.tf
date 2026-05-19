@@ -24,6 +24,7 @@ resource "google_cloud_run_v2_service" "webhooks" {
 }
 
 resource "google_cloud_run_v2_service_iam_member" "public_invoke" {
+  count    = var.allow_unauthenticated_invoke ? 1 : 0
   project  = var.project_id
   location = google_cloud_run_v2_service.webhooks.location
   name     = google_cloud_run_v2_service.webhooks.name

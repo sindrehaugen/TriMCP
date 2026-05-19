@@ -25,3 +25,8 @@ variable "disk_size_gb" {
 variable "labels" {
   type = map(string)
 }
+
+variable "worker_service_account_email" {
+  type        = string
+  description = "Grant secretAccessor on the Postgres admin secret only"
+}

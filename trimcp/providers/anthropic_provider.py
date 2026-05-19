@@ -157,7 +157,9 @@ class AnthropicProvider(LLMProvider):
         return f"anthropic/{self._model}"
 
     def __repr__(self) -> str:
-        return f"AnthropicProvider(model={self._model!r}, api_key={_redact_api_key(self._api_key)!r})"
+        return (
+            f"AnthropicProvider(model={self._model!r}, api_key={_redact_api_key(self._api_key)!r})"
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers

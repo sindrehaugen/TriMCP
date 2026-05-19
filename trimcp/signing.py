@@ -70,6 +70,8 @@ from typing import Any
 
 import asyncpg
 
+from trimcp.config import cfg
+
 try:
     import jcs as _jcs_lib  # RFC 8785 — preferred
 
@@ -88,9 +90,9 @@ except ImportError:  # pragma: no cover – jcs is in requirements.txt; handle g
         Full ECMAScript number serialisation divergence is not triggered
         because signing inputs never contain bare floats.
         """
-        return _json.dumps(
-            data, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        ).encode("utf-8")
+        return _json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
 
 
 from cachetools import TTLCache
@@ -111,15 +113,9 @@ _MASTER_KEY_LEN: int = 32  # minimum master key length in bytes
 # Floor: NIST minimum 100,000 for v2 backward compat.
 # OWASP 2026: 600,000 for v4 blobs (new writes).  v2 decryption (100K) retained.
 # Operator may raise via TRIMCP_PBKDF2_ITERATIONS (affects v2 only).
-_PBKDF2_ITERATIONS: int = max(
-    100_000,
-    int(os.environ.get("TRIMCP_PBKDF2_ITERATIONS", "100000")),
-)
+_PBKDF2_ITERATIONS: int = cfg.TRIMCP_PBKDF2_ITERATIONS
 # OWASP 2026 recommended minimum: 600,000 iterations for PBKDF2-HMAC-SHA256.
-_PBKDF2_ITERATIONS_V4: int = max(
-    600_000,
-    int(os.environ.get("TRIMCP_PBKDF2_ITERATIONS_V4", "600000")),
-)
+_PBKDF2_ITERATIONS_V4: int = cfg.TRIMCP_PBKDF2_ITERATIONS_V4
 _PBKDF2_SALT_LEN: int = 16
 # Magic prefix for v2 blobs (PBKDF2 @ 100K + random salt). Legacy blobs have no prefix.
 _ENCRYPTED_KEY_BLOB_V2: bytes = b"TC2\x01"
@@ -138,7 +134,7 @@ try:
     from argon2.low_level import Type, hash_secret_raw
 
     _HAS_ARGON2 = True
-except ImportError:  # pragma: no cover — argon2-cffi is in requirements.txt
+except ImportError:  # pragma: no cover — install argon2-cffi (see requirements.txt)
     _HAS_ARGON2 = False
 
 # Argon2id parameters (OWASP 2025 recommended minimums).
@@ -335,9 +331,7 @@ class MutableKeyBuffer:
     def raw(self) -> memoryview:
         """Read-only view of the key material.  Raises ``ValueError`` if zeroed."""
         if self._zeroed:
-            raise ValueError(
-                "MutableKeyBuffer has been zeroed and is no longer usable."
-            )
+            raise ValueError("MutableKeyBuffer has been zeroed and is no longer usable.")
         return memoryview(self._buf)
 
     def zero(self) -> None:
@@ -355,9 +349,7 @@ class MutableKeyBuffer:
     def __bytes__(self) -> bytes:
         """Return a copy of the raw key bytes.  Raises ``ValueError`` if zeroed."""
         if self._zeroed:
-            raise ValueError(
-                "MutableKeyBuffer has been zeroed and is no longer usable."
-            )
+            raise ValueError("MutableKeyBuffer has been zeroed and is no longer usable.")
         return bytes(self._buf)
 
     def __del__(self) -> None:
@@ -506,9 +498,7 @@ class _SigningKeyCache(TTLCache):
         if entry is not None:
             try:
                 entry.raw_key.zero()
-                log.debug(
-                    "Signing key buffer zeroed on eviction (key_id=%s).", entry.key_id
-                )
+                log.debug("Signing key buffer zeroed on eviction (key_id=%s).", entry.key_id)
             except Exception:
                 pass  # Best-effort zeroing — must not prevent eviction
         super().__delitem__(key)
@@ -952,9 +942,7 @@ async def admin_signing_keys_status(conn: asyncpg.Connection) -> dict[str, Any]:
         ),
         "keys_by_status": by_status,
         "latest_retired_at": (
-            latest_ret.astimezone(timezone.utc).isoformat()
-            if latest_ret is not None
-            else None
+            latest_ret.astimezone(timezone.utc).isoformat() if latest_ret is not None else None
         ),
         "signing_wire_format_notes": (
             "memories/events: HMAC-SHA256 over RFC 8785 (JCS) canonical JSON; "

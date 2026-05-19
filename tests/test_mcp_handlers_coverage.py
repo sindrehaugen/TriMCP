@@ -6,9 +6,10 @@ Uses mocked engines / pools so structural wiring stays exercised without live se
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -30,6 +31,7 @@ from trimcp.mcp_errors import McpError
 from trimcp.models import SnapshotRecord, StateDiffResult
 
 NS = "00000000-0000-4000-8000-000000000001"
+MEM_ID = "00000000-0000-4000-8000-000000000002"
 
 
 class _FakeAcquire:
@@ -47,6 +49,10 @@ class _FakeAcquire:
 
 def _engine_pool_context(conn: object | None = None) -> MagicMock:
     conn = conn or AsyncMock()
+    tx = MagicMock()
+    tx.__aenter__ = AsyncMock(return_value=None)
+    tx.__aexit__ = AsyncMock(return_value=None)
+    conn.transaction = MagicMock(return_value=tx)
     engine = MagicMock()
     engine.pg_pool = MagicMock()
     engine.pg_pool.acquire = MagicMock(side_effect=lambda *_a, **_k: _FakeAcquire(conn))
@@ -91,19 +97,29 @@ def _patch_httpx_async_client(
 
 
 def _admin_arguments(extra: dict) -> dict:
-    return {"admin_api_key": "test-admin-mcp-key", **extra}
+    return {
+        "admin_api_key": os.environ.get(
+            "TRIMCP_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests"
+        ),
+        **extra,
+    }
 
 
 @pytest.fixture
 def admin_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "test-admin-mcp-key")
+    from trimcp import auth as auth_mod
+
+    admin_key = os.environ.get(
+        "TRIMCP_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests"
+    )
+    monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", admin_key)
+    monkeypatch.setattr(auth_mod.cfg, "TRIMCP_ADMIN_API_KEY", admin_key)
+    monkeypatch.setattr(auth_mod.cfg, "TRIMCP_ADMIN_OVERRIDE", False)
 
 
 @pytest.mark.asyncio
 async def test_a2a_helpers_and_handlers() -> None:
-    ctx = a2a_mcp_handlers._build_caller_context(
-        {"namespace_id": NS, "agent_id": "agent-1"}
-    )
+    ctx = a2a_mcp_handlers._build_caller_context({"namespace_id": NS, "agent_id": "agent-1"})
     assert str(ctx.namespace_id) == NS
     assert ctx.agent_id == "agent-1"
 
@@ -154,7 +170,9 @@ async def test_a2a_helpers_and_handlers() -> None:
             engine,
             {"namespace_id": NS, "include_inactive": True},
         )
-        assert "g1" in out
+        list_data = json.loads(out)
+        assert list_data["status"] == "ok"
+        assert list_data["grants"] == [{"id": "g1"}]
 
     owner_ns = uuid.uuid4()
     verified = VerifiedGrant(
@@ -173,10 +191,10 @@ async def test_a2a_helpers_and_handlers() -> None:
         out = await a2a_mcp_handlers.handle_a2a_query_shared(
             engine,
             {
-                "namespace_id": NS,
+                "consumer_namespace_id": NS,
                 "sharing_token": "st",
                 "query": "hello",
-                "top_k": "3",
+                "top_k": 3,
             },
         )
     assert json.loads(out)["results"] == [{"hit": 1}]
@@ -237,7 +255,7 @@ async def test_admin_handlers_delegate(admin_key_env: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_code_and_contradiction_handlers() -> None:
+async def test_code_and_contradiction_handlers(admin_key_env: None) -> None:
     engine = MagicMock()
     engine.index_code_file = AsyncMock(return_value={"status": "indexed"})
     engine.get_job_status = AsyncMock(return_value={"done": True})
@@ -245,7 +263,13 @@ async def test_code_and_contradiction_handlers() -> None:
 
     r = await code_mcp_handlers.handle_index_code_file(
         engine,
-        {"filepath": "a.py", "raw_code": "x=1", "language": "python"},
+        {
+            "namespace_id": NS,
+            "filepath": "a.py",
+            "raw_code": "x=1",
+            "language": "python",
+            "user_id": "tester",
+        },
     )
     assert json.loads(r)["status"] == "indexed"
 
@@ -257,7 +281,13 @@ async def test_code_and_contradiction_handlers() -> None:
 
     r = await code_mcp_handlers.handle_search_codebase(
         engine,
-        {"query": "foo", "top_k": "2", "private": True},
+        {
+            "query": "foo",
+            "namespace_id": NS,
+            "top_k": "2",
+            "private": True,
+            "user_id": "tester",
+        },
     )
     assert json.loads(r) == []
 
@@ -271,12 +301,14 @@ async def test_code_and_contradiction_handlers() -> None:
     engine.resolve_contradiction = AsyncMock(return_value={"resolved": True})
     r = await contradiction_mcp_handlers.handle_resolve_contradiction(
         engine,
-        {
-            "contradiction_id": "c1",
-            "namespace_id": NS,
-            "resolution": "keep_newer",
-            "resolved_by": "tester",
-        },
+        _admin_arguments(
+            {
+                "contradiction_id": "00000000-0000-4000-8000-000000000003",
+                "namespace_id": NS,
+                "resolution": "accepted_a",
+                "resolved_by": "tester",
+            }
+        ),
     )
     assert json.loads(r)["resolved"] is True
 
@@ -284,10 +316,8 @@ async def test_code_and_contradiction_handlers() -> None:
 @pytest.mark.asyncio
 async def test_memory_handlers_ok_response_and_search() -> None:
     engine = MagicMock()
-    engine.store_memory = AsyncMock(
-        return_value={"payload_ref": "0" * 24, "contradiction": None}
-    )
-    engine.store_media = AsyncMock(return_value="1" * 24)
+    engine.store_memory = AsyncMock(return_value={"payload_ref": "0" * 24, "contradiction": None})
+    engine.store_artifact = AsyncMock(return_value="1" * 24)
     engine.semantic_search = AsyncMock(return_value=[])
     engine.recall_recent = AsyncMock(return_value=[])
     engine.boost_memory = AsyncMock(return_value={"boosted": True})
@@ -334,7 +364,7 @@ async def test_memory_handlers_ok_response_and_search() -> None:
     r = await memory_mcp_handlers.handle_boost_memory(
         engine,
         {
-            "memory_id": "m1",
+            "memory_id": MEM_ID,
             "agent_id": "ag",
             "namespace_id": ns_uuid,
             "factor": 0.1,
@@ -344,13 +374,13 @@ async def test_memory_handlers_ok_response_and_search() -> None:
 
     r = await memory_mcp_handlers.handle_forget_memory(
         engine,
-        {"memory_id": "m1", "agent_id": "ag", "namespace_id": ns_uuid},
+        {"memory_id": MEM_ID, "agent_id": "ag", "namespace_id": ns_uuid},
     )
     assert json.loads(r)["forgot"] is True
 
     r = await memory_mcp_handlers.handle_unredact_memory(
         engine,
-        {"memory_id": "m1", "namespace_id": ns_uuid, "agent_id": "ag"},
+        {"memory_id": MEM_ID, "namespace_id": ns_uuid, "agent_id": "ag"},
     )
     assert json.loads(r)["unredacted"] is True
 
@@ -364,6 +394,7 @@ async def test_memory_helpers_serialize() -> None:
 
 @pytest.mark.asyncio
 async def test_migration_handlers_audited_and_status(admin_key_env: None) -> None:
+    mid = str(uuid.uuid4())
     engine = MagicMock()
     engine.pg_pool = MagicMock()
     engine.start_migration = AsyncMock(return_value={"id": "m1"})
@@ -386,13 +417,13 @@ async def test_migration_handlers_audited_and_status(admin_key_env: None) -> Non
 
     raw = await migration_mcp_handlers.handle_migration_status(
         engine,
-        _admin_arguments({"migration_id": "mid"}),
+        _admin_arguments({"migration_id": mid}),
     )
     assert json.loads(raw)["state"] == "running"
 
     raw = await migration_mcp_handlers.handle_validate_migration(
         engine,
-        _admin_arguments({"migration_id": "mid"}),
+        _admin_arguments({"migration_id": mid}),
     )
     assert json.loads(raw)["status"] == "success"
 
@@ -403,13 +434,13 @@ async def test_migration_handlers_audited_and_status(admin_key_env: None) -> Non
     ):
         raw = await migration_mcp_handlers.handle_commit_migration(
             engine,
-            _admin_arguments({"migration_id": "mid"}),
+            _admin_arguments({"migration_id": mid}),
         )
         assert json.loads(raw)["committed"] is True
 
         raw = await migration_mcp_handlers.handle_abort_migration(
             engine,
-            _admin_arguments({"migration_id": "mid"}),
+            _admin_arguments({"migration_id": mid}),
         )
         assert json.loads(raw)["aborted"] is True
 
@@ -502,7 +533,9 @@ async def test_replay_handlers_smoke() -> None:
             "trimcp.replay.ForkedReplay",
             return_value=_Fork(),
         ),
-        patch("trimcp.replay_mcp_handlers.asyncio.create_task") as ct,
+        patch(
+            "trimcp.replay_mcp_handlers.create_tracked_task",
+        ) as ct,
     ):
         out = await replay_mcp_handlers.handle_replay_fork(
             engine,
@@ -527,7 +560,9 @@ async def test_replay_handlers_smoke() -> None:
             "trimcp.replay.ReconstructiveReplay",
             return_value=_Fork(),
         ),
-        patch("trimcp.replay_mcp_handlers.asyncio.create_task") as ct2,
+        patch(
+            "trimcp.replay_mcp_handlers.create_tracked_task",
+        ) as ct2,
     ):
         out = await replay_mcp_handlers.handle_replay_reconstruct(
             engine,
@@ -611,11 +646,12 @@ async def test_snapshot_handlers_delegate() -> None:
     )
     assert "ok" in raw
 
+    earlier = now - timedelta(hours=1)
     raw = await snapshot_mcp_handlers.handle_compare_states(
         engine,
         {
             "namespace_id": NS,
-            "as_of_a": now.isoformat(),
+            "as_of_a": earlier.isoformat(),
             "as_of_b": now.isoformat(),
         },
     )
@@ -646,7 +682,7 @@ async def test_connect_bridge_dropbox_pending_config(
     ):
         raw = await bridge_mcp_handlers.connect_bridge(
             engine,
-            {"user_id": "u1", "provider": "dropbox"},
+            {"user_id": "u1", "namespace_id": NS, "provider": "dropbox"},
         )
         data = json.loads(raw)
         assert data["status"] == "pending_config"
@@ -663,7 +699,7 @@ async def test_connect_bridge_sharepoint_and_gdrive_pending_config(
         bridge_mcp_handlers.bridge_repo, "insert_subscription", new_callable=AsyncMock
     ):
         raw = await bridge_mcp_handlers.connect_bridge(
-            engine, {"user_id": "u1", "provider": "sharepoint"}
+            engine, {"user_id": "u1", "namespace_id": NS, "provider": "sharepoint"}
         )
         assert json.loads(raw)["status"] == "pending_config"
 
@@ -672,7 +708,7 @@ async def test_connect_bridge_sharepoint_and_gdrive_pending_config(
         bridge_mcp_handlers.bridge_repo, "insert_subscription", new_callable=AsyncMock
     ):
         raw = await bridge_mcp_handlers.connect_bridge(
-            engine, {"user_id": "u1", "provider": "gdrive"}
+            engine, {"user_id": "u1", "namespace_id": NS, "provider": "gdrive"}
         )
         assert json.loads(raw)["status"] == "pending_config"
 
@@ -682,7 +718,7 @@ async def test_connect_bridge_invalid_provider() -> None:
     engine = _engine_pool_context(AsyncMock())
     with pytest.raises(McpError) as exc_info:
         await bridge_mcp_handlers.connect_bridge(
-            engine, {"user_id": "u1", "provider": "ftp"}
+            engine, {"user_id": "u1", "namespace_id": NS, "provider": "ftp"}
         )
     assert "provider must be one of" in exc_info.value.data["detail"]
 
@@ -797,9 +833,7 @@ async def test_complete_bridge_auth_dropbox_updates_row() -> None:
         return row
 
     with (
-        patch.object(
-            bridge_mcp_handlers.bridge_repo, "get_by_id", side_effect=_get_by_id
-        ),
+        patch.object(bridge_mcp_handlers.bridge_repo, "get_by_id", side_effect=_get_by_id),
         patch.object(
             bridge_mcp_handlers,
             "_exchange_oauth_code",
@@ -869,9 +903,7 @@ async def test_disconnect_bridge_dropbox() -> None:
 async def test_force_resync_bridge_dropbox_enqueues(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        bridge_mcp_handlers.cfg, "REDIS_URL", "redis://localhost:6379/0"
-    )
+    monkeypatch.setattr(bridge_mcp_handlers.cfg, "REDIS_URL", "redis://localhost:6379/0")
     engine = _engine_pool_context(AsyncMock())
     bid = uuid.uuid4()
     row = {
@@ -923,7 +955,7 @@ async def test_connect_bridge_ok_auth_urls(monkeypatch: pytest.MonkeyPatch) -> N
         bridge_mcp_handlers.bridge_repo, "insert_subscription", new_callable=AsyncMock
     ):
         raw = await bridge_mcp_handlers.connect_bridge(
-            engine, {"user_id": "u1", "provider": "sharepoint"}
+            engine, {"user_id": "u1", "namespace_id": NS, "provider": "sharepoint"}
         )
     data = json.loads(raw)
     assert data["status"] == "ok"
@@ -933,7 +965,7 @@ async def test_connect_bridge_ok_auth_urls(monkeypatch: pytest.MonkeyPatch) -> N
         bridge_mcp_handlers.bridge_repo, "insert_subscription", new_callable=AsyncMock
     ):
         raw = await bridge_mcp_handlers.connect_bridge(
-            engine, {"user_id": "u1", "provider": "gdrive"}
+            engine, {"user_id": "u1", "namespace_id": NS, "provider": "gdrive"}
         )
     assert json.loads(raw)["status"] == "ok"
     assert "accounts.google.com" in json.loads(raw)["auth_url"]
@@ -942,7 +974,7 @@ async def test_connect_bridge_ok_auth_urls(monkeypatch: pytest.MonkeyPatch) -> N
         bridge_mcp_handlers.bridge_repo, "insert_subscription", new_callable=AsyncMock
     ):
         raw = await bridge_mcp_handlers.connect_bridge(
-            engine, {"user_id": "u1", "provider": "dropbox"}
+            engine, {"user_id": "u1", "namespace_id": NS, "provider": "dropbox"}
         )
     assert json.loads(raw)["status"] == "ok"
     assert "dropbox.com/oauth2" in json.loads(raw)["auth_url"]
@@ -952,16 +984,15 @@ async def test_connect_bridge_ok_auth_urls(monkeypatch: pytest.MonkeyPatch) -> N
 async def test_exchange_oauth_token_flows(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "AZURE_CLIENT_ID", "c1")
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "AZURE_CLIENT_SECRET", "s1")
-    monkeypatch.setattr(
-        bridge_mcp_handlers.cfg, "BRIDGE_OAUTH_REDIRECT_URI", "http://127.0.0.1/r"
+    monkeypatch.setattr(bridge_mcp_handlers.cfg, "BRIDGE_OAUTH_REDIRECT_URI", "http://127.0.0.1/r")
+    oauth_mock = AsyncMock(
+        return_value={
+            "access_token": "at1",
+            "refresh_token": "ref1",
+            "expires_in": 3600,
+        }
     )
-    post_r = _httpx_resp(
-        json_data={"access_token": "at1", "refresh_token": "ref1", "expires_in": 3600}
-    )
-    with patch(
-        "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
-        _patch_httpx_async_client(post_r),
-    ):
+    with patch("trimcp.bridge_mcp_handlers.oauth_token_post_form", oauth_mock):
         tok = await bridge_mcp_handlers._exchange_oauth_code("sharepoint", "code")
     assert tok["access_token"] == "at1"
     assert tok["refresh_token"] == "ref1"
@@ -969,26 +1000,28 @@ async def test_exchange_oauth_token_flows(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "GDRIVE_OAUTH_CLIENT_ID", "gc")
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "GDRIVE_OAUTH_CLIENT_SECRET", "gs")
-    post_r2 = _httpx_resp(
-        json_data={"access_token": "at2", "refresh_token": "ref2", "expires_in": 3600}
+    oauth_mock2 = AsyncMock(
+        return_value={
+            "access_token": "at2",
+            "refresh_token": "ref2",
+            "expires_in": 3600,
+        }
     )
-    with patch(
-        "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
-        _patch_httpx_async_client(post_r2),
-    ):
+    with patch("trimcp.bridge_mcp_handlers.oauth_token_post_form", oauth_mock2):
         tok = await bridge_mcp_handlers._exchange_oauth_code("gdrive", "c2")
     assert tok["access_token"] == "at2"
     assert tok["refresh_token"] == "ref2"
     assert "expires_at" in tok
 
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "DROPBOX_OAUTH_CLIENT_ID", "dc")
-    post_r3 = _httpx_resp(
-        json_data={"access_token": "at3", "refresh_token": "ref3", "expires_in": 3600}
+    oauth_mock3 = AsyncMock(
+        return_value={
+            "access_token": "at3",
+            "refresh_token": "ref3",
+            "expires_in": 3600,
+        }
     )
-    with patch(
-        "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
-        _patch_httpx_async_client(post_r3),
-    ):
+    with patch("trimcp.bridge_mcp_handlers.oauth_token_post_form", oauth_mock3):
         tok = await bridge_mcp_handlers._exchange_oauth_code("dropbox", "c3")
     assert tok["access_token"] == "at3"
     assert tok["refresh_token"] == "ref3"
@@ -1018,13 +1051,10 @@ async def test_exchange_oauth_missing_access_token(
 ) -> None:
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "AZURE_CLIENT_ID", "c1")
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "AZURE_CLIENT_SECRET", "s1")
-    monkeypatch.setattr(
-        bridge_mcp_handlers.cfg, "BRIDGE_OAUTH_REDIRECT_URI", "http://127.0.0.1/r"
-    )
-    post_r = _httpx_resp(json_data={})
+    monkeypatch.setattr(bridge_mcp_handlers.cfg, "BRIDGE_OAUTH_REDIRECT_URI", "http://127.0.0.1/r")
     with patch(
-        "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
-        _patch_httpx_async_client(post_r),
+        "trimcp.bridge_mcp_handlers.oauth_token_post_form",
+        AsyncMock(return_value={}),
     ):
         with pytest.raises(ValueError, match="missing access_token"):
             await bridge_mcp_handlers._exchange_oauth_code("sharepoint", "code")
@@ -1032,9 +1062,7 @@ async def test_exchange_oauth_missing_access_token(
 
 @pytest.mark.asyncio
 async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
-    ok_sub = _httpx_resp(
-        json_data={"id": "sub-1", "expirationDateTime": "2030-01-01T00:00:00Z"}
-    )
+    ok_sub = _httpx_resp(json_data={"id": "sub-1", "expirationDateTime": "2030-01-01T00:00:00Z"})
     with patch(
         "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
         _patch_httpx_async_client(ok_sub),
@@ -1050,9 +1078,7 @@ async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
     assert exp is not None
 
     bad = _httpx_resp(status_code=400, json_data={}, text="nope")
-    with patch(
-        "trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad)
-    ):
+    with patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad)):
         with pytest.raises(ValueError, match="Graph subscription failed"):
             await bridge_mcp_handlers._setup_sharepoint_webhook(
                 "tok",
@@ -1084,9 +1110,7 @@ async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
     assert exp2 is not None
 
     bad_d = _httpx_resp(status_code=401, json_data={}, text="fail")
-    with patch(
-        "trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad_d)
-    ):
+    with patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad_d)):
         with pytest.raises(ValueError, match="Drive watch failed"):
             await bridge_mcp_handlers._setup_gdrive_webhook(
                 "gtok",
@@ -1117,9 +1141,7 @@ async def test_bridge_repo_token_roundtrip() -> None:
 async def test_complete_bridge_auth_sharepoint_happy_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        bridge_mcp_handlers.cfg, "BRIDGE_WEBHOOK_BASE_URL", "http://127.0.0.1"
-    )
+    monkeypatch.setattr(bridge_mcp_handlers.cfg, "BRIDGE_WEBHOOK_BASE_URL", "http://127.0.0.1")
     conn = AsyncMock()
     conn.execute = AsyncMock()
     engine = _engine_pool_context(conn)
@@ -1138,9 +1160,7 @@ async def test_complete_bridge_auth_sharepoint_happy_path(
         return row
 
     with (
-        patch.object(
-            bridge_mcp_handlers.bridge_repo, "get_by_id", side_effect=_get_by_id
-        ),
+        patch.object(bridge_mcp_handlers.bridge_repo, "get_by_id", side_effect=_get_by_id),
         patch.object(
             bridge_mcp_handlers,
             "_exchange_oauth_code",
@@ -1180,9 +1200,7 @@ async def test_complete_bridge_auth_sharepoint_happy_path(
 async def test_complete_bridge_auth_gdrive_happy_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        bridge_mcp_handlers.cfg, "BRIDGE_WEBHOOK_BASE_URL", "http://127.0.0.1"
-    )
+    monkeypatch.setattr(bridge_mcp_handlers.cfg, "BRIDGE_WEBHOOK_BASE_URL", "http://127.0.0.1")
     conn = AsyncMock()
     conn.execute = AsyncMock()
     engine = _engine_pool_context(conn)
@@ -1285,9 +1303,7 @@ async def test_complete_bridge_auth_webhook_base_validation_errors(
             )
         assert "BRIDGE_WEBHOOK_BASE_URL" in exc_info.value.data["detail"]
 
-    monkeypatch.setattr(
-        bridge_mcp_handlers.cfg, "BRIDGE_WEBHOOK_BASE_URL", "ftp://evil.com"
-    )
+    monkeypatch.setattr(bridge_mcp_handlers.cfg, "BRIDGE_WEBHOOK_BASE_URL", "ftp://evil.com")
     with (
         patch.object(
             bridge_mcp_handlers.bridge_repo,
@@ -1453,9 +1469,7 @@ async def test_disconnect_sharepoint_and_gdrive_http_paths(
 async def test_force_resync_sharepoint_and_gdrive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        bridge_mcp_handlers.cfg, "REDIS_URL", "redis://localhost:6379/0"
-    )
+    monkeypatch.setattr(bridge_mcp_handlers.cfg, "REDIS_URL", "redis://localhost:6379/0")
     engine = _engine_pool_context(AsyncMock())
     bid = uuid.uuid4()
     job = MagicMock()
@@ -1483,9 +1497,7 @@ async def test_force_resync_sharepoint_and_gdrive(
             ),
             patch.object(bridge_mcp_handlers, "bridge_redis", return_value=mock_r),
             patch.object(bridge_mcp_handlers, "Redis") as RedisM,
-            patch.object(
-                bridge_mcp_handlers, "get_priority_queue", return_value=mock_q
-            ),
+            patch.object(bridge_mcp_handlers, "get_priority_queue", return_value=mock_q),
         ):
             RedisM.from_url.return_value = MagicMock()
             raw = await bridge_mcp_handlers.force_resync_bridge(
@@ -1522,9 +1534,7 @@ async def test_force_resync_sharepoint_bad_resource() -> None:
 
 
 def test_bridge_redis_uses_config_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        bridge_mcp_handlers.cfg, "REDIS_URL", "redis://localhost:9999/1"
-    )
+    monkeypatch.setattr(bridge_mcp_handlers.cfg, "REDIS_URL", "redis://localhost:9999/1")
     with patch.object(bridge_mcp_handlers, "Redis") as R:
         bridge_mcp_handlers.bridge_redis()
     R.from_url.assert_called_once()
@@ -1616,7 +1626,7 @@ async def test_replay_fork_and_reconstruct_background_task_logs_exception() -> N
         patch("trimcp.models.FrozenForkConfig.from_request", return_value=froz),
         patch("trimcp.replay._create_run", new_callable=AsyncMock, return_value=run_id),
         patch("trimcp.replay.ForkedReplay", return_value=_ForkBoom()),
-        patch("trimcp.replay_mcp_handlers.asyncio.create_task") as ct,
+        patch("trimcp.replay_mcp_handlers.create_tracked_task") as ct,
         patch.object(replay_mcp_handlers.log, "exception") as log_exc,
     ):
         await replay_mcp_handlers.handle_replay_fork(
@@ -1635,7 +1645,7 @@ async def test_replay_fork_and_reconstruct_background_task_logs_exception() -> N
     with (
         patch("trimcp.replay._create_run", new_callable=AsyncMock, return_value=run_id),
         patch("trimcp.replay.ReconstructiveReplay", return_value=_ForkBoom()),
-        patch("trimcp.replay_mcp_handlers.asyncio.create_task") as ct2,
+        patch("trimcp.replay_mcp_handlers.create_tracked_task") as ct2,
         patch.object(replay_mcp_handlers.log, "exception") as log_exc2,
     ):
         await replay_mcp_handlers.handle_replay_reconstruct(

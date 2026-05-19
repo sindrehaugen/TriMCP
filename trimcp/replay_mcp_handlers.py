@@ -9,7 +9,6 @@ concern — handlers focus purely on domain logic.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
@@ -23,9 +22,7 @@ log = logging.getLogger("trimcp.replay_mcp_handlers")
 
 
 @mcp_handler
-async def handle_replay_observe(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_replay_observe(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """[ADMIN] Observational replay — reads event log and replays events."""
     from trimcp.replay import ObservationalReplay
 
@@ -42,9 +39,7 @@ async def handle_replay_observe(
         if item.get("type") == "event":
             count += 1
             if count >= int(arguments.get("max_events", 500)):
-                lines.append(
-                    json.dumps({"type": "truncated", "reason": "max_events_reached"})
-                )
+                lines.append(json.dumps({"type": "truncated", "reason": "max_events_reached"}))
                 break
     return "\n".join(lines)
 
@@ -101,14 +96,12 @@ async def handle_replay_fork(engine: TriStackEngine, arguments: dict[str, Any]) 
         except Exception:
             log.exception("Replay failed")
 
-    await create_tracked_task(_run_fork(), name=f"fork-{fork_run_id}")
+    create_tracked_task(_run_fork(), name=f"fork-{fork_run_id}")
     return json.dumps({"status": "started", "run_id": str(fork_run_id)})
 
 
 @mcp_handler
-async def handle_replay_reconstruct(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_replay_reconstruct(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """[ADMIN] Reconstructive replay — reproduces byte-identical state at end_seq."""
     from trimcp.replay import ReconstructiveReplay, _create_run
 
@@ -147,14 +140,12 @@ async def handle_replay_reconstruct(
         except Exception:
             log.exception("Reconstructive replay failed")
 
-    await create_tracked_task(_run(), name=f"reconstruct-{run_id}")
+    create_tracked_task(_run(), name=f"reconstruct-{run_id}")
     return json.dumps({"status": "started", "run_id": str(run_id)})
 
 
 @mcp_handler
-async def handle_replay_status(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_replay_status(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """[ADMIN] Check the status of a replay run."""
     from trimcp.replay import get_run_status
 
@@ -163,13 +154,9 @@ async def handle_replay_status(
 
 
 @mcp_handler
-async def handle_get_event_provenance(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_get_event_provenance(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """Get the full provenance chain for a memory."""
     from trimcp.replay import get_event_provenance
 
-    provenance = await get_event_provenance(
-        engine.pg_pool, uuid.UUID(arguments["memory_id"])
-    )
+    provenance = await get_event_provenance(engine.pg_pool, uuid.UUID(arguments["memory_id"]))
     return json.dumps(provenance)

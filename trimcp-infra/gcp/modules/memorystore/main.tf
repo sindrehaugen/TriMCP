@@ -25,6 +25,12 @@ resource "google_secret_manager_secret" "redis" {
   }
 }
 
+resource "google_secret_manager_secret_iam_member" "worker_redis_accessor" {
+  secret_id = google_secret_manager_secret.redis.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.worker_service_account_email}"
+}
+
 resource "google_secret_manager_secret_version" "redis" {
   secret = google_secret_manager_secret.redis.id
   secret_data = jsonencode({

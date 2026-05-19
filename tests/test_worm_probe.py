@@ -2,7 +2,7 @@
 Tests for event_log WORM enforcement startup probe.
 
 Verifies that ``verify_worm_enforcement()`` correctly detects:
-- Expected: UPDATE and DELETE denied (InsufficientPrivilegeError)
+- Expected: UPDATE and DELETE denied (InsufficientPrivilegeError) on each WORM table
 - Critical: UPDATE or DELETE succeeds → RuntimeError raised
 - Edge cases: table missing, unexpected errors
 """
@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 import asyncpg
 import pytest
 
-from trimcp.event_log import verify_worm_enforcement
+from trimcp.event_log import _WORM_TABLES, verify_worm_enforcement
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,17 +37,20 @@ def _conn() -> AsyncMock:
 async def test_worm_update_denied_delete_denied():
     """UPDATE and DELETE both raise InsufficientPrivilegeError → probe passes."""
     conn = _conn()
+    n = len(_WORM_TABLES) * 2
     conn.execute.side_effect = [
         asyncpg.exceptions.InsufficientPrivilegeError("UPDATE denied"),
         asyncpg.exceptions.InsufficientPrivilegeError("DELETE denied"),
-    ]
+    ] * len(_WORM_TABLES)
 
     # Should not raise
     await verify_worm_enforcement(conn)
 
-    assert conn.execute.call_count == 2
-    assert "UPDATE" in conn.execute.call_args_list[0][0][0]
-    assert "DELETE" in conn.execute.call_args_list[1][0][0]
+    assert conn.execute.call_count == n
+    for i in range(len(_WORM_TABLES)):
+        off = i * 2
+        assert "UPDATE" in conn.execute.call_args_list[off][0][0]
+        assert "DELETE" in conn.execute.call_args_list[off + 1][0][0]
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +64,6 @@ async def test_worm_update_succeeds_raises_runtime_error():
     conn = _conn()
     conn.execute.side_effect = [
         None,  # UPDATE succeeds — DANGER
-        asyncpg.exceptions.InsufficientPrivilegeError("DELETE denied"),
     ]
 
     with pytest.raises(RuntimeError, match="UPDATE on event_log succeeded"):
@@ -85,7 +87,7 @@ async def test_worm_delete_succeeds_raises_runtime_error():
 async def test_worm_both_succeed_raises_on_update_first():
     """If both UPDATE and DELETE succeed, only UPDATE error is raised."""
     conn = _conn()
-    conn.execute.side_effect = [None, None]  # both succeed
+    conn.execute.side_effect = [None, None]  # both succeed on first table
 
     with pytest.raises(RuntimeError, match="UPDATE on event_log succeeded"):
         await verify_worm_enforcement(conn)
@@ -100,9 +102,7 @@ async def test_worm_both_succeed_raises_on_update_first():
 async def test_table_missing_propagates_error():
     """If the table doesn't exist, the error propagates (not caught)."""
     conn = _conn()
-    conn.execute.side_effect = asyncpg.exceptions.UndefinedTableError(
-        "event_log missing"
-    )
+    conn.execute.side_effect = asyncpg.exceptions.UndefinedTableError("event_log missing")
 
     with pytest.raises(asyncpg.exceptions.UndefinedTableError):
         await verify_worm_enforcement(conn)
@@ -130,14 +130,13 @@ async def test_probe_uses_where_false():
     conn.execute.side_effect = [
         asyncpg.exceptions.InsufficientPrivilegeError("no"),
         asyncpg.exceptions.InsufficientPrivilegeError("no"),
-    ]
+    ] * len(_WORM_TABLES)
 
     await verify_worm_enforcement(conn)
 
-    update_sql = conn.execute.call_args_list[0][0][0]
-    delete_sql = conn.execute.call_args_list[1][0][0]
-    assert "WHERE FALSE" in update_sql
-    assert "WHERE FALSE" in delete_sql
+    for call in conn.execute.call_args_list:
+        sql = call[0][0]
+        assert "WHERE FALSE" in sql
 
 
 # ---------------------------------------------------------------------------

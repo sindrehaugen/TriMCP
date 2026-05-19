@@ -8,20 +8,27 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TypeVar
 from uuid import UUID
 
 import asyncpg
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from trimcp.background_task_manager import create_tracked_task
 from trimcp.db_utils import scoped_pg_session
+from trimcp.mongo_bulk import fetch_episode_previews_by_ref, normalize_payload_ref
 
 log = logging.getLogger("tri-stack-orchestrator.temporal")
 
+MAX_DIFF_ITEMS: int = 1000
+_MAX_COMPARE_QUERY_LEN: int = 2048
 
-# Mirrored from orchestrator.py for extraction purity
+_TDiffItem = TypeVar("_TDiffItem")
+
+
 def _metadata_as_dict(raw: Any) -> dict[str, Any]:
     if raw is None:
         return {}
@@ -31,6 +38,10 @@ def _metadata_as_dict(raw: Any) -> dict[str, Any]:
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
+            log.warning(
+                "Invalid memories.metadata JSON (prefix=%r)",
+                raw[:80],
+            )
             return {}
     return dict(raw)
 
@@ -42,17 +53,19 @@ def _lineage_source_id(row: Any) -> str | None:
     sid = meta.get("source_memory_id")
     if sid:
         return str(sid)
-    df = (
-        row.get("derived_from")
-        if hasattr(row, "get")
-        else getattr(row, "derived_from", None)
-    )
+    df = row.get("derived_from") if hasattr(row, "get") else getattr(row, "derived_from", None)
     if df is None:
         return None
     if isinstance(df, str):
         try:
             df = json.loads(df)
         except json.JSONDecodeError:
+            mem_id = row.get("memory_id") if hasattr(row, "get") else None
+            log.warning(
+                "Invalid derived_from JSON on memory %s (prefix=%r)",
+                mem_id,
+                df[:80],
+            )
             return None
     if isinstance(df, (list, tuple)) and len(df) > 0:
         return str(df[0])
@@ -80,6 +93,37 @@ def _build_lineage_modified(old_row: Any, new_row: Any) -> dict[str, Any]:
     }
 
 
+def _validate_compare_window(as_of_a: datetime, as_of_b: datetime) -> None:
+    if as_of_a >= as_of_b:
+        raise ValueError(
+            f"as_of_a must be strictly before as_of_b "
+            f"(got as_of_a={as_of_a.isoformat()}, as_of_b={as_of_b.isoformat()})"
+        )
+
+
+def _normalize_compare_query(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    query = raw.strip()
+    if not query:
+        raise ValueError("query must not be empty or whitespace-only")
+    if len(query) > _MAX_COMPARE_QUERY_LEN:
+        raise ValueError(f"query exceeds maximum length of {_MAX_COMPARE_QUERY_LEN} characters")
+    return query
+
+
+def _cap_diff_list(kind: str, items: list[_TDiffItem]) -> list[_TDiffItem]:
+    if len(items) <= MAX_DIFF_ITEMS:
+        return items
+    log.warning(
+        "compare_states %s list truncated from %d to %d items",
+        kind,
+        len(items),
+        MAX_DIFF_ITEMS,
+    )
+    return items[:MAX_DIFF_ITEMS]
+
+
 class TemporalOrchestrator:
     """Domain orchestrator for consolidation, snapshots, and state diffing."""
 
@@ -87,11 +131,11 @@ class TemporalOrchestrator:
         self,
         pg_pool: asyncpg.Pool,
         mongo_client: AsyncIOMotorClient,
-        engine,  # TriStackEngine — needed for semantic_search cross-call
+        semantic_search_fn: Callable[..., Awaitable[list[dict[str, Any]]]],
     ):
         self.pg_pool = pg_pool
         self.mongo_client = mongo_client
-        self._engine = engine
+        self._semantic_search_fn = semantic_search_fn
 
     # ------------------------------------------------------------------
     # Helpers
@@ -143,6 +187,16 @@ class TemporalOrchestrator:
         )
         return {str(r["memory_id"]): r for r in rows}
 
+    async def _hydrate_semantic_results(self, outs: list) -> None:
+        if not outs:
+            return
+        refs = [normalize_payload_ref(getattr(res, "payload_ref", None)) for res in outs]
+        previews = await fetch_episode_previews_by_ref(self._mongo_db, refs)
+        for res in outs:
+            key = normalize_payload_ref(getattr(res, "payload_ref", None))
+            if key and key in previews:
+                res.content_preview = previews[key]
+
     # ------------------------------------------------------------------
     # Consolidation
     # ------------------------------------------------------------------
@@ -169,12 +223,9 @@ class TemporalOrchestrator:
             mongo_client=self.mongo_client,
         )
 
-        import asyncio
-
-        asyncio.create_task(
-            worker.run_consolidation(
-                UUID(namespace_id), since_timestamp=since_timestamp
-            )
+        create_tracked_task(
+            worker.run_consolidation(UUID(namespace_id), since_timestamp=since_timestamp),
+            name=f"consolidation-{namespace_id}",
         )
         return {
             "status": "triggered",
@@ -262,9 +313,7 @@ class TemporalOrchestrator:
                 UUID(namespace_id),
             )
             if res == "DELETE 0":
-                raise ValueError(
-                    f"Snapshot {snapshot_id} not found in namespace {namespace_id}"
-                )
+                raise ValueError(f"Snapshot {snapshot_id} not found in namespace {namespace_id}")
 
         return DeleteSnapshotResult(status="ok", message=f"Snapshot {snapshot_id} deleted")
 
@@ -274,13 +323,14 @@ class TemporalOrchestrator:
 
     async def compare_states(self, payload) -> Any:
         """[Phase 2.2] Diff two temporal views."""
-        from bson import ObjectId
-
         from trimcp.models import SemanticSearchResult, StateDiffResult
 
         ns_uuid = self._ensure_uuid(payload.namespace_id)
         if ns_uuid is None:
             raise ValueError("namespace_id is required")
+
+        _validate_compare_window(payload.as_of_a, payload.as_of_b)
+        query = _normalize_compare_query(payload.query)
 
         agent_id = "default"
 
@@ -291,18 +341,6 @@ class TemporalOrchestrator:
             if rd is not None:
                 return str(rd)[:200]
             return None
-
-        async def _hydrate(outs: list) -> None:
-            db = self._mongo_db
-            for res in outs:
-                try:
-                    doc = await db.episodes.find_one({"_id": ObjectId(res.payload_ref)})
-                    if doc:
-                        res.content_preview = (
-                            doc.get("summary") or str(doc.get("raw_data", ""))
-                        )[:200]
-                except Exception:
-                    pass
 
         def _row_to_sem(row: Any, *, score: float, hit: dict[str, Any] | None) -> Any:
             meta = _metadata_as_dict(row.get("metadata"))
@@ -321,18 +359,17 @@ class TemporalOrchestrator:
                 metadata=meta if meta else None,
             )
 
-        if payload.query:
-            # Cross-orchestrator call: semantic_search lives on MemoryOrchestrator
-            res_a = await self._engine.semantic_search(
-                payload.query,
+        if query is not None:
+            res_a = await self._semantic_search_fn(
+                query,
                 str(payload.namespace_id),
                 agent_id,
                 limit=payload.top_k,
                 offset=0,
                 as_of=payload.as_of_a,
             )
-            res_b = await self._engine.semantic_search(
-                payload.query,
+            res_b = await self._semantic_search_fn(
+                query,
                 str(payload.namespace_id),
                 agent_id,
                 limit=payload.top_k,
@@ -367,7 +404,7 @@ class TemporalOrchestrator:
             consumed_a: set[str] = set()
             consumed_b: set[str] = set()
 
-            for yid in list(added_ids):
+            for yid in sorted(added_ids):
                 row_b = map_b.get(yid)
                 if row_b is None:
                     continue
@@ -378,18 +415,27 @@ class TemporalOrchestrator:
                     consumed_b.add(yid)
                     consumed_a.add(src)
 
-            added = [
-                _row_to_sem(map_b[i], score=score_b.get(i, 1.0), hit=hit_b.get(i))
-                for i in added_ids
-                if i not in consumed_b and i in map_b
-            ]
-            removed = [
-                _row_to_sem(map_a[i], score=score_a.get(i, 1.0), hit=hit_a.get(i))
-                for i in removed_ids
-                if i not in consumed_a and i in map_a
-            ]
+            added = sorted(
+                [
+                    _row_to_sem(map_b[i], score=score_b.get(i, 1.0), hit=hit_b.get(i))
+                    for i in sorted(added_ids)
+                    if i not in consumed_b and i in map_b
+                ],
+                key=lambda r: str(r.memory_id),
+            )
+            removed = sorted(
+                [
+                    _row_to_sem(map_a[i], score=score_a.get(i, 1.0), hit=hit_a.get(i))
+                    for i in sorted(removed_ids)
+                    if i not in consumed_a and i in map_a
+                ],
+                key=lambda r: str(r.memory_id),
+            )
 
-            await _hydrate(added + removed)
+            added = _cap_diff_list("added", added)
+            removed = _cap_diff_list("removed", removed)
+
+            await self._hydrate_semantic_results(added + removed)
 
             return StateDiffResult(
                 as_of_a=payload.as_of_a,
@@ -403,28 +449,31 @@ class TemporalOrchestrator:
         async with self.scoped_session(payload.namespace_id) as conn:
             all_rows = await conn.fetch(
                 """
-                SELECT m.id AS memory_id, m.namespace_id, m.agent_id, m.payload_ref,
-                       m.assertion_type, m.memory_type, m.valid_from, m.pii_redacted,
-                       m.derived_from, COALESCE(m.metadata, '{}'::jsonb) AS metadata,
-                       (SELECT ms.salience_score FROM memory_salience ms
-                        WHERE ms.memory_id = m.id AND ms.namespace_id = m.namespace_id
-                        ORDER BY ms.updated_at DESC NULLS LAST LIMIT 1) AS salience,
-                       'added' AS change_type
-                FROM memories m
-                WHERE m.namespace_id = $1
-                  AND m.valid_from > $2 AND m.valid_from <= $3
-                  AND (m.valid_to IS NULL OR m.valid_to > $3)
-                UNION ALL
-                SELECT m.id AS memory_id, m.namespace_id, m.agent_id, m.payload_ref,
-                       m.assertion_type, m.memory_type, m.valid_from, m.pii_redacted,
-                       m.derived_from, COALESCE(m.metadata, '{}'::jsonb) AS metadata,
-                       (SELECT ms.salience_score FROM memory_salience ms
-                        WHERE ms.memory_id = m.id AND ms.namespace_id = m.namespace_id
-                        ORDER BY ms.updated_at DESC NULLS LAST LIMIT 1) AS salience,
-                       'removed' AS change_type
-                FROM memories m
-                WHERE m.namespace_id = $1
-                  AND m.valid_to > $2 AND m.valid_to <= $3
+                SELECT * FROM (
+                    SELECT m.id AS memory_id, m.namespace_id, m.agent_id, m.payload_ref,
+                           m.assertion_type, m.memory_type, m.valid_from, m.pii_redacted,
+                           m.derived_from, COALESCE(m.metadata, '{}'::jsonb) AS metadata,
+                           (SELECT ms.salience_score FROM memory_salience ms
+                            WHERE ms.memory_id = m.id AND ms.namespace_id = m.namespace_id
+                            ORDER BY ms.updated_at DESC NULLS LAST LIMIT 1) AS salience,
+                           'added' AS change_type
+                    FROM memories m
+                    WHERE m.namespace_id = $1
+                      AND m.valid_from > $2 AND m.valid_from <= $3
+                      AND (m.valid_to IS NULL OR m.valid_to > $3)
+                    UNION ALL
+                    SELECT m.id AS memory_id, m.namespace_id, m.agent_id, m.payload_ref,
+                           m.assertion_type, m.memory_type, m.valid_from, m.pii_redacted,
+                           m.derived_from, COALESCE(m.metadata, '{}'::jsonb) AS metadata,
+                           (SELECT ms.salience_score FROM memory_salience ms
+                            WHERE ms.memory_id = m.id AND ms.namespace_id = m.namespace_id
+                            ORDER BY ms.updated_at DESC NULLS LAST LIMIT 1) AS salience,
+                           'removed' AS change_type
+                    FROM memories m
+                    WHERE m.namespace_id = $1
+                      AND m.valid_to > $2 AND m.valid_to <= $3
+                ) diff_rows
+                ORDER BY valid_from, memory_id, change_type
                 """,
                 ns_uuid,
                 payload.as_of_a,
@@ -441,7 +490,8 @@ class TemporalOrchestrator:
         consumed_added: set[str] = set()
         consumed_removed: set[str] = set()
 
-        for yid, row_b in added_by_id.items():
+        for yid in sorted(added_by_id.keys()):
+            row_b = added_by_id[yid]
             src = _lineage_source_id(row_b)
             if src and src in removed_by_id:
                 row_a = removed_by_id[src]
@@ -449,18 +499,27 @@ class TemporalOrchestrator:
                 consumed_added.add(yid)
                 consumed_removed.add(src)
 
-        added = [
-            _row_to_sem(row, score=1.0, hit=None)
-            for mid, row in added_by_id.items()
-            if mid not in consumed_added
-        ]
-        removed = [
-            _row_to_sem(row, score=1.0, hit=None)
-            for mid, row in removed_by_id.items()
-            if mid not in consumed_removed
-        ]
+        added = sorted(
+            [
+                _row_to_sem(added_by_id[mid], score=1.0, hit=None)
+                for mid in sorted(added_by_id.keys())
+                if mid not in consumed_added
+            ],
+            key=lambda r: str(r.memory_id),
+        )
+        removed = sorted(
+            [
+                _row_to_sem(removed_by_id[mid], score=1.0, hit=None)
+                for mid in sorted(removed_by_id.keys())
+                if mid not in consumed_removed
+            ],
+            key=lambda r: str(r.memory_id),
+        )
 
-        await _hydrate(added + removed)
+        added = _cap_diff_list("added", added)
+        removed = _cap_diff_list("removed", removed)
+
+        await self._hydrate_semantic_results(added + removed)
 
         return StateDiffResult(
             as_of_a=payload.as_of_a,

@@ -15,7 +15,6 @@ Uncle Bob SRP refactoring (2026-05-08):
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
@@ -25,7 +24,6 @@ from trimcp.models import (
     BoostMemoryRequest,
     ForgetMemoryRequest,
     GetRecentContextRequest,
-    MediaPayload,
     SemanticSearchRequest,
     StoreMemoryRequest,
     UnredactMemoryRequest,
@@ -37,12 +35,12 @@ from trimcp.orchestrator import TriStackEngine
 
 def _ok_response(payload_ref: str, **extras: Any) -> str:
     """Serialize a standard {"status": "ok", "payload_ref": ...} envelope."""
-    return json.dumps({"status": "ok", "payload_ref": payload_ref, **extras})
+    return json.dumps({"status": "ok", "payload_ref": payload_ref, **extras}, default=str)
 
 
 def _serialize(data: object) -> str:
     """Serialize a dict or list to a JSON string for MCP TextContent wrapping."""
-    return json.dumps(data)
+    return json.dumps(data, default=str)
 
 
 # ── MCP Tool Handlers ─────────────────────────────────────────────────────────
@@ -53,16 +51,17 @@ async def handle_store_memory(engine: TriStackEngine, arguments: dict[str, Any])
     """Persist a memory (conversation turn, document, or summary) to the Tri-Stack."""
     payload = StoreMemoryRequest(**arguments)
     result = await engine.store_memory(payload)
+    payload_ref = result.get("payload_ref")
+    if not isinstance(payload_ref, str) or not payload_ref:
+        raise ValueError("Invalid engine response: missing or empty payload_ref")
     return _ok_response(
-        result["payload_ref"],
+        payload_ref,
         contradiction=result.get("contradiction"),
     )
 
 
 @mcp_handler
-async def handle_store_artifact(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_store_artifact(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """Ingest large artifacts (media, PDF, log, etc.) into the Quad-Stack."""
     payload = ArtifactPayload(**arguments)
     mongo_id = await engine.store_artifact(payload)
@@ -71,14 +70,16 @@ async def handle_store_artifact(
 
 @mcp_handler
 async def handle_store_media(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
-    """[DEPRECATED] Alias for store_artifact."""
-    return await handle_store_artifact(engine, arguments)
+    """[DEPRECATED] Alias for store_artifact. Use store_artifact instead."""
+    result_json = await handle_store_artifact(engine, arguments)
+    data = json.loads(result_json)
+    data["deprecated"] = True
+    data["replacement"] = "store_artifact"
+    return json.dumps(data, default=str)
 
 
 @mcp_handler
-async def handle_semantic_search(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_semantic_search(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """Search stored memories by semantic similarity (pgvector cosine search)."""
     req = SemanticSearchRequest(**arguments)
     results = await engine.semantic_search(
@@ -89,26 +90,21 @@ async def handle_semantic_search(
         offset=req.offset,
         as_of=req.as_of,
     )
-    return await asyncio.to_thread(_serialize, results)
+    return _serialize(results)
 
 
 @mcp_handler
-async def handle_get_recent_context(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_get_recent_context(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """Retrieve the most recent cached context for a user/session from Redis."""
     req = GetRecentContextRequest(**arguments)
-    context = await asyncio.wait_for(
-        engine.recall_recent(
-            namespace_id=str(req.namespace_id),
-            agent_id=req.user_id or "default",
-            limit=req.limit,
-            as_of=req.as_of,
-            offset=req.offset,
-        ),
-        timeout=5.0,
+    context = await engine.recall_recent(
+        namespace_id=str(req.namespace_id),
+        agent_id=req.agent_id or "default",
+        limit=req.limit,
+        as_of=req.as_of,
+        offset=req.offset,
     )
-    return await asyncio.to_thread(_serialize, {"context": context})
+    return _serialize({"context": context})
 
 
 @mcp_handler
@@ -116,37 +112,33 @@ async def handle_boost_memory(engine: TriStackEngine, arguments: dict[str, Any])
     """Boost the salience of a memory for the calling agent."""
     req = BoostMemoryRequest(**arguments)
     res = await engine.boost_memory(
-        memory_id=req.memory_id,
+        memory_id=str(req.memory_id),
         agent_id=req.agent_id,
-        namespace_id=req.namespace_id,
+        namespace_id=str(req.namespace_id),
         factor=req.factor,
     )
     return _serialize(res)
 
 
 @mcp_handler
-async def handle_forget_memory(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_forget_memory(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """Set salience to 0.0 for the calling agent (soft-delete)."""
     req = ForgetMemoryRequest(**arguments)
     res = await engine.forget_memory(
-        memory_id=req.memory_id,
+        memory_id=str(req.memory_id),
         agent_id=req.agent_id,
-        namespace_id=req.namespace_id,
+        namespace_id=str(req.namespace_id),
     )
     return _serialize(res)
 
 
 @mcp_handler
-async def handle_unredact_memory(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_unredact_memory(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """Reverse pseudonymisation for a given memory (requires elevated permissions)."""
     req = UnredactMemoryRequest(**arguments)
     result = await engine.unredact_memory(
-        memory_id=req.memory_id,
-        namespace_id=req.namespace_id,
+        memory_id=str(req.memory_id),
+        namespace_id=str(req.namespace_id),
         agent_id=req.agent_id,
     )
     return _serialize(result)

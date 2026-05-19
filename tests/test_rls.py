@@ -4,16 +4,15 @@ Tests for Row Level Security (RLS) connection lifecycles, transaction scopes, an
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any, Final
-from uuid import UUID, uuid4
+from typing import Any
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 
-from trimcp.db_utils import scoped_pg_session, POOL_ACQUIRE_TIMEOUT
-from trimcp.auth import audited_session, set_namespace_context, _reset_rls_context
 from tests.fixtures.fake_asyncpg import RecordingFakeConnection, RecordingFakePool
+from trimcp.auth import audited_session
+from trimcp.db_utils import scoped_pg_session
 
 
 class MockRLSConnection(RecordingFakeConnection):
@@ -40,7 +39,9 @@ def fake_pool() -> tuple[RecordingFakePool, MockRLSConnection]:
 
 
 @pytest.mark.asyncio
-async def test_scoped_pg_session_success(fake_pool: tuple[RecordingFakePool, MockRLSConnection]) -> None:
+async def test_scoped_pg_session_success(
+    fake_pool: tuple[RecordingFakePool, MockRLSConnection],
+) -> None:
     """Test that scoped_pg_session checks out a connection, wraps in transaction, and sets context."""
     pool, conn = fake_pool
     namespace_id = uuid4()
@@ -58,18 +59,16 @@ async def test_scoped_pg_session_success(fake_pool: tuple[RecordingFakePool, Moc
     # After session exits, transaction should be closed (depth == 0)
     assert not conn.is_in_transaction()
 
-    # Context must have been cleared in finally block
+    # SET LOCAL is cleared at transaction end — no explicit reset query (FIX-011).
     set_config_calls = [q for q in conn.recorded_queries if "set_config" in q[0]]
-    assert len(set_config_calls) == 2
+    assert len(set_config_calls) == 1
     assert set_config_calls[0][1][0] == str(namespace_id)
-    if set_config_calls[1][1]:
-        assert set_config_calls[1][1][0] == ""
-    else:
-        assert "''" in set_config_calls[1][0]
 
 
 @pytest.mark.asyncio
-async def test_scoped_pg_session_exception_resets_context(fake_pool: tuple[RecordingFakePool, MockRLSConnection]) -> None:
+async def test_scoped_pg_session_exception_resets_context(
+    fake_pool: tuple[RecordingFakePool, MockRLSConnection],
+) -> None:
     """Test that context is still reset and transaction closed even if block raises an exception."""
     pool, conn = fake_pool
     namespace_id = uuid4()
@@ -79,25 +78,22 @@ async def test_scoped_pg_session_exception_resets_context(fake_pool: tuple[Recor
             assert conn.is_in_transaction()
             raise ValueError("Block error")
 
-    # Transaction closed
+    # Transaction closed (SET LOCAL cleared on rollback)
     assert not conn.is_in_transaction()
 
-    # Context reset called
     set_config_calls = [q for q in conn.recorded_queries if "set_config" in q[0]]
-    assert len(set_config_calls) == 2
-    if set_config_calls[1][1]:
-        assert set_config_calls[1][1][0] == ""
-    else:
-        assert "''" in set_config_calls[1][0]
+    assert len(set_config_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_scoped_pg_session_requires_namespace(fake_pool: tuple[RecordingFakePool, MockRLSConnection]) -> None:
+async def test_scoped_pg_session_requires_namespace(
+    fake_pool: tuple[RecordingFakePool, MockRLSConnection],
+) -> None:
     """Test that scoped_pg_session fails closed if namespace is missing/invalid."""
     pool, conn = fake_pool
 
     with pytest.raises(ValueError, match="namespace_id is required"):
-        async with scoped_pg_session(pool, None): # type: ignore
+        async with scoped_pg_session(pool, None):  # type: ignore
             pass
 
     with pytest.raises(ValueError, match="namespace_id is required"):
@@ -137,18 +133,15 @@ async def test_audited_session_flow(fake_pool: tuple[RecordingFakePool, MockRLSC
             assert mock_append.call_args[1]["event_type"] == "test_event"
             assert mock_append.call_args[1]["params"]["reason"] == "just testing"
 
-        # Cleared in finally
         assert not conn.is_in_transaction()
         set_config_calls = [q for q in conn.recorded_queries if "set_config" in q[0]]
         assert len(set_config_calls) == 2
-        if set_config_calls[1][1]:
-            assert set_config_calls[1][1][0] == ""
-        else:
-            assert "''" in set_config_calls[1][0]
 
 
 @pytest.mark.asyncio
-async def test_audited_session_fails_closed_on_audit_failure(fake_pool: tuple[RecordingFakePool, MockRLSConnection]) -> None:
+async def test_audited_session_fails_closed_on_audit_failure(
+    fake_pool: tuple[RecordingFakePool, MockRLSConnection],
+) -> None:
     """Test that if audit log write fails, audited_session immediately raises and block never executes."""
     pool, conn = fake_pool
     namespace_id = uuid4()

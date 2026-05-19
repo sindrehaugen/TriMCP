@@ -19,6 +19,7 @@ GB-scale tenant exports without crashing the orchestrator.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -43,12 +44,11 @@ log = logging.getLogger("trimcp.snapshot_mcp_handlers")
 # ── Stream batching constants ─────────────────────────────────────────────
 _STREAM_BATCH_SIZE: int = 500  # rows per server-side cursor fetch
 _STREAM_PROGRESS_INTERVAL: int = 1000  # emit a progress line every N rows
+_MAX_EXPORT_ROWS: int = 1_000_000
 
 
 @mcp_handler
-async def handle_create_snapshot(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_create_snapshot(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """Create a named point-in-time reference for a namespace."""
     req = build_create_snapshot_request(arguments)
     res = await engine.create_snapshot(req)
@@ -56,18 +56,14 @@ async def handle_create_snapshot(
 
 
 @mcp_handler
-async def handle_list_snapshots(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_list_snapshots(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """List all snapshots for a namespace."""
     res = await engine.list_snapshots(arguments[SNAPSHOT_ARG_KEYS.NAMESPACE_ID])
     return serialize_snapshot_list(res)
 
 
 @mcp_handler
-async def handle_delete_snapshot(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_delete_snapshot(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """Delete a point-in-time reference."""
     res = await engine.delete_snapshot(
         snapshot_id=arguments[SNAPSHOT_ARG_KEYS.SNAPSHOT_ID],
@@ -77,9 +73,7 @@ async def handle_delete_snapshot(
 
 
 @mcp_handler
-async def handle_compare_states(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_compare_states(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """Diff two temporal views of a namespace."""
     req = build_compare_states_request(arguments)
     res = await engine.compare_states(req)
@@ -116,7 +110,12 @@ async def stream_snapshot_export(
         yield json.dumps({"type": "error", "message": "Engine not connected"}) + "\n"
         return
 
-    ns_uuid = uuid.UUID(namespace_id)
+    try:
+        ns_uuid = uuid.UUID(namespace_id)
+    except ValueError:
+        yield json.dumps({"type": "error", "message": "Invalid namespace_id"}) + "\n"
+        return
+
     export_as_of = as_of or datetime.now(timezone.utc)
 
     # ── Resolve snapshot_id to as_of ─────────────────────────────────────
@@ -191,6 +190,22 @@ async def stream_snapshot_export(
             )
             total_expected = int(count_row["total"]) if count_row else 0
 
+            if total_expected > _MAX_EXPORT_ROWS:
+                yield (
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "message": (
+                                f"Export size {total_expected} rows exceeds the maximum "
+                                f"of {_MAX_EXPORT_ROWS}. Use snapshot_id + filtering to export "
+                                "smaller subsets."
+                            ),
+                        }
+                    )
+                    + "\n"
+                )
+                return
+
             # Server-side cursor — never materialises full result set
             async with conn.transaction():
                 cursor = conn.cursor(
@@ -216,13 +231,28 @@ async def stream_snapshot_export(
                     WHERE m.namespace_id = $1
                       AND m.valid_from <= $2
                       AND (m.valid_to IS NULL OR m.valid_to > $2)
-                    ORDER BY m.valid_from ASC
+                    ORDER BY m.valid_from ASC, m.id ASC
                     """,
                     ns_uuid,
                     export_as_of,
                 )
 
-                async for batch in cursor.fetchmany(_STREAM_BATCH_SIZE):
+                _next_progress = _STREAM_PROGRESS_INTERVAL
+                while True:
+                    try:
+                        batch = await asyncio.wait_for(
+                            cursor.fetchmany(_STREAM_BATCH_SIZE),
+                            timeout=30.0,
+                        )
+                    except asyncio.TimeoutError:
+                        log.error(
+                            "Snapshot export cursor timed out at row %d; aborting export.",
+                            total,
+                        )
+                        yield (json.dumps({"type": "error", "message": "Export timed out"}) + "\n")
+                        return
+                    if not batch:
+                        break
                     for row in batch:
                         memory = _serialize_memory_row(row)
                         yield (
@@ -235,27 +265,26 @@ async def stream_snapshot_export(
                             + "\n"
                         )
                         total += 1
-
-                    # Periodic progress markers
-                    if total % _STREAM_PROGRESS_INTERVAL == 0:
-                        yield (
-                            json.dumps(
-                                {
-                                    "type": "progress",
-                                    "exported": total,
-                                    "total_expected": total_expected,
-                                }
+                        if total >= _next_progress:
+                            yield (
+                                json.dumps(
+                                    {
+                                        "type": "progress",
+                                        "exported": total,
+                                        "total_expected": total_expected,
+                                    }
+                                )
+                                + "\n"
                             )
-                            + "\n"
-                        )
+                            _next_progress += _STREAM_PROGRESS_INTERVAL
 
-    except Exception as exc:
+    except Exception:
         log.exception("Snapshot export failed at memory %d", total)
         yield (
             json.dumps(
                 {
                     "type": "error",
-                    "message": f"Export failed after {total} records: {exc}",
+                    "message": f"Export failed after {total} records",
                 }
             )
             + "\n"
@@ -299,7 +328,10 @@ def _serialize_memory_row(row: Any) -> dict[str, Any]:
         elif isinstance(v, datetime):
             out[k] = v.astimezone(timezone.utc).isoformat() if v else None
         elif k == "metadata" and isinstance(v, str):
-            out[k] = json.loads(v)
+            try:
+                out[k] = json.loads(v)
+            except (json.JSONDecodeError, ValueError):
+                out[k] = {}
         else:
             out[k] = v
     return out

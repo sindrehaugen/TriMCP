@@ -13,13 +13,38 @@ TriMCP has three server surfaces, each with independent auth middleware stacks:
 
 | Surface | File | Auth mechanisms |
 |---|---|---|
-| **MCP stdio** | `server.py` | Namespace token in tool args; admin check via `TRIMCP_ADMIN_OVERRIDE` or `TRIMCP_ADMIN_API_KEY` |
+| **MCP stdio** | `server.py` | `mcp_api_key` / `TRIMCP_MCP_API_KEY` (required in production); admin tools via `admin_api_key` or `TRIMCP_ADMIN_OVERRIDE` (dev only) |
 | **Admin REST API** | `admin_server.py` | HMAC-SHA256 + HTTP Basic (UI) + optional mTLS |
 | **A2A JSON-RPC** | `trimcp/a2a_server.py` | JWT Bearer + optional mTLS + cryptographic grant tokens |
 
 ---
 
-## 2. HMAC API Authentication (Admin Server)
+## 2. MCP stdio tenant authentication
+
+Production MCP clients must pass a tenant API key on every non-admin tool call:
+
+```json
+{
+  "mcpServers": {
+    "TriMCP": {
+      "command": "python",
+      "args": ["server.py"],
+      "env": {
+        "TRIMCP_MCP_API_KEY": "<long-random-secret>",
+        "TRIMCP_MASTER_KEY": "<32+ byte signing key>"
+      }
+    }
+  }
+}
+```
+
+Each tool invocation should include `"mcp_api_key": "<same secret>"` in the arguments (tests inject this automatically via `tests/conftest.py`). `trimcp.config.validate()` fails closed in production when `TRIMCP_MCP_API_KEY` is unset.
+
+Admin-scoped MCP tools (`start_migration`, `rotate_signing_key`, replay admin tools, etc.) require `"admin_api_key": "<TRIMCP_ADMIN_API_KEY>"` instead. In production, set `TRIMCP_DISABLE_MIGRATION_MCP=true` unless you are in an explicit migration window (`TRIMCP_ALLOW_MIGRATION_MCP_IN_PROD=true`).
+
+---
+
+## 3. HMAC API Authentication (Admin Server)
 
 All `/api/` routes on `admin_server.py` require an HMAC-SHA256 `Authorization` header.
 
@@ -47,7 +72,7 @@ REDIS_URL=redis://your-shared-redis:6379/0
 
 ---
 
-## 3. JWT / Bearer Authentication (A2A Server)
+## 4. JWT / Bearer Authentication (A2A Server)
 
 The A2A server and agent-facing routes use JWT Bearer tokens for identity.
 
@@ -102,7 +127,7 @@ Tokens accepted by the A2A server will be rejected by the admin server and vice 
 
 ---
 
-## 4. mTLS Client Certificate Enforcement
+## 5. mTLS Client Certificate Enforcement
 
 `MTLSAuthMiddleware` (`trimcp/mtls.py`) can be applied to either the Admin server or the A2A server. It reads the client certificate from:
 - **Direct TLS** (uvicorn with `--ssl-certfile`/`--ssl-keyfile`): from the ASGI `scope["ssl_object"]`.
@@ -188,7 +213,7 @@ sequenceDiagram
 
 ---
 
-## 5. Signing Key Management
+## 6. Signing Key Management
 
 All memories and events are HMAC-SHA256 signed at write time. Keys are **AES-256-GCM encrypted at rest** using `TRIMCP_MASTER_KEY`.
 
@@ -215,7 +240,7 @@ There is no automated master-key rotation helper in v1.0 — do this offline usi
 
 ---
 
-## 6. Row-Level Security (RLS) Enforcement
+## 7. Row-Level Security (RLS) Enforcement
 
 RLS is enforced via a PostgreSQL session variable `trimcp.namespace_id` that must be set inside an explicit transaction before any query executes.
 
@@ -243,7 +268,7 @@ Background workers (`garbage_collector.py`, `reembedding_worker.py`) use system-
 
 ---
 
-## 7. PII Redaction
+## 8. PII Redaction
 
 See [pii.md](pii.md) for the full pipeline. Security summary:
 - Presidio-based NER + regex fallback runs **before** payloads reach LLMs or external storage.
@@ -252,7 +277,7 @@ See [pii.md](pii.md) for the full pipeline. Security summary:
 
 ---
 
-## 8. Security Checklist — Production Readiness
+## 9. Security Checklist — Production Readiness
 
 | Item | Env var / action | Status |
 |---|---|---|

@@ -119,16 +119,17 @@ def _create_openai(model: str | None, cred_ref: str | None) -> LLMProvider:
 
 
 def _create_azure_openai(model: str | None, cred_ref: str | None) -> LLMProvider:
+    from trimcp.config import cfg
     from trimcp.providers.openai_compat import OpenAICompatProvider
 
     api_key = _resolve_credential(cred_ref, env_fallback="TRIMCP_AZURE_OPENAI_API_KEY")
-    endpoint = os.getenv("TRIMCP_AZURE_OPENAI_ENDPOINT", "")
+    endpoint = cfg.TRIMCP_AZURE_OPENAI_ENDPOINT
     if not endpoint:
         raise LLMProviderError(
             "azure_openai provider requires TRIMCP_AZURE_OPENAI_ENDPOINT",
             provider=f"azure_openai/{model}",
         )
-    deployment = os.getenv("TRIMCP_AZURE_OPENAI_DEPLOYMENT", model or "gpt-5")
+    deployment = cfg.TRIMCP_AZURE_OPENAI_DEPLOYMENT or model or "gpt-5"
     return OpenAICompatProvider(
         base_url=f"{endpoint.rstrip('/')}/openai/deployments/{deployment}",
         api_key=api_key,
@@ -173,16 +174,17 @@ def _create_google_gemini(model: str | None, cred_ref: str | None) -> LLMProvide
 
 
 def _create_openai_compatible(model: str | None, cred_ref: str | None) -> LLMProvider:
+    from trimcp.config import cfg
     from trimcp.providers.openai_compat import OpenAICompatProvider
 
     api_key = _resolve_credential(cred_ref, env_fallback="TRIMCP_OPENAI_COMPAT_API_KEY")
-    base_url = os.getenv("TRIMCP_OPENAI_COMPAT_BASE_URL", "")
+    base_url = cfg.TRIMCP_OPENAI_COMPAT_BASE_URL
     if not base_url:
         raise LLMProviderError(
             "openai_compatible provider requires TRIMCP_OPENAI_COMPAT_BASE_URL",
             provider="openai_compatible",
         )
-    compat_model = model or os.getenv("TRIMCP_OPENAI_COMPAT_MODEL") or "default"
+    compat_model = model or cfg.TRIMCP_OPENAI_COMPAT_MODEL or "default"
     return OpenAICompatProvider(
         base_url=base_url,
         api_key=api_key,
@@ -234,20 +236,25 @@ def _resolve_credential(cred_ref: str | None, *, env_fallback: str) -> str:
       * ``"ref:vault/<path>"`` → not yet implemented; raises
       * Anything else → treat as a literal key (logs a warning)
     """
+    from trimcp.config import cfg
+
     if not cred_ref:
         value = os.getenv(env_fallback, "")
         if not value:
-            log.warning(
-                "LLM provider credential not set.  Set the %s environment variable.",
-                env_fallback,
-            )
+            msg = f"LLM provider credential not set. Set the {env_fallback} environment variable."
+            if cfg.IS_PROD:
+                raise LLMProviderError(msg, provider="factory")
+            log.warning("%s", msg)
         return value
 
     if cred_ref.startswith("ref:env/"):
         var_name = cred_ref[len("ref:env/") :]
         value = os.getenv(var_name, "")
         if not value:
-            log.warning("Credential reference %r resolved to empty string.", cred_ref)
+            msg = f"Credential reference {cred_ref!r} resolved to empty string."
+            if cfg.IS_PROD:
+                raise LLMProviderError(msg, provider="factory")
+            log.warning("%s", msg)
         return value
 
     if cred_ref.startswith("ref:vault/"):
@@ -261,6 +268,12 @@ def _resolve_credential(cred_ref: str | None, *, env_fallback: str) -> str:
     # or interpolate ``cred_ref`` (the raw key) into log messages or exceptions.
     # Future debugging must use redaction (e.g. ``_redact_api_key``) if any key
     # material is ever logged.
+    if cfg.IS_PROD:
+        raise LLMProviderError(
+            "Literal LLM credentials in namespace metadata are forbidden in production. "
+            "Use ref:env/<ENV_VAR> instead.",
+            provider="factory",
+        )
     log.warning(
         "LLM credential is a literal string, not a ref:env/ reference.  "
         "Avoid storing keys directly in namespace metadata.",

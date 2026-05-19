@@ -1,4 +1,4 @@
-"""Tests for cognitive (salience-map, LLM payload) and fleet admin helpers."""
+﻿"""Tests for cognitive (salience-map, LLM payload) and fleet admin helpers."""
 
 from __future__ import annotations
 
@@ -52,7 +52,9 @@ async def test_fetch_fleet_overview_page_slug_prefix_sql_args():
         open_contradictions=2,
         consolidation_last_status="completed",
         consolidation_last_finished_at=now - timedelta(days=1),
-        quota_entries=[{"resource_type": "x", "agent_id": "a", "used_amount": 1, "limit_amount": 10}],
+        quota_entries=[
+            {"resource_type": "x", "agent_id": "a", "used_amount": 1, "limit_amount": 10}
+        ],
         bridge_active_count=1,
         bridge_next_expiry=now + timedelta(days=3),
         last_event_at=now - timedelta(days=1),
@@ -91,8 +93,9 @@ async def test_fetch_fleet_overview_page_slug_prefix_sql_args():
 async def test_fetch_fleet_quota_entries_json_string_parsed():
     from trimcp.admin_routes import fetch_fleet_overview_page
 
-    now = datetime.now(timezone.utc)
-    quota_json = json.dumps([{"resource_type": "q", "agent_id": "", "used_amount": 0, "limit_amount": 1}])
+    quota_json = json.dumps(
+        [{"resource_type": "q", "agent_id": "", "used_amount": 0, "limit_amount": 1}]
+    )
     row = AttrDict(
         namespace_id=uuid.uuid4(),
         slug="ns",
@@ -174,7 +177,7 @@ async def test_fetch_salience_map_points_shapes_output():
 @pytest.mark.asyncio
 async def test_api_admin_salience_map_requires_namespace_id():
     mock_engine = MagicMock()
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_salience_map
 
         request = Request(
@@ -192,7 +195,7 @@ async def test_api_admin_salience_map_requires_namespace_id():
 @pytest.mark.asyncio
 async def test_api_admin_llm_payload_missing_ids():
     mock_engine = MagicMock()
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_llm_payload
 
         request = Request(
@@ -218,7 +221,7 @@ async def test_api_admin_llm_payload_fetches_when_uri_present():
     mock_engine.pg_pool.acquire.return_value.__aenter__.return_value = mock_conn
     mock_conn.fetchrow.return_value = {"llm_payload_uri": uri}
 
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         with patch(
             "trimcp.salience.fetch_llm_payload",
             AsyncMock(return_value={"prompt": "x", "response": "y"}),
@@ -252,10 +255,13 @@ async def test_api_admin_fleet_overview_includes_rls():
     rls = {"memories": True, "replay_runs": False}
     items = [{"namespace_id": str(uuid.uuid4()), "slug": "a"}]
 
-    with patch("admin_server.engine", mock_engine):
-        with patch("admin_server.fetch_pg_rls_snapshot", AsyncMock(return_value=rls)):
+    with patch("trimcp.admin_state.engine", mock_engine):
+        with patch(
+            "trimcp.admin_handlers.fleet.fetch_pg_rls_snapshot",
+            AsyncMock(return_value=rls),
+        ):
             with patch(
-                "admin_server.fetch_fleet_overview_page",
+                "trimcp.admin_handlers.fleet.fetch_fleet_overview_page",
                 AsyncMock(return_value=(items, 1)),
             ):
                 from admin_server import api_admin_fleet_overview
@@ -293,8 +299,8 @@ async def test_api_admin_bridge_renew_audit_and_dispatch():
 
     mock_renew = AsyncMock(return_value=None)
 
-    with patch("admin_server.engine", mock_engine):
-        with patch("admin_server.logger") as log:
+    with patch("trimcp.admin_state.engine", mock_engine):
+        with patch("trimcp.admin_handlers._shared.logger") as log:
             with patch("trimcp.bridge_renewal.renew_gdrive", mock_renew):
                 from admin_server import api_admin_bridge_renew
 
@@ -325,11 +331,9 @@ async def test_api_admin_memory_boost_calls_engine():
     mem_id = uuid.uuid4()
 
     mock_engine = MagicMock()
-    mock_engine.boost_memory = AsyncMock(
-        return_value={"status": "success", "boosted_by": 0.2}
-    )
+    mock_engine.boost_memory = AsyncMock(return_value={"status": "success", "boosted_by": 0.2})
 
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_memory_boost
 
         request = MagicMock()
@@ -373,9 +377,9 @@ async def test_api_admin_contradictions_recent_lists_items():
         }
     ]
 
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         with patch(
-            "admin_server.fetch_recent_open_contradictions",
+            "trimcp.admin_handlers.fleet.fetch_recent_open_contradictions",
             AsyncMock(return_value=sample),
         ):
             from admin_server import api_admin_contradictions_recent
@@ -399,7 +403,7 @@ async def test_api_admin_contradictions_recent_lists_items():
 @pytest.mark.asyncio
 async def test_api_admin_namespace_bridges_requires_uuid():
     mock_engine = MagicMock()
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_namespace_bridges
 
         request = Request(
@@ -424,7 +428,7 @@ async def test_api_admin_events_include_details():
         id=uuid.uuid4(),
         namespace_id=ns,
         agent_id="system",
-        event_type="consolidation",
+        event_type="consolidation_run",
         event_seq=1,
         occurred_at=now,
         parent_event_id=None,
@@ -439,7 +443,7 @@ async def test_api_admin_events_include_details():
     mock_conn.fetchrow = AsyncMock(return_value=AttrDict(total=1))
     mock_conn.fetch = AsyncMock(return_value=[row])
 
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_events
 
         qs = f"namespace_id={ns}&include_details=1&limit=5".encode()

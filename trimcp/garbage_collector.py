@@ -14,6 +14,7 @@ Hardening:
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -23,31 +24,64 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from trimcp.auth import set_namespace_context
 from trimcp.config import cfg, redact_secrets_in_text
 
+log = logging.getLogger("tri-stack-gc")
+
 _GC_LOCK_KEY: str = "trimcp:gc:lock"
 _GC_LOCK_TTL_SECONDS: int = cfg.GC_INTERVAL_SECONDS + 60
 
 
-async def _acquire_gc_lock() -> bool:
-    """Try to acquire a Redis distributed lock for the GC singleton.
+class _NoOpLock:
+    """Sentinel returned when Redis is unavailable — no-op release."""
 
-    Returns ``True`` if the lock was acquired, ``False`` if another
-    instance is already running.
+    async def aclose(self) -> None:
+        pass
+
+    async def delete(self, key: str) -> None:
+        pass
+
+    def __bool__(self) -> bool:
+        return True
+
+
+async def _acquire_gc_lock() -> Any:
+    """Acquire the GC distributed lock.
+
+    Returns the open Redis client if acquired (caller must call _release_gc_lock),
+    or None if the lock is held by another instance or Redis is unavailable.
+    Returns a sentinel when REDIS_URL is not set (no-op mode).
     """
     if not cfg.REDIS_URL:
-        log.warning("REDIS_URL not set — GC distributed lock disabled; "
-                    "multiple instances may race.")
-        return True
+        log.warning("REDIS_URL not set — GC distributed lock disabled.")
+        return _NoOpLock()
     try:
         from redis.asyncio import Redis as AsyncRedis
+
         client = AsyncRedis.from_url(cfg.REDIS_URL)
         acquired = await client.set(_GC_LOCK_KEY, "1", nx=True, ex=_GC_LOCK_TTL_SECONDS)
-        await client.aclose()
-        return bool(acquired)
+        if not acquired:
+            await client.aclose()
+            return None
+        return client
     except Exception as exc:
         log.error("GC lock acquisition failed: %s", exc)
-        return False  # fail-closed: abort the job on Redis outage to prevent concurrency bugs
+        return None
 
-log = logging.getLogger("tri-stack-gc")
+
+async def _release_gc_lock(lock_client: Any) -> None:
+    """Release the GC distributed lock and close the Redis client."""
+    if lock_client is None:
+        return
+    try:
+        if not isinstance(lock_client, _NoOpLock):
+            await lock_client.delete(_GC_LOCK_KEY)
+    except Exception as exc:
+        log.warning("GC lock release failed: %s", exc)
+    finally:
+        try:
+            await lock_client.aclose()
+        except Exception:
+            pass
+
 
 PAGE_SIZE = cfg.GC_PAGE_SIZE  # rows fetched per PG cursor page
 MAX_CONNECT_ATTEMPTS = cfg.GC_MAX_CONNECT_ATTEMPTS
@@ -67,8 +101,9 @@ async def _connect_with_retry() -> tuple[AsyncIOMotorClient, asyncpg.Pool]:
     last_exc: Exception | None = None
 
     for attempt in range(1, MAX_CONNECT_ATTEMPTS + 1):
+        mongo_client: AsyncIOMotorClient | None = None
         try:
-            mongo_client: AsyncIOMotorClient = AsyncIOMotorClient(
+            mongo_client = AsyncIOMotorClient(
                 cfg.MONGO_URI,
                 serverSelectionTimeoutMS=5_000,
             )
@@ -86,6 +121,11 @@ async def _connect_with_retry() -> tuple[AsyncIOMotorClient, asyncpg.Pool]:
 
         except Exception as exc:
             last_exc = exc
+            if mongo_client is not None:
+                try:
+                    mongo_client.close()
+                except Exception:
+                    pass
             log.warning(
                 "GC connect attempt %d/%d failed: %s. Retrying in %.0fs.",
                 attempt,
@@ -97,15 +137,15 @@ async def _connect_with_retry() -> tuple[AsyncIOMotorClient, asyncpg.Pool]:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 60)
 
-    raise RuntimeError(
-        f"GC could not connect after {MAX_CONNECT_ATTEMPTS} attempts: {last_exc}"
-    )
+    raise RuntimeError(f"GC could not connect after {MAX_CONNECT_ATTEMPTS} attempts: {last_exc}")
 
 
 # --- Paginated PG reference set builder ---
 
 
-async def _fetch_pg_ref_batch(conn: asyncpg.Connection, table: str, last_seen_id: UUID, limit: int) -> list[asyncpg.Record]:
+async def _fetch_pg_ref_batch(
+    conn: asyncpg.Connection, table: str, last_seen_id: UUID, limit: int
+) -> list[asyncpg.Record]:
     """Fetch a batch of payload_refs using keyset pagination."""
     # Keyset pagination — table name is from a hardcoded tuple, not user input
     return await conn.fetch(
@@ -173,8 +213,7 @@ async def _clean_orphaned_cascade(
     Iterates with ``await asyncio.sleep(0.1)`` between chunks to yield the
     event loop so other connections can process during a large GC sweep.
 
-    Returns cumulative counts for ``salience``, ``contradictions``, ``events``
-    across all chunks.
+    Returns cumulative counts for ``salience`` and ``contradictions`` across all chunks.
     """
     totals: dict[str, int] = {
         "salience": 0,
@@ -234,7 +273,7 @@ async def _clean_orphaned_cascade(
                                OR memory_b_id IN (SELECT memory_id FROM orphan_memory_ids))
                           AND namespace_id = $1::uuid
                         RETURNING 1 AS dummy
-                    ),
+                    )
                     SELECT
                         (SELECT count(*) FROM deleted_salience)      AS salience_count,
                         (SELECT count(*) FROM deleted_contradictions) AS contradictions_count
@@ -246,15 +285,17 @@ async def _clean_orphaned_cascade(
                         break
                     chunk_salience = int(row["salience_count"])
                     chunk_contradictions = int(row["contradictions_count"])
-                    if (
-                        chunk_salience == 0
-                        and chunk_contradictions == 0
-                    ):
+                    if chunk_salience == 0 and chunk_contradictions == 0:
                         break
                     totals["salience"] += chunk_salience
                     totals["contradictions"] += chunk_contradictions
         except Exception as exc:
-            log.error("GC: cascade cleanup failed for ns=%s: %s", namespace_id, exc)
+            log.error(
+                "GC: cascade cleanup chunk failed for ns=%s: %s — stopping cascade for "
+                "this namespace (partial cleanup may have occurred)",
+                namespace_id,
+                type(exc).__name__,
+            )
             break
 
         await asyncio.sleep(0.1)
@@ -275,9 +316,13 @@ async def _collect_orphans(
     candidates: list[tuple[str, str]] = []
 
     for col_name in ("episodes", "code_files"):
-        cursor = db[col_name].find(
-            {"ingested_at": {"$lt": cutoff}},
-            {"_id": 1},
+        cursor = (
+            db[col_name]
+            .find(
+                {"ingested_at": {"$lt": cutoff}},
+                {"_id": 1},
+            )
+            .max_time_ms(30_000)
         )
         async for doc in cursor:
             candidates.append((col_name, str(doc["_id"])))
@@ -301,13 +346,22 @@ async def _collect_orphans(
     # reference collection) and the per-namespace cascade loop below.
     namespaces = await _fetch_all_namespaces(pg_pool)
 
+    if not namespaces:
+        log.warning(
+            "GC: no namespaces found in PG — aborting orphan deletion to prevent "
+            "data loss. This may indicate an empty or misconfigured database."
+        )
+        return {
+            "deleted_docs": 0,
+            "deleted_salience": 0,
+            "deleted_contradictions": 0,
+        }
+
     pg_refs = await _fetch_pg_refs(pg_pool, namespaces)
     orphans = [(col, oid) for col, oid in candidates if oid not in pg_refs]
 
     if not orphans:
-        log.info(
-            "GC: all %d candidates referenced in PG — no orphans.", len(candidates)
-        )
+        log.info("GC: all %d candidates referenced in PG — no orphans.", len(candidates))
         return {
             "deleted_docs": 0,
             "deleted_nodes": 0,
@@ -335,14 +389,6 @@ async def _collect_orphans(
     # LEFT JOIN against memories, then cascades DELETEs to all dependent
     # tables in a single round-trip.  Every subquery and DELETE includes an
     # explicit namespace_id filter (defense-in-depth on top of RLS).
-
-    if not namespaces:
-        log.info("GC: no namespaces found — skipping PG maintenance passes.")
-        return {
-            "deleted_docs": deleted,
-            "deleted_salience": 0,
-            "deleted_contradictions": 0,
-        }
 
     log.info(
         "GC: running per-namespace cascade maintenance across %d namespace(s).",
@@ -401,7 +447,8 @@ async def run_gc_loop():
 
     try:
         while True:
-            if not await _acquire_gc_lock():
+            lock_client = await _acquire_gc_lock()
+            if lock_client is None:
                 log.info("GC lock held by another instance — skipping this pass.")
                 await asyncio.sleep(cfg.GC_INTERVAL_SECONDS)
                 continue
@@ -409,6 +456,8 @@ async def run_gc_loop():
                 await _collect_orphans(mongo_client, pg_pool)
             except Exception as exc:
                 log.error("GC pass raised unexpected error: %s", exc)
+            finally:
+                await _release_gc_lock(lock_client)
             await asyncio.sleep(cfg.GC_INTERVAL_SECONDS)
     finally:
         mongo_client.close()
@@ -417,7 +466,5 @@ async def run_gc_loop():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s [GC] %(levelname)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [GC] %(levelname)s %(message)s")
     asyncio.run(run_gc_loop())

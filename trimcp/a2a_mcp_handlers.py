@@ -25,12 +25,16 @@ from trimcp.a2a import (
     revoke_grant,
     verify_token,
 )
+from trimcp.auth import NamespaceContext
 from trimcp.mcp_errors import mcp_handler
 from trimcp.mcp_utils import build_caller_context as _build_caller_context
 from trimcp.mcp_utils import parse_scopes as _parse_scopes
+from trimcp.models import A2AQuerySharedRequest
 from trimcp.orchestrator import TriStackEngine
 
 log = logging.getLogger("trimcp.a2a_mcp_handlers")
+
+_MAX_SHARING_TOKEN_LEN: int = 4_096
 
 # ---------------------------------------------------------------------------
 # Private helpers — argument extraction (transport concern)
@@ -53,9 +57,7 @@ def _build_grant_request(arguments: dict[str, Any]) -> A2AGrantRequest:
 
 
 @mcp_handler
-async def handle_a2a_create_grant(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_a2a_create_grant(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """Create an A2A sharing grant — generates a token for cross-namespace access."""
     caller_ctx = _build_caller_context(arguments)
     grant_request = _build_grant_request(arguments)
@@ -73,22 +75,26 @@ async def handle_a2a_create_grant(
 
 
 @mcp_handler
-async def handle_a2a_revoke_grant(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_a2a_revoke_grant(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """Revoke an active A2A sharing grant."""
     caller_ctx = _build_caller_context(arguments)
 
+    raw_gid = arguments.get("grant_id")
+    if not raw_gid:
+        raise ValueError("grant_id is required")
+    try:
+        grant_id = uuid.UUID(str(raw_gid).strip())
+    except (ValueError, AttributeError):
+        raise ValueError("grant_id must be a valid UUID")
+
     async with engine.pg_pool.acquire(timeout=10.0) as conn:
-        revoked = await revoke_grant(conn, uuid.UUID(arguments["grant_id"]), caller_ctx)
+        revoked = await revoke_grant(conn, grant_id, caller_ctx)
 
     return json.dumps({"revoked": revoked})
 
 
 @mcp_handler
-async def handle_a2a_list_grants(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_a2a_list_grants(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """List all active A2A sharing grants owned by this namespace."""
     caller_ctx = _build_caller_context(arguments)
     include_inactive = bool(arguments.get("include_inactive", False))
@@ -96,32 +102,48 @@ async def handle_a2a_list_grants(
     async with engine.pg_pool.acquire(timeout=10.0) as conn:
         grants = await list_grants(conn, caller_ctx, include_inactive=include_inactive)
 
-    return json.dumps(grants)
+    return json.dumps({"status": "ok", "grants": grants}, default=str)
 
 
 @mcp_handler
-async def handle_a2a_query_shared(
-    engine: TriStackEngine, arguments: dict[str, Any]
-) -> str:
+async def handle_a2a_query_shared(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
     """Execute a semantic search against another agent's memories using an A2A token."""
-    consumer_ctx = _build_caller_context(arguments)
+    req = A2AQuerySharedRequest(**arguments)
+    if len(req.sharing_token) > _MAX_SHARING_TOKEN_LEN:
+        raise ValueError(f"sharing_token exceeds maximum length ({_MAX_SHARING_TOKEN_LEN} chars)")
+    consumer_ctx = NamespaceContext(
+        namespace_id=req.consumer_namespace_id,
+        agent_id=req.consumer_agent_id,
+    )
 
     async with engine.pg_pool.acquire(timeout=10.0) as conn:
-        verified = await verify_token(conn, arguments["sharing_token"], consumer_ctx)
+        verified = await verify_token(conn, req.sharing_token, consumer_ctx)
+
+    resource_id = req.resource_id or str(verified.owner_namespace_id)
+    if req.resource_type != "namespace" and not req.resource_id:
+        raise ValueError(f"resource_id is required when resource_type={req.resource_type!r}")
 
     enforce_scope(
         verified.scopes,
-        arguments.get("resource_type", "namespace"),
-        arguments.get("resource_id") or str(verified.owner_namespace_id),
+        req.resource_type,
+        resource_id,
         str(verified.owner_namespace_id),
     )
+
+    if verified.owner_namespace_id == consumer_ctx.namespace_id:
+        log.warning(
+            "A2A self-access: consumer_namespace=%s used token from same namespace "
+            "(owner_namespace=%s) — verify this is intentional",
+            consumer_ctx.namespace_id,
+            verified.owner_namespace_id,
+        )
 
     results = await engine.semantic_search(
         namespace_id=str(verified.owner_namespace_id),
         agent_id=verified.owner_agent_id,
-        query=arguments["query"],
-        limit=int(arguments.get("limit", arguments.get("top_k", 5))),
-        offset=int(arguments.get("offset", 0)),
+        query=req.query,
+        limit=req.top_k,
+        offset=0,
     )
 
-    return json.dumps({"results": results})
+    return json.dumps({"results": results}, default=str)

@@ -19,3 +19,9 @@ variable "worker_service_account_email" {
   type        = string
   description = "Grant objectAdmin on this bucket only"
 }
+
+variable "force_destroy" {
+  type        = bool
+  default     = false
+  description = "Allow Terraform to delete non-empty bucket (dev only)"
+}

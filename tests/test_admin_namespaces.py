@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 from starlette.requests import Request
 
-import os
 os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-test-key-32chars-long!!")
 
 
@@ -23,6 +24,7 @@ async def test_api_admin_namespaces_list():
     ns_id_1 = uuid.uuid4()
     ns_id_2 = uuid.uuid4()
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc)
 
     mock_conn.fetchrow.return_value = {"total": 2}
@@ -43,7 +45,7 @@ async def test_api_admin_namespaces_list():
         },
     ]
 
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_namespaces_list
 
         request = Request(
@@ -75,6 +77,7 @@ async def test_api_admin_namespaces_get():
 
     ns_id = uuid.uuid4()
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc)
 
     mock_conn.fetchrow.return_value = {
@@ -85,15 +88,17 @@ async def test_api_admin_namespaces_get():
         "metadata": '{"consolidation": {"enabled": false}}',
     }
 
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_namespaces_get
 
-        request = Request({
-            "type": "http",
-            "method": "GET",
-            "path": f"/api/admin/namespaces/{ns_id}",
-            "path_params": {"namespace_id": str(ns_id)},
-        })
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": f"/api/admin/namespaces/{ns_id}",
+                "path_params": {"namespace_id": str(ns_id)},
+            }
+        )
         response = await api_admin_namespaces_get(request)
 
         assert response.status_code == 200
@@ -113,15 +118,17 @@ async def test_api_admin_namespaces_get_not_found():
 
     ns_id = uuid.uuid4()
 
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_namespaces_get
 
-        request = Request({
-            "type": "http",
-            "method": "GET",
-            "path": f"/api/admin/namespaces/{ns_id}",
-            "path_params": {"namespace_id": str(ns_id)},
-        })
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": f"/api/admin/namespaces/{ns_id}",
+                "path_params": {"namespace_id": str(ns_id)},
+            }
+        )
         response = await api_admin_namespaces_get(request)
         assert response.status_code == 404
 
@@ -142,21 +149,24 @@ async def test_api_admin_namespaces_update_metadata():
             "llm_model": "gpt-4o",
             "llm_temperature": 0.5,
             "decay_sources": True,
-        }
+        },
     }
 
     async def receive():
         return {"type": "http.request", "body": json.dumps(payload).encode()}
 
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_namespaces_update_metadata
 
-        request = Request({
-            "type": "http",
-            "method": "POST",
-            "path": f"/api/admin/namespaces/{ns_id}/metadata",
-            "path_params": {"namespace_id": str(ns_id)},
-        }, receive=receive)
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": f"/api/admin/namespaces/{ns_id}/metadata",
+                "path_params": {"namespace_id": str(ns_id)},
+            },
+            receive=receive,
+        )
 
         response = await api_admin_namespaces_update_metadata(request)
 
@@ -182,7 +192,7 @@ async def test_api_admin_namespaces_update_metadata_invalid_pydantic():
     """Verify invalid pydantic inputs are safely rejected at validation layer."""
     mock_engine = MagicMock()
     ns_id = uuid.uuid4()
-    
+
     # Extra key forbidden by Pydantic model
     payload = {
         "invalid_extra_field_key": 45,
@@ -191,15 +201,18 @@ async def test_api_admin_namespaces_update_metadata_invalid_pydantic():
     async def receive():
         return {"type": "http.request", "body": json.dumps(payload).encode()}
 
-    with patch("admin_server.engine", mock_engine):
+    with patch("trimcp.admin_state.engine", mock_engine):
         from admin_server import api_admin_namespaces_update_metadata
 
-        request = Request({
-            "type": "http",
-            "method": "POST",
-            "path": f"/api/admin/namespaces/{ns_id}/metadata",
-            "path_params": {"namespace_id": str(ns_id)},
-        }, receive=receive)
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": f"/api/admin/namespaces/{ns_id}/metadata",
+                "path_params": {"namespace_id": str(ns_id)},
+            },
+            receive=receive,
+        )
 
         response = await api_admin_namespaces_update_metadata(request)
         assert response.status_code == 422
