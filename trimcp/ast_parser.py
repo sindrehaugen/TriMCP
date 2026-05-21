@@ -13,7 +13,34 @@ from dataclasses import dataclass
 
 log = logging.getLogger("tri-stack-ast")
 
-SUPPORTED_LANGUAGES = ("python", "javascript", "typescript", "go", "rust")
+SUPPORTED_LANGUAGES = (
+    "python", "javascript", "typescript", "go", "rust",
+    "java", "c", "cpp", "csharp", "ruby", "php", "swift",
+    "kotlin", "scala", "lua"
+)
+
+try:
+    import tree_sitter_language_pack
+    if hasattr(tree_sitter_language_pack, "manifest_languages"):
+        _MANIFEST_LANGUAGES = frozenset(tree_sitter_language_pack.manifest_languages())
+    else:
+        _MANIFEST_LANGUAGES = frozenset()
+except ImportError:
+    _MANIFEST_LANGUAGES = frozenset()
+
+
+def _is_pack_supported(language: str) -> bool:
+    """Check if the language pack can provide a parser for this language."""
+    if not _MANIFEST_LANGUAGES:
+        try:
+            from typing import get_args
+            from tree_sitter_language_pack import SupportedLanguage
+            allowed = frozenset(get_args(SupportedLanguage))
+            return language in allowed
+        except ImportError:
+            return False
+    return language in _MANIFEST_LANGUAGES
+
 
 # Protects against RecursionError on deeply nested auto-generated code (FIX-051)
 _MAX_AST_DEPTH = 200
@@ -21,6 +48,7 @@ _MAX_AST_DEPTH = 200
 # Line-based fallback chunk size — prevents unbounded embedding payloads for
 # large files where Tree-sitter is unavailable or finds no top-level symbols.
 _FALLBACK_CHUNK_LINES = 200
+_FALLBACK_CHUNK_CHARS = 4000
 
 _LANGUAGE_ALIASES: dict[str, str] = {
     "py": "python",
@@ -30,6 +58,15 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "tsx": "typescript",
     "golang": "go",
     "rs": "rust",
+    "c++": "cpp",
+    "c#": "csharp",
+    "sh": "bash",
+    "yml": "yaml",
+    "rb": "ruby",
+    "pl": "perl",
+    "kt": "kotlin",
+    "clj": "clojure",
+    "ex": "elixir",
 }
 
 
@@ -56,21 +93,10 @@ def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | Non
     except ImportError:
         return None
 
-    try:
-        from tree_sitter_language_pack import has_language as _pack_has_language
-    except ImportError:
-        from typing import get_args
-
-        from tree_sitter_language_pack import SupportedLanguage
-
-        _ALLOWED_PACK = frozenset(get_args(SupportedLanguage))
-
-        def _pack_has_language(name: str) -> bool:
-            return name in _ALLOWED_PACK
-
-    if not _pack_has_language(language):
+    if not _is_pack_supported(language):
         log.warning("Tree-sitter language pack has no grammar for %r", language)
         return None
+
 
     try:
         parser = get_parser(language)  # type: ignore[arg-type]
@@ -105,16 +131,105 @@ def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | Non
             "impl_item",
             "trait_item",
         },
+        "java": {
+            "class_declaration",
+            "interface_declaration",
+            "method_declaration",
+            "constructor_declaration",
+            "enum_declaration",
+        },
+        "c": {
+            "function_definition",
+            "struct_specifier",
+            "enum_specifier",
+        },
+        "cpp": {
+            "function_definition",
+            "class_specifier",
+            "struct_specifier",
+            "namespace_definition",
+        },
+        "csharp": {
+            "class_declaration",
+            "interface_declaration",
+            "method_declaration",
+            "struct_declaration",
+            "constructor_declaration",
+            "enum_declaration",
+        },
+        "ruby": {
+            "method",
+            "class",
+            "module",
+        },
+        "php": {
+            "class_declaration",
+            "interface_declaration",
+            "method_declaration",
+            "function_definition",
+        },
+        "swift": {
+            "class_declaration",
+            "struct_declaration",
+            "protocol_declaration",
+            "function_declaration",
+        },
+        "kotlin": {
+            "class_declaration",
+            "object_declaration",
+            "function_declaration",
+        },
+        "scala": {
+            "class_definition",
+            "object_definition",
+            "trait_definition",
+            "function_definition",
+        },
+        "lua": {
+            "function_definition",
+            "local_function_definition",
+        },
+        "zig": {
+            "Decl",
+        },
     }
     targets = target_types.get(language, set())
     lines = raw_code.splitlines()
     chunks: list[CodeChunk] = []
 
     def _extract_name(node) -> str:
+        if node.type in ("call", "macro_definition", "macro_call", "expression"):
+            first_child = node.children[0] if node.children else None
+            if first_child and first_child.type.lower() in ("identifier", "name"):
+                keyword = first_child.text.decode(errors="ignore").lower()
+                if keyword in ("def", "defmodule", "defmacro", "defn", "fn", "defp", "defstruct", "defimpl", "defprotocol", "func", "function"):
+                    for child in node.children:
+                        if child.type == "arguments":
+                            for gchild in child.children:
+                                if gchild.type.lower() in ("identifier", "name", "alias", "symbol"):
+                                    return gchild.text.decode(errors="ignore")
+                                elif gchild.type in ("call", "macro_definition", "macro_call", "expression"):
+                                    for ggchild in gchild.children:
+                                        if ggchild.type.lower() in ("identifier", "name", "alias", "symbol"):
+                                            return ggchild.text.decode(errors="ignore")
+
+        def _find_id(n) -> str | None:
+            if n.type.lower() in ("identifier", "name", "alias", "symbol"):
+                return n.text.decode(errors="ignore")
+            if n.type.lower() in ("block", "statement", "body", "compound_statement"):
+                return None
+            for child in n.children:
+                res = _find_id(child)
+                if res:
+                    return res
+            return None
+
         for child in node.children:
-            if child.type == "identifier":
-                return child.text.decode()
-        return "<anonymous>"
+            if child.type.lower() in ("identifier", "name"):
+                return child.text.decode(errors="ignore")
+
+        res = _find_id(node)
+        return res if res else "<anonymous>"
 
     def _walk(node, depth: int = 0) -> None:
         if depth > _MAX_AST_DEPTH:
@@ -123,11 +238,43 @@ def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | Non
                 _MAX_AST_DEPTH,
             )
             return
-        if node.type in targets:
+        
+        is_target = False
+        if targets:
+            is_target = node.type in targets
+        else:
+            # Fallback heuristic for any other language in the 305+ pack:
+            # Matches node types that look like definitions/declarations of structural code blocks.
+            t = node.type.lower()
+            is_target = any(
+                keyword in t for keyword in (
+                    "function", "method", "class", "struct", "interface", 
+                    "module", "definition", "declaration", "procedure", "subroutine"
+                )
+            )
+            if not is_target:
+                # Also check if it's a call/macro node with a structural keyword like def/defmodule/fn
+                if node.type in ("call", "macro_definition", "macro_call", "expression"):
+                    first_child = node.children[0] if node.children else None
+                    if first_child and first_child.type in ("identifier", "name"):
+                        text = first_child.text.decode(errors="ignore").lower()
+                        is_target = text in (
+                            "def", "defmodule", "defmacro", "defn", "fn", 
+                            "defp", "defstruct", "defimpl", "defprotocol", "func", "function"
+                        )
+
+        if is_target:
             start = node.start_point[0]  # 0-indexed
             end = node.end_point[0]
             code_string = "\n".join(lines[start : end + 1])
-            node_type = "function" if "function" in node.type else "class"
+            if "function" in node.type.lower() or "method" in node.type.lower():
+                node_type = "function"
+            elif node.type in ("call", "macro_definition", "macro_call", "expression") and node.children:
+                first_child = node.children[0]
+                text = first_child.text.decode(errors="ignore").lower() if first_child else ""
+                node_type = "function" if text in ("def", "defn", "fn", "defp", "defmacro", "func", "function") else "class"
+            else:
+                node_type = "class"
             chunks.append(
                 CodeChunk(
                     node_type=node_type,
@@ -148,17 +295,90 @@ def _try_treesitter_parse(raw_code: str, language: str) -> list[CodeChunk] | Non
 
 
 def _line_chunks(raw_code: str) -> Iterator[CodeChunk]:
-    """Split raw_code into bounded line-based chunks to limit payload size."""
+    """
+    Split raw_code into bounded, semantically-aware line-based chunks.
+    Prefers splitting on paragraph boundaries (empty lines) and keeps chunks
+    within line and character budgets to preserve RAG retrieval context.
+    """
     lines = raw_code.splitlines()
-    for i in range(0, len(lines), _FALLBACK_CHUNK_LINES):
-        block = lines[i : i + _FALLBACK_CHUNK_LINES]
-        yield CodeChunk(
+    if not lines:
+        return
+
+    max_lines = _FALLBACK_CHUNK_LINES
+    max_chars = _FALLBACK_CHUNK_CHARS
+
+    def emit_chunk(start: int, end: int, block_lines: list[str]) -> CodeChunk:
+        return CodeChunk(
             node_type="block",
-            name=f"<lines_{i + 1}_{i + len(block)}>",
-            code_string="\n".join(block),
-            start_line=i + 1,
-            end_line=i + len(block),
+            name=f"<lines_{start}_{end}>",
+            code_string="\n".join(block_lines),
+            start_line=start,
+            end_line=end,
         )
+
+    # Group lines into paragraphs. Empty or whitespace-only lines are treated
+    # as standalone single-line paragraphs to maintain exact empty space.
+    paragraphs: list[list[str]] = []
+    current_para: list[str] = []
+
+    for line in lines:
+        if line.strip() == "":
+            if current_para:
+                paragraphs.append(current_para)
+                current_para = []
+            paragraphs.append([line])
+        else:
+            current_para.append(line)
+
+    if current_para:
+        paragraphs.append(current_para)
+
+    current_chunk: list[str] = []
+    current_start = 1
+    current_line_count = 0
+    current_char_count = 0
+
+    for para in paragraphs:
+        para_lines = len(para)
+        para_chars = sum(len(l) for l in para) + para_lines  # +1 character per line for newline
+
+        # Check if adding this paragraph would exceed the limits.
+        # If so, emit the current chunk first.
+        if current_chunk and (
+            current_line_count + para_lines > max_lines or
+            current_char_count + para_chars > max_chars
+        ):
+            yield emit_chunk(current_start, current_start + current_line_count - 1, current_chunk)
+            current_start = current_start + current_line_count
+            current_chunk = []
+            current_line_count = 0
+            current_char_count = 0
+
+        # If a single paragraph itself exceeds either limit, slice it line-by-line.
+        if para_lines > max_lines or para_chars > max_chars:
+            for line in para:
+                line_len = len(line) + 1
+                if current_chunk and (
+                    current_line_count + 1 > max_lines or
+                    current_char_count + line_len > max_chars
+                ):
+                    yield emit_chunk(current_start, current_start + current_line_count - 1, current_chunk)
+                    current_start = current_start + current_line_count
+                    current_chunk = []
+                    current_line_count = 0
+                    current_char_count = 0
+
+                current_chunk.append(line)
+                current_line_count += 1
+                current_char_count += line_len
+        else:
+            # Paragraph fits perfectly, add it.
+            current_chunk.extend(para)
+            current_line_count += para_lines
+            current_char_count += para_chars
+
+    if current_chunk:
+        yield emit_chunk(current_start, current_start + current_line_count - 1, current_chunk)
 
 
 def parse_file(raw_code: str, language: str) -> Iterator[CodeChunk]:
@@ -166,14 +386,18 @@ def parse_file(raw_code: str, language: str) -> Iterator[CodeChunk]:
     Parse source code into CodeChunk objects.
 
     Normalises language aliases (e.g. "py" → "python"), tries Tree-sitter
-    for supported languages, then falls back to bounded line-based chunks.
+    for supported languages (dynamically validated against the language pack),
+    then falls back to bounded line-based chunks.
     """
     language = _LANGUAGE_ALIASES.get(language.lower(), language.lower())
 
-    if language not in SUPPORTED_LANGUAGES:
+    is_pack_supported = _is_pack_supported(language)
+
+    if not is_pack_supported and language not in SUPPORTED_LANGUAGES:
         log.warning("Language %r not supported — yielding line-based chunks.", language)
         yield from _line_chunks(raw_code)
         return
+
 
     chunks = _try_treesitter_parse(raw_code, language)
 

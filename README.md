@@ -229,8 +229,27 @@ TriMCP exposes the following tools directly to LLM clients via JSON-RPC 2.0, uti
 | `list_contradictions` / `resolve_contradiction` | Contradiction workflow. |
 | `start_migration` … `abort_migration` | Embedding model migration controls. |
 | `replay_observe` / `replay_fork` / `replay_status` | Event-log replay and forked namespaces. |
+| `a2a_create_grant` / `a2a_revoke_grant` / `a2a_list_grants` | Basic agent sharing grant administration. |
+| `a2a_verify_grant_status` | Verify the validity, scopes, status, and expiration of a grant by token/ID. |
+| `a2a_update_grant_scopes` | Dynamically mutate scopes on an active grant (replace or append strategy). |
+| `a2a_inspect_grant` | Retrieve metadata for a single grant safely for audit compliance (cryptographically secure). |
 
-*Full list and schemas: `TOOLS` in `server.py`.*
+*Full list and schemas: `TOOLS` in `trimcp/mcp_stdio_tools.py`.*
+
+## 🎛️ Dynamic Tools Control Console & Interceptor Routing
+
+TriMCP features an **Enterprise-Grade Admin Tools Console** integrated directly into the Starlette Admin panel. This console allows IT administrators to dynamically enable and disable specific local stdio MCP tools and public A2A server skills at runtime with zero system downtime.
+
+### Architecture & Propagation
+1. **Dynamic State Persistence**: Toggling a tool's state dynamically publishes and persists the value within a Redis hash named `trimcp:tools:disabled`.
+2. **Real-time Routing Interceptors**:
+   - **Stdio MCP Transport**: Custom middleware intercepts invocations in `mcp_stdio_dispatch.py`. If a tool is flagged as disabled, the server rejects it instantly, returning JSON-RPC error code `-32005` (Scope forbidden).
+   - **Agent-to-Agent (A2A) Skill Server**: Inbound network skills are intercepted inside `a2a_server.py`. If a skill is disabled, the request is rejected with RPC code `-32011` / HTTP 403 (Scope violation).
+3. **High-Availability Resiliency**: In the event of a Redis outage or fallback, the interceptor defaults to "enabled" (no-op pass-through) to guarantee high availability and prevent downstream microservice cascading failures.
+
+### Admin API Endpoints
+- `GET /api/admin/tools`: Retrieve a list of all MCP tools and A2A network skills, including localized operational impact descriptions, descriptions, and toggle states.
+- `POST /api/admin/tools/toggle`: Persist the state mutation (`tool_name`, `tool_type`, `enabled`) to the Redis registry.
 
 ## 🔗 Connecting to an LLM Client
 

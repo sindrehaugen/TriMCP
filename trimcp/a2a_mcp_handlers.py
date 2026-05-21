@@ -24,6 +24,9 @@ from trimcp.a2a import (
     list_grants,
     revoke_grant,
     verify_token,
+    verify_grant_status,
+    update_grant_scopes,
+    inspect_grant,
 )
 from trimcp.auth import NamespaceContext
 from trimcp.mcp_errors import mcp_handler
@@ -147,3 +150,76 @@ async def handle_a2a_query_shared(engine: TriStackEngine, arguments: dict[str, A
     )
 
     return json.dumps({"results": results}, default=str)
+
+
+@mcp_handler
+async def handle_a2a_verify_grant_status(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+    """Verify the validity, scopes, and expiration of an A2A grant."""
+    caller_ctx = _build_caller_context(arguments)
+    sharing_token = arguments.get("sharing_token")
+    grant_id_str = arguments.get("grant_id")
+
+    grant_id = None
+    if grant_id_str is not None:
+        try:
+            grant_id = uuid.UUID(str(grant_id_str).strip())
+        except (ValueError, AttributeError):
+            raise ValueError("grant_id must be a valid UUID")
+
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
+        res = await verify_grant_status(
+            conn=conn,
+            ctx=caller_ctx,
+            sharing_token=sharing_token,
+            grant_id=grant_id,
+        )
+    return json.dumps(res)
+
+
+@mcp_handler
+async def handle_a2a_update_grant_scopes(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+    """Dynamically mutate the scopes on an active grant owned by this namespace."""
+    owner_ctx = _build_caller_context(arguments)
+    raw_gid = arguments.get("grant_id")
+    if not raw_gid:
+        raise ValueError("grant_id is required")
+    try:
+        grant_id = uuid.UUID(str(raw_gid).strip())
+    except (ValueError, AttributeError):
+        raise ValueError("grant_id must be a valid UUID")
+
+    scopes = _parse_scopes(arguments.get("scopes", []))
+    mode = arguments.get("mode", "replace")
+    if mode not in ("replace", "append"):
+        raise ValueError("mode must be 'replace' or 'append'")
+
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
+        res = await update_grant_scopes(
+            conn=conn,
+            owner_ctx=owner_ctx,
+            grant_id=grant_id,
+            scopes=scopes,
+            mode=mode,
+        )
+    return json.dumps(res)
+
+
+@mcp_handler
+async def handle_a2a_inspect_grant(engine: TriStackEngine, arguments: dict[str, Any]) -> str:
+    """Retrieve single grant metadata for audit audit trails (excludes token_hash)."""
+    owner_ctx = _build_caller_context(arguments)
+    raw_gid = arguments.get("grant_id")
+    if not raw_gid:
+        raise ValueError("grant_id is required")
+    try:
+        grant_id = uuid.UUID(str(raw_gid).strip())
+    except (ValueError, AttributeError):
+        raise ValueError("grant_id must be a valid UUID")
+
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
+        res = await inspect_grant(
+            conn=conn,
+            owner_ctx=owner_ctx,
+            grant_id=grant_id,
+        )
+    return json.dumps(res)

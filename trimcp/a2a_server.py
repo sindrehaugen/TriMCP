@@ -478,6 +478,16 @@ async def _dispatch_skill(
     """Route an A2A skill ID to the appropriate TriStackEngine method."""
     assert _engine is not None, "engine not initialized"
 
+    # Check if A2A skill is disabled in Redis
+    try:
+        if _engine and _engine.redis_client:
+            if await _engine.redis_client.hexists("trimcp:tools:disabled", skill):
+                raise A2AScopeViolationError(f"A2A skill '{skill}' has been disabled by the administrator.")
+    except A2AScopeViolationError:
+        raise
+    except Exception as exc:
+        log.warning("Redis A2A skill toggle check failed (defaulting to enabled): %s", exc)
+
     if skill == "recall_relevant_context":
         query = _require_param(params, "query")
         ns_id = _require_param(params, "namespace_id")
@@ -558,6 +568,22 @@ async def _dispatch_skill(
             session_id=agent_id,
         )
         return {"context": context, "n_requested": n}
+
+    if skill == "verify_grant_status":
+        sharing_token = params.get("sharing_token")
+        grant_id_str = params.get("grant_id")
+        grant_id = None
+        if grant_id_str is not None:
+            grant_id = uuid.UUID(str(grant_id_str).strip())
+
+        from trimcp.a2a import verify_grant_status as a2a_verify_grant_status
+        async with _engine.pg_pool.acquire(timeout=10.0) as conn:
+            return await a2a_verify_grant_status(
+                conn=conn,
+                ctx=caller_ctx,
+                sharing_token=sharing_token,
+                grant_id=grant_id,
+            )
 
     raise ValueError(f"Unknown A2A skill: {skill!r}")
 

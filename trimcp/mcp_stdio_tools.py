@@ -922,6 +922,111 @@ TOOLS = [
         },
     ),
     Tool(
+        name="a2a_verify_grant_status",
+        description=(
+            "[Phase 3.1] Verify the validity, scopes, and expiration of an A2A grant. "
+            "Pass namespace_id and agent_id of the caller, plus exactly one of sharing_token or grant_id."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Calling namespace UUID (can be owner or target).",
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Calling agent ID.",
+                },
+                "sharing_token": {
+                    "type": "string",
+                    "description": "The raw sharing token to look up (optional).",
+                },
+                "grant_id": {
+                    "type": "string",
+                    "description": "The grant UUID to look up (optional).",
+                },
+            },
+            "required": ["namespace_id", "agent_id"],
+        },
+    ),
+    Tool(
+        name="a2a_update_grant_scopes",
+        description=(
+            "[Phase 3.1] Dynamically mutate the scopes on an active grant owned by this namespace. "
+            "Uses a replace or append strategy without breaking active consumer integrations."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Owner namespace UUID.",
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Owner agent ID.",
+                },
+                "grant_id": {
+                    "type": "string",
+                    "description": "UUID of the grant to update.",
+                },
+                "scopes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "resource_type": {
+                                "type": "string",
+                                "enum": ["namespace", "memory", "kg_node", "subgraph"],
+                            },
+                            "resource_id": {"type": "string"},
+                            "permissions": {
+                                "type": "array",
+                                "items": {"type": "string", "enum": ["read"]},
+                                "default": ["read"],
+                            },
+                        },
+                        "required": ["resource_type", "resource_id"],
+                    },
+                    "description": "List of scopes to apply.",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["replace", "append"],
+                    "default": "replace",
+                    "description": "replace (overwrite) or append (merge) scopes.",
+                },
+            },
+            "required": ["namespace_id", "agent_id", "grant_id", "scopes"],
+        },
+    ),
+    Tool(
+        name="a2a_inspect_grant",
+        description=(
+            "[Phase 3.1] Safe metadata inspection of a single A2A grant. "
+            "Restricted to the owner namespace; ensures the token_hash is never exposed."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Owner namespace UUID.",
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Owner agent ID.",
+                },
+                "grant_id": {
+                    "type": "string",
+                    "description": "UUID of the grant to inspect.",
+                },
+            },
+            "required": ["namespace_id", "agent_id", "grant_id"],
+        },
+    ),
+    Tool(
         name="manage_namespace",
         description="[ADMIN] Manage namespaces: create, list, grant, revoke, update_metadata.",
         inputSchema={

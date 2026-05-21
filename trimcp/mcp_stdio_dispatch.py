@@ -52,6 +52,17 @@ async def execute_call_tool(
             detail="Engine not initialized",
         )
 
+    # Check if tool is disabled in Redis
+    try:
+        if engine.redis_client and await engine.redis_client.hexists("trimcp:tools:disabled", name):
+            return _jsonrpc_error_response(
+                -32005,
+                "Scope forbidden",
+                detail=f"Tool '{name}' has been disabled by the administrator.",
+            )
+    except Exception as exc:
+        log.warning("Redis toggle check failed (defaulting to enabled): %s", exc)
+
     from trimcp.observability import instrument_tool_call
     from trimcp.quotas import null_reservation
 
@@ -88,6 +99,7 @@ async def execute_call_tool(
                 "forget_memory",
                 "a2a_create_grant",
                 "a2a_revoke_grant",
+                "a2a_update_grant_scopes",
                 "unredact_memory",
                 "replay_reconstruct",
             }
@@ -317,6 +329,18 @@ async def execute_call_tool(
 
                 if name == "a2a_query_shared":
                     result_text = await a2a_mcp_handlers.handle_a2a_query_shared(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "a2a_verify_grant_status":
+                    result_text = await a2a_mcp_handlers.handle_a2a_verify_grant_status(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "a2a_update_grant_scopes":
+                    result_text = await a2a_mcp_handlers.handle_a2a_update_grant_scopes(engine, arguments)
+                    return [TextContent(type="text", text=result_text)]
+
+                if name == "a2a_inspect_grant":
+                    result_text = await a2a_mcp_handlers.handle_a2a_inspect_grant(engine, arguments)
                     return [TextContent(type="text", text=result_text)]
 
                 if name == "manage_namespace":

@@ -860,3 +860,233 @@ def enforce_scope(
         f"Access denied: no grant covers {resource_type}/{resource_id}. "
         f"Available scopes: {[f'{s.resource_type}/{s.resource_id}' for s in scopes]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Extended A2A Lifecycle operations (Phase 3.1 Suite Enrichment)
+# ---------------------------------------------------------------------------
+
+
+async def verify_grant_status(
+    conn: asyncpg.Connection,
+    ctx: NamespaceContext,
+    sharing_token: str | None = None,
+    grant_id: UUID | None = None,
+) -> dict[str, Any]:
+    """
+    Verify the validity, status, scopes, and expiration of a grant.
+    Resolves by either sharing_token or grant_id.
+    Enforces NamespaceContext boundaries.
+    """
+    if (sharing_token is None) == (grant_id is None):
+        raise ValueError("Must provide exactly one of 'sharing_token' or 'grant_id'.")
+
+    if sharing_token is not None:
+        token_hash = _hash_token(sharing_token)
+        row = await conn.fetchrow(
+            """
+            SELECT id, owner_namespace_id, owner_agent_id,
+                   target_namespace_id, target_agent_id,
+                   scopes, expires_at, status, created_at
+            FROM a2a_grants
+            WHERE token_hash = $1
+            """,
+            token_hash,
+        )
+    else:
+        row = await conn.fetchrow(
+            """
+            SELECT id, owner_namespace_id, owner_agent_id,
+                   target_namespace_id, target_agent_id,
+                   scopes, expires_at, status, created_at
+            FROM a2a_grants
+            WHERE id = $1
+            """,
+            grant_id,
+        )
+
+    if not row:
+        log.warning("A2A grant verification failed: grant not found")
+        raise A2AAuthorizationError("Grant not found.")
+
+    # Timezone-aware expiration check and auto-expiry transition
+    expires_at: datetime = row["expires_at"]
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    status = row["status"]
+    if status == "active" and expires_at < datetime.now(timezone.utc):
+        await conn.execute(
+            "UPDATE a2a_grants SET status = 'expired' WHERE id = $1",
+            row["id"],
+        )
+        status = "expired"
+        log.info("A2A token auto-expired during status check: grant_id=%s", row["id"])
+
+    # Enforce NamespaceContext security boundaries (must be owner or target)
+    owner_ns = row["owner_namespace_id"]
+    target_ns = row["target_namespace_id"]
+    target_agent = row["target_agent_id"]
+
+    is_owner = ctx.namespace_id == owner_ns
+    is_target = False
+
+    if target_ns is None:
+        # Unrestricted target namespace (any bearer is target)
+        is_target = True
+    elif ctx.namespace_id == target_ns:
+        if target_agent is None or ctx.agent_id == target_agent:
+            is_target = True
+
+    if not (is_owner or is_target):
+        log.warning(
+            "A2A status check forbidden: caller=%s owner_ns=%s target_ns=%s",
+            ctx.namespace_id,
+            owner_ns,
+            target_ns,
+        )
+        raise A2AAuthorizationError("Unauthorized access to grant status.")
+
+    return {
+        "grant_id": str(row["id"]),
+        "owner_namespace_id": str(owner_ns),
+        "owner_agent_id": row["owner_agent_id"],
+        "target_namespace_id": str(target_ns) if target_ns else None,
+        "target_agent_id": target_agent,
+        "scopes": json.loads(row["scopes"]),
+        "status": status,
+        "expires_at": expires_at.isoformat(),
+        "created_at": row["created_at"].isoformat(),
+    }
+
+
+async def update_grant_scopes(
+    conn: asyncpg.Connection,
+    owner_ctx: NamespaceContext,
+    grant_id: UUID,
+    scopes: list[A2AScope],
+    mode: Literal["replace", "append"] = "replace",
+) -> dict[str, Any]:
+    """
+    Dynamically mutate the scopes on an active grant owned by owner_ctx.namespace_id.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT id, owner_namespace_id, scopes, expires_at, status
+        FROM a2a_grants
+        WHERE id = $1 AND owner_namespace_id = $2
+        """,
+        grant_id,
+        owner_ctx.namespace_id,
+    )
+
+    if not row:
+        log.warning("A2A update scopes failed: grant not found or unauthorized")
+        raise A2AAuthorizationError("Grant not found or unauthorized.")
+
+    if row["status"] != "active":
+        raise A2AAuthorizationError("Cannot update scopes of an inactive grant.")
+
+    expires_at: datetime = row["expires_at"]
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        raise A2AAuthorizationError("Cannot update scopes of an expired grant.")
+
+    # Apply append or replace strategy
+    if mode == "append":
+        existing_data = json.loads(row["scopes"])
+        merged_scopes = [A2AScope.model_validate(s) for s in existing_data]
+        
+        # Merge input scopes, filtering out exact duplicates
+        for ns in scopes:
+            if ns not in merged_scopes:
+                merged_scopes.append(ns)
+        final_scopes = merged_scopes
+    elif mode == "replace":
+        final_scopes = scopes
+    else:
+        raise ValueError(f"Invalid scope update mode: {mode!r}")
+
+    # Validate final scopes list
+    if not final_scopes:
+        raise ValueError("A grant must have at least one active scope.")
+
+    scopes_json = json.dumps([s.model_dump() for s in final_scopes])
+
+    async with conn.transaction():
+        await conn.execute(
+            "UPDATE a2a_grants SET scopes = $1::jsonb WHERE id = $2",
+            scopes_json,
+            grant_id,
+        )
+
+        await set_namespace_context(conn, owner_ctx.namespace_id)
+        from trimcp.event_log import append_event
+
+        await append_event(
+            conn=conn,
+            namespace_id=owner_ctx.namespace_id,
+            agent_id=owner_ctx.agent_id,
+            event_type="a2a_grant_updated",
+            params={
+                "grant_id": str(grant_id),
+                "mode": mode,
+                "scope_count": len(final_scopes),
+            },
+        )
+
+    log.info(
+        "A2A grant scopes updated: grant_id=%s owner_ns=%s mode=%s final_scopes=%d",
+        grant_id,
+        owner_ctx.namespace_id,
+        mode,
+        len(final_scopes),
+    )
+    return {
+        "grant_id": str(grant_id),
+        "status": "updated",
+        "scopes": [s.model_dump() for s in final_scopes],
+    }
+
+
+async def inspect_grant(
+    conn: asyncpg.Connection,
+    owner_ctx: NamespaceContext,
+    grant_id: UUID,
+) -> dict[str, Any]:
+    """
+    Retrieve single grant metadata for audit audit trails (excludes token_hash).
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT id, owner_namespace_id, owner_agent_id,
+               target_namespace_id, target_agent_id,
+               scopes, status, expires_at, created_at
+        FROM a2a_grants
+        WHERE id = $1 AND owner_namespace_id = $2
+        """,
+        grant_id,
+        owner_ctx.namespace_id,
+    )
+
+    if not row:
+        log.warning("A2A inspect failed: grant not found or unauthorized")
+        raise A2AAuthorizationError("Grant not found or unauthorized.")
+
+    expires_at: datetime = row["expires_at"]
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    return {
+        "grant_id": str(row["id"]),
+        "owner_namespace_id": str(row["owner_namespace_id"]),
+        "owner_agent_id": row["owner_agent_id"],
+        "target_namespace_id": str(row["target_namespace_id"]) if row["target_namespace_id"] else None,
+        "target_agent_id": row["target_agent_id"],
+        "scopes": json.loads(row["scopes"]),
+        "status": row["status"],
+        "expires_at": expires_at.isoformat(),
+        "created_at": row["created_at"].isoformat(),
+    }
+

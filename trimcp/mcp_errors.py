@@ -212,6 +212,18 @@ def mcp_handler(handler_fn: F) -> F:
                 data=invalid_arguments_data(e),
             )
         except Exception as e:
+            if type(e).__name__ == "A2AAuthorizationError":
+                raise McpError(
+                    -32010,
+                    "A2A authorization failure",
+                    data={"reason": str(e)},
+                )
+            if type(e).__name__ == "A2AScopeViolationError":
+                raise McpError(
+                    -32011,
+                    "Scope violation",
+                    data={"reason": str(e)},
+                )
             request_id = str(uuid.uuid4())
             log.exception(
                 "Handler %s failed request_id=%s",

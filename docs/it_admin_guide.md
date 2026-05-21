@@ -98,3 +98,25 @@ To enable the Document Bridge System (Push Architecture), you must register TriM
 3. Grant the `https://www.googleapis.com/auth/drive.readonly` scope.
 
 Provide the resulting client IDs and secrets to the TriMCP configuration via the `.env` file or your cloud provider's secret management service (e.g., AWS Secrets Manager, Azure Key Vault).
+
+## 4. Dynamic Tools & Skills Management Console
+
+TriMCP features a dynamic administration console within the Starlette Admin panel (`admin/index.html` serviced by `admin_server.py`) for managing local stdio Model Context Protocol (MCP) tools and public Agent-to-Agent (A2A) network skills.
+
+### 4.1 System Architecture
+- **Control Plane**: Administrators mutate toggle states via Basic/HMAC-secured REST endpoints `/api/admin/tools` and `/api/admin/tools/toggle`.
+- **Data Plane (Redis Registry)**: Toggle states are stored inside the Redis hash key `trimcp:tools:disabled`.
+  - When a tool is **disabled**, its name is registered in the hash with a value of `1`.
+  - When a tool is **enabled**, its key is deleted from the hash.
+- **Routing Interceptors**:
+  - **Stdio MCP Layer**: Calls are intercepted inside `mcp_stdio_dispatch.py`. Disabled tools return JSON-RPC error code `-32005` (Scope forbidden).
+  - **A2A Network Layer**: Skills are intercepted in `a2a_server.py`. Disabled skills raise `A2AScopeViolationError`, returning RPC code `-32011` / HTTP 403 (Scope violation).
+
+### 4.2 High-Availability & Resiliency Guarantees
+- **Fail-Safe Defaults**: If the Redis cluster is offline, unreachable, or throws read timeouts, the dynamic interceptor catches the exception, logs a warning (`Redis toggle check failed`), and defaults to **allowed/enabled**.
+- **No Cascade Breakages**: This fail-safe architecture prevents temporary database or network issues from bricking active microservice integrations.
+
+### 4.3 Administration Operations
+1. **Accessing the Console**: Open the Starlette Admin panel (default port `8003`) and click the **Tools** tab in the sidebar navigation.
+2. **Reviewing Operational Impact**: Each tool card displays a customized description alongside an amber warning block explaining downstream consequences (e.g., disabling `store_memory` disables agent write paths and entity extraction pipelines, resulting in potential data loss for new sessions).
+3. **Toggling States**: Toggling a dynamic switch immediately propagates the configuration to all active workers and servers via Redis hash check, returning a real-time visual success toast to the administrator.

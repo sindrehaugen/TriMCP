@@ -35,29 +35,29 @@ from typing import Any
 
 from trimcp.observability import HAS_PROMETHEUS
 
+class _StubMetric:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def labels(self, *args, **kwargs):
+        return self
+
+    def inc(self, *args, **kwargs):
+        pass
+
+    def dec(self, *args, **kwargs):
+        pass
+
+    def observe(self, *args, **kwargs):
+        pass
+
+    def set(self, *args, **kwargs):
+        pass
+
+
 if HAS_PROMETHEUS:
     from prometheus_client import Counter, Gauge, Histogram
 else:
-    # Stub metrics — no-op when Prometheus is not installed
-    class _StubMetric:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def labels(self, *args, **kwargs):
-            return self
-
-        def inc(self, *args, **kwargs):
-            pass
-
-        def dec(self, *args, **kwargs):
-            pass
-
-        def observe(self, *args, **kwargs):
-            pass
-
-        def set(self, *args, **kwargs):
-            pass
-
     Counter = Histogram = Gauge = _StubMetric
 
 
