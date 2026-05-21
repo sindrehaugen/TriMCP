@@ -92,6 +92,8 @@ services:
       context: .
       dockerfile: deploy/multiuser/Dockerfile
     container_name: tri-stack-worker
+    profiles:
+      - gpu
     env_file:
       - deploy/compose.stack.env
       - deploy/compose.stack.env.generated
@@ -115,8 +117,6 @@ services:
       redis:
         condition: service_healthy
       minio:
-        condition: service_healthy
-      cognitive:
         condition: service_healthy
     restart: unless-stopped
 
@@ -185,7 +185,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/api/health')",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/healthz')",
         ]
       interval: 30s
       timeout: 10s
@@ -247,6 +247,9 @@ services:
       - deploy/compose.stack.env.generated
     environment:
       REDIS_URL: redis://redis:6379/0
+      PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
     ports:
       - "${WEBHOOK_PORT:-8080}:8080"
     depends_on:
@@ -254,6 +257,18 @@ services:
         condition: service_healthy
       jaeger:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   jaeger:

@@ -177,6 +177,7 @@ class _Config:
 
     # --- Database connections ---
     # ``DATABASE_URL`` is accepted as a 12-factor alias for ``PG_DSN`` (same precedence: explicit PG_DSN wins).
+    TRIMCP_APP_PASSWORD: str = os.getenv("TRIMCP_APP_PASSWORD", "trimcp_app_secret").strip()
     MONGO_URI: str = os.getenv("MONGO_URI", "mongodb://localhost:27017")
     PG_DSN: str = (
         os.getenv("PG_DSN")

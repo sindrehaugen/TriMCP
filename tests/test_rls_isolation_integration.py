@@ -23,47 +23,44 @@ async def test_get_trimcp_namespace_fails_without_context(pg_pool) -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_resource_quotas_cross_namespace_isolation(
-    pg_pool,
+    pg_app_conn,
     make_namespace,
 ) -> None:
     ns_a = await make_namespace()
     ns_b = await make_namespace()
     resource_type = f"pytest-rls-{uuid4().hex}"
 
-    async with pg_pool.acquire() as conn:
-        async with conn.transaction():
-            await set_namespace_context(conn, ns_a)
-            row_id = await conn.fetchval(
-                """
-                INSERT INTO resource_quotas (
-                    namespace_id, resource_type, limit_amount
-                )
-                VALUES ($1, $2, 10)
-                RETURNING id
-                """,
-                ns_a,
-                resource_type,
+    async with pg_app_conn.transaction():
+        await set_namespace_context(pg_app_conn, ns_a)
+        row_id = await pg_app_conn.fetchval(
+            """
+            INSERT INTO resource_quotas (
+                namespace_id, resource_type, limit_amount
             )
+            VALUES ($1, $2, 10)
+            RETURNING id
+            """,
+            ns_a,
+            resource_type,
+        )
 
     assert row_id is not None
 
-    async with pg_pool.acquire() as conn:
-        async with conn.transaction():
-            await set_namespace_context(conn, ns_b)
-            visible = await conn.fetchval(
-                "SELECT count(*) FROM resource_quotas WHERE id = $1",
-                row_id,
-            )
-            assert visible == 0
+    async with pg_app_conn.transaction():
+        await set_namespace_context(pg_app_conn, ns_b)
+        visible = await pg_app_conn.fetchval(
+            "SELECT count(*) FROM resource_quotas WHERE id = $1",
+            row_id,
+        )
+        assert visible == 0
 
-    async with pg_pool.acquire() as conn:
-        async with conn.transaction():
-            await set_namespace_context(conn, ns_a)
-            visible = await conn.fetchval(
-                "SELECT count(*) FROM resource_quotas WHERE id = $1",
-                row_id,
-            )
-            assert visible == 1
+    async with pg_app_conn.transaction():
+        await set_namespace_context(pg_app_conn, ns_a)
+        visible = await pg_app_conn.fetchval(
+            "SELECT count(*) FROM resource_quotas WHERE id = $1",
+            row_id,
+        )
+        assert visible == 1
 
 
 @pytest.mark.integration

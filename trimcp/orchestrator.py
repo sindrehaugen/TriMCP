@@ -437,11 +437,19 @@ class TriStackEngine:
 
     def _init_minio_buckets(self):
         """Creates default media buckets if they do not exist."""
+        from minio.error import S3Error
+
         buckets = ["mcp-audio", "mcp-video", "mcp-images"]
         for b in buckets:
-            if not self.minio_client.bucket_exists(b):
-                self.minio_client.make_bucket(b)
-                log.debug("[MinIO] Created bucket: %s", b)
+            try:
+                if not self.minio_client.bucket_exists(b):
+                    self.minio_client.make_bucket(b)
+                    log.debug("[MinIO] Created bucket: %s", b)
+            except S3Error as exc:
+                if exc.code in {"BucketAlreadyOwnedByYou", "BucketAlreadyExists"}:
+                    log.debug("[MinIO] Bucket already exists: %s", b)
+                    continue
+                raise
 
     def _validate_path(self, filepath: str):
         """Strict OS-agnostic path traversal protection using pathlib.
@@ -480,11 +488,19 @@ class TriStackEngine:
         """
         from pathlib import Path
 
+        from trimcp.config import cfg
+
         schema_path = Path(__file__).resolve().parent / "schema.sql"
         ddl = schema_path.read_text(encoding="utf-8")
         async with self.pg_pool.acquire(timeout=10.0) as conn:
             await conn.execute(ddl)
         log.debug("[PG] schema.sql applied from %s", schema_path)
+
+        if cfg.TRIMCP_APP_PASSWORD:
+            escaped = cfg.TRIMCP_APP_PASSWORD.replace("'", "''")
+            async with self.pg_pool.acquire(timeout=10.0) as conn:
+                await conn.execute(f"ALTER ROLE trimcp_app WITH LOGIN PASSWORD '{escaped}'")
+            log.debug("[PG] trimcp_app login password dynamically updated from configuration")
 
     async def _apply_pg_migrations(self) -> None:
         """Apply idempotent SQL files from trimcp/migrations/ in lexical order."""
@@ -503,12 +519,41 @@ class TriStackEngine:
         """
         Runtime assertion that all WORM tables deny UPDATE/DELETE.
 
-        Acquires a connection from the pool and probes each table in
-        ``event_log._WORM_TABLES`` via ``verify_worm_on_table()``.
-        Halts server startup with a ``RuntimeError`` if any table's WORM
-        guarantee is not in effect.
+        Acquires a connection from a temporary connection established as the
+        ``trimcp_app`` role using its configured password, eliminating superuser
+        WORM bypassing in regular environments.
         """
+        from urllib.parse import urlparse, urlunparse
+
+        from trimcp.config import cfg
         from trimcp.event_log import _WORM_TABLES, verify_worm_on_table
+
+        # Construct DSN for trimcp_app
+        app_dsn = None
+        if cfg.PG_DSN:
+            try:
+                parsed = urlparse(cfg.PG_DSN)
+                netloc = parsed.hostname or ""
+                if parsed.port:
+                    netloc = f"{netloc}:{parsed.port}"
+                app_pass = cfg.TRIMCP_APP_PASSWORD or "trimcp_app_secret"
+                netloc = f"trimcp_app:{app_pass}@{netloc}"
+                app_dsn = urlunparse(parsed._replace(netloc=netloc))
+            except Exception as exc:
+                log.warning("[worm-probe] Failed to parse PG_DSN for trimcp_app connection: %s", exc)
+
+        if app_dsn:
+            log.debug("[worm-probe] Probing WORM enforcement with actual trimcp_app role credentials...")
+            try:
+                conn = await asyncpg.connect(app_dsn, timeout=10.0)
+                try:
+                    for table in _WORM_TABLES:
+                        await verify_worm_on_table(conn, table)
+                finally:
+                    await conn.close()
+                return
+            except Exception as exc:
+                log.warning("[worm-probe] Failed to connect as trimcp_app: %s. Falling back to default PG pool.", exc)
 
         async with self.pg_pool.acquire(timeout=10.0) as conn:
             for table in _WORM_TABLES:

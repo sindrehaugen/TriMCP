@@ -87,6 +87,38 @@ The **webhook-receiver** service depends on **Redis** for sliding-window rate li
 
 Bridge webhook secrets (`DROPBOX_APP_SECRET`, `GRAPH_CLIENT_STATE`, `DRIVE_CHANNEL_TOKEN`) are required at process start — generate them via `scripts/bootstrap-compose-secrets.py` and store them in **`deploy/compose.stack.env.generated`** (never commit).
 
+### Infrastructure & Health Monitoring
+
+The stack includes built-in HTTP-based process and connection checks suitable for reverse-proxies, load-balancers, or orchestrator probes:
+
+- **Admin Web Server (`admin`):** Exposes `GET /healthz` on port `8003`. Returns 200 OK after checking all backend services (PostgreSQL, MongoDB, Redis, MinIO).
+- **Webhook Receiver (`webhook-receiver`):** Exposes `GET /health` on port `8080` (or `8002` internally).
+- **Caddy Edge (`caddy`):** Exposes `GET /health` via proxy-pass where appropriate.
+
+### Running GPU-Accelerated Workloads
+
+For re-embedding, alignment, and dense search operations, TriMCP supports GPU/CUDA hardware acceleration:
+
+- **NVIDIA GPU Support:** Separate resource requirements are encapsulated under the `gpu` profile.
+- **Run on GPU:** Include the `--profile gpu` flag:
+  ```bash
+  docker compose --profile gpu up -d
+  ```
+- **Local Dev CPU-Only Fallback:** If you do not have an NVIDIA GPU or local CUDA drivers, copy `docker-compose.override.example.yml` to `docker-compose.override.yml` in the root. This strips the GPU profile constraint and runs all services on CPU by default with `docker compose up -d`.
+
+### Upgrades and Schema Migrations
+
+When rolling out schema upgrades or applying major system changes:
+
+1. **Volume Wipe (If Clean Setup is Required):** In staging or development environments, if you wish to wipe the database and start from a fresh slate, stop the stack and run:
+   ```bash
+   docker compose down -v
+   ```
+2. **Schema & Migration Playbooks:** The PostgreSQL schema is loaded dynamically from `trimcp/schema.sql` during the first database bootstrap or orchestrator connect. To manually apply migrations to a running instance, execute:
+   ```bash
+   python scripts/apply_integration_schema.py
+   ```
+
 ---
 
 ## Native installers (`trimcp-launch` shim)

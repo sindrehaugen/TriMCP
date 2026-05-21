@@ -58,18 +58,21 @@ async def probe():
     # 5. Embedding Engine Check (Soft Check)
     # We check if the model is reachable or loaded if we are the worker/server
     # For now, reaching the cognitive sidecar is a good proxy.
-    import httpx
+    if cfg.TRIMCP_COGNITIVE_BASE_URL:
+        import httpx
 
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            resp = await client.get(f"{cfg.TRIMCP_COGNITIVE_BASE_URL}/health")
-            if resp.status_code != 200:
-                print(f"Cognitive Engine Unhealthy: {resp.status_code}")
-                return False
-    except Exception as e:
-        # Don't fail the whole probe if LLM is optional/down during boot,
-        # but log it for the container health status.
-        print(f"Cognitive Engine Probe Warning: {e}")
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.get(f"{cfg.TRIMCP_COGNITIVE_BASE_URL}/health")
+                if resp.status_code != 200:
+                    print(f"Cognitive Engine Unhealthy: {resp.status_code}")
+                    return False
+        except Exception as e:
+            # Don't fail the whole probe if LLM is optional/down during boot,
+            # but log it for the container health status.
+            print(f"Cognitive Engine Probe Warning: {e}")
+    else:
+        print("Cognitive Engine Probe: Skipped (no TRIMCP_COGNITIVE_BASE_URL set)")
 
     return True
 

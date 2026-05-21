@@ -3,11 +3,13 @@
 -- Complements trimcp/schema.sql — safe to re-run on existing databases.
 -- ============================================================================
 
--- Application role (no login — granted to runtime DB user)
+-- Application role (login enabled — granted to runtime DB user)
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
-        CREATE ROLE trimcp_app;
+        CREATE ROLE trimcp_app WITH LOGIN PASSWORD 'trimcp_app_secret';
+    ELSE
+        ALTER ROLE trimcp_app WITH LOGIN PASSWORD 'trimcp_app_secret';
     END IF;
 END $$;
 
@@ -83,10 +85,18 @@ BEGIN
             'WITH CHECK (namespace_id IS NOT NULL AND namespace_id = get_trimcp_namespace())',
             t
         );
-        EXECUTE format(
-            'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.%I TO trimcp_app',
-            t
-        );
+        EXECUTE format('REVOKE ALL ON TABLE public.%I FROM trimcp_app', t);
+        IF t IN ('event_log', 'pii_redactions') THEN
+            EXECUTE format(
+                'GRANT SELECT, INSERT ON TABLE public.%I TO trimcp_app',
+                t
+            );
+        ELSE
+            EXECUTE format(
+                'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.%I TO trimcp_app',
+                t
+            );
+        END IF;
     END LOOP;
 END $$;
 
@@ -161,7 +171,12 @@ BEGIN
 END $$;
 COMMIT;
 
-ALTER ROLE postgres RESET row_security;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postgres') THEN
+        ALTER ROLE postgres RESET row_security;
+    END IF;
+END $$;
 
 DO $$
 BEGIN

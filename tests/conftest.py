@@ -382,9 +382,21 @@ async def pg_app_conn(
     primary = _integration_pool_dsn() or ""
 
     if not app_dsn or app_dsn == primary:
-        async with pg_pool.acquire() as conn:
-            yield conn
-        return
+        from urllib.parse import urlparse, urlunparse
+
+        from trimcp.config import cfg
+        try:
+            parsed = urlparse(primary)
+            netloc = parsed.hostname or ""
+            if parsed.port:
+                netloc = f"{netloc}:{parsed.port}"
+            app_pass = cfg.TRIMCP_APP_PASSWORD or "trimcp_app_secret"
+            netloc = f"trimcp_app:{app_pass}@{netloc}"
+            app_dsn = urlunparse(parsed._replace(netloc=netloc))
+        except Exception:
+            async with pg_pool.acquire() as conn:
+                yield conn
+            return
 
     try:
         app_pool = await asyncpg.create_pool(

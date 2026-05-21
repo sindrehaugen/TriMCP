@@ -39,6 +39,27 @@ KEY_SPECS: list[tuple[str, Callable[[str], bool]]] = [
         or "replace_me" in v.lower(),
     ),
     (
+        "TRIMCP_ADMIN_API_KEY",
+        lambda v: _weak(v, min_len=16)
+        or "change" in v.lower()
+        or v.lower().startswith("dev-")
+        or "replace_me" in v.lower(),
+    ),
+    (
+        "TRIMCP_MCP_API_KEY",
+        lambda v: _weak(v, min_len=16)
+        or "change" in v.lower()
+        or v.lower().startswith("dev-")
+        or "replace_me" in v.lower(),
+    ),
+    (
+        "TRIMCP_APP_PASSWORD",
+        lambda v: _weak(v, min_len=8)
+        or "change" in v.lower()
+        or "replace_me" in v.lower()
+        or v == "trimcp_app_secret",
+    ),
+    (
         "TRIMCP_JWT_SECRET",
         lambda v: _weak(v, min_len=32) or "dev-jwt" in v.lower() or "replace_me" in v.lower(),
     ),
@@ -46,7 +67,8 @@ KEY_SPECS: list[tuple[str, Callable[[str], bool]]] = [
         "TRIMCP_ADMIN_PASSWORD",
         lambda v: _weak(v, min_len=8)
         or v.lower() in ("changeme", "admin", "password")
-        or "replace_me" in v.lower(),
+        or "replace_me" in v.lower()
+        or not v.startswith("$pbkdf2$"),
     ),
     (
         "DROPBOX_APP_SECRET",
@@ -84,9 +106,34 @@ def _parse_env_text(text: str) -> dict[str, str]:
     return out
 
 
+def _hash_pbkdf2(password: str) -> str:
+    import hashlib
+    import os
+    iters = 600000
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        iters,
+        dklen=32,
+    )
+    return f"$pbkdf2${iters}${salt.hex()}${dk.hex()}"
+
+
 def _gen_for_key(key: str) -> str:
     if key == "TRIMCP_ADMIN_PASSWORD":
-        return secrets.token_urlsafe(18)
+        raw_pass = secrets.token_urlsafe(18)
+        hashed_pass = _hash_pbkdf2(raw_pass)
+        print("=" * 60)
+        print(" TriMCP ADMINISTRATOR PASSWORD GENERATED ")
+        print(f" Plaintext Password:  {raw_pass}")
+        print(" Keep this password secure! It will NOT be written to disk in plaintext.")
+        print(" Only the PBKDF2 hash is written to deploy/compose.stack.env.generated.")
+        print("=" * 60)
+        return hashed_pass
+    if key == "TRIMCP_APP_PASSWORD":
+        return secrets.token_urlsafe(16)
     return secrets.token_hex(32)
 
 

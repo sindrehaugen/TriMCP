@@ -95,7 +95,7 @@ def build_admin_middleware() -> list[Middleware]:
         Middleware(
             BasicAuthMiddleware,
             protected_prefix="/",
-            excluded_prefixes=("/api/",),
+            excluded_prefixes=("/api/", "/healthz"),
             username=cfg.TRIMCP_ADMIN_USERNAME,
             password=cfg.TRIMCP_ADMIN_PASSWORD,
             realm="TriMCP Admin",

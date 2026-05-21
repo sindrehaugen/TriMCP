@@ -13,6 +13,21 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+-- --- Application roles (required before any RLS policy references trimcp_app) ---
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
+        CREATE ROLE trimcp_app WITH LOGIN PASSWORD 'trimcp_app_secret';
+    ELSE
+        ALTER ROLE trimcp_app WITH LOGIN PASSWORD 'trimcp_app_secret';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_gc') THEN
+        CREATE ROLE trimcp_gc BYPASSRLS NOLOGIN;
+    ELSE
+        ALTER ROLE trimcp_gc BYPASSRLS NOLOGIN;
+    END IF;
+END $$;
+
 -- --- Phase 0.1: Namespaces ---
 CREATE TABLE IF NOT EXISTS namespaces (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -999,22 +1014,6 @@ END $$;
 -- Applied after all tenant tables exist. Policies use get_trimcp_namespace() (fail-fast).
 -- kg_node_embeddings remain global (no namespace_id). kg_nodes/kg_edges are tenant-scoped.
 
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
-        CREATE ROLE trimcp_app;
-    END IF;
-END $$;
-
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_gc') THEN
-        CREATE ROLE trimcp_gc BYPASSRLS NOLOGIN;
-    ELSE
-        ALTER ROLE trimcp_gc BYPASSRLS NOLOGIN;
-    END IF;
-END $$;
-
 -- Backfill nullable namespace_id on tables that gained the column after first deploy.
 DO $$
 DECLARE
@@ -1069,10 +1068,18 @@ BEGIN
             'WITH CHECK (namespace_id IS NOT NULL AND namespace_id = get_trimcp_namespace())',
             t
         );
-        EXECUTE format(
-            'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.%I TO trimcp_app',
-            t
-        );
+        EXECUTE format('REVOKE ALL ON TABLE public.%I FROM trimcp_app', t);
+        IF t IN ('event_log', 'pii_redactions') THEN
+            EXECUTE format(
+                'GRANT SELECT, INSERT ON TABLE public.%I TO trimcp_app',
+                t
+            );
+        ELSE
+            EXECUTE format(
+                'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.%I TO trimcp_app',
+                t
+            );
+        END IF;
     END LOOP;
 END $$;
 
