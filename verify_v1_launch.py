@@ -36,7 +36,16 @@ import time
 from typing import Any
 from uuid import UUID
 
-import asyncpg
+try:
+    import asyncpg
+except ModuleNotFoundError as _e:
+    raise SystemExit(
+        "[verify_v1_launch] Could not import 'asyncpg'. "
+        "Activate the virtual environment first:\n"
+        "  .venv\\Scripts\\activate  (Windows)\n"
+        "  source .venv/bin/activate  (Unix)\n"
+        "or install dependencies: pip install -r requirements.txt"
+    ) from _e
 import httpx
 
 from trimcp.config import cfg
