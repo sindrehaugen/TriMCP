@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from trimcp.observability import HAS_PROMETHEUS
+from trimcp.observability import HAS_PROMETHEUS, _safe_counter, _safe_gauge, _safe_histogram
 
 class _StubMetric:
     def __init__(self, *args, **kwargs):
@@ -65,26 +65,26 @@ log = logging.getLogger("trimcp.background_task_manager")
 
 # --- Prometheus Metrics ---
 
-BACKGROUND_TASKS_TOTAL = Counter(
+BACKGROUND_TASKS_TOTAL = _safe_counter(
     "trimcp_background_tasks_total",
     "Total count of background tasks created",
     ["task_name", "status"],  # status: created, completed, failed
 )
 
-BACKGROUND_TASK_DURATION = Histogram(
+BACKGROUND_TASK_DURATION = _safe_histogram(
     "trimcp_background_task_duration_seconds",
     "Duration of background tasks in seconds",
     ["task_name"],
     buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0, float("inf")),
 )
 
-BACKGROUND_TASK_FAILURES_TOTAL = Counter(
+BACKGROUND_TASK_FAILURES_TOTAL = _safe_counter(
     "trimcp_background_task_failures_total",
     "Total count of background task failures (exceptions)",
     ["task_name", "exception_type"],
 )
 
-BACKGROUND_TASK_ACTIVE = Gauge(
+BACKGROUND_TASK_ACTIVE = _safe_gauge(
     "trimcp_background_task_active",
     "Current number of active background tasks",
     ["task_name"],

@@ -29,9 +29,42 @@ except ImportError:
     HAS_OTEL = False
 
 try:
-    from prometheus_client import Counter, Gauge, Histogram, start_http_server
+    from prometheus_client import (
+        REGISTRY as _PROM_REGISTRY,
+        Counter,
+        Gauge,
+        Histogram,
+        start_http_server,
+    )
 
     HAS_PROMETHEUS = True
+
+    def _safe_metric(metric_cls, name: str, *args, **kwargs):
+        """Create or retrieve an existing Prometheus metric by name.
+
+        When the same metric name is registered twice in the same process
+        (e.g. during test-suite module reloads), prometheus_client raises
+        ``ValueError: Duplicated timeseries``.  This helper catches that
+        error and returns the already-registered collector instead so the
+        module stays usable.
+        """
+        try:
+            return metric_cls(name, *args, **kwargs)
+        except ValueError:
+            # Already registered — retrieve the existing collector
+            return _PROM_REGISTRY._names_to_collectors.get(name) or metric_cls(
+                name, *args, registry=None, **kwargs
+            )
+
+    def _safe_counter(name: str, *args, **kwargs) -> Counter:
+        return _safe_metric(Counter, name, *args, **kwargs)
+
+    def _safe_histogram(name: str, *args, **kwargs) -> Histogram:
+        return _safe_metric(Histogram, name, *args, **kwargs)
+
+    def _safe_gauge(name: str, *args, **kwargs) -> Gauge:
+        return _safe_metric(Gauge, name, *args, **kwargs)
+
 except ImportError:
     HAS_PROMETHEUS = False
 
@@ -57,6 +90,15 @@ except ImportError:
     def start_http_server(*args, **kwargs):
         pass
 
+    def _safe_counter(name, *args, **kwargs):  # type: ignore[misc]
+        return _StubMetric()
+
+    def _safe_histogram(name, *args, **kwargs):  # type: ignore[misc]
+        return _StubMetric()
+
+    def _safe_gauge(name, *args, **kwargs):  # type: ignore[misc]
+        return _StubMetric()
+
 
 from trimcp.config import cfg  # noqa: E402 — after optional-dep stubs
 
@@ -66,12 +108,12 @@ F = TypeVar("F", bound=Callable[..., Any])
 # --- Prometheus Metrics ---
 
 # Tool level metrics (server.py)
-TOOL_CALLS = Counter(
+TOOL_CALLS = _safe_counter(
     "trimcp_tool_calls_total",
     "Total count of MCP tool calls",
     ["tool_name", "status"],
 )
-TOOL_LATENCY = Histogram(
+TOOL_LATENCY = _safe_histogram(
     "trimcp_tool_latency_seconds",
     "Latency of MCP tool calls in seconds",
     ["tool_name"],
@@ -79,49 +121,49 @@ TOOL_LATENCY = Histogram(
 )
 
 # Saga level metrics (orchestrator.py)
-SAGA_DURATION = Histogram(
+SAGA_DURATION = _safe_histogram(
     "trimcp_saga_duration_seconds",
     "Duration of distributed saga transactions",
     ["operation", "result"],
     buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, float("inf")),
 )
-SAGA_FAILURES = Counter(
+SAGA_FAILURES = _safe_counter(
     "trimcp_saga_failures_total",
     "Total count of saga step failures",
     ["stage"],  # stage = pg, mongo, redis, etc.
 )
 
 # Component specific
-EMBEDDING_COUNT = Counter(
+EMBEDDING_COUNT = _safe_counter(
     "trimcp_embedding_count",
     "Total count of individual chunks embedded",
     ["model_id"],
 )
-REEMBEDDING_PROGRESS = Gauge(
+REEMBEDDING_PROGRESS = _safe_gauge(
     "trimcp_reembedding_progress",
     "Progress of the background re-embedding worker",
     ["worker_id"],
 )
 
 # VRAM metrics for re-embedder CUDA memory pressure monitoring (Item 49)
-REEMBEDDER_VRAM_ALLOCATED = Gauge(
+REEMBEDDER_VRAM_ALLOCATED = _safe_gauge(
     "trimcp_reembedder_vram_allocated_bytes",
     "Current VRAM allocated to PyTorch tensors by the re-embedder (torch.cuda.memory_allocated)",
     ["worker_id"],
 )
-REEMBEDDER_VRAM_RESERVED = Gauge(
+REEMBEDDER_VRAM_RESERVED = _safe_gauge(
     "trimcp_reembedder_vram_reserved_bytes",
     "Current VRAM reserved by the CUDA caching allocator for the re-embedder (torch.cuda.memory_reserved)",
     ["worker_id"],
 )
-REEMBEDDER_VRAM_PEAK = Gauge(
+REEMBEDDER_VRAM_PEAK = _safe_gauge(
     "trimcp_reembedder_vram_peak_bytes",
     "Peak VRAM allocated since last measurement reset (torch.cuda.max_memory_allocated)",
     ["worker_id"],
 )
 
 # Connection pool / RLS overhead
-SCOPED_SESSION_LATENCY = Histogram(
+SCOPED_SESSION_LATENCY = _safe_histogram(
     "trimcp_scoped_session_latency_seconds",
     "Latency of scoped_session acquisition + SET LOCAL RLS",
     ["namespace_id"],
@@ -129,98 +171,98 @@ SCOPED_SESSION_LATENCY = Histogram(
 )
 
 # Dead Letter Queue / Poison Pill metrics (Phase 3 tasks.py)
-TASK_DLQ_TOTAL = Counter(
+TASK_DLQ_TOTAL = _safe_counter(
     "trimcp_task_dlq_total",
     "Total count of background tasks routed to the Dead Letter Queue after exhausting retries",
     ["task_name"],
 )
-TASK_DLQ_BACKLOG = Gauge(
+TASK_DLQ_BACKLOG = _safe_gauge(
     "trimcp_task_dlq_backlog",
     "Current number of pending (un-replayed, un-purged) entries in the Dead Letter Queue",
     ["task_name"],
 )
 
 # Partition maintenance runway (Item C)
-EVENT_LOG_PARTITION_MONTHS_AHEAD = Gauge(
+EVENT_LOG_PARTITION_MONTHS_AHEAD = _safe_gauge(
     "trimcp_event_log_partition_months_ahead",
     "Number of future monthly partitions ahead of current month for event_log",
 )
 
 # Merkle chain verification gauge (B2) — 1=valid, 0=corrupted
-MERKLE_CHAIN_VALID = Gauge(
+MERKLE_CHAIN_VALID = _safe_gauge(
     "trimcp_merkle_chain_valid",
     "Merkle chain validity: 1=valid, 0=corrupted",
     ["namespace_id"],
 )
 
 # Transactional outbox relay (Phase 1.1)
-OUTBOX_DELIVERED_TOTAL = Counter(
+OUTBOX_DELIVERED_TOTAL = _safe_counter(
     "trimcp_outbox_delivered_total",
     "Outbox events successfully published by the relay",
     ["event_type"],
 )
-OUTBOX_DELIVERY_FAILURES_TOTAL = Counter(
+OUTBOX_DELIVERY_FAILURES_TOTAL = _safe_counter(
     "trimcp_outbox_delivery_failures_total",
     "Outbox delivery attempts that failed (may retry until DLQ)",
     ["event_type"],
 )
-OUTBOX_DLQ_TOTAL = Counter(
+OUTBOX_DLQ_TOTAL = _safe_counter(
     "trimcp_outbox_dlq_total",
     "Outbox events routed to DLQ after exhausting relay attempts",
     ["event_type"],
 )
 
 # Signing key cache (Item 31)
-SIGNING_KEY_CACHE_HIT_TOTAL = Counter(
+SIGNING_KEY_CACHE_HIT_TOTAL = _safe_counter(
     "trimcp_signing_key_cache_hit_total",
     "Total count of signing key cache hits",
 )
-SIGNING_KEY_CACHE_MISS_TOTAL = Counter(
+SIGNING_KEY_CACHE_MISS_TOTAL = _safe_counter(
     "trimcp_signing_key_cache_miss_total",
     "Total count of signing key cache misses",
 )
 
 # Extraction security (Items E, K)
-EXTRACTION_MIME_MISMATCH_TOTAL = Counter(
+EXTRACTION_MIME_MISMATCH_TOTAL = _safe_counter(
     "trimcp_extraction_mime_mismatch_total",
     "Total count of attachments rejected due to extension/magic-byte MIME mismatch",
 )
-EXTRACTION_REJECTED_TOO_LARGE_TOTAL = Counter(
+EXTRACTION_REJECTED_TOO_LARGE_TOTAL = _safe_counter(
     "trimcp_extraction_rejected_too_large_total",
     "Total count of attachments rejected due to size limit",
 )
 
 # Circuit breaker state (Item 44)
-CIRCUIT_BREAKER_STATE = Gauge(
+CIRCUIT_BREAKER_STATE = _safe_gauge(
     "trimcp_circuit_breaker_state",
     "Current circuit breaker state: 0=closed, 1=half_open, 2=open",
     ["provider"],
 )
-CIRCUIT_BREAKER_FAILURES = Gauge(
+CIRCUIT_BREAKER_FAILURES = _safe_gauge(
     "trimcp_circuit_breaker_failures",
     "Current consecutive failure count inside the circuit breaker",
     ["provider"],
 )
-MINIO_ORPHAN_CLEANUP_FAILURES_TOTAL = Counter(
+MINIO_ORPHAN_CLEANUP_FAILURES_TOTAL = _safe_counter(
     "trimcp_minio_orphan_cleanup_failures_total",
     "Number of MinIO object deletions that failed during orphan cleanup",
 )
-EXTERNAL_HTTP_ATTEMPTS_TOTAL = Counter(
+EXTERNAL_HTTP_ATTEMPTS_TOTAL = _safe_counter(
     "trimcp_external_http_attempts_total",
     "Total individual HTTP attempts including all retries",
     ["operation"],
 )
-EXTERNAL_HTTP_RETRIES_TOTAL = Counter(
+EXTERNAL_HTTP_RETRIES_TOTAL = _safe_counter(
     "trimcp_external_http_retries_total",
     "Total retry attempts (excludes the initial attempt)",
     ["operation"],
 )
-EXTERNAL_HTTP_FAILURES_TOTAL = Counter(
+EXTERNAL_HTTP_FAILURES_TOTAL = _safe_counter(
     "trimcp_external_http_failures_total",
     "Total HTTP calls that raised a client error or exhausted retries",
     ["operation", "error_type"],
 )
-EXTERNAL_HTTP_LATENCY_SECONDS = Histogram(
+EXTERNAL_HTTP_LATENCY_SECONDS = _safe_histogram(
     "trimcp_external_http_latency_seconds",
     "End-to-end wall-clock latency of HTTP calls including all retry attempts",
     ["operation"],

@@ -58,11 +58,11 @@ class TestSagaMetricsWrapsRealWork:
         # Monkeypatch SAGA_DURATION.observe to capture the duration
         from trimcp.observability import SAGA_DURATION
 
-        original_observe = SAGA_DURATION.observe
-
         def _capture_observe(self_hist, value: float) -> None:
             observed_duration[0] = value
-            return original_observe(value)
+            # Note: we intentionally do NOT call the original observe here because
+            # SAGA_DURATION.observe is on the Histogram class and requires labels
+            # to be set first (via .labels(operation=..., result=...)).
 
         monkeypatch.setattr(SAGA_DURATION.__class__, "observe", _capture_observe)
 
@@ -77,6 +77,7 @@ class TestSagaMetricsWrapsRealWork:
             f"SagaMetrics recorded zero duration ({observed_duration[0]}s) for "
             f"non-trivial work — the context manager is wrapping nothing"
         )
+
 
     @pytest.mark.asyncio
     async def test_duration_non_zero_with_async_work(self, monkeypatch) -> None:

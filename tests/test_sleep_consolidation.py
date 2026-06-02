@@ -59,7 +59,7 @@ class FakePool:
     def __init__(self, conn: FakeConsolidationConn) -> None:
         self._conn = conn
 
-    def acquire(self) -> _FakeAcquire:
+    def acquire(self, **kwargs) -> _FakeAcquire:
         return _FakeAcquire(self._conn)
 
 
@@ -94,22 +94,55 @@ class FakeConsolidationConn:
         if "coalesce(max(event_seq)" in q:
             self.event_seq += 1
             return self.event_seq
+        if "clock_timestamp" in q or "current_timestamp" in q:
+            from datetime import datetime, timezone
+            return datetime.now(tz=timezone.utc)
         raise AssertionError(f"unexpected fetchval: {query!r}")
 
+
     async def fetch(self, query: str, *args: Any) -> list:
-        if "from memories" in query.lower() and "episodic" in query.lower():
+        q = query.lower()
+        if "from memories" in q and "episodic" in q:
             assert args[0] == self.namespace_id
             return self.memory_rows
+        if "from memory_salience" in q and "any" in q:
+            return []  # No pre-existing salience rows for batch fetch
         raise AssertionError(f"unexpected fetch: {query!r}")
 
     async def fetchrow(self, query: str, *args: Any) -> dict | None:
-        if "memory_salience" in query.lower() and "memory_id" in query.lower():
+        q = query.lower()
+        if "memory_salience" in q and "memory_id" in q:
             return None  # No salience rows pre-populated in test
+        if "event_sequences" in q:
+            self.event_seq += 1
+            return {"seq": self.event_seq}
+        if "chain_hash" in q and "event_log" in q and "select" in q and "insert" not in q:
+            return None  # Genesis event — no previous chain hash
+        if "insert into event_log" in q:
+            from datetime import datetime, timezone
+            # Also track in executes so test SQL assertions on conn.executes work
+            self.executes.append((query, args))
+            return {
+                "id": uuid4(),
+                "event_seq": self.event_seq,
+                "occurred_at": datetime.now(tz=timezone.utc),
+                "chain_hash": b"\x00" * 32,
+            }
+
         raise AssertionError(f"unexpected fetchrow: {query!r}")
+
+
+
 
     async def execute(self, query: str, *args: Any) -> str:
         self.executes.append((query, args))
         return "UPDATE 1"
+
+    def is_in_transaction(self) -> bool:
+        """Simulate an active PG transaction — required by append_event()."""
+        return True
+
+
 
 
 class _FakeHDBSCAN:
@@ -142,8 +175,13 @@ def patch_signing(monkeypatch: pytest.MonkeyPatch):
         _ = conn
         return ("test-key-id", b"\x11" * 32)
 
+    # append_event in event_log.py is where signing actually happens
+    monkeypatch.setattr("trimcp.event_log.get_active_key", _gk)
+    monkeypatch.setattr("trimcp.event_log.sign_fields", lambda fields, key: b"signed-by-test")
+    # Also patch on consolidation module for forward-compatibility
     monkeypatch.setattr("trimcp.consolidation.get_active_key", _gk)
     monkeypatch.setattr("trimcp.consolidation.sign_fields", lambda fields, key: b"signed-by-test")
+
 
 
 def test_consolidation_no_memories_completes(patch_signing, monkeypatch: pytest.MonkeyPatch):
@@ -306,7 +344,13 @@ def test_consolidation_decay_sources_updates_salience(
     asyncio.run(_run())
 
     decay_sql = [e for e in conn.executes if "memory_salience" in e[0].lower()]
-    assert len(decay_sql) >= 2
+    # The implementation uses a single batch upsert for all source memories (unnest pattern),
+    # so we expect at least 1 SQL statement covering both mid_a and mid_b.
+    assert len(decay_sql) >= 1, f"No memory_salience update found. Executes: {conn.executes}"
+    # Verify both memory IDs appear in the batch args of any salience statement
+    all_decay_args = " ".join(str(a) for e in decay_sql for a in e[1])
+    assert str(mid_a) in all_decay_args, "mid_a not found in decay args"
+    assert str(mid_b) in all_decay_args, "mid_b not found in decay args"
 
 
 def test_consolidated_abstraction_roundtrip():

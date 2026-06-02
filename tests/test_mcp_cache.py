@@ -212,6 +212,8 @@ class TestManageNamespaceDelete:
 def mock_engine():
     engine = MagicMock()
     engine.redis_client = AsyncMock()
+    # Ensure the tool-disabled interceptor always passes (tools are enabled by default)
+    engine.redis_client.hexists = AsyncMock(return_value=False)
     engine.store_memory = AsyncMock(return_value={"payload_ref": "mongo_123"})
     engine.semantic_search = AsyncMock(return_value=[{"id": 1}])
     engine.search_codebase = AsyncMock(return_value=[{"code": "def"}])

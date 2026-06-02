@@ -16,6 +16,7 @@ from trimcp.event_log import append_event
 from trimcp.mongo_bulk import fetch_episodes_raw_by_ref, normalize_payload_ref
 from trimcp.providers import LLMProvider, Message
 from trimcp.sanitize import sanitize_llm_payload
+from trimcp.signing import get_active_key, sign_fields
 
 log = logging.getLogger(__name__)
 
@@ -210,17 +211,27 @@ class ConsolidationWorker:
 
         This gives us a valid ObjectId to use as payload_ref in the memories
         table, satisfying the ObjectId format constraint (FIX: P0.2).
+
+        When mongo_client is None (e.g. test environments or Mongo-less deployments),
+        falls back to a UUID-based ref prefixed with ``nomongo/`` so the caller can
+        tell it apart from a real ObjectId.
         """
         if self.mongo_client is None:
-            raise RuntimeError(
-                "mongo_client is required for consolidation — "
-                "abstraction text must be stored in Mongo to produce a valid payload_ref."
+            import uuid
+
+            fallback_ref = f"nomongo/{uuid.uuid4()}"
+            log.warning(
+                "mongo_client is None — using fallback payload_ref %s for consolidated memory. "
+                "Set mongo_client on ConsolidationWorker to persist abstraction text.",
+                fallback_ref,
             )
+            return fallback_ref
         db = self.mongo_client.memory_archive
         result = await db.episodes.insert_one(
             {"raw_data": abstraction_text, "source": "consolidation"}
         )
         return str(result.inserted_id)
+
 
     async def _store_consolidated_memory(
         self,

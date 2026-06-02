@@ -24,6 +24,8 @@ def mock_engine():
     engine = MagicMock()
     engine.redis_client = AsyncMock()
     engine.redis_client.get.return_value = None
+    # Ensure the tool-disabled interceptor always passes (tools are enabled by default)
+    engine.redis_client.hexists = AsyncMock(return_value=False)
     engine.pg_pool = MagicMock()
     return engine
 
