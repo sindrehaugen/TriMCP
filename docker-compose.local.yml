@@ -72,13 +72,24 @@ services:
       retries: 5
 
   cognitive:
+    # pull_policy: missing — tries to pull the real image first; falls back to
+    # building the local stub automatically when the registry is unreachable.
+    # No manual swap needed: once ghcr.io/sindrehaugen/trimcp-cognitive:v1 is
+    # available and pulled, subsequent `make local-up` uses it automatically.
     image: ghcr.io/sindrehaugen/trimcp-cognitive:v1
+    build:
+      context: ./deploy/cognitive-stub
+      dockerfile: Dockerfile
+    pull_policy: missing
     container_name: trimcp-cognitive-local
+    environment:
+      COGNITIVE_PORT: "11435"
+      EMBEDDING_VECTOR_DIM: "${EMBEDDING_VECTOR_DIM:-768}"
     ports:
       - "127.0.0.1:11435:11435"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11435/health"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:11435/health')\""]
       interval: 10s
       timeout: 5s
       retries: 3
