@@ -496,7 +496,9 @@ class TriStackEngine:
         schema_path = Path(__file__).resolve().parent / "schema.sql"
         ddl = schema_path.read_text(encoding="utf-8")
         async with self.pg_pool.acquire(timeout=10.0) as conn:
-            await conn.execute(ddl)
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock(123456)")
+                await conn.execute(ddl)
         log.debug("[PG] schema.sql applied from %s", schema_path)
 
         if cfg.TRIMCP_APP_PASSWORD:
@@ -515,7 +517,9 @@ class TriStackEngine:
         for path in sorted(migrations_dir.glob("*.sql")):
             sql = path.read_text(encoding="utf-8")
             async with self.pg_pool.acquire(timeout=60.0) as conn:
-                await conn.execute(sql)
+                async with conn.transaction():
+                    await conn.execute("SELECT pg_advisory_xact_lock(123456)")
+                    await conn.execute(sql)
             log.debug("[PG] migration applied: %s", path.name)
 
     async def _verify_worm_enforcement(self):

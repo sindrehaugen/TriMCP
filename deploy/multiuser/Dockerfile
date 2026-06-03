@@ -43,6 +43,7 @@ RUN chown -R trimcp:trimcp /app
 
 USER trimcp
 
+ENV XDG_CACHE_HOME=/tmp
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
