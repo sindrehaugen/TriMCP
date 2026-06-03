@@ -270,6 +270,8 @@ EXPECTED_TENANT_RLS_TABLES: dict[str, str] = {
     "dead_letter_queue": "namespace_id",
     "embedding_migrations": "namespace_id",
     "memory_embeddings": "namespace_id",
+    "graph_schema_registry": "namespace_id",
+    "query_templates": "namespace_id",
 }
 
 EXPECTED_SPECIAL_RLS_TABLES: dict[str, tuple[str, ...]] = {

@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir -r requirements.txt --no-index --find-links=/whee
     # Download spaCy model required for Graphify (Phase 2) with pinned version
     && python -m spacy download en_core_web_sm \
     # Create non-root user
-    && useradd --system --uid 10001 --no-create-home trimcp
+    && useradd --system --uid 10001 --create-home trimcp
 
 # Copy application code
 COPY trimcp ./trimcp
