@@ -257,5 +257,5 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
             await asyncio.sleep(10)
 
 
-def start_re_embedder(pg_pool, mongo_client):
-    create_tracked_task(run_re_embedding_worker(pg_pool, mongo_client), name="re_embedding_worker")
+def start_re_embedder(pg_pool, mongo_client) -> asyncio.Task:
+    return create_tracked_task(run_re_embedding_worker(pg_pool, mongo_client), name="re_embedding_worker")

@@ -349,3 +349,39 @@ class TestSecretRedaction:
                 )
         assert "REDACTED" in str(ei.value)
         assert "postgresql://user:pass@host/db" not in str(ei.value)
+
+
+class TestPostJsonWithRetry:
+    @pytest.mark.asyncio
+    async def test_successful_response_returns_json(self):
+        mock_resp = _response(200, content=b'{"id": "sub123"}')
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("trimcp.http_resilience.httpx.AsyncClient", return_value=mock_client):
+            out = await hr.post_json_with_retry(
+                "https://api.example/subscriptions",
+                {"changeType": "updated"},
+                operation="setup_webhook:test",
+            )
+        assert out == {"id": "sub123"}
+
+    @pytest.mark.asyncio
+    async def test_content_type_header_set(self):
+        mock_resp = _response(200, content=b'{"id": "sub123"}')
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("trimcp.http_resilience.httpx.AsyncClient", return_value=mock_client):
+            await hr.post_json_with_retry(
+                "https://api.example/subscriptions",
+                {"changeType": "updated"},
+                operation="setup_webhook:test",
+            )
+        hdrs = mock_client.post.call_args.kwargs["headers"]
+        assert hdrs["Content-Type"] == "application/json"
+

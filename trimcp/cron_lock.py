@@ -3,29 +3,26 @@ Distributed lock helper for singleton cron jobs.
 
 Uses Redis SET NX EX so only one cron instance runs a given job at a time.
 Extracted from cron.py to keep it importable without APScheduler.
+
+Lock primitives (Lua CAS script, token generation) are centralised in
+``trimcp.redis_lock`` and imported here — single definition, no duplication.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-import secrets
 from dataclasses import dataclass
+from typing import Any
 
 from trimcp.config import cfg
+from trimcp.redis_lock import acquire_lock as _acquire_lock
+from trimcp.redis_lock import release_lock as _release_lock
 
 log = logging.getLogger("trimcp.cron")
 
 _CRON_LOCK_PREFIX = "trimcp:cron:lock"
 _JOB_ID_RE = re.compile(r"^[a-zA-Z0-9_.:-]{1,128}$")
-
-# Lua compare-and-delete: only DEL if value still matches our token.
-_RELEASE_LOCK_LUA = """
-if redis.call("GET", KEYS[1]) == ARGV[1] then
-    return redis.call("DEL", KEYS[1])
-end
-return 0
-"""
 
 # Sentinel for environments where Redis is disabled (non-prod).
 _LOCAL_DISABLED = "local-disabled"
@@ -52,19 +49,35 @@ def _validated_lock_key(job_id: str) -> str:
     return f"{_CRON_LOCK_PREFIX}:{job_id}"
 
 
-async def acquire_cron_lock(job_id: str, ttl_seconds: int) -> CronLock | None:
+async def acquire_cron_lock(
+    job_id: str,
+    ttl_seconds: int,
+    *,
+    redis_client: Any | None = None,
+) -> CronLock | None:
     """Try to acquire a Redis distributed lock for a singleton cron job.
 
-    Returns:
-        CronLock — if the lock was acquired (safe to run this job).
-        None — if another instance holds the lock, Redis is unreachable, or
-               locking is required but unavailable (production with no REDIS_URL).
+    Parameters
+    ----------
+    job_id:
+        Unique cron job name — must match ``[a-zA-Z0-9_.:-]{1,128}``.
+    ttl_seconds:
+        Lock TTL.  Acts as a safety net if the process dies before
+        :func:`release_cron_lock` is called.
+    redis_client:
+        Optional open ``redis.asyncio.Redis`` instance.  When supplied the
+        caller owns its lifetime — this function will not close it.  When
+        omitted a temporary client is created and destroyed automatically.
+        Pass a shared client from the caller to avoid one TCP round-trip per
+        lock acquisition.
 
-    In non-production environments with no ``REDIS_URL`` configured the function
-    returns a local-disabled CronLock so dev/CI runs are not blocked.
-
-    In production (``IS_PROD=True``) with no ``REDIS_URL`` this returns None
-    (fail-closed) to prevent concurrent singleton jobs.
+    Returns
+    -------
+    CronLock
+        If the lock was acquired — pass to :func:`release_cron_lock`.
+    None
+        If another instance holds the lock, Redis is unreachable, or locking
+        is required but unavailable (production with no REDIS_URL).
     """
     if ttl_seconds < 1:
         raise ValueError("ttl_seconds must be >= 1")
@@ -88,61 +101,68 @@ async def acquire_cron_lock(job_id: str, ttl_seconds: int) -> CronLock | None:
             ttl_seconds=ttl_seconds,
         )
 
-    token = secrets.token_urlsafe(32)
-    client = None
+    owned_client = redis_client is None
+    client = redis_client
     try:
-        from redis.asyncio import Redis as AsyncRedis
+        if owned_client:
+            from redis.asyncio import Redis as AsyncRedis
 
-        client = AsyncRedis.from_url(cfg.REDIS_URL)
-        acquired = await client.set(key, token, nx=True, ex=ttl_seconds)
+            client = AsyncRedis.from_url(cfg.REDIS_URL)
 
-        if not acquired:
+        token = await _acquire_lock(client, key, ttl_seconds)
+        if token is None:
             return None
 
         return CronLock(job_id=job_id, key=key, token=token, ttl_seconds=ttl_seconds)
 
     except Exception as exc:
         log.error("Cron lock acquisition failed for job=%s: %s", job_id, exc)
-        # Fail-closed: abort the job on Redis outage to prevent concurrency bugs.
         return None
 
     finally:
-        if client is not None:
+        if owned_client and client is not None:
             try:
                 await client.aclose()
             except Exception as exc:
                 log.warning("Cron lock Redis close failed for job=%s: %s", job_id, exc)
 
 
-async def release_cron_lock(lock: CronLock) -> bool:
+async def release_cron_lock(
+    lock: CronLock,
+    *,
+    redis_client: Any | None = None,
+) -> bool:
     """Release a cron lock only if this process still owns it (compare-and-delete).
 
     Safe to call even if the TTL has expired or another instance has taken
-    over — the Lua script will return 0 without deleting another owner's lock.
+    over — the Lua CAS script returns 0 without deleting another owner's lock.
+
+    Parameters
+    ----------
+    lock:
+        The :class:`CronLock` returned by :func:`acquire_cron_lock`.
+    redis_client:
+        Optional shared client (same contract as :func:`acquire_cron_lock`).
     """
     if lock.token == _LOCAL_DISABLED:
         return True
 
-    client = None
+    owned_client = redis_client is None
+    client = redis_client
     try:
-        from redis.asyncio import Redis as AsyncRedis
+        if owned_client:
+            from redis.asyncio import Redis as AsyncRedis
 
-        client = AsyncRedis.from_url(cfg.REDIS_URL)
-        released = await client.eval(_RELEASE_LOCK_LUA, 1, lock.key, lock.token)
-        if not released:
-            log.warning(
-                "Cron lock release for job=%s did not delete key — "
-                "lock may have expired or been taken by another instance.",
-                lock.job_id,
-            )
-        return bool(released)
+            client = AsyncRedis.from_url(cfg.REDIS_URL)
+
+        return await _release_lock(client, lock.key, lock.token)
 
     except Exception as exc:
         log.warning("Cron lock release failed for job=%s: %s", lock.job_id, exc)
         return False
 
     finally:
-        if client is not None:
+        if owned_client and client is not None:
             try:
                 await client.aclose()
             except Exception as exc:

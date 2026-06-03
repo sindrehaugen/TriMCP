@@ -120,9 +120,10 @@ def test_check_admin_delegates_to_validate_scope(monkeypatch):
     monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "server-secret-key")
 
     import server as srv
+    from trimcp.mcp_errors import McpError
 
-    with pytest.raises(ValueError) as ei:
+    with pytest.raises(McpError) as ei:
         srv._check_admin({"admin_api_key": "wrong"})
-    assert "(-32001)" in str(ei.value)
+    assert ei.value.code == -32001
 
     srv._check_admin({"admin_api_key": "server-secret-key"})

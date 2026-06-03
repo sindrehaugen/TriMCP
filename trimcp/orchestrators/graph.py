@@ -10,22 +10,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from contextlib import asynccontextmanager
 from uuid import UUID
 
 import asyncpg
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from trimcp.constants import ALLOWED_LANGUAGES as _ALLOWED_LANGUAGES, MAX_TOP_K as _MAX_TOP_K, SAFE_ID_RE as _SAFE_ID_RE
 from trimcp.db_utils import scoped_pg_session
 from trimcp.mongo_bulk import fetch_code_files_raw_by_ref, normalize_payload_ref
 
 log = logging.getLogger("tri-stack-orchestrator.graph")
-
-# Reusable constants (mirrored from orchestrator.py for extraction purity)
-_SAFE_ID_RE = re.compile(r"^[\w\-]{1,128}$")
-_ALLOWED_LANGUAGES = frozenset({"python", "javascript", "typescript", "go", "rust"})
-_MAX_TOP_K = 100
 
 
 class GraphOrchestrator:

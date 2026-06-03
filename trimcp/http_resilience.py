@@ -17,7 +17,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import httpx
 from tenacity import (
@@ -359,3 +359,48 @@ async def oauth_token_post_form(
                 ) from exc
 
         return await execute_http_with_retry(once, operation_name=operation)
+
+
+async def post_json_with_retry(
+    url: str,
+    json_data: dict[str, Any],
+    *,
+    operation: str,
+    timeout: float | httpx.Timeout = 60.0,
+    headers: dict[str, str] | None = None,
+) -> dict:
+    """POST JSON data to an endpoint with retries and connection pooling.
+
+    Reuses connection pooling across tenacity retry attempts under external timeouts
+    or transport drops.
+    """
+    hdrs = dict(headers or {})
+    hdrs.setdefault("Content-Type", "application/json")
+    timeout_config = timeout if isinstance(timeout, httpx.Timeout) else httpx.Timeout(timeout)
+    async with httpx.AsyncClient(timeout=timeout_config) as client:
+
+        async def once() -> dict:
+            try:
+                resp = await client.post(url, headers=hdrs, json=json_data)
+            except httpx.TimeoutException as exc:
+                raise ExternalAPITransientError(
+                    f"{operation}: request timed out",
+                    operation=operation,
+                ) from exc
+            except httpx.RequestError as exc:
+                raise ExternalAPITransientError(
+                    f"{operation}: transport error: {redact_secrets_in_text(str(exc))}",
+                    operation=operation,
+                ) from exc
+            classify_httpx_response(resp, operation=operation)
+            try:
+                return resp.json()
+            except ValueError as exc:
+                raise ExternalAPIClientError(
+                    f"{operation}: endpoint returned non-JSON body",
+                    operation=operation,
+                    status_code=resp.status_code,
+                ) from exc
+
+        return await execute_http_with_retry(once, operation_name=operation)
+

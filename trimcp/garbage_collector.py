@@ -23,6 +23,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from trimcp.auth import set_namespace_context
 from trimcp.config import cfg, redact_secrets_in_text
+from trimcp.redis_lock import acquire_lock as _acquire_redis_lock
+from trimcp.redis_lock import release_lock as _release_redis_lock
 
 log = logging.getLogger("tri-stack-gc")
 
@@ -30,57 +32,31 @@ _GC_LOCK_KEY: str = "trimcp:gc:lock"
 _GC_LOCK_TTL_SECONDS: int = cfg.GC_INTERVAL_SECONDS + 60
 
 
-class _NoOpLock:
-    """Sentinel returned when Redis is unavailable — no-op release."""
+async def _acquire_gc_lock(redis_client: Any) -> str | None:
+    """Try to acquire the GC distributed lock.
 
-    async def aclose(self) -> None:
-        pass
+    Parameters
+    ----------
+    redis_client:
+        An open ``redis.asyncio.Redis`` instance shared by the GC loop.
+        The caller owns its lifetime — this function never closes it.
 
-    async def delete(self, key: str) -> None:
-        pass
-
-    def __bool__(self) -> bool:
-        return True
-
-
-async def _acquire_gc_lock() -> Any:
-    """Acquire the GC distributed lock.
-
-    Returns the open Redis client if acquired (caller must call _release_gc_lock),
-    or None if the lock is held by another instance or Redis is unavailable.
-    Returns a sentinel when REDIS_URL is not set (no-op mode).
+    Returns
+    -------
+    str
+        The lock token (pass to :func:`_release_gc_lock`).
+    None
+        Lock held by another instance or Redis unavailable — skip this pass.
     """
-    if not cfg.REDIS_URL:
-        log.warning("REDIS_URL not set — GC distributed lock disabled.")
-        return _NoOpLock()
-    try:
-        from redis.asyncio import Redis as AsyncRedis
-
-        client = AsyncRedis.from_url(cfg.REDIS_URL)
-        acquired = await client.set(_GC_LOCK_KEY, "1", nx=True, ex=_GC_LOCK_TTL_SECONDS)
-        if not acquired:
-            await client.aclose()
-            return None
-        return client
-    except Exception as exc:
-        log.error("GC lock acquisition failed: %s", exc)
-        return None
+    token = await _acquire_redis_lock(redis_client, _GC_LOCK_KEY, _GC_LOCK_TTL_SECONDS)
+    if token is None:
+        log.debug("GC lock held by another instance — skipping this pass.")
+    return token
 
 
-async def _release_gc_lock(lock_client: Any) -> None:
-    """Release the GC distributed lock and close the Redis client."""
-    if lock_client is None:
-        return
-    try:
-        if not isinstance(lock_client, _NoOpLock):
-            await lock_client.delete(_GC_LOCK_KEY)
-    except Exception as exc:
-        log.warning("GC lock release failed: %s", exc)
-    finally:
-        try:
-            await lock_client.aclose()
-        except Exception:
-            pass
+async def _release_gc_lock(redis_client: Any, token: str) -> None:
+    """Release the GC distributed lock (compare-and-delete)."""
+    await _release_redis_lock(redis_client, _GC_LOCK_KEY, token)
 
 
 PAGE_SIZE = cfg.GC_PAGE_SIZE  # rows fetched per PG cursor page
@@ -166,8 +142,8 @@ async def _fetch_pg_refs(pg_pool: asyncpg.Pool, namespaces: list[UUID]) -> set[s
     pg_refs: set[str] = set()
     ZERO_UUID = UUID(int=0)
 
-    for ns_id in namespaces:
-        async with pg_pool.acquire(timeout=10.0) as conn:
+    async with pg_pool.acquire(timeout=30.0) as conn:
+        for ns_id in namespaces:
             async with conn.transaction():
                 await set_namespace_context(conn, ns_id)
                 for table in ("memories",):
@@ -220,13 +196,14 @@ async def _clean_orphaned_cascade(
         "contradictions": 0,
     }
 
-    while True:
-        try:
-            async with pg_pool.acquire(timeout=10.0) as conn:
-                async with conn.transaction():
-                    await set_namespace_context(conn, namespace_id)
-                    row = await conn.fetchrow(
-                        """
+    try:
+        async with pg_pool.acquire(timeout=30.0) as conn:
+            while True:
+                try:
+                    async with conn.transaction():
+                        await set_namespace_context(conn, namespace_id)
+                        row = await conn.fetchrow(
+                            """
                     WITH existing_memories AS (
                         SELECT id FROM memories
                         WHERE namespace_id = $1::uuid
@@ -247,7 +224,7 @@ async def _clean_orphaned_cascade(
                             UNION
                             SELECT c.memory_b_id
                             FROM contradictions c
-                            LEFT JOIN existing_memories em ON c.memory_b_id = em.id
+                            LEFT JOIN existing_memories em ON c.memory_a_id = em.id
                             WHERE em.id IS NULL
                               AND c.namespace_id = $1::uuid
                             UNION
@@ -278,27 +255,33 @@ async def _clean_orphaned_cascade(
                         (SELECT count(*) FROM deleted_salience)      AS salience_count,
                         (SELECT count(*) FROM deleted_contradictions) AS contradictions_count
                     """,
+                            namespace_id,
+                            CHUNK_DELETE_SIZE,
+                        )
+                        if row is None:
+                            break
+                        chunk_salience = int(row["salience_count"])
+                        chunk_contradictions = int(row["contradictions_count"])
+                        if chunk_salience == 0 and chunk_contradictions == 0:
+                            break
+                        totals["salience"] += chunk_salience
+                        totals["contradictions"] += chunk_contradictions
+                except Exception as exc:
+                    log.error(
+                        "GC: cascade cleanup chunk failed for ns=%s: %s — stopping cascade for "
+                        "this namespace (partial cleanup may have occurred)",
                         namespace_id,
-                        CHUNK_DELETE_SIZE,
+                        type(exc).__name__,
                     )
-                    if row is None:
-                        break
-                    chunk_salience = int(row["salience_count"])
-                    chunk_contradictions = int(row["contradictions_count"])
-                    if chunk_salience == 0 and chunk_contradictions == 0:
-                        break
-                    totals["salience"] += chunk_salience
-                    totals["contradictions"] += chunk_contradictions
-        except Exception as exc:
-            log.error(
-                "GC: cascade cleanup chunk failed for ns=%s: %s — stopping cascade for "
-                "this namespace (partial cleanup may have occurred)",
-                namespace_id,
-                type(exc).__name__,
-            )
-            break
+                    break
 
-        await asyncio.sleep(0.1)
+                await asyncio.sleep(0.1)
+    except Exception as exc:
+        log.error(
+            "GC: cascade cleanup connection check out failed for ns=%s: %s",
+            namespace_id,
+            exc,
+        )
 
     return totals
 
@@ -429,6 +412,10 @@ async def run_gc_loop():
     """
     Background loop. Connects once with retry, then runs a GC pass every hour.
     Designed to be launched as asyncio.create_task() alongside the MCP server.
+
+    A single Redis client is created here and reused for every lock acquire/
+    release cycle — one persistent connection instead of two ephemeral ones
+    per GC pass.
     """
     log.info(
         "GC starting up (interval=%ds, orphan_age=%ds).",
@@ -445,23 +432,49 @@ async def run_gc_loop():
         )
         return
 
+    # Create a single shared Redis client for the lock lifecycle.
+    redis_client: Any | None = None
+    if cfg.REDIS_URL:
+        try:
+            from redis.asyncio import Redis as AsyncRedis
+
+            redis_client = AsyncRedis.from_url(cfg.REDIS_URL)
+        except Exception as exc:
+            log.error(
+                "GC could not create Redis client — distributed lock disabled: %s", exc
+            )
+    else:
+        log.warning("REDIS_URL not set — GC distributed lock disabled.")
+
     try:
         while True:
-            lock_client = await _acquire_gc_lock()
-            if lock_client is None:
-                log.info("GC lock held by another instance — skipping this pass.")
+            if redis_client is None:
+                # No Redis — run without locking (single-instance deployments / dev).
+                lock_token: str | None = "no-lock"
+            else:
+                lock_token = await _acquire_gc_lock(redis_client)
+
+            if lock_token is None:
                 await asyncio.sleep(cfg.GC_INTERVAL_SECONDS)
                 continue
+
             try:
                 await _collect_orphans(mongo_client, pg_pool)
             except Exception as exc:
                 log.error("GC pass raised unexpected error: %s", exc)
             finally:
-                await _release_gc_lock(lock_client)
+                if redis_client is not None and lock_token != "no-lock":
+                    await _release_gc_lock(redis_client, lock_token)
+
             await asyncio.sleep(cfg.GC_INTERVAL_SECONDS)
     finally:
         mongo_client.close()
         await pg_pool.close()
+        if redis_client is not None:
+            try:
+                await redis_client.aclose()
+            except Exception:
+                pass
         log.info("GC connections closed.")
 
 

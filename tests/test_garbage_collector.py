@@ -454,14 +454,9 @@ async def test_acquire_gc_lock_returns_none_when_not_acquired():
     mock_client = AsyncMock()
     mock_client.set = AsyncMock(return_value=False)
 
-    with (
-        patch("trimcp.garbage_collector.cfg.REDIS_URL", "redis://localhost:6379/0"),
-        patch("redis.asyncio.Redis.from_url", return_value=mock_client),
-    ):
-        result = await _acquire_gc_lock()
+    result = await _acquire_gc_lock(mock_client)
 
     assert result is None
-    mock_client.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -471,26 +466,21 @@ async def test_acquire_gc_lock_returns_client_when_acquired():
     mock_client = AsyncMock()
     mock_client.set = AsyncMock(return_value=True)
 
-    with (
-        patch("trimcp.garbage_collector.cfg.REDIS_URL", "redis://localhost:6379/0"),
-        patch("redis.asyncio.Redis.from_url", return_value=mock_client),
-    ):
-        result = await _acquire_gc_lock()
+    result = await _acquire_gc_lock(mock_client)
 
-    assert result is mock_client
-    mock_client.aclose.assert_not_awaited()
+    assert isinstance(result, str)
 
 
 @pytest.mark.asyncio
 async def test_release_gc_lock_deletes_key_and_closes():
-    from trimcp.garbage_collector import _GC_LOCK_KEY, _release_gc_lock
+    from trimcp.garbage_collector import _release_gc_lock
 
     mock_client = AsyncMock()
+    mock_client.eval = AsyncMock(return_value=1)
 
-    await _release_gc_lock(mock_client)
+    await _release_gc_lock(mock_client, "token")
 
-    mock_client.delete.assert_awaited_once_with(_GC_LOCK_KEY)
-    mock_client.aclose.assert_awaited_once()
+    mock_client.eval.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -536,7 +526,8 @@ async def test_run_gc_loop_releases_lock_on_collect_error():
         with pytest.raises(asyncio.CancelledError):
             await run_gc_loop()
 
-    mock_release.assert_awaited_once_with(mock_lock)
+    mock_release.assert_awaited_once()
+    assert mock_release.call_args[0][1] == mock_lock
 
 
 @pytest.mark.asyncio

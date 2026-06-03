@@ -33,32 +33,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from trimcp.observability import HAS_PROMETHEUS, _safe_counter, _safe_gauge, _safe_histogram
-
-class _StubMetric:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def labels(self, *args, **kwargs):
-        return self
-
-    def inc(self, *args, **kwargs):
-        pass
-
-    def dec(self, *args, **kwargs):
-        pass
-
-    def observe(self, *args, **kwargs):
-        pass
-
-    def set(self, *args, **kwargs):
-        pass
-
-
-if HAS_PROMETHEUS:
-    from prometheus_client import Counter, Gauge, Histogram
-else:
-    Counter = Histogram = Gauge = _StubMetric
+from trimcp.observability import HAS_PROMETHEUS, _StubMetric, _safe_counter, _safe_gauge, _safe_histogram
 
 
 log = logging.getLogger("trimcp.background_task_manager")

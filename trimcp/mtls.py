@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 
 from trimcp.a2a import A2AMTLSError, mtls_enforce
@@ -92,17 +93,18 @@ class MTLSAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
+        headers_obj = Headers(scope=scope)
         headers: dict[str, str] = {}
-        for key, value in scope.get("headers", []):
+        for key, value in headers_obj.items():
             if len(value) > _MAX_HEADER_VALUE_BYTES:
                 log.warning(
                     "mTLS: oversized header dropped name=%s len=%d path=%s",
-                    key.decode("latin-1", errors="replace")[:32],
+                    key[:32],
                     len(value),
                     path,
                 )
                 continue
-            headers[key.decode("latin-1").lower()] = value.decode("latin-1")
+            headers[key.lower()] = value
 
         try:
             mtls_enforce(

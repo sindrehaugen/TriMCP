@@ -77,11 +77,13 @@ from jwt.exceptions import (
     MissingRequiredClaimError,
 )
 from pydantic import ValidationError
+from functools import lru_cache
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from trimcp.auth import NamespaceContext, validate_agent_id
+from trimcp.auth import NamespaceContext, validate_agent_id, jsonrpc_error_response
 from trimcp.config import cfg
 
 log = logging.getLogger("trimcp.jwt_auth")
@@ -124,26 +126,15 @@ def _jsonrpc_error(
     401 responses include ``WWW-Authenticate: Bearer realm="trimcp"``
     per RFC 6750 §3 so HTTP clients know the expected scheme.
     """
-    http_status = (
-        _HTTP_UNAUTHORIZED
-        if code in (_CODE_JWT_INVALID, _CODE_JWT_MISSING_CLAIM, _CODE_JWT_BAD_CLAIM)
-        else _HTTP_BAD_REQUEST
-    )
     headers: dict[str, str] = {}
-    if http_status == _HTTP_UNAUTHORIZED:
+    if code in (_CODE_JWT_INVALID, _CODE_JWT_MISSING_CLAIM, _CODE_JWT_BAD_CLAIM):
         headers["WWW-Authenticate"] = 'Bearer realm="trimcp"'
-    return JSONResponse(
-        status_code=http_status,
-        content={
-            "jsonrpc": "2.0",
-            "error": {
-                "code": code,
-                "message": message,
-                "data": {"reason": reason},
-            },
-            "id": request_id,
-        },
-        headers=headers or None,
+    return jsonrpc_error_response(
+        code,
+        message,
+        reason,
+        headers=headers,
+        request_id=request_id,
     )
 
 
@@ -152,6 +143,7 @@ def _jsonrpc_error(
 # ---------------------------------------------------------------------------
 
 
+@lru_cache(maxsize=4)
 def _load_public_key(raw: str) -> str:
     """Resolve a public key from an env-var value.
 

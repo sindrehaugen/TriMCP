@@ -18,8 +18,8 @@ from trimcp.mcp_stdio_tools import TOOLS
 log = logging.getLogger("tri-stack-mcp")
 
 
-def create_stdio_app(*, engine_module: Any) -> Server:
-    """Build the MCP Server with tool handlers bound to ``engine_module.engine``."""
+def create_stdio_app(*, engine: TriStackEngine) -> Server:
+    """Build the MCP Server with tool handlers bound to ``engine``."""
     app = Server("tri-stack-memory")
 
     @app.list_tools()
@@ -28,26 +28,23 @@ def create_stdio_app(*, engine_module: Any) -> Server:
 
     @app.call_tool()
     async def call_tool(name: str, arguments: dict):
-        return await execute_call_tool(engine_module.engine, name, arguments)
+        return await execute_call_tool(engine, name, arguments)
 
     return app
 
 
-async def run_stdio_server(*, app: Server | None = None, engine_module: Any = None) -> None:
+async def run_stdio_server(*, app: Server | None = None, engine: TriStackEngine | None = None) -> None:
     """Connect TriStackEngine, start background loops, and serve MCP over stdio."""
-    import importlib
-
-    host = engine_module or importlib.import_module("server")
-
     assert_admin_override_not_in_production()
-    host.engine = TriStackEngine()
+    
+    if engine is None:
+        engine = TriStackEngine()
 
     from trimcp.observability import init_observability
 
     init_observability()
     log.info("Observability layer initialized.")
 
-    engine = host.engine
     try:
         await engine.connect()
     except Exception as exc:
@@ -71,7 +68,7 @@ async def run_stdio_server(*, app: Server | None = None, engine_module: Any = No
 
     from trimcp.re_embedder import start_re_embedder
 
-    start_re_embedder(engine.pg_pool, engine.mongo_client)
+    re_embedder_task = start_re_embedder(engine.pg_pool, engine.mongo_client)
     log.info("Re-embedder background task started.")
 
     from trimcp.outbox_relay import run_outbox_relay_once
@@ -91,19 +88,18 @@ async def run_stdio_server(*, app: Server | None = None, engine_module: Any = No
     outbox_relay_task = create_tracked_task(_outbox_relay_loop(), name="outbox_relay_loop")
     log.info("Outbox relay background task started (interval=%ds).", interval_s)
 
-    stdio_app = app or create_stdio_app(engine_module=host)
+    stdio_app = app or create_stdio_app(engine=engine)
     try:
         async with stdio_server() as (read_stream, write_stream):
             log.info("MCP server listening on stdio.")
             await stdio_app.run(read_stream, write_stream, stdio_app.create_initialization_options())
     finally:
-        for task in (gc_task, quota_flush_task, outbox_relay_task):
+        for task in (gc_task, quota_flush_task, outbox_relay_task, re_embedder_task):
             task.cancel()
-        for task in (gc_task, quota_flush_task, outbox_relay_task):
+        for task in (gc_task, quota_flush_task, outbox_relay_task, re_embedder_task):
             try:
                 await task
             except asyncio.CancelledError:
                 pass
         await engine.disconnect()
-        host.engine = None
         log.info("Shutdown complete.")

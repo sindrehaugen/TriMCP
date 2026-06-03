@@ -46,6 +46,8 @@ if TYPE_CHECKING:
     from trimcp.orchestrator import TriStackEngine
 from uuid import uuid4
 
+from trimcp.correlation import correlation_id_var
+
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.requests import Request
@@ -354,6 +356,18 @@ async def tasks_send(request: Request) -> JSONResponse:
     params: dict[str, Any] = body.get("params") or {}
     sharing_token: str | None = body.get("sharing_token")  # optional cross-agent token
 
+    # Propagate correlation_id from the caller's _meta block.
+    # Guards against str(None) — only inject a valid UUID string.
+    _incoming_cid: uuid.UUID | None = None
+    _meta: dict[str, Any] = body.get("_meta") or {}
+    _raw_cid: str | None = _meta.get("correlation_id")
+    if _raw_cid:
+        try:
+            _incoming_cid = uuid.UUID(str(_raw_cid))
+        except (ValueError, AttributeError):
+            log.debug("a2a tasks_send: ignoring malformed correlation_id %r", _raw_cid)
+    _cid_token = correlation_id_var.set(_incoming_cid or uuid4())
+
     if not skill:
         return JSONResponse(
             _jsonrpc_err(A2A_CODE_BAD_REQUEST, "Bad request", "missing_skill"),
@@ -365,6 +379,7 @@ async def tasks_send(request: Request) -> JSONResponse:
     async with _track_active_request():
         try:
             # --- Cross-agent scope validation (A2A sharing token path) ---
+            # correlation_id_var is already set above; reset in finally.
             if sharing_token is not None:
                 async with _engine.pg_pool.acquire(timeout=10.0) as conn:
                     verified = await verify_token(conn, sharing_token, caller_ctx)
@@ -425,6 +440,8 @@ async def tasks_send(request: Request) -> JSONResponse:
             task = _make_task(task_id, "failed", message=f"Internal error: {type(exc).__name__}")
             _tasks[task_id] = task
             return JSONResponse({"error": "Internal error"}, status_code=500)
+        finally:
+            correlation_id_var.reset(_cid_token)
 
 
 async def tasks_get(request: Request) -> JSONResponse:

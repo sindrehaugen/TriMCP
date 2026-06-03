@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from trimcp.graph_extractor import _regex_extract, deduplicate_graph, extract
+from trimcp.graph_extractor import _regex_extract, deduplicate_graph, extract, extract_async
 from trimcp.models import KGEdge, KGNode
 
 # ---------------------------------------------------------------------------
@@ -234,3 +234,19 @@ class TestDeduplicateGraphEdgeWeights:
             "overlapping chunk deduplication is broken"
         )
         assert merged[0].metadata["occurrences"] == 2
+
+
+@pytest.mark.anyio
+async def test_extract_async():
+    """Verify that extract_async offloads successfully and yields expected nodes/edges."""
+    text = "Redis connects to PostgreSQL"
+    entities, triplets = await extract_async(text)
+
+    assert len(entities) >= 2
+    assert any(e.label.lower() == "redis" for e in entities)
+    assert any(e.label.lower() == "postgresql" for e in entities)
+
+    assert len(triplets) == 1
+    assert triplets[0].subject_label.lower() == "redis"
+    assert triplets[0].predicate == "connects to"
+    assert triplets[0].object_label.lower() == "postgresql"

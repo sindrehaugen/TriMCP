@@ -46,7 +46,7 @@ from trimcp.admin_routes import (
     sanitize_task_name_filter,
     validate_dlq_status,
 )
-from trimcp.auth import set_namespace_context
+from trimcp.auth import set_namespace_context, validate_agent_id
 from trimcp.background_task_manager import create_tracked_task
 from trimcp.config import cfg
 from trimcp.event_log import verify_merkle_chain

@@ -178,6 +178,7 @@ class RecordingFakeConnection:
                 signature,
                 signature_key_id,
                 chain_hash,
+                correlation_id,
             ) = args
 
             record = {
@@ -191,6 +192,7 @@ class RecordingFakeConnection:
                 "signature": signature,
                 "signature_key_id": signature_key_id,
                 "chain_hash": chain_hash,
+                "correlation_id": correlation_id,
             }
             if self.unique_violation:
                 raise asyncpg.UniqueViolationError("simulated collision")

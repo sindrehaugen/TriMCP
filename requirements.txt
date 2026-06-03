@@ -63,6 +63,10 @@ opentelemetry-sdk>=1.22.0
 opentelemetry-exporter-otlp>=1.22.0
 opentelemetry-instrumentation-fastapi>=0.43b0
 
+# Phase 1 Enterprise: Query Catalog (Jinja2 parameterised templates + JSON Schema validation)
+jinja2>=3.1.0
+jsonschema>=4.23.0
+
 # Testing
 pytest>=8.0.0
 pytest-asyncio>=0.23.0

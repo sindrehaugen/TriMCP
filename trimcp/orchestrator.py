@@ -66,9 +66,11 @@ _QUEUE_PROBE_ERRORS: tuple[type[BaseException], ...] = (
     RuntimeError,
 )
 
-_ALLOWED_LANGUAGES = frozenset({"python", "javascript", "typescript", "go", "rust"})
-_MAX_TOP_K = 100
-_MAX_DEPTH = 3
+from trimcp.constants import (
+    ALLOWED_LANGUAGES as _ALLOWED_LANGUAGES,
+    MAX_TOP_K as _MAX_TOP_K,
+    MAX_GRAPH_DEPTH as _MAX_DEPTH,
+)
 
 
 def _metadata_as_dict(raw: Any) -> dict[str, Any]:
@@ -257,7 +259,7 @@ class TriStackEngine:
         self._graph_traverser = GraphRAGTraverser(
             pg_pool=self.pg_pool,
             mongo_client=self.mongo_client,
-            embedding_fn=self._generate_embedding,
+            embedding_fn=_embeddings.embed,
         )
 
         # --- Domain Orchestrators ---
@@ -276,7 +278,7 @@ class TriStackEngine:
             pg_pool=self.pg_pool,
             mongo_client=self.mongo_client,
             graph_traverser=self._graph_traverser,
-            embed_fn=self._generate_embedding,
+            embed_fn=_embeddings.embed,
         )
         from trimcp.orchestrators.temporal import TemporalOrchestrator
 
@@ -362,6 +364,7 @@ class TriStackEngine:
         async with self._init_lock:
             if self.memory is not None:
                 return
+            self._warn_connect_not_called("store_memory / store_artifact")
             from trimcp.orchestrators.memory import MemoryOrchestrator
 
             self.memory = MemoryOrchestrator(
@@ -385,7 +388,7 @@ class TriStackEngine:
                 self.pg_pool,
                 self.mongo_client,
                 self._graph_traverser,
-                self._generate_embedding,
+                _embeddings.embed,
             )
 
     async def _ensure_temporal(self, method_name: str) -> None:
@@ -638,19 +641,12 @@ class TriStackEngine:
         await db.code_files.create_index("filepath")
         await db.code_files.create_index("user_id")
 
-    async def _generate_embedding(self, text: str) -> list[float]:
-        return await _embeddings.embed(text)
-
     # --- Database Helpers ---
-
-    def _get_db_pool(self, read_only: bool = False) -> asyncpg.Pool:
-        """Return the appropriate pool for the operation type.
-
-        Routes read-only queries to the read-replica pool when configured.
-        """
-        if read_only and self.pg_read_pool is not None:
-            return self.pg_read_pool
-        return self.pg_pool
+    # NOTE: _get_db_pool was removed (R3) — it was defined but never called.
+    # Read-replica routing will be wired in Phase 4 via scoped_pg_session.
+    # NOTE: _generate_embedding was removed (R4) — it was a one-liner alias for
+    # _embeddings.embed and offered no added value.  All three call sites now
+    # reference _embeddings.embed directly.
 
     @asynccontextmanager
     async def scoped_session(self, namespace_id: str | UUID):
@@ -756,6 +752,7 @@ class TriStackEngine:
 
     async def store_artifact(self, payload: ArtifactPayload) -> str:
         """[Phase 1.3] High-performance artifact storage (replaces store_media)."""
+        await self._ensure_memory()
         return await self.memory.store_artifact(payload)
 
     async def store_media(self, payload: MediaPayload) -> str:
@@ -943,10 +940,14 @@ class TriStackEngine:
         namespace_id: str,
         resolution: str | None = None,
         agent_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> list[dict]:
         """[Phase 1.3] List contradictions — delegating to CognitiveOrchestrator."""
         await self._ensure_cognitive("list_contradictions")
-        return await self.cognitive.list_contradictions(namespace_id, resolution, agent_id)
+        return await self.cognitive.list_contradictions(
+            namespace_id, resolution, agent_id, limit=limit, offset=offset
+        )
 
     async def resolve_contradiction(
         self,

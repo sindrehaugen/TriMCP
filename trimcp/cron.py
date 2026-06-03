@@ -440,12 +440,22 @@ async def async_main() -> None:
     log.info("Started outbox relay scheduler: interval=%s s", outbox_seconds)
 
     # Fire maintenance jobs immediately on startup so the first interval is not wasted.
-    await _renewal_tick(pool)
-    await _reembedding_tick(pool, mongo_client)
-    await _consolidation_tick(pool, mongo_client)
-    await _partition_maintenance_tick(pool)
-    await _saga_recovery_tick(pool)
-    await _outbox_relay_tick(pool)
+    # Run concurrently — sequential awaits would delay the event loop by the sum of all
+    # tick durations; _reembedding_tick in particular can take minutes.  Each tick already
+    # catches and logs its own errors, so we gather with return_exceptions=True as a
+    # belt-and-suspenders guard.
+    startup_results = await asyncio.gather(
+        _renewal_tick(pool),
+        _reembedding_tick(pool, mongo_client),
+        _consolidation_tick(pool, mongo_client),
+        _partition_maintenance_tick(pool),
+        _saga_recovery_tick(pool),
+        _outbox_relay_tick(pool),
+        return_exceptions=True,
+    )
+    for _result in startup_results:
+        if isinstance(_result, BaseException):
+            log.error("Startup tick raised uncaught exception: %s", _result)
 
     try:
         await asyncio.Event().wait()

@@ -20,16 +20,41 @@ merge the results, use ``deduplicate_graph()``.  It:
   the occurrence count in ``edge.metadata["occurrences"]``.
 """
 
-from __future__ import annotations
-
+import asyncio
 import logging
 import re
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 from trimcp.models import KGEdge, KGNode
 
 log = logging.getLogger("tri-stack-graphify")
+
+
+_graph_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trimcp-graphify")
+
+
+def shutdown_graph_executor() -> None:
+    """Gracefully drain the graph executor. Call during app shutdown."""
+    _graph_executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _add_unique_node(
+    nodes: list[KGNode],
+    seen: set[str],
+    label: str,
+    entity_type: str,
+    source_text: str,
+    *,
+    min_len: int = 1,
+) -> None:
+    """Add a KGNode to the list if its normalised label is not already in seen."""
+    cleaned = label.strip()
+    key = cleaned.lower()
+    if cleaned and len(cleaned) >= min_len and key not in seen:
+        nodes.append(KGNode(label=cleaned, entity_type=entity_type, source_text=source_text))
+        seen.add(key)
 
 
 # --- spaCy backend ---
@@ -69,28 +94,26 @@ def _spacy_extract(text: str) -> tuple[list[KGNode], list[KGEdge]]:
         "LAW": "CONCEPT",
     }
     nodes: list[KGNode] = []
-    # Normalise to lowercase for dedup comparison; label retains original casing.
-    seen_lower: set[str] = set()
+    seen: set[str] = set()
     for ent in doc.ents:
-        label = ent.text.strip()
-        label_key = label.lower()
-        if label and label_key not in seen_lower:
-            nodes.append(
-                KGNode(
-                    label=label,
-                    entity_type=entity_type_map.get(ent.label_, "UNKNOWN"),
-                    source_text=ent.text,
-                )
-            )
-            seen_lower.add(label_key)
+        _add_unique_node(
+            nodes,
+            seen,
+            ent.text,
+            entity_type_map.get(ent.label_, "UNKNOWN"),
+            ent.text,
+        )
 
     # Also capture noun chunks not caught by NER
     for chunk in doc.noun_chunks:
-        label = chunk.root.lemma_.strip()
-        label_key = label.lower()
-        if label and label_key not in seen_lower and len(label) > 2:
-            nodes.append(KGNode(label=label, entity_type="CONCEPT", source_text=chunk.text))
-            seen_lower.add(label_key)
+        _add_unique_node(
+            nodes,
+            seen,
+            chunk.root.lemma_,
+            "CONCEPT",
+            chunk.text,
+            min_len=3,
+        )
 
     # --- Triplets from dependency parse (SVO extraction) ---
     edges: list[KGEdge] = []
@@ -139,15 +162,13 @@ _KNOWN_TOOLS = {
 def _regex_extract(text: str) -> tuple[list[KGNode], list[KGEdge]]:
     nodes: list[KGNode] = []
     edges: list[KGEdge] = []
-    # Normalise to lowercase for dedup comparison (consistent with spaCy backend).
     seen: set[str] = set()
 
     # Detect known tool names
     for word in re.findall(r"\b\w[\w\-]+\b", text):
         lower = word.lower()
-        if lower in _KNOWN_TOOLS and lower not in seen:
-            nodes.append(KGNode(label=word, entity_type="TOOL", source_text=word))
-            seen.add(lower)
+        if lower in _KNOWN_TOOLS:
+            _add_unique_node(nodes, seen, word, "TOOL", word)
 
     # Extract simple SVO triplets
     for m in _IS_RELATION.finditer(text):
@@ -158,9 +179,7 @@ def _regex_extract(text: str) -> tuple[list[KGNode], list[KGEdge]]:
         )
         edges.append(KGEdge(subject_label=subj, predicate=pred, object_label=obj, confidence=0.6))
         for label in (subj, obj):
-            if label.lower() not in seen:
-                nodes.append(KGNode(label=label, entity_type="CONCEPT", source_text=label))
-                seen.add(label.lower())
+            _add_unique_node(nodes, seen, label, "CONCEPT", label)
 
     return nodes, edges
 
@@ -280,3 +299,12 @@ def extract(text: str) -> tuple[list[KGNode], list[KGEdge]]:
         nodes, edges = _regex_extract(text)
         log.debug("Regex extracted %d nodes, %d edges.", len(nodes), len(edges))
         return nodes, edges
+
+
+async def extract_async(text: str) -> tuple[list[KGNode], list[KGEdge]]:
+    """
+    Extract entities and triplets from text asynchronously.
+    Offloads CPU-bound spaCy / Regex operations to a dedicated thread pool.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_graph_executor, extract, text)

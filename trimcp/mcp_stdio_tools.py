@@ -1248,6 +1248,86 @@ TOOLS = [
             "required": ["namespace_id", "as_of_a", "as_of_b"],
         },
     ),
+    # ── Phase 1 Enterprise: Query Catalog ─────────────────────────────────────
+    Tool(
+        name="suggest_queries",
+        description=(
+            "[Phase 1E] Given a natural-language intent, returns ranked pre-optimised "
+            "query templates the agent can execute without constructing raw search "
+            "parameters. Use this before calling execute_query_template."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Caller namespace UUID.",
+                },
+                "intent": {
+                    "type": "string",
+                    "description": "Natural language description of what you want to retrieve.",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 20,
+                },
+            },
+            "required": ["namespace_id", "intent"],
+        },
+    ),
+    Tool(
+        name="execute_query_template",
+        description=(
+            "[Phase 1E] Execute a named query template by slug. "
+            "Tenant isolation is injected server-side — do NOT pass namespace_id "
+            "in the parameters object."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Caller namespace UUID (used for RLS, not passed to template).",
+                },
+                "slug": {
+                    "type": "string",
+                    "description": "Template slug returned by suggest_queries.",
+                },
+                "parameters": {
+                    "type": "object",
+                    "description": "Slot values required by the template's param_schema.",
+                    "additionalProperties": True,
+                },
+            },
+            "required": ["namespace_id", "slug"],
+        },
+    ),
+    Tool(
+        name="describe_schema",
+        description=(
+            "[Phase 1E] Return the live graph schema for this namespace: distinct "
+            "entity types and edge predicates.  Use before constructing graph_search "
+            "constraints to avoid hallucinated predicates."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Caller namespace UUID.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 50,
+                    "minimum": 1,
+                    "maximum": 200,
+                },
+            },
+            "required": ["namespace_id"],
+        },
+    ),
 ]
 
 # Conditionally include migration tools based on operator config.

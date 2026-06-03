@@ -223,6 +223,23 @@ class _Config:
         os.getenv("TRIMCP_MAX_ATTACHMENT_BYTES", str(50 * 1024 * 1024))
     )  # 50 MB default
 
+    # --- MCP Sizing Limits ---
+    TRIMCP_MAX_ARGUMENTS_JSON_SIZE: int = _int_env(
+        "TRIMCP_MAX_ARGUMENTS_JSON_SIZE", 1_000_000, minimum=1024
+    )
+    TRIMCP_MAX_METADATA_KEYS: int = _int_env(
+        "TRIMCP_MAX_METADATA_KEYS", 512, minimum=1
+    )
+    TRIMCP_MAX_METADATA_KEY_LEN: int = _int_env(
+        "TRIMCP_MAX_METADATA_KEY_LEN", 256, minimum=1
+    )
+    TRIMCP_MAX_METADATA_STRING_VALUE_LEN: int = _int_env(
+        "TRIMCP_MAX_METADATA_STRING_VALUE_LEN", 4096, minimum=1
+    )
+    TRIMCP_MAX_METADATA_LIST_ITEMS: int = _int_env(
+        "TRIMCP_MAX_METADATA_LIST_ITEMS", 256, minimum=1
+    )
+
     # --- Temporal queries ---
     # Maximum lookback window for ``as_of`` temporal queries.  Prevents
     # unbounded historical searches that trigger full-table scans on
@@ -242,6 +259,7 @@ class _Config:
     )
 
     # --- Embeddings ---
+    EMBEDDING_MAX_WORKERS: int = _int_env("EMBEDDING_MAX_WORKERS", 1, minimum=1)
     EMBED_BATCH_CHUNK: int = int(os.getenv("EMBED_BATCH_CHUNK", "64"))
     # Model identity — configurable so operators can swap the embedding model without a code change.
     TRIMCP_EMBEDDING_MODEL_ID: str = os.getenv(

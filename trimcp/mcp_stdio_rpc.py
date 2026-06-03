@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import TYPE_CHECKING, Any
 
 from mcp.types import TextContent
 
-from trimcp.mcp_errors import merge_client_error_data
+from trimcp import quotas as _quotas
+from trimcp.mcp_args import build_cache_key
+from trimcp.mcp_errors import MCP_AUTH_FAILED, McpError, merge_client_error_data
+from trimcp.tool_registry import CACHEABLE_TOOLS
 
 log = logging.getLogger("tri-stack-mcp")
 
@@ -18,9 +20,6 @@ if TYPE_CHECKING:
 
 # MCP / JSON-RPC client-visible prefix when ``consume_for_tool`` hits a hard limit.
 MCP_QUOTA_EXCEEDED_PREFIX = "Resource quota exceeded (-32013)"
-
-# Tools whose JSON-RPC payloads are keyed in Redis — quota must NOT run on cache hit (FIX-020).
-_MCP_TOOL_RESPONSE_CACHE_TOOLS = frozenset({"semantic_search", "search_codebase", "graph_search"})
 
 
 async def _try_cached_mcp_tool_response(
@@ -31,9 +30,7 @@ async def _try_cached_mcp_tool_response(
     """Return cached MCP tool payloads before quota runs; misses return (None, redis_key).
 
     Naming note: callers treat a non-empty first element as cache hit."""
-    from trimcp.mcp_args import build_cache_key
-
-    if tool_name not in _MCP_TOOL_RESPONSE_CACHE_TOOLS:
+    if tool_name not in CACHEABLE_TOOLS:
         return None, None
 
     gen_raw = await eng.redis_client.get("mcp_cache_generation")
@@ -63,40 +60,27 @@ async def _consume_quota_for_mcp_tool(
     arguments: dict[str, Any],
     redis_client,
 ) -> Any:
-    from trimcp import quotas as _quotas
-
-    try:
-        return await _quotas.consume_for_tool(
-            pg_pool, tool_name, arguments, redis_client=redis_client
-        )
-    except _quotas.QuotaExceededError as exc:
-        raise ValueError(f"{MCP_QUOTA_EXCEEDED_PREFIX}: {exc}") from exc
+    return await _quotas.consume_for_tool(
+        pg_pool, tool_name, arguments, redis_client=redis_client
+    )
 
 
 def _check_admin(arguments: dict[str, Any]) -> None:
     """Validate admin privileges via :func:`trimcp.auth._validate_scope`.
 
-    .. deprecated::
-        Prefer ``@require_scope("admin")`` on new handlers.  Legacy replay/unredact
-        paths still call this helper; it delegates to the same scope logic as the
-        decorator and maps failures to ``(-32001)`` for backward-compatible clients.
-
     Raises:
-        ValueError: When the caller is not authorised (embeds ``(-32001)``).
+        McpError(-32001): When the caller is not authorised.
     """
     from trimcp.auth import ScopeError, _validate_scope
 
     try:
         _validate_scope("admin", arguments)
     except ScopeError as exc:
-        raise ValueError(f"Unauthorized: {exc.reason} (-32001)") from exc
-
-
-def _model_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
-    """Strip MCP auth-only keys before ``**`` into ``extra='forbid'`` domain models."""
-    from trimcp.mcp_args import model_kwargs
-
-    return model_kwargs(arguments)
+        raise McpError(
+            MCP_AUTH_FAILED,
+            "Admin authentication required",
+            data={"reason": "unauthorized"},
+        ) from exc
 
 
 # ── JSON-RPC 2.0 Error Response Helper ─────────────────────────────────────
@@ -110,24 +94,6 @@ def _model_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
 #   -32005  Scope forbidden
 #   -32013  Resource quota exceeded
 #   -32029  Rate limit exceeded
-
-# Regex to extract embedded MCP error codes from exception messages:
-# e.g. "Unauthorized administrative attempt: missing admin_api_key (-32001)"
-_MCP_ERROR_CODE_RE = re.compile(r"\((-32\d{3})\)")
-
-
-def _extract_mcp_code(msg: str, default: int = -32602) -> int:
-    """Extract an MCP extended error code embedded in an exception message.
-
-    Some callers (e.g. ``_check_admin``) embed codes like ``(-32001)`` in
-    their ``ValueError`` message strings.  This function extracts them so
-    the JSON-RPC response preserves the intended error code.
-    """
-    m = _MCP_ERROR_CODE_RE.search(msg)
-    if m:
-        return int(m.group(1))
-    return default
-
 
 def _jsonrpc_error_response(
     code: int,

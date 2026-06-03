@@ -71,6 +71,7 @@ from typing import Any, Final
 import asyncpg
 
 from trimcp.config import cfg
+from trimcp.correlation import get_correlation_id
 from trimcp.event_types import (
     EVENT_FORBIDDEN_PARAM_KEYS,
     EVENT_REQUIRED_PARAM_KEYS,
@@ -839,6 +840,7 @@ async def _insert_event(
     signature: bytes,
     key_id: str,
     chain_hash: bytes | None,
+    correlation_id: uuid.UUID | None = None,
 ) -> AppendResult:
     """
     INSERT a row into ``event_log`` and return the DB-assigned result.
@@ -857,12 +859,14 @@ async def _insert_event(
                 id, namespace_id, agent_id, event_type, event_seq,
                 occurred_at, params, result_summary,
                 parent_event_id, llm_payload_uri, llm_payload_hash,
-                signature, signature_key_id, chain_hash
+                signature, signature_key_id, chain_hash,
+                correlation_id
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7::jsonb, $8::jsonb,
                 $9, $10, $11,
-                $12, $13, $14
+                $12, $13, $14,
+                $15
             )
             RETURNING id, event_seq, occurred_at
             """,
@@ -880,6 +884,7 @@ async def _insert_event(
             signature,
             key_id,
             chain_hash,
+            correlation_id,
         )
     except asyncpg.UniqueViolationError as exc:
         raise EventLogSequenceError(
@@ -915,6 +920,7 @@ async def append_event(
     parent_event_id: uuid.UUID | None = None,
     llm_payload_uri: str | None = None,
     llm_payload_hash: bytes | None = None,
+    correlation_id: uuid.UUID | None = None,
 ) -> AppendResult:
     """
     Append one entry to the tamper-resistant ``event_log`` table.
@@ -952,6 +958,10 @@ async def append_event(
             "append_event() must be called inside an active transaction. "
             "Wrap caller code in 'async with conn.transaction():'."
         )
+
+    # Resolve correlation_id from ContextVar if not explicitly supplied.
+    if correlation_id is None:
+        correlation_id = get_correlation_id()
 
     # 1. Validate event_type and agent_id
     agent_id = _validate_event_payload(event_type, agent_id)
@@ -1039,6 +1049,7 @@ async def append_event(
         signature=signature,
         key_id=key_id,
         chain_hash=chain_hash,
+        correlation_id=correlation_id,
     )
 
     log.info(

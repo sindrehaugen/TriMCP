@@ -22,12 +22,14 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import uuid
 from typing import Any
 
 from mcp.server import Server
 from mcp.types import TextContent, Tool
 
 from trimcp import TriStackEngine
+from trimcp.correlation import correlation_id_var
 from trimcp.mcp_stdio_dispatch import execute_call_tool
 from trimcp.mcp_stdio_rpc import _check_admin
 from trimcp.mcp_stdio_tools import TOOLS
@@ -61,14 +63,22 @@ async def list_tools() -> list[Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-    return await execute_call_tool(engine, name, arguments)
+    token = correlation_id_var.set(uuid.uuid4())
+    try:
+        return await execute_call_tool(engine, name, arguments)
+    finally:
+        correlation_id_var.reset(token)
 
 
 async def main() -> None:
     from trimcp.mcp_stdio_main import run_stdio_server
 
-    host = importlib.import_module("server")
-    await run_stdio_server(app=app, engine_module=host)
+    global engine
+    engine = TriStackEngine()
+    try:
+        await run_stdio_server(app=app, engine=engine)
+    finally:
+        engine = None
 
 
 if __name__ == "__main__":

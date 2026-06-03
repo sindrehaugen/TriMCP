@@ -19,7 +19,7 @@ from trimcp import bridge_repo
 from trimcp.bridge_providers import BRIDGE_PROVIDERS
 from trimcp.config import cfg
 from trimcp.extractors.dispatch import get_priority_queue
-from trimcp.http_resilience import oauth_token_post_form
+from trimcp.http_resilience import oauth_token_post_form, post_json_with_retry
 from trimcp.mcp_errors import mcp_handler
 from trimcp.net_safety import BridgeURLValidationError, validate_bridge_webhook_base_url
 from trimcp.observability import inject_trace_headers
@@ -136,26 +136,26 @@ async def _setup_sharepoint_webhook(
         "expirationDateTime": exp_iso,
         "clientState": bridge_client_state,
     }
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        cr = await client.post(
+    try:
+        sub = await post_json_with_retry(
             "https://graph.microsoft.com/v1.0/subscriptions",
+            body,
+            operation="setup_webhook:sharepoint",
             headers=inject_trace_headers(
                 {
                     "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
                 }
             ),
-            json=body,
         )
-        if cr.status_code >= 400:
-            raise ValueError(f"Graph subscription failed: {cr.status_code} {cr.text[:500]}")
-        sub = cr.json()
-        sub_id = sub.get("id")
-        exp_s = sub.get("expirationDateTime")
-        expires_at: datetime | None = None
-        if exp_s:
-            expires_at = datetime.fromisoformat(str(exp_s).replace("Z", "+00:00"))
-        return sub_id, expires_at
+    except Exception as exc:
+        raise ValueError(f"Graph subscription failed: {exc}") from exc
+
+    sub_id = sub.get("id")
+    exp_s = sub.get("expirationDateTime")
+    expires_at: datetime | None = None
+    if exp_s:
+        expires_at = datetime.fromisoformat(str(exp_s).replace("Z", "+00:00"))
+    return sub_id, expires_at
 
 
 async def _setup_gdrive_webhook(
@@ -178,27 +178,27 @@ async def _setup_gdrive_webhook(
         "token": bridge_client_state or "",
         "expiration": exp_ms,
     }
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        cr = await client.post(
+    try:
+        sub = await post_json_with_retry(
             "https://www.googleapis.com/drive/v3/changes/watch",
+            watch_body,
+            operation="setup_webhook:gdrive",
             headers=inject_trace_headers(
                 {
                     "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
                 }
             ),
-            json=watch_body,
         )
-        if cr.status_code >= 400:
-            raise ValueError(f"Drive watch failed: {cr.status_code} {cr.text[:500]}")
-        sub = cr.json()
-        sub_id = sub.get("id") or chan
-        rid = sub.get("resourceId") or resource_id
-        exp_ms2 = sub.get("expiration")
-        expires_at: datetime | None = None
-        if exp_ms2:
-            expires_at = datetime.fromtimestamp(int(exp_ms2) / 1000.0, tz=timezone.utc)
-        return sub_id, str(rid), expires_at
+    except Exception as exc:
+        raise ValueError(f"Drive watch failed: {exc}") from exc
+
+    sub_id = sub.get("id") or chan
+    rid = sub.get("resourceId") or resource_id
+    exp_ms2 = sub.get("expiration")
+    expires_at: datetime | None = None
+    if exp_ms2:
+        expires_at = datetime.fromtimestamp(int(exp_ms2) / 1000.0, tz=timezone.utc)
+    return sub_id, str(rid), expires_at
 
 
 @mcp_handler

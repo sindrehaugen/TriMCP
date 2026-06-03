@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
@@ -405,6 +405,40 @@ async def delete_quota_redis_counter(
     await redis_client.delete(quota_redis_key(namespace_id, quota_row_id))
 
 
+def _store_memory_cost(arguments: dict[str, Any]) -> dict[str, int]:
+    c = arguments.get("content")
+    summary = arguments.get("summary")
+    heavy = arguments.get("heavy_payload")
+    tok = estimate_llm_tokens(c, summary, heavy)
+    return {
+        RESOURCE_LLM_TOKENS: max(1, tok * 3),
+        RESOURCE_STORAGE_BYTES: estimate_storage_bytes(c, summary, heavy),
+        RESOURCE_MEMORY_COUNT: 1,
+    }
+
+
+def _search_cost(arguments: dict[str, Any]) -> dict[str, int]:
+    q = arguments.get("query") or ""
+    return {RESOURCE_LLM_TOKENS: estimate_llm_tokens(q) + 50}
+
+
+def _fixed_cost(tokens: int) -> Callable[[dict[str, Any]], dict[str, int]]:
+    return lambda args: {RESOURCE_LLM_TOKENS: tokens}
+
+
+# Registry of cost estimators per tool_name
+_TOOL_COST_REGISTRY: dict[str, Callable[[dict[str, Any]], dict[str, int]]] = {
+    "store_memory": _store_memory_cost,
+    "semantic_search": _search_cost,
+    "api_semantic_search": _search_cost,
+    "a2a_query_shared": _search_cost,
+    "boost_memory": _fixed_cost(64),
+    "forget_memory": _fixed_cost(64),
+    "unredact_memory": _fixed_cost(64),
+    "list_contradictions": _fixed_cost(128),
+}
+
+
 def tool_quota_plan(
     tool_name: str, arguments: dict[str, Any]
 ) -> tuple[UUID, str | None, dict[str, int]] | None:
@@ -414,67 +448,28 @@ def tool_quota_plan(
     ``agent_id`` may be None to enforce only namespace-wide rows.
     Returns None when the tool should not touch quotas.
     """
-    amounts: dict[str, int] = {}
+    estimator = _TOOL_COST_REGISTRY.get(tool_name)
+    if estimator is None:
+        return None
 
-    if tool_name == "store_memory":
-        if "namespace_id" not in arguments:
-            return None
-        ns = UUID(str(arguments["namespace_id"]))
-        agent: str | None = str(arguments.get("agent_id") or "default")
-        c = arguments.get("content")
-        summary = arguments.get("summary")
-        heavy = arguments.get("heavy_payload")
-        tok = estimate_llm_tokens(c, summary, heavy)
-        amounts[RESOURCE_LLM_TOKENS] = max(1, tok * 3)
-        amounts[RESOURCE_STORAGE_BYTES] = estimate_storage_bytes(c, summary, heavy)
-        amounts[RESOURCE_MEMORY_COUNT] = 1
-        return ns, agent, amounts
+    # Resolve namespace_id
+    ns_key = "consumer_namespace_id" if tool_name == "a2a_query_shared" else "namespace_id"
+    if ns_key not in arguments:
+        return None
+    ns = UUID(str(arguments[ns_key]))
 
-    if tool_name == "semantic_search":
-        if "namespace_id" not in arguments:
-            return None
-        ns = UUID(str(arguments["namespace_id"]))
-        agent = str(arguments.get("agent_id") or "default")
-        q = arguments.get("query") or ""
-        amounts[RESOURCE_LLM_TOKENS] = estimate_llm_tokens(q) + 50
-        return ns, agent, amounts
-
-    if tool_name in ("boost_memory", "forget_memory", "unredact_memory"):
-        if "namespace_id" not in arguments:
-            return None
-        ns = UUID(str(arguments["namespace_id"]))
-        agent = str(arguments.get("agent_id") or "default")
-        amounts[RESOURCE_LLM_TOKENS] = 64
-        return ns, agent, amounts
-
-    if tool_name == "list_contradictions":
-        if "namespace_id" not in arguments:
-            return None
-        ns = UUID(str(arguments["namespace_id"]))
+    # Resolve agent_id
+    if tool_name == "a2a_query_shared":
+        agent: str | None = str(arguments.get("consumer_agent_id") or "default")
+    elif tool_name == "list_contradictions":
         aid = arguments.get("agent_id")
         agent = str(aid) if aid else None
-        amounts[RESOURCE_LLM_TOKENS] = 128
-        return ns, agent, amounts
-
-    if tool_name == "a2a_query_shared":
-        if "consumer_namespace_id" not in arguments:
-            return None
-        ns = UUID(str(arguments["consumer_namespace_id"]))
-        agent = str(arguments.get("consumer_agent_id") or "default")
-        q = arguments.get("query") or ""
-        amounts[RESOURCE_LLM_TOKENS] = estimate_llm_tokens(q) + 50
-        return ns, agent, amounts
-
-    if tool_name == "api_semantic_search":
-        if "namespace_id" not in arguments:
-            return None
-        ns = UUID(str(arguments["namespace_id"]))
+    else:
         agent = str(arguments.get("agent_id") or "default")
-        q = arguments.get("query") or ""
-        amounts[RESOURCE_LLM_TOKENS] = estimate_llm_tokens(q) + 50
-        return ns, agent, amounts
 
-    return None
+    # Compute amounts
+    amounts = estimator(arguments)
+    return ns, agent, amounts
 
 
 async def consume_for_tool(

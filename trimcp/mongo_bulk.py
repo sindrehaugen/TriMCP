@@ -34,14 +34,13 @@ def normalize_payload_ref(payload_ref: str | ObjectId | None) -> str | None:
     return str(payload_ref)
 
 
-async def _fetch_field_by_refs(
-    collection,
-    refs: Iterable[str | ObjectId | None],
-    *,
-    field: str,
-) -> dict[str, str]:
-    if field not in _ALLOWED_FIELDS:
-        raise ValueError(f"field {field!r} is not allowed. Allowed: {sorted(_ALLOWED_FIELDS)}")
+def _normalize_and_validate_refs(
+    refs: Iterable[str | ObjectId | None]
+) -> list[ObjectId]:
+    """Deduplicate, normalize, and validate a sequence of payload refs.
+
+    Raises ValueError if the number of unique refs exceeds _MAX_REFS.
+    """
     seen: list[str] = []
     uniq: dict[str, None] = {}
     for ref in refs:
@@ -52,7 +51,7 @@ async def _fetch_field_by_refs(
         seen.append(key)
 
     if not seen:
-        return {}
+        return []
     if len(seen) > _MAX_REFS:
         raise ValueError(f"Too many payload refs: {len(seen)} exceeds limit of {_MAX_REFS}")
 
@@ -66,7 +65,19 @@ async def _fetch_field_by_refs(
             )
         else:
             oids.append(oid)
+    return oids
 
+
+async def _fetch_field_by_refs(
+    collection,
+    refs: Iterable[str | ObjectId | None],
+    *,
+    field: str,
+) -> dict[str, str]:
+    if field not in _ALLOWED_FIELDS:
+        raise ValueError(f"field {field!r} is not allowed. Allowed: {sorted(_ALLOWED_FIELDS)}")
+
+    oids = _normalize_and_validate_refs(refs)
     if not oids:
         return {}
 
@@ -113,31 +124,7 @@ async def fetch_episode_previews_by_ref(
     max_preview_len: int = 200,
 ) -> dict[str, str]:
     """Map episode ``_id`` (str) → short preview (summary, else raw_data)."""
-    seen: list[str] = []
-    uniq: dict[str, None] = {}
-    for ref in refs:
-        key = normalize_payload_ref(ref)
-        if not key or key in uniq:
-            continue
-        uniq[key] = None
-        seen.append(key)
-
-    if not seen:
-        return {}
-    if len(seen) > _MAX_REFS:
-        raise ValueError(f"Too many payload refs: {len(seen)} exceeds limit of {_MAX_REFS}")
-
-    oids: list[ObjectId] = []
-    for key in seen:
-        oid = _safe_object_id(key)
-        if oid is None:
-            log.warning(
-                "Invalid Mongo payload_ref (prefix=%s): not a valid ObjectId",
-                key[:8],
-            )
-        else:
-            oids.append(oid)
-
+    oids = _normalize_and_validate_refs(refs)
     if not oids:
         return {}
 

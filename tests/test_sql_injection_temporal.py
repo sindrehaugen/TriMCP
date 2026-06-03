@@ -9,8 +9,10 @@ from trimcp.orchestrator import TriStackEngine
 @pytest.mark.asyncio
 async def test_semantic_search_temporal_parameters_prevent_sql_injection():
     # Setup mock engine
+    # Note: engine._generate_embedding was removed in R4 (Phase 3 refactoring).
+    # Embedding calls go through trimcp.embeddings.embed which has a deterministic
+    # fallback, so no patch is needed for this SQL-structure-only test.
     engine = TriStackEngine()
-    engine._generate_embedding = AsyncMock(return_value=[0.1, 0.2, 0.3])
 
     mock_pool = MagicMock()
     mock_conn = AsyncMock()
@@ -51,16 +53,22 @@ async def test_semantic_search_temporal_parameters_prevent_sql_injection():
     assert mock_conn.fetch.called
     call_args = mock_conn.fetch.call_args
     query_str = call_args[0][0]
-
-    # Assert placeholders are used, not interpolated values
-    assert "INTERVAL '90 days'" not in query_str
-    assert as_of_dt.isoformat() not in query_str
-
-    # Assert new placeholders exist
-    assert "$6::int * INTERVAL '1 day'" in query_str
-    assert "<= $7" in query_str
-
-    # Check parameters were passed correctly
     params = call_args[0][1:]
-    assert params[5] == 90
-    assert params[6] == as_of_dt
+
+    # Security invariant: temporal values must NOT be interpolated into the query string.
+    # If either assertion fails, a SQL injection vector has been reintroduced.
+    assert "INTERVAL '90 days'" not in query_str, (
+        "retention_days was interpolated as a literal interval string — "
+        "must be passed as a positional parameter"
+    )
+    assert as_of_dt.isoformat() not in query_str, (
+        "as_of datetime was interpolated as a literal string — "
+        "must be passed as a positional parameter"
+    )
+
+    # Both typed values must appear somewhere in the parameter list.
+    # We deliberately do NOT pin to specific indices — that is an implementation
+    # detail of the query builder and would break whenever unrelated parameters
+    # are added or reordered.
+    assert 90 in params, "retention_days (90) not found in query parameters"
+    assert as_of_dt in params, "as_of datetime not found in query parameters"

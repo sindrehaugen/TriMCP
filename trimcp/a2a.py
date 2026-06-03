@@ -33,6 +33,25 @@ from trimcp.auth import NamespaceContext, set_namespace_context
 
 log = logging.getLogger("trimcp.a2a")
 
+
+async def _append_a2a_event(
+    conn: asyncpg.Connection,
+    owner_ctx: NamespaceContext,
+    event_type: str,
+    params: dict,
+) -> None:
+    """Helper to set namespace context and append a2a audit event cleanly."""
+    await set_namespace_context(conn, owner_ctx.namespace_id)
+    from trimcp.event_log import append_event
+
+    await append_event(
+        conn=conn,
+        namespace_id=owner_ctx.namespace_id,
+        agent_id=owner_ctx.agent_id,
+        event_type=event_type,
+        params=params,
+    )
+
 # ---------------------------------------------------------------------------
 # JSON-RPC 2.0 error codes
 # ---------------------------------------------------------------------------
@@ -599,13 +618,9 @@ async def create_grant(
             expires_at,
         )
 
-        await set_namespace_context(conn, owner_ctx.namespace_id)
-        from trimcp.event_log import append_event
-
-        await append_event(
-            conn=conn,
-            namespace_id=owner_ctx.namespace_id,
-            agent_id=owner_ctx.agent_id,
+        await _append_a2a_event(
+            conn,
+            owner_ctx=owner_ctx,
             event_type="a2a_grant_created",
             params={
                 "grant_id": str(grant_id),
@@ -732,13 +747,9 @@ async def revoke_grant(
         )
         revoked = result == "UPDATE 1"
         if revoked:
-            await set_namespace_context(conn, owner_ctx.namespace_id)
-            from trimcp.event_log import append_event
-
-            await append_event(
-                conn=conn,
-                namespace_id=owner_ctx.namespace_id,
-                agent_id=owner_ctx.agent_id,
+            await _append_a2a_event(
+                conn,
+                owner_ctx=owner_ctx,
                 event_type="a2a_grant_revoked",
                 params={"grant_id": str(grant_id)},
             )
@@ -1021,13 +1032,9 @@ async def update_grant_scopes(
             grant_id,
         )
 
-        await set_namespace_context(conn, owner_ctx.namespace_id)
-        from trimcp.event_log import append_event
-
-        await append_event(
-            conn=conn,
-            namespace_id=owner_ctx.namespace_id,
-            agent_id=owner_ctx.agent_id,
+        await _append_a2a_event(
+            conn,
+            owner_ctx=owner_ctx,
             event_type="a2a_grant_updated",
             params={
                 "grant_id": str(grant_id),

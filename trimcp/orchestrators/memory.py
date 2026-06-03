@@ -24,7 +24,7 @@ from minio import Minio
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from trimcp import embeddings as _embeddings
-from trimcp.auth import set_namespace_context
+from trimcp.auth import set_namespace_context, validate_agent_id
 from trimcp.config import cfg
 from trimcp.db_utils import scoped_pg_session
 from trimcp.models import (
@@ -42,12 +42,6 @@ from trimcp.observability import SagaMetrics, get_tracer
 
 log = logging.getLogger("tri-stack-orchestrator.memory")
 
-
-def _validate_agent_id(agent_id: str) -> str:
-    """Shared validation — mirrors orchestrator._validate_agent_id."""
-    from trimcp.auth import validate_agent_id as _v
-
-    return _v(agent_id)
 
 
 class MemoryOrchestrator:
@@ -138,9 +132,11 @@ class MemoryOrchestrator:
         sanitized_summary = pii_result.sanitized_text
         sanitized_heavy = (await pii_process(payload.heavy_payload, pii_config)).sanitized_text
 
-        from trimcp.graph_extractor import extract as graph_extract
+        from trimcp.graph_extractor import extract_async as graph_extract_async
 
-        entities, triplets = graph_extract(sanitized_summary)
+        # graph_extract_async runs spaCy NLP in a dedicated background thread pool
+        # to ensure the event loop remains responsive to other requests.
+        entities, triplets = await graph_extract_async(sanitized_summary)
 
         return pii_result, sanitized_summary, sanitized_heavy, entities, triplets
 
@@ -1005,7 +1001,7 @@ class MemoryOrchestrator:
         if not namespace_id:
             raise ValueError("namespace_id is required")
 
-        agent_id = _validate_agent_id(agent_id)
+        agent_id = validate_agent_id(agent_id)
         if offset < 0:
             raise ValueError("offset must be >= 0")
         offset = int(offset)

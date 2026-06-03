@@ -73,6 +73,8 @@ import asyncpg
 from trimcp import embeddings as _embeddings
 from trimcp.config import cfg
 from trimcp.embeddings import MODEL_ID, VECTOR_DIM  # noqa: F401
+from trimcp.redis_lock import acquire_lock as _acquire_redis_lock
+from trimcp.redis_lock import release_lock as _release_redis_lock
 
 log = logging.getLogger("trimcp.reembedding")
 
@@ -352,6 +354,13 @@ async def _checkpoint(
 # --------------------------------------------------------------------------- #
 
 
+_EMBED_LOCK_KEY: str = "trimcp:reembed:embed_lock"
+# TTL covers the maximum expected time for one embed_batch call.
+# Chosen conservatively at 5 minutes; the lock is released immediately on
+# success, so the TTL is only relevant if the process dies mid-embedding.
+_EMBED_LOCK_TTL: int = 300
+
+
 class ReembeddingWorker:
     """
     Stateless background worker — instantiate once per process; call
@@ -366,6 +375,7 @@ class ReembeddingWorker:
         max_rows_per_run: int = MAX_ROWS_PER_RUN,
         include_kg_nodes: bool = INCLUDE_KG_NODES,
         max_text_chars: int = MAX_TEXT_CHARS,
+        redis_client: Any | None = None,
     ) -> None:
         self.batch_size = max(1, batch_size)
         # Inter-batch sleep enforces the token-rate cap.
@@ -373,20 +383,54 @@ class ReembeddingWorker:
         self.max_rows_per_run = max_rows_per_run  # 0 = unlimited
         self.include_kg_nodes = include_kg_nodes
         self.max_text_chars = max_text_chars
+        # Optional shared Redis client for the embedding lock.  When None a
+        # short-lived client is created per embed batch (acceptable overhead
+        # given embed_batch itself takes seconds).
+        self._redis_client = redis_client
 
     # ---------------------------------------------------------------------- #
     # Internal helpers
     # ---------------------------------------------------------------------- #
 
     async def _embed(self, pool: asyncpg.Pool, texts: list[str]) -> list[list[float]]:
-        # Use Postgres advisory lock to prevent concurrent embedding fan-out across workers
-        lock_key = 0x7265656D626564  # 'reembed' in hex
-        async with pool.acquire(timeout=10.0) as conn:
-            await conn.execute("SELECT pg_advisory_lock($1)", lock_key)
+        """Run batch embedding, holding a Redis distributed lock for the duration.
+
+        Replaces the old ``pg_advisory_lock`` approach which kept a pool
+        connection parked while the embedding model ran (potentially minutes).
+        A Redis key lock achieves the same cross-worker exclusion without
+        tying up a PG connection.
+
+        If Redis is not configured or unavailable the embedding proceeds
+        without a distributed lock — functionally identical to the original
+        behaviour when no second instance is running.
+        """
+        if not cfg.REDIS_URL:
+            return await _embeddings.embed_batch(texts)
+
+        owned = self._redis_client is None
+        client = self._redis_client
+        try:
+            if owned:
+                from redis.asyncio import Redis as AsyncRedis
+
+                client = AsyncRedis.from_url(cfg.REDIS_URL)
+
+            token = await _acquire_redis_lock(client, _EMBED_LOCK_KEY, _EMBED_LOCK_TTL)
+            if token is None:
+                log.warning(
+                    "Re-embed: embedding lock held by another worker — proceeding without lock"
+                )
             try:
                 return await _embeddings.embed_batch(texts)
             finally:
-                await conn.execute("SELECT pg_advisory_unlock($1)", lock_key)
+                if token is not None:
+                    await _release_redis_lock(client, _EMBED_LOCK_KEY, token)
+        finally:
+            if owned and client is not None:
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
 
     async def _create_run(
         self,

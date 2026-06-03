@@ -46,6 +46,7 @@ from typing import Any, TypeVar
 
 from pydantic import ValidationError
 
+from trimcp.a2a import A2AAuthorizationError, A2AScopeViolationError
 from trimcp.auth import RateLimitError, ScopeError
 from trimcp.config import cfg
 from trimcp.quotas import QuotaExceededError
@@ -67,6 +68,8 @@ MCP_INTERNAL_ERROR: int = -32603
 MCP_AUTH_FAILED: int = -32001
 MCP_REPLAY_DETECTED: int = -32002
 MCP_SCOPE_FORBIDDEN: int = -32005
+MCP_A2A_AUTH_FAILED: int = -32010
+MCP_A2A_SCOPE_VIOLATION: int = -32011
 MCP_QUOTA_EXCEEDED: int = -32013
 MCP_RATE_LIMITED: int = -32029
 
@@ -211,19 +214,19 @@ def mcp_handler(handler_fn: F) -> F:
                 "Invalid parameters",
                 data=invalid_arguments_data(e),
             )
+        except A2AAuthorizationError as e:
+            raise McpError(
+                MCP_A2A_AUTH_FAILED,
+                "A2A authorization failure",
+                data={"reason": str(e)},
+            )
+        except A2AScopeViolationError as e:
+            raise McpError(
+                MCP_A2A_SCOPE_VIOLATION,
+                "Scope violation",
+                data={"reason": str(e)},
+            )
         except Exception as e:
-            if type(e).__name__ == "A2AAuthorizationError":
-                raise McpError(
-                    -32010,
-                    "A2A authorization failure",
-                    data={"reason": str(e)},
-                )
-            if type(e).__name__ == "A2AScopeViolationError":
-                raise McpError(
-                    -32011,
-                    "Scope violation",
-                    data={"reason": str(e)},
-                )
             request_id = str(uuid.uuid4())
             log.exception(
                 "Handler %s failed request_id=%s",

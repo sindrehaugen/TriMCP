@@ -42,8 +42,10 @@ degraded_embedding_flag: ContextVar[bool] = ContextVar("degraded_embedding_flag"
 MODEL_ID: str = cfg.TRIMCP_EMBEDDING_MODEL_ID
 VECTOR_DIM: int = cfg.EMBEDDING.VECTOR_DIM
 
-# Model encode is not thread-safe across mixed backends — single worker serializes.
-_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trimcp-embed")
+# Model encode is not thread-safe across mixed backends — worker count is configurable.
+_executor = ThreadPoolExecutor(
+    max_workers=cfg.EMBEDDING_MAX_WORKERS, thread_name_prefix="trimcp-embed"
+)
 
 # Lazy singleton selected by ``detect_backend()``, guarded by double-checked lock.
 _backend: EmbeddingBackend | None = None
@@ -84,6 +86,20 @@ def _deterministic_hash_embedding(text: str) -> list[float]:
 def _fallback_batch(texts: list[str]) -> list[list[float]]:
     """Return deterministic fallback vectors for all texts."""
     return [_deterministic_hash_embedding(t) for t in texts]
+
+
+def _fallback_with_error(
+    texts: list[str],
+    msg: str,
+    *args,
+    is_warn: bool = False,
+) -> tuple[list[list[float]], bool]:
+    """Log an error or warning and return deterministic fallback vectors and degraded=True."""
+    if is_warn:
+        log.warning(msg, *args)
+    else:
+        log.error(msg, *args)
+    return _fallback_batch(texts), True
 
 
 def _validate_batch(
@@ -304,11 +320,12 @@ class TorchEmbeddingBackend(EmbeddingBackend):
         device = self.get_device()
         model = _load_sentence_transformer(device)
         if model is None:
-            log.warning(
+            return _fallback_with_error(
+                texts,
                 "%s: model unavailable — using deterministic fallback vectors",
                 self.get_backend_name(),
+                is_warn=True,
             )
-            return _fallback_batch(texts), True
         try:
             raw = model.encode(
                 texts,
@@ -318,8 +335,12 @@ class TorchEmbeddingBackend(EmbeddingBackend):
             )
             vectors = [v.tolist() for v in raw]
         except Exception as e:
-            log.error("%s batch embedding failed: %s", self.get_backend_name(), e)
-            return _fallback_batch(texts), True
+            return _fallback_with_error(
+                texts,
+                "%s batch embedding failed: %s",
+                self.get_backend_name(),
+                e,
+            )
 
         # Validate count + dimension before returning.
         return _validate_batch(texts, vectors, backend_name=self.get_backend_name())
@@ -392,13 +413,21 @@ class OpenVINONPUBackend(EmbeddingBackend):
         import os
 
         if not self.model_dir or not os.path.isdir(self.model_dir):
-            return _fallback_batch(texts), True
+            return _fallback_with_error(
+                texts,
+                "OpenVINONPUBackend: model directory %r not found or not set",
+                self.model_dir,
+                is_warn=True,
+            )
         seq_len = cfg.TRIMCP_OPENVINO_SEQ_LEN
         try:
             model, tokenizer, _ = _load_openvino_npu_bundle(self.model_dir, seq_len)
         except Exception as e:
-            log.error("OpenVINO NPU load failed: %s", e)
-            return _fallback_batch(texts), True
+            return _fallback_with_error(
+                texts,
+                "OpenVINO NPU load failed: %s",
+                e,
+            )
 
         try:
             import numpy as np
@@ -423,8 +452,11 @@ class OpenVINONPUBackend(EmbeddingBackend):
             pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
             vectors = pooled.detach().cpu().numpy().astype(np.float64).tolist()
         except Exception as e:
-            log.error("OpenVINO NPU inference failed: %s", e)
-            return _fallback_batch(texts), True
+            return _fallback_with_error(
+                texts,
+                "OpenVINO NPU inference failed: %s",
+                e,
+            )
 
         return _validate_batch(texts, vectors, backend_name="OpenVINONPU")
 
@@ -474,8 +506,11 @@ class CognitiveRemoteBackend(EmbeddingBackend):
 
     def _sync_embed_batch(self, texts: list[str]) -> tuple[list[list[float]], bool]:
         if not self._base:
-            log.warning("CognitiveRemoteBackend: empty base URL — stubbing.")
-            return _fallback_batch(texts), True
+            return _fallback_with_error(
+                texts,
+                "CognitiveRemoteBackend: empty base URL — stubbing.",
+                is_warn=True,
+            )
 
         import httpx
 
@@ -526,29 +561,42 @@ class CognitiveRemoteBackend(EmbeddingBackend):
                         r.raise_for_status()
                         data = r.json()
                 except Exception as fe:
-                    log.error("Fallback embedding model also failed: %s", fe)
-                    # Both primary and fallback failed — degraded.
-                    return _fallback_batch(texts), True
+                    return _fallback_with_error(
+                        texts,
+                        "Fallback embedding model also failed: %s",
+                        fe,
+                    )
             else:
-                log.error("Cognitive embedding HTTP failed: %s", e)
-                # Generic error — degraded.
-                return _fallback_batch(texts), True
+                return _fallback_with_error(
+                    texts,
+                    "Cognitive embedding HTTP failed: %s",
+                    e,
+                )
 
         rows = data.get("data") if isinstance(data, dict) else None
         if not rows or not isinstance(rows, list):
-            log.error("Cognitive embedding response missing data[]: %s", data)
-            return _fallback_batch(texts), True
+            return _fallback_with_error(
+                texts,
+                "Cognitive embedding response missing data[]: %s",
+                data,
+            )
 
         # OpenAI-style payloads include ``index``; sort defensively when batched.
         indexed: list[tuple[int, list[float]]] = []
         for item in rows:
             if not isinstance(item, dict):
-                log.error("Invalid embedding row from cognitive: %r", item)
-                return _fallback_batch(texts), True
+                return _fallback_with_error(
+                    texts,
+                    "Invalid embedding row from cognitive: %r",
+                    item,
+                )
             emb = item.get("embedding")
             if not isinstance(emb, list):
-                log.error("Invalid embedding row from cognitive: %r", item)
-                return _fallback_batch(texts), True
+                return _fallback_with_error(
+                    texts,
+                    "Invalid embedding row from cognitive: %r",
+                    item,
+                )
             idx = int(item["index"]) if "index" in item else len(indexed)
             indexed.append((idx, [float(x) for x in emb]))
         indexed.sort(key=lambda t: t[0])

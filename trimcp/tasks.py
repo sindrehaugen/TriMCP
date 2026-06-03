@@ -49,9 +49,15 @@ def _get_job_id() -> str:
         return "unknown"
 
 
+_redis_client: Redis | None = None
+
+
 def _get_redis() -> Redis:
-    """Return a Redis client for attempt-tracking counters."""
-    return Redis.from_url(cfg.REDIS_URL)
+    """Return a cached Redis client for attempt-tracking counters."""
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = Redis.from_url(cfg.REDIS_URL)
+    return _redis_client
 
 
 def _check_poison_pill(
@@ -372,12 +378,11 @@ def enqueue_memory_postprocess(payload: dict) -> None:
     Intentionally thin — heavy work (embeddings, graph, contradiction detection)
     belongs in the worker, not in the relay transaction.
     """
-    from redis import Redis
     from rq import Queue
 
     from trimcp.extractors.dispatch import HIGH_PRIORITY_QUEUE
 
-    redis_conn = Redis.from_url(cfg.REDIS_URL)
+    redis_conn = _get_redis()
     q = Queue(HIGH_PRIORITY_QUEUE, connection=redis_conn)
     q.enqueue(
         "trimcp.tasks._process_memory_postprocess",

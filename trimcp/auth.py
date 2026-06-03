@@ -255,23 +255,24 @@ async def verify_admin_password_async(
 # ---------------------------------------------------------------------------
 
 
-def _jsonrpc_error(
+def jsonrpc_error_response(
     code: int,
     message: str,
     reason: str,
+    *,
+    status_code: int | None = None,
+    headers: dict[str, str] | None = None,
     request_id: Any = None,
 ) -> JSONResponse:
-    """Build a strict JSON-RPC 2.0 error response.
-
-    HTTP status:
-      401 — authentication / replay errors
-      400 — malformed namespace / agent_id
-    """
-    http_status = (
-        _HTTP_UNAUTHORIZED if code in (_CODE_AUTH_FAILED, _CODE_REPLAY) else _HTTP_BAD_REQUEST
-    )
+    """Build a strict JSON-RPC 2.0 HTTP JSONResponse."""
+    if status_code is None:
+        status_code = (
+            _HTTP_UNAUTHORIZED
+            if code in (_CODE_AUTH_FAILED, _CODE_REPLAY, -32005, -32006, -32007)
+            else _HTTP_BAD_REQUEST
+        )
     return JSONResponse(
-        status_code=http_status,
+        status_code=status_code,
         content={
             "jsonrpc": "2.0",
             "error": {
@@ -281,6 +282,22 @@ def _jsonrpc_error(
             },
             "id": request_id,
         },
+        headers=headers or None,
+    )
+
+
+def _jsonrpc_error(
+    code: int,
+    message: str,
+    reason: str,
+    request_id: Any = None,
+) -> JSONResponse:
+    """Build a strict JSON-RPC 2.0 error response."""
+    return jsonrpc_error_response(
+        code,
+        message,
+        reason,
+        request_id=request_id,
     )
 
 
@@ -699,8 +716,9 @@ class NamespaceContext(BaseModel):
     @field_validator("agent_id", mode="before")
     @classmethod
     def clean_agent_id(cls, v: Any) -> str:
-        cleaned = (str(v) if v is not None else "").strip()[:128]
-        return cleaned if cleaned else "default"
+        # Delegate to the canonical validate_agent_id so the normalisation
+        # rule (strip, truncate to 128, default "default") lives in one place.
+        return validate_agent_id(str(v) if v is not None else "")
 
 
 # ---------------------------------------------------------------------------

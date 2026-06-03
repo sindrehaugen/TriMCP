@@ -12,56 +12,13 @@ import re
 from typing import Any
 
 from trimcp.config import cfg
+from trimcp.constants import ALLOWED_LANGUAGES as _ALLOWED_LANGUAGES
+from trimcp.mcp_args import require_namespace_id as _require_namespace_id
 from trimcp.mcp_errors import mcp_handler
 from trimcp.models import IndexCodeFileRequest
 from trimcp.orchestrator import TriStackEngine
 
 log = logging.getLogger("trimcp.code_mcp_handlers")
-
-# Allowlisted languages — callers must pass one of these.
-_ALLOWED_LANGUAGES: frozenset[str] = frozenset(
-    {
-        "python",
-        "javascript",
-        "typescript",
-        "go",
-        "rust",
-        "java",
-        "c",
-        "cpp",
-        "csharp",
-        "ruby",
-        "php",
-        "swift",
-        "kotlin",
-        "scala",
-        "shell",
-        "bash",
-        "sql",
-        "yaml",
-        "json",
-        "toml",
-        "dockerfile",
-        "markdown",
-        "html",
-        "css",
-        "lua",
-        "r",
-        "julia",
-        "haskell",
-        "elixir",
-        "erlang",
-        "dart",
-        "perl",
-        "objectivec",
-        "zig",
-        "nim",
-        "ocaml",
-        "clojure",
-        "groovy",
-        "terraform",
-    }
-)
 
 # Safe filepath pattern: no traversal, no null bytes, no leading slashes.
 _SAFE_FILEPATH_RE = re.compile(r"^[\w][\w/\\.@\-]{0,511}$")
@@ -70,16 +27,6 @@ _SAFE_FILEPATH_RE = re.compile(r"^[\w][\w/\\.@\-]{0,511}$")
 _TOP_K_MIN = 1
 _TOP_K_MAX = 50
 _TOP_K_DEFAULT = 5
-
-
-def _validate_namespace_id(arguments: dict[str, Any]) -> str:
-    """Require and validate namespace_id as a UUID-shaped string."""
-    from uuid import UUID
-
-    raw = arguments.get("namespace_id")
-    if not raw:
-        raise ValueError("namespace_id is required")
-    return str(UUID(str(raw)))
 
 
 def _validate_language(raw: Any) -> str:
@@ -128,7 +75,7 @@ async def handle_index_code_file(engine: TriStackEngine, arguments: dict[str, An
 
     Required: filepath, raw_code, language, namespace_id.
     """
-    namespace_id = _validate_namespace_id(arguments)
+    namespace_id = _require_namespace_id(arguments)
     filepath = _validate_filepath(arguments.get("filepath", ""))
     language = _validate_language(arguments.get("language", ""))
 
@@ -180,7 +127,7 @@ async def handle_search_codebase(engine: TriStackEngine, arguments: dict[str, An
     Required: query, namespace_id.
     Optional: language_filter (allowlisted), top_k (1–50), user_id, private.
     """
-    namespace_id = _validate_namespace_id(arguments)
+    namespace_id = _require_namespace_id(arguments)
 
     query = str(arguments.get("query", "")).strip()
     if not query:

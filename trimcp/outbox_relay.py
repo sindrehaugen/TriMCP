@@ -5,9 +5,18 @@ The relay polls unpublished rows from ``outbox_events`` using
 marks successful deliveries with ``published_at``, increments ``attempt_count``
 on failure, and routes exhausted events to ``dead_letter_queue``.
 
-Handlers must be thin: enqueue worker jobs rather than performing heavy work
-(embeddings, graph extraction, contradiction detection) inline inside the
-relay transaction.
+Handler contract
+----------------
+Handlers run **inside** the open transaction, which gives them MVCC-consistent
+reads and lets ``mark_published`` be atomic with the delivery.  Handlers must
+NOT perform external I/O (Redis, HTTP) inside the transaction — that holds the
+DB connection while waiting on external services and starves the pool.
+
+To fire external work after the commit, return a zero-argument callable from
+the handler.  The relay collects these "post-commit actions" and calls them
+after the transaction closes.  The canonical example is
+``handle_memory_stored`` returning ``lambda: enqueue_memory_postprocess(payload)``
+so the RQ enqueue runs after the DB row is already committed.
 
 Entry point: ``run_outbox_relay_once(pool)`` — call from APScheduler or an
 asyncio periodic task in the server startup.
@@ -24,7 +33,11 @@ import asyncpg
 
 log = logging.getLogger("trimcp.outbox_relay")
 
-OutboxHandler = Callable[[asyncpg.Connection, dict[str, Any]], Awaitable[None]]
+# Handlers may return an optional zero-arg callable to run after the
+# transaction commits (e.g. Redis enqueue, HTTP notification).
+# Return None if no post-commit work is needed.
+PostCommitAction = Callable[[], None]
+OutboxHandler = Callable[[asyncpg.Connection, dict[str, Any]], Awaitable[PostCommitAction | None]]
 
 MAX_OUTBOX_ATTEMPTS: int = 5
 
@@ -38,14 +51,25 @@ class OutboxDeliveryError(Exception):
 # ---------------------------------------------------------------------------
 
 
-async def handle_memory_stored(conn: asyncpg.Connection, event: dict[str, Any]) -> None:
-    """Dispatch 'memory.stored' to the RQ high-priority worker queue."""
+async def handle_memory_stored(
+    conn: asyncpg.Connection,
+    event: dict[str, Any],
+) -> PostCommitAction:
+    """Prepare the RQ enqueue action for 'memory.stored'.
+
+    Returns a post-commit callable instead of enqueuing inside the transaction.
+    This keeps Redis I/O out of the open DB transaction and prevents pool
+    starvation when Redis is slow or briefly unreachable.
+    """
     from trimcp.tasks import enqueue_memory_postprocess
 
     payload = event.get("payload") or {}
     if isinstance(payload, str):
         payload = json.loads(payload)
-    enqueue_memory_postprocess(payload)
+
+    # Capture payload in closure — enqueue runs after transaction commits.
+    captured = dict(payload)
+    return lambda: enqueue_memory_postprocess(captured)
 
 
 OUTBOX_HANDLERS: dict[str, OutboxHandler] = {
@@ -167,13 +191,17 @@ async def move_to_dead_letter_if_exhausted(
 async def deliver_one(
     conn: asyncpg.Connection,
     event: dict[str, Any],
-) -> None:
-    """Dispatch a single outbox event to its registered handler."""
+) -> PostCommitAction | None:
+    """Dispatch a single outbox event to its registered handler.
+
+    Returns the handler's post-commit action (or None) for the caller to fire
+    after the surrounding transaction commits.
+    """
     event_type = event["event_type"]
     handler = OUTBOX_HANDLERS.get(event_type)
     if handler is None:
         raise OutboxDeliveryError(f"No outbox handler registered for event_type={event_type!r}")
-    await handler(conn, event)
+    return await handler(conn, event)
 
 
 # ---------------------------------------------------------------------------
@@ -190,10 +218,14 @@ async def run_outbox_relay_once(
     Run one relay pass: poll → deliver → mark_published or mark_failed → DLQ.
 
     Returns the number of events successfully delivered in this pass.
-    All operations run inside a single transaction so locks are released
-    atomically on commit.
+
+    The transaction covers only DB operations (poll, mark_published/failed,
+    DLQ insert).  Any post-commit actions returned by handlers (e.g. Redis
+    enqueues) are collected during the transaction and fired **after** the
+    transaction commits so external I/O never holds the DB connection open.
     """
     delivered = 0
+    post_commit_actions: list[PostCommitAction] = []
 
     async with pool.acquire(timeout=10.0) as conn:
         async with conn.transaction():
@@ -201,7 +233,7 @@ async def run_outbox_relay_once(
 
             for event in events:
                 try:
-                    await deliver_one(conn, event)
+                    action = await deliver_one(conn, event)
                 except Exception as exc:
                     error_message = f"{type(exc).__name__}: {exc}"
                     log.exception(
@@ -231,12 +263,21 @@ async def run_outbox_relay_once(
 
                 await mark_published(conn, event["id"])
                 delivered += 1
+                if action is not None:
+                    post_commit_actions.append(action)
                 try:
                     from trimcp.observability import OUTBOX_DELIVERED_TOTAL
 
                     OUTBOX_DELIVERED_TOTAL.labels(event_type=str(event["event_type"])).inc()
                 except Exception:
                     pass
+        # Transaction committed.  Fire external work outside the DB connection.
+
+    for action in post_commit_actions:
+        try:
+            action()
+        except Exception as exc:
+            log.warning("[outbox] post-commit action failed: %s", exc)
 
     log.debug("[outbox] relay pass complete: delivered=%d", delivered)
     return delivered

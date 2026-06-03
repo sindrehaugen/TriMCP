@@ -24,6 +24,8 @@ from uuid import UUID
 
 from pydantic import AfterValidator
 
+from trimcp.config import cfg
+
 log = logging.getLogger(__name__)
 
 # Keys supplied for transport/auth at the MCP layer, not part of domain payloads.
@@ -33,30 +35,31 @@ _MCP_AUTH_KEYS = frozenset({"admin_api_key", "mcp_api_key", "is_admin", "admin_i
 _MCP_CACHE_PREFIX = "mcp_cache"
 
 # Cache TTL for cacheable tool responses (seconds).
-# Reduced from 300s to 60s for tools covered by the generation counter.
-_MCP_CACHE_TTL_S: int = 60
+# Canonical value lives in trimcp.constants.MCP_CACHE_TTL_S (300 s).
+# The old value here was 60 — stale, never matched the dispatch loop's 300 s.
+from trimcp.constants import MCP_CACHE_TTL_S as _MCP_CACHE_TTL_S
 
 # Redis key for the global cache-generation counter.
 _MCP_CACHE_GENERATION_KEY: str = "mcp_cache_generation"
 
 # Maximum serialized size of arguments when building a cache key.
-_MAX_ARGUMENTS_JSON_SIZE: int = 1_000_000  # 1 MB
+_MAX_ARGUMENTS_JSON_SIZE: int = cfg.TRIMCP_MAX_ARGUMENTS_JSON_SIZE  # 1 MB
 
 # ---------------------------------------------------------------------------
 # Strict nested validation — metadata / context sub-models
 # ---------------------------------------------------------------------------
 
 # Maximum number of metadata keys accepted on any MCP request.
-_MAX_METADATA_KEYS: int = 512
+_MAX_METADATA_KEYS: int = cfg.TRIMCP_MAX_METADATA_KEYS
 
 # Maximum length of a metadata key string.
-_MAX_METADATA_KEY_LEN: int = 256
+_MAX_METADATA_KEY_LEN: int = cfg.TRIMCP_MAX_METADATA_KEY_LEN
 
 # Maximum length of a metadata string value.
-_MAX_METADATA_STRING_VALUE_LEN: int = 4096
+_MAX_METADATA_STRING_VALUE_LEN: int = cfg.TRIMCP_MAX_METADATA_STRING_VALUE_LEN
 
 # Maximum number of items in a metadata list value.
-_MAX_METADATA_LIST_ITEMS: int = 256
+_MAX_METADATA_LIST_ITEMS: int = cfg.TRIMCP_MAX_METADATA_LIST_ITEMS
 
 
 def _validate_metadata_values(v: dict[str, Any]) -> dict[str, Any]:
@@ -196,6 +199,21 @@ def extract_namespace_id(arguments: dict[str, Any]) -> str | None:
         return str(UUID(str(raw)))
     except (ValueError, TypeError) as exc:
         raise ValueError(f"Invalid namespace_id: {str(raw)[:64]!r}") from exc
+
+
+def require_namespace_id(arguments: dict[str, Any]) -> str:
+    """Like :func:`extract_namespace_id` but raises ``ValueError`` when absent.
+
+    Use this in handlers where ``namespace_id`` is unconditionally required.
+    Returns the canonical UUID string (lowercase, hyphenated).
+
+    Raises:
+        ValueError: If ``namespace_id`` is absent or not a valid UUID.
+    """
+    ns = extract_namespace_id(arguments)
+    if ns is None:
+        raise ValueError("namespace_id is required")
+    return ns
 
 
 # ---------------------------------------------------------------------------

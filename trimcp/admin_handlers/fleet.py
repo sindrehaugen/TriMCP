@@ -1761,8 +1761,7 @@ async def api_admin_memory_boost(request):
     if ns is None or mem is None:
         return JSONResponse({"error": "namespace_id and memory_id are required"}, status_code=422)
 
-    agent_raw = body.get("agent_id")
-    agent_id = (str(agent_raw).strip() if agent_raw else "") or "default"
+    agent_id = validate_agent_id(str(body.get("agent_id") or ""))
 
     try:
         factor = float(body.get("factor")) if body.get("factor") is not None else 0.2

@@ -16,6 +16,36 @@ from typing import Any, TypeVar
 
 log = logging.getLogger("trimcp.observability")
 
+
+# ---------------------------------------------------------------------------
+# Stub metric — always defined so it can be imported by other modules
+# (e.g. background_task_manager) regardless of whether prometheus_client is
+# installed.  The real Prometheus classes are assigned conditionally below.
+# ---------------------------------------------------------------------------
+
+
+class _StubMetric:
+    """No-op drop-in for Prometheus Counter/Gauge/Histogram when the library is absent."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def labels(self, *args: object, **kwargs: object) -> "_StubMetric":
+        return self
+
+    def inc(self, amount: float = 1, **kwargs: object) -> None:
+        pass
+
+    def dec(self, amount: float = 1, **kwargs: object) -> None:
+        pass
+
+    def observe(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def set(self, *args: object, **kwargs: object) -> None:
+        pass
+
+
 try:
     from opentelemetry import context as otel_context
     from opentelemetry import propagate, trace
@@ -51,8 +81,11 @@ try:
         try:
             return metric_cls(name, *args, **kwargs)
         except ValueError:
-            # Already registered — retrieve the existing collector
-            return _PROM_REGISTRY._names_to_collectors.get(name) or metric_cls(
+            # Already registered — retrieve the existing collector.
+            # _names_to_collectors is a private prometheus_client attribute; guard
+            # with getattr so a future library rename doesn't cause AttributeError.
+            collectors = getattr(_PROM_REGISTRY, "_names_to_collectors", {})
+            return collectors.get(name) or metric_cls(
                 name, *args, registry=None, **kwargs
             )
 
@@ -67,23 +100,6 @@ try:
 
 except ImportError:
     HAS_PROMETHEUS = False
-
-    # Stub classes for metrics if prometheus_client is missing
-    class _StubMetric:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def labels(self, *args, **kwargs):
-            return self
-
-        def inc(self, *args, **kwargs):
-            pass
-
-        def observe(self, *args, **kwargs):
-            pass
-
-        def set(self, *args, **kwargs):
-            pass
 
     Counter = Histogram = Gauge = _StubMetric
 
@@ -499,36 +515,6 @@ def inject_trace_headers(
     if HAS_OTEL and cfg.TRIMCP_OBSERVABILITY_ENABLED:
         propagate.inject(headers)
     return headers
-
-
-def extract_trace_from_headers(
-    headers: dict[str, str],
-) -> None:
-    """Extract W3C Trace Context from incoming request *headers* and activate it.
-
-    Call this at the top of an HTTP request handler (or middleware) to bind the
-    current span to a remotely-initiated trace.  If no ``traceparent`` header is
-    present this is a no-op.
-
-    After calling this, any new spans created with ``get_tracer()`` will be
-    children of the remote span.  Use ``@instrument_tool`` / ``instrument_tool_call``
-    / ``get_tracer().start_as_current_span(...)`` to create child spans.
-
-    Usage::
-
-        extract_trace_from_headers(dict(request.headers))
-        with get_tracer().start_as_current_span("my_handler") as span:
-            ...
-    """
-    if HAS_OTEL and cfg.TRIMCP_OBSERVABILITY_ENABLED and headers:
-        ctx = propagate.extract(headers)
-        trace.get_current_span()  # ensure tracer provider is set
-        # Activate the extracted context so child spans are correctly parented
-        token = otel_context.attach(ctx)
-        # Note: we deliberately do NOT keep the token — the context is active
-        # for the duration of the current async task.  In an ASGI middleware
-        # this matches the request lifecycle naturally.
-        _ = token
 
 
 # ---------------------------------------------------------------------------

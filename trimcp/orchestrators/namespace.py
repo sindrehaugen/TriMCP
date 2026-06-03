@@ -49,11 +49,14 @@ _SINGLE_SHOT_DELETE_TABLES: frozenset[str] = frozenset(
 
 
 async def _delete_namespace_rows_chunked(
-    conn: asyncpg.Connection,
+    pool: asyncpg.Pool,
     table: str,
     namespace_id: UUID,
 ) -> None:
-    """Delete all rows for namespace_id in 1000-row chunks to limit lock duration.
+    """Delete all rows for namespace_id in 1000-row chunks.
+
+    Each chunk commits its own short transaction so row locks are released
+    promptly rather than accumulating across the entire namespace deletion.
 
     Only tables in _CHUNKED_DELETE_TABLES are accepted to prevent accidental
     misuse with arbitrary table names.
@@ -61,44 +64,51 @@ async def _delete_namespace_rows_chunked(
     if table not in _CHUNKED_DELETE_TABLES:
         raise ValueError(f"Table '{table}' is not in the allowed chunked-delete list")
     while True:
-        result = await conn.execute(
-            f"""
-            WITH to_delete AS (
-                SELECT id FROM {table}
-                WHERE namespace_id = $1
-                LIMIT $2
-            )
-            DELETE FROM {table}
-            WHERE id IN (SELECT id FROM to_delete)
-            """,
-            namespace_id,
-            _NS_DELETE_CHUNK_SIZE,
-        )
+        async with pool.acquire(timeout=10.0) as conn:
+            async with conn.transaction():
+                result = await conn.execute(
+                    f"""
+                    WITH to_delete AS (
+                        SELECT id FROM {table}
+                        WHERE namespace_id = $1
+                        LIMIT $2
+                    )
+                    DELETE FROM {table}
+                    WHERE id IN (SELECT id FROM to_delete)
+                    """,
+                    namespace_id,
+                    _NS_DELETE_CHUNK_SIZE,
+                )
         if result == "DELETE 0":
             break
         await asyncio.sleep(0)  # yield event loop between chunks
 
 
 async def _delete_memory_salience_chunked(
-    conn: asyncpg.Connection,
+    pool: asyncpg.Pool,
     namespace_id: UUID,
 ) -> None:
-    """Chunked delete for memory_salience, which has composite PK (memory_id, agent_id)."""
+    """Chunked delete for memory_salience (composite PK: memory_id, agent_id).
+
+    Each chunk commits its own transaction — see :func:`_delete_namespace_rows_chunked`.
+    """
     while True:
-        result = await conn.execute(
-            """
-            WITH to_delete AS (
-                SELECT memory_id, agent_id
-                FROM memory_salience
-                WHERE namespace_id = $1
-                LIMIT $2
-            )
-            DELETE FROM memory_salience
-            WHERE (memory_id, agent_id) IN (SELECT memory_id, agent_id FROM to_delete)
-            """,
-            namespace_id,
-            _NS_DELETE_CHUNK_SIZE,
-        )
+        async with pool.acquire(timeout=10.0) as conn:
+            async with conn.transaction():
+                result = await conn.execute(
+                    """
+                    WITH to_delete AS (
+                        SELECT memory_id, agent_id
+                        FROM memory_salience
+                        WHERE namespace_id = $1
+                        LIMIT $2
+                    )
+                    DELETE FROM memory_salience
+                    WHERE (memory_id, agent_id) IN (SELECT memory_id, agent_id FROM to_delete)
+                    """,
+                    namespace_id,
+                    _NS_DELETE_CHUNK_SIZE,
+                )
         if result == "DELETE 0":
             break
         await asyncio.sleep(0)
@@ -340,24 +350,29 @@ class NamespaceOrchestrator:
                         exc,
                     )
 
+            # Phase 1: chunked deletes — each chunk commits its own short
+            # transaction so row locks are released after every 1000 rows.
+            # An outer transaction here would defeat the entire purpose.
+            # NB: omit event_log (WORM + FK); audited tenants are rejected above.
+            for table in (
+                "memories",
+                "kg_nodes",
+                "kg_edges",
+                "pii_redactions",
+                "outbox_events",
+                "saga_execution_log",
+            ):
+                await _delete_namespace_rows_chunked(
+                    self.pg_pool, table, payload.namespace_id
+                )
+
+            # memory_salience has composite PK (memory_id, agent_id).
+            await _delete_memory_salience_chunked(self.pg_pool, payload.namespace_id)
+
+            # Phase 2: atomic final teardown — small tables + namespace row in
+            # one transaction so the namespace is never left empty-but-present.
             async with self.pg_pool.acquire(timeout=10.0) as conn:
                 async with conn.transaction():
-                    # Large tables — chunked to limit per-statement lock duration.
-                    # NB: omit event_log (WORM + FK); audited tenants are rejected above.
-                    for table in (
-                        "memories",
-                        "kg_nodes",
-                        "kg_edges",
-                        "pii_redactions",
-                        "outbox_events",
-                        "saga_execution_log",
-                    ):
-                        await _delete_namespace_rows_chunked(conn, table, payload.namespace_id)
-
-                    # memory_salience has composite PK (memory_id, agent_id) — no id column.
-                    await _delete_memory_salience_chunked(conn, payload.namespace_id)
-
-                    # Small tables — single-shot deletes are safe.
                     for table in (
                         "contradictions",
                         "resource_quotas",

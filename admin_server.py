@@ -13,8 +13,7 @@ logging.basicConfig(level=logging.INFO)
 engine = admin_state.engine
 
 
-def _admin_error_response(*args, **kwargs):
-    return admin_error_response(*args, **kwargs)
+from trimcp.admin_http_support import admin_error_response as _admin_error_response
 
 
 if __name__ == "__main__":
@@ -26,4 +25,33 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8003)
 
 # Re-export handlers for existing tests
-from trimcp.admin_http_handlers import *  # noqa: F403, E402
+from trimcp.admin_http_handlers import (
+    api_admin_salience_map,
+    api_admin_llm_payload,
+    api_admin_fleet_overview,
+    api_admin_bridge_renew,
+    api_admin_memory_boost,
+    api_admin_contradictions_recent,
+    api_admin_namespace_bridges,
+    api_admin_events,
+    api_admin_datastores_status,
+    api_admin_datastores_save,
+    api_admin_db_postgres_status,
+    api_admin_db_mongo_status,
+    api_admin_db_redis_status,
+    api_admin_db_minio_status,
+    api_admin_connectors_status,
+    api_admin_namespaces_list,
+    api_admin_namespaces_get,
+    api_admin_namespaces_update_metadata,
+    api_admin_dlq_list,
+    api_admin_quotas,
+    api_admin_signing_status,
+    api_admin_pii_redactions_list,
+    api_admin_security_event_seq_gaps,
+    api_admin_security_verify_memory_sample,
+    api_admin_security_test_rls_isolation,
+    api_admin_verify_chain,
+    trigger_gc,
+    api_search,
+)

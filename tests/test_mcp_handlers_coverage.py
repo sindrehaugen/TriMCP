@@ -71,6 +71,7 @@ def _httpx_resp(
     r.text = text
     r.json = MagicMock(return_value=json_data or {})
     r.raise_for_status = MagicMock()
+    r.is_success = 200 <= status_code < 300
     return r
 
 
@@ -1063,9 +1064,9 @@ async def test_exchange_oauth_missing_access_token(
 @pytest.mark.asyncio
 async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
     ok_sub = _httpx_resp(json_data={"id": "sub-1", "expirationDateTime": "2030-01-01T00:00:00Z"})
-    with patch(
-        "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
-        _patch_httpx_async_client(ok_sub),
+    with (
+        patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(ok_sub)),
+        patch("trimcp.http_resilience.httpx.AsyncClient", _patch_httpx_async_client(ok_sub)),
     ):
         sid, exp = await bridge_mcp_handlers._setup_sharepoint_webhook(
             "tok",
@@ -1078,7 +1079,10 @@ async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
     assert exp is not None
 
     bad = _httpx_resp(status_code=400, json_data={}, text="nope")
-    with patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad)):
+    with (
+        patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad)),
+        patch("trimcp.http_resilience.httpx.AsyncClient", _patch_httpx_async_client(bad)),
+    ):
         with pytest.raises(ValueError, match="Graph subscription failed"):
             await bridge_mcp_handlers._setup_sharepoint_webhook(
                 "tok",
@@ -1095,9 +1099,9 @@ async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
             "expiration": str(int(datetime.now(timezone.utc).timestamp() * 1000) + 1000),
         }
     )
-    with patch(
-        "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
-        _patch_httpx_async_client(ok_drive),
+    with (
+        patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(ok_drive)),
+        patch("trimcp.http_resilience.httpx.AsyncClient", _patch_httpx_async_client(ok_drive)),
     ):
         sid2, rid2, exp2 = await bridge_mcp_handlers._setup_gdrive_webhook(
             "gtok",
@@ -1110,7 +1114,10 @@ async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
     assert exp2 is not None
 
     bad_d = _httpx_resp(status_code=401, json_data={}, text="fail")
-    with patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad_d)):
+    with (
+        patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad_d)),
+        patch("trimcp.http_resilience.httpx.AsyncClient", _patch_httpx_async_client(bad_d)),
+    ):
         with pytest.raises(ValueError, match="Drive watch failed"):
             await bridge_mcp_handlers._setup_gdrive_webhook(
                 "gtok",
@@ -1118,6 +1125,7 @@ async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
                 bridge_client_state="cs",
                 resource_id="folder1",
             )
+
 
 
 @pytest.mark.asyncio
