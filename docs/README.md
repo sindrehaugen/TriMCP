@@ -49,6 +49,7 @@ Technical specifications, architectural guides, and operational references for N
 
 - [**Cognitive Features (Consolidation & Salience)**](cognitive_layer.md): HDBSCAN-based memory "sleep cycle", Ebbinghaus forgetting curve modeling, and contradiction detection.
 - [**LLM Providers & Structured Output**](llm_providers.md): Provider-agnostic engine and mandatory Pydantic V2 schema validation for all cognitive tasks.
+- [**NetBox Integration & Phase 3 Spec**](netbox_and_cognitive_extensions.md): Technical specifications for ATMS, chrono-branching, spiking spreading activation, operator stress tracking, active learning queues, NetBox vertical modules, and the NetBox Cognitive Dashboard plugin.
 
 ---
 
