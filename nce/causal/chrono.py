@@ -53,6 +53,13 @@ def apply_hypothetical_states(graph: CausalGraph, hypothetical_states: dict[str,
     new_outgoing = {k: list(v) for k, v in graph._outgoing.items()}
     new_incoming = {k: list(v) for k, v in graph._incoming.items()}
 
+    # Resolve fallback namespace from the existing causal graph nodes to maintain RLS consistency
+    fallback_ns = None
+    if new_nodes:
+        fallback_ns = next(iter(new_nodes.values())).namespace_id
+    else:
+        fallback_ns = uuid.uuid4()
+
     # 1. Deletions
     deletions = hypothetical_states.get("deletions", {})
     deleted_nodes = set(deletions.get("nodes", []))
@@ -92,10 +99,14 @@ def apply_hypothetical_states(graph: CausalGraph, hypothetical_states: dict[str,
             continue
         existing = new_nodes.get(nid)
         ntype = node_data.get("node_type", existing.node_type if existing else "device")
-        ns_id = node_data.get("namespace_id", existing.namespace_id if existing else uuid.uuid4())
+        ns_id = node_data.get("namespace_id", existing.namespace_id if existing else fallback_ns)
 
         if isinstance(ns_id, str):
-            ns_id = uuid.UUID(ns_id)
+            try:
+                ns_id = uuid.UUID(ns_id)
+            except ValueError as exc:
+                log.warning("Invalid namespace_id UUID string %r in chrono branch: %s", ns_id, exc)
+                ns_id = fallback_ns
 
         new_nodes[nid] = CausalNode(node_id=nid, node_type=ntype, namespace_id=ns_id)
 
@@ -115,7 +126,11 @@ def apply_hypothetical_states(graph: CausalGraph, hypothetical_states: dict[str,
         last_verified = edge_data.get("last_verified", None)
 
         if isinstance(last_verified, str):
-            last_verified = parse_as_of(last_verified)
+            try:
+                last_verified = parse_as_of(last_verified)
+            except ValueError as exc:
+                log.warning("Invalid last_verified string %r in chrono branch: %s", last_verified, exc)
+                last_verified = None
 
         new_edge = CausalEdge(
             source_node_id=src,
@@ -139,8 +154,8 @@ def apply_hypothetical_states(graph: CausalGraph, hypothetical_states: dict[str,
 
         # Make sure endpoints exist
         if src not in new_nodes:
-            new_nodes[src] = CausalNode(node_id=src, node_type="device", namespace_id=uuid.uuid4())
+            new_nodes[src] = CausalNode(node_id=src, node_type="device", namespace_id=fallback_ns)
         if tgt not in new_nodes:
-            new_nodes[tgt] = CausalNode(node_id=tgt, node_type="service", namespace_id=uuid.uuid4())
+            new_nodes[tgt] = CausalNode(node_id=tgt, node_type="service", namespace_id=fallback_ns)
 
     return CausalGraph(nodes=new_nodes, outgoing=new_outgoing, incoming=new_incoming)
