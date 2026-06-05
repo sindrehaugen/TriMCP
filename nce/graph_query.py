@@ -189,6 +189,8 @@ async def adapt_synaptic_weights(
     
     All confidence values are clipped between 0.0 and 1.0.
     """
+    if not namespace_id:
+        raise ValueError("namespace_id is required for tenant-scoped synaptic adaptation.")
     ns_uuid = UUID(str(namespace_id))
     from nce.auth import set_namespace_context
     await set_namespace_context(conn, ns_uuid)
@@ -265,8 +267,6 @@ async def adapt_synaptic_weights(
                 updated_count += 1
         except asyncpg.LockNotAvailableError:
             log.warning("Lock not available for kg_edges update on edge %s", edge)
-        except Exception as e:
-            log.error("Failed to update kg_edges: %s", e)
 
         # 2. Update topology_graph
         try:
@@ -326,8 +326,6 @@ async def adapt_synaptic_weights(
                 updated_count += 1
         except asyncpg.LockNotAvailableError:
             log.warning("Lock not available for topology_graph update on edge %s", edge)
-        except Exception as e:
-            log.error("Failed to update topology_graph: %s", e)
 
     return updated_count
 

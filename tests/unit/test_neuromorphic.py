@@ -214,6 +214,32 @@ class TestAdaptSynapticWeights:
         topo_fetch = next(c for c in conn.fetch_calls if "topology_graph" in c[0].lower())
         assert "valid_to is null" in topo_fetch[0].lower()
 
+    async def test_adapt_synaptic_weights_invalid_namespace(self) -> None:
+        conn = MockConnection()
+        with pytest.raises(ValueError, match="namespace_id is required"):
+            await adapt_synaptic_weights(
+                conn=conn,
+                namespace_id="",
+                decision_outcome="success",
+                reinforced_edges=[("device_A", "device_B")],
+            )
+
+    async def test_adapt_synaptic_weights_db_exception_propagation(self) -> None:
+        ns = uuid.uuid4()
+        # Mock database exception (not LockNotAvailableError) which must propagate
+        fetch_results = {
+            "select id, confidence from kg_edges": RuntimeError("DB query failed"),
+        }
+        conn = MockConnection(fetch_results)
+
+        with pytest.raises(RuntimeError, match="DB query failed"):
+            await adapt_synaptic_weights(
+                conn=conn,
+                namespace_id=ns,
+                decision_outcome="success",
+                reinforced_edges=[("device_A", "device_B")],
+            )
+
 
 # ---------------------------------------------------------------------------
 # 3. GraphRAGTraverser.neuromorphic_search Unit Tests
