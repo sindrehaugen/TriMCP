@@ -33,8 +33,8 @@ import asyncpg
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from trimcp.config import cfg
-from trimcp.signing import (
+from nce.config import cfg
+from nce.signing import (
     SigningKeyDecryptionError,
     decrypt_signing_key,
     encrypt_signing_key,

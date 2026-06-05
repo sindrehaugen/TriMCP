@@ -3,16 +3,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from trimcp.orchestrator import TriStackEngine
+from nce.orchestrator import NCEEngine
 
 
 @pytest.mark.asyncio
 async def test_semantic_search_temporal_parameters_prevent_sql_injection():
     # Setup mock engine
     # Note: engine._generate_embedding was removed in R4 (Phase 3 refactoring).
-    # Embedding calls go through trimcp.embeddings.embed which has a deterministic
+    # Embedding calls go through nce.embeddings.embed which has a deterministic
     # fallback, so no patch is needed for this SQL-structure-only test.
-    engine = TriStackEngine()
+    engine = NCEEngine()
 
     mock_pool = MagicMock()
     mock_conn = AsyncMock()

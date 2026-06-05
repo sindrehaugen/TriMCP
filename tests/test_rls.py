@@ -11,8 +11,8 @@ from uuid import uuid4
 import pytest
 
 from tests.fixtures.fake_asyncpg import RecordingFakeConnection, RecordingFakePool
-from trimcp.auth import audited_session
-from trimcp.db_utils import scoped_pg_session
+from nce.auth import audited_session
+from nce.db_utils import scoped_pg_session
 
 
 class MockRLSConnection(RecordingFakeConnection):
@@ -108,7 +108,7 @@ async def test_audited_session_flow(fake_pool: tuple[RecordingFakePool, MockRLSC
     namespace_id = uuid4()
 
     # Mock the central append_event to avoid requiring cryptographic schemas
-    with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
+    with patch("nce.event_log.append_event", new_callable=AsyncMock) as mock_append:
         async with audited_session(
             pg_pool=pool,
             namespace_id=namespace_id,
@@ -147,7 +147,7 @@ async def test_audited_session_fails_closed_on_audit_failure(
     namespace_id = uuid4()
     block_executed = False
 
-    with patch("trimcp.event_log.append_event", side_effect=RuntimeError("DB write error")):
+    with patch("nce.event_log.append_event", side_effect=RuntimeError("DB write error")):
         with pytest.raises(RuntimeError, match="Audit write failed"):
             async with audited_session(
                 pg_pool=pool,

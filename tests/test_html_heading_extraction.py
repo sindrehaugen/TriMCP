@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import os
 
-os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-test-key-32chars-long!!")
+os.environ.setdefault("NCE_MASTER_KEY", "dev-test-key-32chars-long!!")
 
 import pytest
 
-from trimcp.extractors.plaintext import _html_sections_from_headings, extract_html
+from nce.extractors.plaintext import _html_sections_from_headings, extract_html
 
 
 class TestHtmlSectionsFromHeadings:

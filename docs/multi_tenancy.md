@@ -1,10 +1,10 @@
 # Multi-Tenancy and Resource Quotas
 
-TriMCP is an enterprise-grade multi-tenant memory engine. It enforces strict isolation between different namespaces while managing resource consumption through a high-performance quota system.
+NCE is an enterprise-grade multi-tenant memory engine. It enforces strict isolation between different namespaces while managing resource consumption through a high-performance quota system.
 
 ## Architecture of Isolation
 
-Isolation in TriMCP is achieved through a combination of application-level logic and database-level enforcement.
+Isolation in NCE is achieved through a combination of application-level logic and database-level enforcement.
 
 1.  **Namespace Resolution**: Every request must provide a `namespace_id`. The engine resolves this ID and ensures the agent or user has authority to access it.
 2.  **Row-Level Security (RLS)**: PostgreSQL Row-Level Security ensures that queries can only "see" and "touch" data belonging to the active namespace.
@@ -16,15 +16,15 @@ To ensure RLS is active, the application layer must set a session-local variable
 
 ```python
 # Application Hook
-await conn.execute("SET LOCAL trimcp.namespace_id = $1", str(namespace_id))
+await conn.execute("SET LOCAL nce.namespace_id = $1", str(namespace_id))
 ```
 
 The database policy then uses this variable to filter results:
 
 ```sql
 CREATE POLICY tenant_isolation_policy ON memories
-FOR ALL TO trimcp_app
-USING (namespace_id = current_setting('trimcp.namespace_id')::uuid);
+FOR ALL TO nce_app
+USING (namespace_id = current_setting('nce.namespace_id')::uuid);
 ```
 
 #### Connection & Transaction Lifecycle Flow
@@ -45,7 +45,7 @@ sequenceDiagram
     Manager->>Conn: transaction()
     Conn->>DB: BEGIN TRANSACTION
     Manager->>Conn: set_namespace_context(conn, namespace_id)
-    Conn->>DB: SELECT set_config('trimcp.namespace_id', namespace_id, true)
+    Conn->>DB: SELECT set_config('nce.namespace_id', namespace_id, true)
     Note over DB: namespace_id is now local to transaction context
     Manager-->>App: yield Connection
     
@@ -58,7 +58,7 @@ sequenceDiagram
 
     App->>Manager: Exit context block (success / exception)
     Manager->>Conn: _reset_rls_context(conn)
-    Conn->>DB: SELECT set_config('trimcp.namespace_id', '', true)
+    Conn->>DB: SELECT set_config('nce.namespace_id', '', true)
     Manager->>Conn: Exit transaction context
     alt Success
         Conn->>DB: COMMIT
@@ -70,7 +70,7 @@ sequenceDiagram
 
 ## Resource Quotas
 
-TriMCP protects its infrastructure from over-consumption or "noisy neighbor" effects via the Quota Engine (Phase 3.2).
+NCE protects its infrastructure from over-consumption or "noisy neighbor" effects via the Quota Engine (Phase 3.2).
 
 ### Quota Engine Signal Flow
 
@@ -80,7 +80,7 @@ sequenceDiagram
     participant Tool as Tool Handler
     participant Quota as Quota Engine
     participant DB as PostgreSQL (resource_quotas)
-    participant Engine as TriMCP Core
+    participant Engine as NCE Core
 
     Client->>Tool: Call Tool (e.g., store_memory)
     Tool->>Quota: consume_for_tool(tool_name, args)
@@ -121,7 +121,7 @@ VALUES ('00000000-0000-4000-8000-000000000001', 'storage_bytes', 1073741824);
 
 ## Best-Effort Rollback
 
-TriMCP uses a `QuotaReservation` pattern. If a resource-consuming operation fails *after* the quota has been decremented, the system attempts to roll back the increment:
+NCE uses a `QuotaReservation` pattern. If a resource-consuming operation fails *after* the quota has been decremented, the system attempts to roll back the increment:
 
 ```python
 reservation = await consume_for_tool(...)

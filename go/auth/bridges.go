@@ -24,25 +24,25 @@ type CloudAzure struct {
 	TenantID     string   `json:"tenant_id"`
 	ClientID     string   `json:"client_id"`
 	Scopes       []string `json:"scopes"`
-	// MsalCacheFile relative to TriMCP data dir unless absolute (e.g. msal_cache.bin).
+	// MsalCacheFile relative to NCE data dir unless absolute (e.g. msal_cache.bin).
 	MsalCacheFile string `json:"msal_cache_file,omitempty"`
 	// MirrorMSALToKeychain duplicates the opaque MSAL blob to the OS credential store when true.
 	MirrorMSALToKeychain bool `json:"mirror_msal_to_keychain,omitempty"`
 }
 
-// TriMCPDataDir resolves %APPDATA%/TriMCP (Windows), ~/Library/Application Support/TriMCP (macOS),
-// or XDG_CONFIG_HOME/TriMCP.
-func TriMCPDataDir() (string, error) {
+// NCEDataDir resolves %APPDATA%/NCE (Windows), ~/Library/Application Support/NCE (macOS),
+// or XDG_CONFIG_HOME/NCE.
+func NCEDataDir() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "TriMCP"), nil
+	return filepath.Join(base, "NCE"), nil
 }
 
 // DefaultBridgesPath is the documented location from §6.3.
 func DefaultBridgesPath() (string, error) {
-	dir, err := TriMCPDataDir()
+	dir, err := NCEDataDir()
 	if err != nil {
 		return "", err
 	}
@@ -74,7 +74,7 @@ func ResolveMSALCachePath(cloud *CloudAzure) (string, error) {
 	if filepath.IsAbs(name) {
 		return name, nil
 	}
-	dir, err := TriMCPDataDir()
+	dir, err := NCEDataDir()
 	if err != nil {
 		return "", err
 	}

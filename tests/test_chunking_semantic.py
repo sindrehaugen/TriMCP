@@ -9,7 +9,7 @@ Verifies:
 - Fallback to newline boundary before hard-slicing
 """
 
-from trimcp.extractors.chunking import (
+from nce.extractors.chunking import (
     _extract_heading_hierarchy,
     _find_semantic_split,
     _hard_split_semantic,
@@ -17,7 +17,7 @@ from trimcp.extractors.chunking import (
     _split_section_text,
     chunk_structured,
 )
-from trimcp.extractors.core import Section
+from nce.extractors.core import Section
 
 # ---------------------------------------------------------------------------
 # Helpers

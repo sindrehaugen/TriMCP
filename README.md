@@ -1,6 +1,6 @@
-# TriMCP — Enterprise-Grade AI Memory Layer
+# NCE — Enterprise-Grade AI Memory Layer
 
-TriMCP is an **MCP-native memory engine** for autonomous agents: a **quad-database** stack (PostgreSQL + pgvector, MongoDB, Redis, MinIO) with a **Saga**-style write path, **temporal** recall (`as_of` time-travel on semantic and graph search), **A2A** scoped sharing between agents, and **background workers** for re-embedding, bridge renewal, and GC. This repository ships **release 2.0.0** (`pyproject.toml`) with a **v1.0 integration surface** in `server.py`, `admin_server.py`, `trimcp/a2a_server.py`, and `trimcp/cron.py`.
+NCE is an **MCP-native memory engine** for autonomous agents: a **quad-database** stack (PostgreSQL + pgvector, MongoDB, Redis, MinIO) with a **Saga**-style write path, **temporal** recall (`as_of` time-travel on semantic and graph search), **A2A** scoped sharing between agents, and **background workers** for re-embedding, bridge renewal, and GC. This repository ships **release 2.0.0** (`pyproject.toml`) with a **v1.0 integration surface** in `server.py`, `admin_server.py`, `nce/a2a_server.py`, and `nce/cron.py`.
 
 Longer-horizon roadmap items (universal installers, 300+ language packs, broad format extraction) live in the innovation roadmap; deploy today **from source** with Docker Compose per [deploy/README.md](deploy/README.md).
 
@@ -8,10 +8,10 @@ Longer-horizon roadmap items (universal installers, 300+ language packs, broad f
 
 - **Semantic search & GraphRAG**: pgvector nearest-neighbor search, MongoDB hydration, BFS over `kg_edges` with structured subgraphs. Includes automated spaCy entity extraction (bundled).
 - **Zero-Config Deployment**: Automated PostgreSQL schema initialization with extensions (vector, pgcrypto) and mandatory Row Level Security (RLS) policies.
-- **Temporal queries**: Optional **`as_of`** (ISO 8601) on `semantic_search` and `graph_search` via `trimcp/temporal.py` and orchestrator filters.
-- **A2A protocol**: Grant/verify token flow and JSON-RPC skills on **`trimcp/a2a_server.py`** (`trimcp/a2a.py`, `a2a_grants` table).
+- **Temporal queries**: Optional **`as_of`** (ISO 8601) on `semantic_search` and `graph_search` via `nce/temporal.py` and orchestrator filters.
+- **A2A protocol**: Grant/verify token flow and JSON-RPC skills on **`nce/a2a_server.py`** (`nce/a2a.py`, `a2a_grants` table).
 - **Quotas & auth**: Namespace-scoped consumption and HMAC-aware admin API patterns with deep v1.0 health monitoring.
-- **Cognitive workers**: **`python -m trimcp.cron`** — APScheduler jobs for **document-bridge renewal** and **`ReembeddingWorker`** sweeps; **`ConsolidationWorker`** (`trimcp/consolidation.py`) for sleep-style abstraction (integrate with your scheduler); MCP startup runs **orphan GC** (`run_gc_loop`).
+- **Cognitive workers**: **`python -m nce.cron`** — APScheduler jobs for **document-bridge renewal** and **`ReembeddingWorker`** sweeps; **`ConsolidationWorker`** (`nce/consolidation.py`) for sleep-style abstraction (integrate with your scheduler); MCP startup runs **orphan GC** (`run_gc_loop`).
 - **MCP tools**: Memory, media, code indexing (RQ async), bridges, salience, contradictions, embedding migration, **replay** (`replay_observe` / `replay_fork` / `replay_status`), and more — see `TOOLS` in `server.py`.
 - **Quad-DB + Saga**: Mongo payload → Postgres vectors/KG, with rollback on failure; see diagram below.
 
@@ -106,10 +106,10 @@ Minimum variables for local development:
 | `MINIO_ENDPOINT` | `localhost:9000` | Required |
 | `MINIO_ACCESS_KEY` | `mcp_admin` | Required — no default in production |
 | `MINIO_SECRET_KEY` | `your_secret` | Required — no default in production |
-| `TRIMCP_MASTER_KEY` | 32+ random bytes | Required — server refuses to start without it |
-| `TRIMCP_MCP_API_KEY` | long random secret | Required in production for MCP stdio tenant tools (`mcp_api_key` argument) |
-| `TRIMCP_MCP_NAMESPACE_ID` | UUID | Required in production when `TRIMCP_MCP_API_KEY` is set — binds stdio tenant tools to one namespace |
-| `TRIMCP_ADMIN_API_KEY` | long random secret | Required in production for MCP admin tools (`admin_api_key` argument) |
+| `NCE_MASTER_KEY` | 32+ random bytes | Required — server refuses to start without it |
+| `NCE_MCP_API_KEY` | long random secret | Required in production for MCP stdio tenant tools (`mcp_api_key` argument) |
+| `NCE_MCP_NAMESPACE_ID` | UUID | Required in production when `NCE_MCP_API_KEY` is set — binds stdio tenant tools to one namespace |
+| `NCE_ADMIN_API_KEY` | long random secret | Required in production for MCP admin tools (`admin_api_key` argument) |
 
 For Cursor/Claude, copy [mcp_config.json.example](mcp_config.json.example) to `mcp_config.json` (gitignored) and set both keys in the `env` block.
 
@@ -129,7 +129,7 @@ python server.py
 
 For **temporal**, **A2A**, and **background worker** sequence diagrams, use **[docs/architecture-v1.md](docs/architecture-v1.md)**. The following sections summarise the quad-DB and saga contracts.
 
-TriMCP is built to treat memory as distinct layers with strict boundaries and absolute rollback guarantees. 
+NCE is built to treat memory as distinct layers with strict boundaries and absolute rollback guarantees. 
 
 ### The Quad-DB Philosophy
 
@@ -159,13 +159,13 @@ The `garbage_collector.py` runs hourly as an independent safety net: any MongoDB
 
 ### Recursive AST Indexing & Background Processing
 
-TriMCP can autonomously ingest its own codebase. When an LLM agent calls the `index_code_file` tool, the request is instantly enqueued to an asynchronous Redis Queue (RQ) worker (`start_worker.py`). The worker handles the heavy AST parsing (via Tree-sitter) to split the source into chunks, stores the raw payload in Mongo, embeds vectors/KG triplets in Postgres, and updates the working context in Redis. The MCP tool immediately returns a `job_id` to the LLM to track progress via `check_indexing_status`.
+NCE can autonomously ingest its own codebase. When an LLM agent calls the `index_code_file` tool, the request is instantly enqueued to an asynchronous Redis Queue (RQ) worker (`start_worker.py`). The worker handles the heavy AST parsing (via Tree-sitter) to split the source into chunks, stores the raw payload in Mongo, embeds vectors/KG triplets in Postgres, and updates the working context in Redis. The MCP tool immediately returns a `job_id` to the LLM to track progress via `check_indexing_status`.
 
 See the [Recursive Indexing Flow Diagram](docs/recursive_indexing_flow.md) and [v1.0 architecture](docs/architecture-v1.md) (temporal, A2A, cognitive workers).
 
 ### Advanced GraphRAG Layer
 
-TriMCP implements a state-of-the-art GraphRAG pipeline:
+NCE implements a state-of-the-art GraphRAG pipeline:
 1. The query undergoes a pgvector cosine search to find the nearest **anchor knowledge graph node**.
 2. A **BFS traversal** executes over `kg_edges` (up to 3 hops, max 50 nodes).
 3. The engine **hydrates source documents** from MongoDB (e.g., 600-character excerpts) mapped to the nodes.
@@ -174,7 +174,7 @@ TriMCP implements a state-of-the-art GraphRAG pipeline:
 ## 📂 Directory Structure
 
 ```text
-TriMCP/
+NCE/
 ├── docker-compose.yml       # Redis, PostgreSQL/pgvector, MongoDB, MinIO
 ├── requirements.txt         # Python dependencies
 ├── .env.example             # Environment variable template
@@ -184,7 +184,7 @@ TriMCP/
 ├── admin_server.py          # Admin UI & Observability
 ├── admin/
 │   └── index.html           # Admin dashboard UI
-├── trimcp/
+├── nce/
 │   ├── __init__.py
 │   ├── orchestrator.py      # Core Saga engine + Quad-Stack connections
 │   ├── config.py            # Configuration loading
@@ -212,7 +212,7 @@ TriMCP/
 
 ## 🔌 MCP Tool Reference
 
-TriMCP exposes the following tools directly to LLM clients via JSON-RPC 2.0, utilizing a highly efficient API cache layer with generation-counter invalidation:
+NCE exposes the following tools directly to LLM clients via JSON-RPC 2.0, utilizing a highly efficient API cache layer with generation-counter invalidation:
 
 | Tool | Description |
 |---|---|
@@ -234,14 +234,14 @@ TriMCP exposes the following tools directly to LLM clients via JSON-RPC 2.0, uti
 | `a2a_update_grant_scopes` | Dynamically mutate scopes on an active grant (replace or append strategy). |
 | `a2a_inspect_grant` | Retrieve metadata for a single grant safely for audit compliance (cryptographically secure). |
 
-*Full list and schemas: `TOOLS` in `trimcp/mcp_stdio_tools.py`.*
+*Full list and schemas: `TOOLS` in `nce/mcp_stdio_tools.py`.*
 
 ## 🎛️ Dynamic Tools Control Console & Interceptor Routing
 
-TriMCP features an **Enterprise-Grade Admin Tools Console** integrated directly into the Starlette Admin panel. This console allows IT administrators to dynamically enable and disable specific local stdio MCP tools and public A2A server skills at runtime with zero system downtime.
+NCE features an **Enterprise-Grade Admin Tools Console** integrated directly into the Starlette Admin panel. This console allows IT administrators to dynamically enable and disable specific local stdio MCP tools and public A2A server skills at runtime with zero system downtime.
 
 ### Architecture & Propagation
-1. **Dynamic State Persistence**: Toggling a tool's state dynamically publishes and persists the value within a Redis hash named `trimcp:tools:disabled`.
+1. **Dynamic State Persistence**: Toggling a tool's state dynamically publishes and persists the value within a Redis hash named `nce:tools:disabled`.
 2. **Real-time Routing Interceptors**:
    - **Stdio MCP Transport**: Custom middleware intercepts invocations in `mcp_stdio_dispatch.py`. If a tool is flagged as disabled, the server rejects it instantly, returning JSON-RPC error code `-32005` (Scope forbidden).
    - **Agent-to-Agent (A2A) Skill Server**: Inbound network skills are intercepted inside `a2a_server.py`. If a skill is disabled, the request is rejected with RPC code `-32011` / HTTP 403 (Scope violation).
@@ -262,9 +262,9 @@ Add to your `~/.cursor/mcp.json` or configure via **Cursor Settings → MCP → 
 ```json
 {
   "mcpServers": {
-    "tri-stack-memory": {
+    "nce-memory": {
       "command": "python",
-      "args": ["/absolute/path/to/TriMCP/server.py"],
+      "args": ["/absolute/path/to/NCE/server.py"],
       "env": {
         "MONGO_URI": "mongodb://localhost:27017",
         "PG_DSN": "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta",
@@ -277,7 +277,7 @@ Add to your `~/.cursor/mcp.json` or configure via **Cursor Settings → MCP → 
   }
 }
 ```
-*Note for Windows: Use double backslashes `C:\\path\\to\\TriMCP\\server.py` or forward slashes `C:/path/to/TriMCP/server.py`.*
+*Note for Windows: Use double backslashes `C:\\path\\to\\NCE\\server.py` or forward slashes `C:/path/to/NCE/server.py`.*
 
 ### Claude Desktop
 
@@ -286,9 +286,9 @@ Edit your `claude_desktop_config.json` (Windows: `%APPDATA%\Claude\`, macOS: `~/
 ```json
 {
   "mcpServers": {
-    "tri-stack-memory": {
+    "nce-memory": {
       "command": "python",
-      "args": ["/absolute/path/to/TriMCP/server.py"],
+      "args": ["/absolute/path/to/NCE/server.py"],
       "env": {
         "MONGO_URI": "mongodb://localhost:27017",
         "PG_DSN": "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta",

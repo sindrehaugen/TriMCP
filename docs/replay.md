@@ -4,7 +4,7 @@ The Memory Replay Engine (Phase 2.3) allows for the observational streaming and 
 
 ## Replay Modes
 
-TriMCP supports two distinct replay modes:
+NCE supports two distinct replay modes:
 
 ### 1. Observational Replay
 A read-only, transport-agnostic stream of events. This mode allows you to "watch" the evolution of a namespace in real-time or historical playback without modifying any state.
@@ -51,7 +51,7 @@ A key feature of forked replay is **Alternate Causal Provenance**.
 
 ## Replay Handlers
 
-The engine uses a **Decorator Registry** to map event types to execution logic. Adding support for a new event type (e.g., `tool_call_result`) simply requires registering a new handler in `trimcp/replay.py`:
+The engine uses a **Decorator Registry** to map event types to execution logic. Adding support for a new event type (e.g., `tool_call_result`) simply requires registering a new handler in `nce/replay.py`:
 
 ```python
 @_register("my_new_event")

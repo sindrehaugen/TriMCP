@@ -5,15 +5,15 @@ from unittest.mock import patch
 
 import pytest
 
-from trimcp.extractors.chunking import chunk_structured
-from trimcp.extractors.core import Section
-from trimcp.extractors.dispatch import extract_with_fallback
-from trimcp.extractors.office_word import _check_zip_bomb
-from trimcp.extractors.pdf_ext import _check_pdf_bomb
+from nce.extractors.chunking import chunk_structured
+from nce.extractors.core import Section
+from nce.extractors.dispatch import extract_with_fallback
+from nce.extractors.office_word import _check_zip_bomb
+from nce.extractors.pdf_ext import _check_pdf_bomb
 
 
-@patch("trimcp.extractors.dispatch.ensure_registered")
-@patch("trimcp.extractors.dispatch._REGISTRY", new_callable=dict)
+@patch("nce.extractors.dispatch.ensure_registered")
+@patch("nce.extractors.dispatch._REGISTRY", new_callable=dict)
 def test_extract_with_fallback_unsupported_extension(mock_registry, mock_ensure):
     # Test that unsupported extensions return a graceful skip instead of crashing
     result = asyncio.run(extract_with_fallback(b"dummy data", filename="test.unknownext"))
@@ -22,8 +22,8 @@ def test_extract_with_fallback_unsupported_extension(mock_registry, mock_ensure)
     assert "unknown or unregistered extension" in result.warnings[0]
 
 
-@patch("trimcp.extractors.dispatch.ensure_registered")
-@patch("trimcp.extractors.dispatch._REGISTRY", new_callable=dict)
+@patch("nce.extractors.dispatch.ensure_registered")
+@patch("nce.extractors.dispatch._REGISTRY", new_callable=dict)
 def test_extract_with_fallback_malformed_pdf(mock_registry, mock_ensure):
     # Mock the registry to have a failing PDF extractor
     async def mock_pdf_extractor(blob):
@@ -99,16 +99,16 @@ class TestCheckZipBomb:
 
     def test_small_zip_passes(self, monkeypatch: pytest.MonkeyPatch):
         """A small zip below all thresholds should return None (pass)."""
-        monkeypatch.setattr("trimcp.extractors.office_word.MAX_DECOMPRESSED_SIZE", 10_000)
-        monkeypatch.setattr("trimcp.extractors.office_word.MAX_ENTRY_DECOMPRESSED_SIZE", 5_000)
+        monkeypatch.setattr("nce.extractors.office_word.MAX_DECOMPRESSED_SIZE", 10_000)
+        monkeypatch.setattr("nce.extractors.office_word.MAX_ENTRY_DECOMPRESSED_SIZE", 5_000)
 
         blob = _make_zip_with_sizes([b"A" * 100, b"B" * 200])
         assert _check_zip_bomb(blob) is None
 
     def test_total_exceeds_limit(self, monkeypatch: pytest.MonkeyPatch):
         """Total uncompressed size exceeding MAX_DECOMPRESSED_SIZE should be rejected."""
-        monkeypatch.setattr("trimcp.extractors.office_word.MAX_DECOMPRESSED_SIZE", 250)
-        monkeypatch.setattr("trimcp.extractors.office_word.MAX_ENTRY_DECOMPRESSED_SIZE", 500)
+        monkeypatch.setattr("nce.extractors.office_word.MAX_DECOMPRESSED_SIZE", 250)
+        monkeypatch.setattr("nce.extractors.office_word.MAX_ENTRY_DECOMPRESSED_SIZE", 500)
 
         blob = _make_zip_with_sizes([b"X" * 150, b"Y" * 150])
         err = _check_zip_bomb(blob)
@@ -117,8 +117,8 @@ class TestCheckZipBomb:
 
     def test_entry_exceeds_limit(self, monkeypatch: pytest.MonkeyPatch):
         """Single entry exceeding MAX_ENTRY_DECOMPRESSED_SIZE should be rejected."""
-        monkeypatch.setattr("trimcp.extractors.office_word.MAX_DECOMPRESSED_SIZE", 10_000)
-        monkeypatch.setattr("trimcp.extractors.office_word.MAX_ENTRY_DECOMPRESSED_SIZE", 100)
+        monkeypatch.setattr("nce.extractors.office_word.MAX_DECOMPRESSED_SIZE", 10_000)
+        monkeypatch.setattr("nce.extractors.office_word.MAX_ENTRY_DECOMPRESSED_SIZE", 100)
 
         blob = _make_zip_with_sizes([b"X" * 200, b"Y" * 50])
         err = _check_zip_bomb(blob)
@@ -138,7 +138,7 @@ class TestCheckPdfBomb:
 
     def test_small_pdf_passes(self, monkeypatch: pytest.MonkeyPatch):
         """A minimal PDF below thresholds should return None."""
-        monkeypatch.setattr("trimcp.extractors.pdf_ext.MAX_DECOMPRESSED_SIZE", 10_000)
+        monkeypatch.setattr("nce.extractors.pdf_ext.MAX_DECOMPRESSED_SIZE", 10_000)
         # Minimal valid PDF
         blob = (
             b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
@@ -150,7 +150,7 @@ class TestCheckPdfBomb:
 
     def test_pdf_too_large(self, monkeypatch: pytest.MonkeyPatch):
         """A PDF blob exceeding MAX_DECOMPRESSED_SIZE should be rejected."""
-        monkeypatch.setattr("trimcp.extractors.pdf_ext.MAX_DECOMPRESSED_SIZE", 100)
+        monkeypatch.setattr("nce.extractors.pdf_ext.MAX_DECOMPRESSED_SIZE", 100)
         blob = b"X" * 200  # Exceeds the 100-byte limit
         err = _check_pdf_bomb(blob)
         assert err is not None
@@ -159,7 +159,7 @@ class TestCheckPdfBomb:
 
 def test_empty_skipped_import():
     """Verify empty_skipped is importable and returns correct type."""
-    from trimcp.extractors.core import empty_skipped as es
+    from nce.extractors.core import empty_skipped as es
 
     result = es("test_extractor", "bomb_detected")
     assert result.skipped is True
@@ -201,7 +201,7 @@ def test_pymupdf_extract_hygiene(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(gc, "collect", mock_gc_collect)
 
     # Now run the sync extractor
-    from trimcp.extractors.pdf_ext import _pymupdf_extract_sync
+    from nce.extractors.pdf_ext import _pymupdf_extract_sync
 
     blob = b"dummy_pdf_bytes"
     text, sections, warnings = _pymupdf_extract_sync(blob)
@@ -235,7 +235,7 @@ async def test_extract_pdf_pymupdf_fallback_to_pypdf(monkeypatch: pytest.MonkeyP
     mock_pypdf.PdfReader.return_value = mock_reader
     monkeypatch.setitem(sys.modules, "pypdf", mock_pypdf)
 
-    from trimcp.extractors.pdf_ext import extract_pdf
+    from nce.extractors.pdf_ext import extract_pdf
 
     blob = b"dummy_pdf_bytes"
     result = await extract_pdf(blob)
@@ -263,7 +263,7 @@ async def test_extract_pdf_uses_pymupdf_when_available(monkeypatch: pytest.Monke
 
     monkeypatch.setitem(sys.modules, "fitz", mock_fitz)
 
-    from trimcp.extractors.pdf_ext import extract_pdf
+    from nce.extractors.pdf_ext import extract_pdf
 
     blob = b"%PDF-1.4 mock pdf"
     result = await extract_pdf(blob)

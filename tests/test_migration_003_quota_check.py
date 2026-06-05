@@ -8,7 +8,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 
-MIGRATION_PATH = Path("trimcp/migrations/003_quota_check.sql")
+MIGRATION_PATH = Path("nce/migrations/003_quota_check.sql")
 
 
 def _migration_sql() -> str:
@@ -27,7 +27,7 @@ async def _require_resource_quotas(conn: asyncpg.Connection) -> None:
         """
     )
     if not exists:
-        pytest.skip("resource_quotas table missing — apply trimcp/schema.sql first")
+        pytest.skip("resource_quotas table missing — apply nce/schema.sql first")
 
 
 async def _drop_nonnegative_used_amount_checks(conn: asyncpg.Connection) -> list[str]:

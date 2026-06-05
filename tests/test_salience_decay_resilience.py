@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trimcp.salience import compute_decayed_score
+from nce.salience import compute_decayed_score
 
 # ---------------------------------------------------------------------------
 # Helpers

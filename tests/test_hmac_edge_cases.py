@@ -22,7 +22,7 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from tests.fixtures.http_hmac_helpers import admin_hmac_headers, compute_admin_hmac
-from trimcp.auth import HMACAuthMiddleware, NamespaceContext, resolve_namespace
+from nce.auth import HMACAuthMiddleware, NamespaceContext, resolve_namespace
 
 _KEY = "fixture-hmac-shared-secret-32b+"
 
@@ -107,7 +107,7 @@ class TestNamespaceContextHeaderEdges:
 
     def test_resolve_namespace_raises_on_bad_uuid_syntax(self) -> None:
         with pytest.raises(ValueError, match="Invalid namespace UUID"):
-            resolve_namespace({"x-trimcp-namespace-id": "not-valid"})
+            resolve_namespace({"x-nce-namespace-id": "not-valid"})
 
     def test_namespace_context_near_max_agent_trim(self) -> None:
         uid = uuid4()

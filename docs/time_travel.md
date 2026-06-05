@@ -1,10 +1,10 @@
 # Memory Time Travel
 
-Time Travel is a core capability of TriMCP that allows agents and administrators to query the memory store as it existed at any specific point in history.
+Time Travel is a core capability of NCE that allows agents and administrators to query the memory store as it existed at any specific point in history.
 
 ## The Temporal Foundation
 
-Time travel is built upon TriMCP's **WORM (Write Once, Read Many) Event Log**. Unlike traditional databases that overwrite state, TriMCP logs every memory creation, update, or deletion as a discrete, immutable event.
+Time travel is built upon NCE's **WORM (Write Once, Read Many) Event Log**. Unlike traditional databases that overwrite state, NCE logs every memory creation, update, or deletion as a discrete, immutable event.
 
 ## How it Works: `as_of` Queries
 
@@ -17,7 +17,7 @@ When a query is received with an `as_of` timestamp, the engine performs a "Tempo
 ```mermaid
 sequenceDiagram
     participant Agent as AI Agent
-    participant Engine as TriMCP Engine
+    participant Engine as NCE Engine
     participant DB as Postgres (event_log)
     participant MG as MongoDB (Archive)
 
@@ -37,7 +37,7 @@ The engine applies the following logic to reconstruct the "Active Set" at time $
 3.  **Update**: Use the salience score and embeddings provided by the most recent `boost_memory` or `re_embed` event before $T$.
 
 ### MongoDB Versioning (Technical Detail)
-While MongoDB stores the "heavy" payload, the **PostgreSQL Event Log** serves as the authoritative version index. Every state change (even re-embedding Strategy A) creates a new event row. During reconstruction, TriMCP uses the `payload_ref` from the matched event log entry to hydrate the correct version of the raw data from MongoDB, ensuring bit-identical historical recall.
+While MongoDB stores the "heavy" payload, the **PostgreSQL Event Log** serves as the authoritative version index. Every state change (even re-embedding Strategy A) creates a new event row. During reconstruction, NCE uses the `payload_ref` from the matched event log entry to hydrate the correct version of the raw data from MongoDB, ensuring bit-identical historical recall.
 
 ## Use Cases
 
@@ -47,4 +47,4 @@ While MongoDB stores the "heavy" payload, the **PostgreSQL Event Log** serves as
 
 ## Snapshotting (Planned)
 
-While `as_of` allows querying arbitrary points in time, TriMCP also supports **Named Snapshots**. Administrators can tag specific timestamps (e.g., `pre-migration-v2`) to provide stable references for agents to use in their queries.
+While `as_of` allows querying arbitrary points in time, NCE also supports **Named Snapshots**. Administrators can tag specific timestamps (e.g., `pre-migration-v2`) to provide stable references for agents to use in their queries.

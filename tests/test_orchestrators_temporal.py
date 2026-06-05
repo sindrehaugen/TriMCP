@@ -1,4 +1,4 @@
-"""Unit tests for trimcp.orchestrators.temporal (compare_states hardening)."""
+"""Unit tests for nce.orchestrators.temporal (compare_states hardening)."""
 
 from __future__ import annotations
 
@@ -12,13 +12,13 @@ from uuid import UUID
 
 import pytest
 
-from trimcp.models import (
+from nce.models import (
     AssertionType,
     CompareStatesRequest,
     MemoryType,
 )
-from trimcp.orchestrators import temporal as temporal_mod
-from trimcp.orchestrators.temporal import (
+from nce.orchestrators import temporal as temporal_mod
+from nce.orchestrators.temporal import (
     TemporalOrchestrator,
     _cap_diff_list,
     _metadata_as_dict,
@@ -185,7 +185,7 @@ class TestCompareStatesSemanticPath:
         previews = {oid: "summary text"}
 
         with patch(
-            "trimcp.orchestrators.temporal.fetch_episode_previews_by_ref",
+            "nce.orchestrators.temporal.fetch_episode_previews_by_ref",
             new=AsyncMock(return_value=previews),
         ) as mock_fetch:
             await temporal_orchestrator._hydrate_semantic_results([row])
@@ -213,13 +213,13 @@ class TestTriggerConsolidation:
         worker.run_consolidation = AsyncMock()
 
         with (
-            patch("trimcp.orchestrators.temporal.create_tracked_task") as mock_track,
+            patch("nce.orchestrators.temporal.create_tracked_task") as mock_track,
             patch(
-                "trimcp.consolidation.ConsolidationWorker",
+                "nce.consolidation.ConsolidationWorker",
                 return_value=worker,
             ),
             patch(
-                "trimcp.providers.get_provider",
+                "nce.providers.get_provider",
                 return_value=MagicMock(),
             ),
         ):

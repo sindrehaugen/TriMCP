@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from trimcp import (
+from nce import (
     a2a_mcp_handlers,
     admin_mcp_handlers,
     bridge_mcp_handlers,
@@ -26,9 +26,9 @@ from trimcp import (
     replay_mcp_handlers,
     snapshot_mcp_handlers,
 )
-from trimcp.a2a import A2AGrantResponse, A2AScope, VerifiedGrant
-from trimcp.mcp_errors import McpError
-from trimcp.models import SnapshotRecord, StateDiffResult
+from nce.a2a import A2AGrantResponse, A2AScope, VerifiedGrant
+from nce.mcp_errors import McpError
+from nce.models import SnapshotRecord, StateDiffResult
 
 NS = "00000000-0000-4000-8000-000000000001"
 MEM_ID = "00000000-0000-4000-8000-000000000002"
@@ -100,7 +100,7 @@ def _patch_httpx_async_client(
 def _admin_arguments(extra: dict) -> dict:
     return {
         "admin_api_key": os.environ.get(
-            "TRIMCP_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests"
+            "NCE_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests"
         ),
         **extra,
     }
@@ -108,14 +108,14 @@ def _admin_arguments(extra: dict) -> dict:
 
 @pytest.fixture
 def admin_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    from trimcp import auth as auth_mod
+    from nce import auth as auth_mod
 
     admin_key = os.environ.get(
-        "TRIMCP_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests"
+        "NCE_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests"
     )
-    monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", admin_key)
-    monkeypatch.setattr(auth_mod.cfg, "TRIMCP_ADMIN_API_KEY", admin_key)
-    monkeypatch.setattr(auth_mod.cfg, "TRIMCP_ADMIN_OVERRIDE", False)
+    monkeypatch.setenv("NCE_ADMIN_API_KEY", admin_key)
+    monkeypatch.setattr(auth_mod.cfg, "NCE_ADMIN_API_KEY", admin_key)
+    monkeypatch.setattr(auth_mod.cfg, "NCE_ADMIN_OVERRIDE", False)
 
 
 @pytest.mark.asyncio
@@ -148,7 +148,7 @@ async def test_a2a_helpers_and_handlers() -> None:
     )
     engine = _engine_pool_context()
 
-    with patch("trimcp.a2a_mcp_handlers.create_grant", new_callable=AsyncMock) as cg:
+    with patch("nce.a2a_mcp_handlers.create_grant", new_callable=AsyncMock) as cg:
         cg.return_value = grant
         out = await a2a_mcp_handlers.handle_a2a_create_grant(
             engine,
@@ -157,7 +157,7 @@ async def test_a2a_helpers_and_handlers() -> None:
         data = json.loads(out)
         assert data["sharing_token"] == "tok"
 
-    with patch("trimcp.a2a_mcp_handlers.revoke_grant", new_callable=AsyncMock) as rv:
+    with patch("nce.a2a_mcp_handlers.revoke_grant", new_callable=AsyncMock) as rv:
         rv.return_value = True
         out = await a2a_mcp_handlers.handle_a2a_revoke_grant(
             engine,
@@ -165,7 +165,7 @@ async def test_a2a_helpers_and_handlers() -> None:
         )
         assert json.loads(out)["revoked"] is True
 
-    with patch("trimcp.a2a_mcp_handlers.list_grants", new_callable=AsyncMock) as lg:
+    with patch("nce.a2a_mcp_handlers.list_grants", new_callable=AsyncMock) as lg:
         lg.return_value = [{"id": "g1"}]
         out = await a2a_mcp_handlers.handle_a2a_list_grants(
             engine,
@@ -185,8 +185,8 @@ async def test_a2a_helpers_and_handlers() -> None:
     )
     engine.semantic_search = AsyncMock(return_value=[{"hit": 1}])
     with (
-        patch("trimcp.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as vt,
-        patch("trimcp.a2a_mcp_handlers.enforce_scope"),
+        patch("nce.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as vt,
+        patch("nce.a2a_mcp_handlers.enforce_scope"),
     ):
         vt.return_value = verified
         out = await a2a_mcp_handlers.handle_a2a_query_shared(
@@ -242,7 +242,7 @@ async def test_admin_handlers_delegate(admin_key_env: None) -> None:
     assert json.loads(raw)["quotas"] == []
 
     engine.pg_pool.acquire = _engine_pool_context().pg_pool.acquire
-    with patch("trimcp.signing.rotate_key", new_callable=AsyncMock) as rk:
+    with patch("nce.signing.rotate_key", new_callable=AsyncMock) as rk:
         rk.return_value = "kid-9"
         raw = await admin_mcp_handlers.handle_rotate_signing_key(
             engine,
@@ -468,7 +468,7 @@ async def test_migration_audit_writes_log() -> None:
         calls.append(kwargs.get("event_type"))
         return SimpleNamespace(event_id=uuid.uuid4(), event_seq=1)
 
-    with patch("trimcp.migration_mcp_handlers.append_event", side_effect=_append):
+    with patch("nce.migration_mcp_handlers.append_event", side_effect=_append):
         await migration_mcp_handlers._audit_migration_action(
             pool,
             event_type="migration_test",
@@ -494,7 +494,7 @@ async def test_replay_handlers_smoke() -> None:
                 yield x
 
     with patch(
-        "trimcp.replay.ObservationalReplay",
+        "nce.replay.ObservationalReplay",
         return_value=_Obs(),
     ):
         out = await replay_mcp_handlers.handle_replay_observe(
@@ -524,18 +524,18 @@ async def test_replay_handlers_smoke() -> None:
                 yield None
 
     with (
-        patch("trimcp.models.FrozenForkConfig.from_request", return_value=froz),
+        patch("nce.models.FrozenForkConfig.from_request", return_value=froz),
         patch(
-            "trimcp.replay._create_run",
+            "nce.replay._create_run",
             new_callable=AsyncMock,
             return_value=run_id,
         ),
         patch(
-            "trimcp.replay.ForkedReplay",
+            "nce.replay.ForkedReplay",
             return_value=_Fork(),
         ),
         patch(
-            "trimcp.replay_mcp_handlers.create_tracked_task",
+            "nce.replay_mcp_handlers.create_tracked_task",
         ) as ct,
     ):
         out = await replay_mcp_handlers.handle_replay_fork(
@@ -553,16 +553,16 @@ async def test_replay_handlers_smoke() -> None:
 
     with (
         patch(
-            "trimcp.replay._create_run",
+            "nce.replay._create_run",
             new_callable=AsyncMock,
             return_value=run_id,
         ),
         patch(
-            "trimcp.replay.ReconstructiveReplay",
+            "nce.replay.ReconstructiveReplay",
             return_value=_Fork(),
         ),
         patch(
-            "trimcp.replay_mcp_handlers.create_tracked_task",
+            "nce.replay_mcp_handlers.create_tracked_task",
         ) as ct2,
     ):
         out = await replay_mcp_handlers.handle_replay_reconstruct(
@@ -577,7 +577,7 @@ async def test_replay_handlers_smoke() -> None:
         assert json.loads(out)["status"] == "started"
 
     with patch(
-        "trimcp.replay.get_run_status",
+        "nce.replay.get_run_status",
         new_callable=AsyncMock,
         return_value={"phase": "done"},
     ):
@@ -588,7 +588,7 @@ async def test_replay_handlers_smoke() -> None:
         assert json.loads(out)["phase"] == "done"
 
     with patch(
-        "trimcp.replay.get_event_provenance",
+        "nce.replay.get_event_provenance",
         new_callable=AsyncMock,
         return_value={"chain": []},
     ):
@@ -614,7 +614,7 @@ async def test_snapshot_handlers_delegate() -> None:
     )
     engine.create_snapshot = AsyncMock(return_value=rec)
     engine.list_snapshots = AsyncMock(return_value=[rec])
-    from trimcp.models import DeleteSnapshotResult
+    from nce.models import DeleteSnapshotResult
 
     engine.delete_snapshot = AsyncMock(
         return_value=DeleteSnapshotResult(status="ok", message="deleted")
@@ -993,7 +993,7 @@ async def test_exchange_oauth_token_flows(monkeypatch: pytest.MonkeyPatch) -> No
             "expires_in": 3600,
         }
     )
-    with patch("trimcp.bridge_mcp_handlers.oauth_token_post_form", oauth_mock):
+    with patch("nce.bridge_mcp_handlers.oauth_token_post_form", oauth_mock):
         tok = await bridge_mcp_handlers._exchange_oauth_code("sharepoint", "code")
     assert tok["access_token"] == "at1"
     assert tok["refresh_token"] == "ref1"
@@ -1008,7 +1008,7 @@ async def test_exchange_oauth_token_flows(monkeypatch: pytest.MonkeyPatch) -> No
             "expires_in": 3600,
         }
     )
-    with patch("trimcp.bridge_mcp_handlers.oauth_token_post_form", oauth_mock2):
+    with patch("nce.bridge_mcp_handlers.oauth_token_post_form", oauth_mock2):
         tok = await bridge_mcp_handlers._exchange_oauth_code("gdrive", "c2")
     assert tok["access_token"] == "at2"
     assert tok["refresh_token"] == "ref2"
@@ -1022,7 +1022,7 @@ async def test_exchange_oauth_token_flows(monkeypatch: pytest.MonkeyPatch) -> No
             "expires_in": 3600,
         }
     )
-    with patch("trimcp.bridge_mcp_handlers.oauth_token_post_form", oauth_mock3):
+    with patch("nce.bridge_mcp_handlers.oauth_token_post_form", oauth_mock3):
         tok = await bridge_mcp_handlers._exchange_oauth_code("dropbox", "c3")
     assert tok["access_token"] == "at3"
     assert tok["refresh_token"] == "ref3"
@@ -1054,7 +1054,7 @@ async def test_exchange_oauth_missing_access_token(
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "AZURE_CLIENT_SECRET", "s1")
     monkeypatch.setattr(bridge_mcp_handlers.cfg, "BRIDGE_OAUTH_REDIRECT_URI", "http://127.0.0.1/r")
     with patch(
-        "trimcp.bridge_mcp_handlers.oauth_token_post_form",
+        "nce.bridge_mcp_handlers.oauth_token_post_form",
         AsyncMock(return_value={}),
     ):
         with pytest.raises(ValueError, match="missing access_token"):
@@ -1065,8 +1065,8 @@ async def test_exchange_oauth_missing_access_token(
 async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
     ok_sub = _httpx_resp(json_data={"id": "sub-1", "expirationDateTime": "2030-01-01T00:00:00Z"})
     with (
-        patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(ok_sub)),
-        patch("trimcp.http_resilience.httpx.AsyncClient", _patch_httpx_async_client(ok_sub)),
+        patch("nce.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(ok_sub)),
+        patch("nce.http_resilience.httpx.AsyncClient", _patch_httpx_async_client(ok_sub)),
     ):
         sid, exp = await bridge_mcp_handlers._setup_sharepoint_webhook(
             "tok",
@@ -1080,8 +1080,8 @@ async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
 
     bad = _httpx_resp(status_code=400, json_data={}, text="nope")
     with (
-        patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad)),
-        patch("trimcp.http_resilience.httpx.AsyncClient", _patch_httpx_async_client(bad)),
+        patch("nce.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad)),
+        patch("nce.http_resilience.httpx.AsyncClient", _patch_httpx_async_client(bad)),
     ):
         with pytest.raises(ValueError, match="Graph subscription failed"):
             await bridge_mcp_handlers._setup_sharepoint_webhook(
@@ -1100,8 +1100,8 @@ async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
         }
     )
     with (
-        patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(ok_drive)),
-        patch("trimcp.http_resilience.httpx.AsyncClient", _patch_httpx_async_client(ok_drive)),
+        patch("nce.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(ok_drive)),
+        patch("nce.http_resilience.httpx.AsyncClient", _patch_httpx_async_client(ok_drive)),
     ):
         sid2, rid2, exp2 = await bridge_mcp_handlers._setup_gdrive_webhook(
             "gtok",
@@ -1115,8 +1115,8 @@ async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
 
     bad_d = _httpx_resp(status_code=401, json_data={}, text="fail")
     with (
-        patch("trimcp.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad_d)),
-        patch("trimcp.http_resilience.httpx.AsyncClient", _patch_httpx_async_client(bad_d)),
+        patch("nce.bridge_mcp_handlers.httpx.AsyncClient", _patch_httpx_async_client(bad_d)),
+        patch("nce.http_resilience.httpx.AsyncClient", _patch_httpx_async_client(bad_d)),
     ):
         with pytest.raises(ValueError, match="Drive watch failed"):
             await bridge_mcp_handlers._setup_gdrive_webhook(
@@ -1420,7 +1420,7 @@ async def test_disconnect_sharepoint_and_gdrive_http_paths(
             return_value=row_sp,
         ),
         patch(
-            "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
+            "nce.bridge_mcp_handlers.httpx.AsyncClient",
             _patch_httpx_async_client(post_r),
         ),
     ):
@@ -1445,7 +1445,7 @@ async def test_disconnect_sharepoint_and_gdrive_http_paths(
             return_value=row_g,
         ),
         patch(
-            "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
+            "nce.bridge_mcp_handlers.httpx.AsyncClient",
             _patch_httpx_async_client(post_r),
         ),
     ):
@@ -1464,7 +1464,7 @@ async def test_disconnect_sharepoint_and_gdrive_http_paths(
             return_value=row_sp,
         ),
         patch(
-            "trimcp.bridge_mcp_handlers.httpx.AsyncClient",
+            "nce.bridge_mcp_handlers.httpx.AsyncClient",
             _patch_httpx_async_client(_httpx_resp(), delete_ret=warn_del),
         ),
     ):
@@ -1590,7 +1590,7 @@ async def test_replay_observe_truncates_at_max_events() -> None:
             async for x in _gen():
                 yield x
 
-    with patch("trimcp.replay.ObservationalReplay", return_value=_Obs()):
+    with patch("nce.replay.ObservationalReplay", return_value=_Obs()):
         out = await replay_mcp_handlers.handle_replay_observe(
             _engine_pool_context(),
             {"namespace_id": NS, "max_events": 2},
@@ -1631,10 +1631,10 @@ async def test_replay_fork_and_reconstruct_background_task_logs_exception() -> N
             yield  # pragma: no cover
 
     with (
-        patch("trimcp.models.FrozenForkConfig.from_request", return_value=froz),
-        patch("trimcp.replay._create_run", new_callable=AsyncMock, return_value=run_id),
-        patch("trimcp.replay.ForkedReplay", return_value=_ForkBoom()),
-        patch("trimcp.replay_mcp_handlers.create_tracked_task") as ct,
+        patch("nce.models.FrozenForkConfig.from_request", return_value=froz),
+        patch("nce.replay._create_run", new_callable=AsyncMock, return_value=run_id),
+        patch("nce.replay.ForkedReplay", return_value=_ForkBoom()),
+        patch("nce.replay_mcp_handlers.create_tracked_task") as ct,
         patch.object(replay_mcp_handlers.log, "exception") as log_exc,
     ):
         await replay_mcp_handlers.handle_replay_fork(
@@ -1651,9 +1651,9 @@ async def test_replay_fork_and_reconstruct_background_task_logs_exception() -> N
         log_exc.assert_called_once()
 
     with (
-        patch("trimcp.replay._create_run", new_callable=AsyncMock, return_value=run_id),
-        patch("trimcp.replay.ReconstructiveReplay", return_value=_ForkBoom()),
-        patch("trimcp.replay_mcp_handlers.create_tracked_task") as ct2,
+        patch("nce.replay._create_run", new_callable=AsyncMock, return_value=run_id),
+        patch("nce.replay.ReconstructiveReplay", return_value=_ForkBoom()),
+        patch("nce.replay_mcp_handlers.create_tracked_task") as ct2,
         patch.object(replay_mcp_handlers.log, "exception") as log_exc2,
     ):
         await replay_mcp_handlers.handle_replay_reconstruct(

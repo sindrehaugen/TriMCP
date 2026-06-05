@@ -1,7 +1,7 @@
 """
 tests/test_event_log_append.py
 
-Unit coverage for trimcp.event_log.append_event using RecordingFakeConnection.
+Unit coverage for nce.event_log.append_event using RecordingFakeConnection.
 
 Exercises:
   - Two appends in one transaction → monotonic event_seq
@@ -21,14 +21,14 @@ import pytest
 
 from tests.fixtures.event_log_params import minimal_store_memory_params
 from tests.fixtures.fake_asyncpg import RecordingFakeConnection
-from trimcp import event_log as event_log_mod
-from trimcp.event_log import (
+from nce import event_log as event_log_mod
+from nce.event_log import (
     EventLogSequenceError,
     EventLogTimestampError,
     InvalidEventTypeError,
     append_event,
 )
-from trimcp.signing import verify_fields
+from nce.signing import verify_fields
 
 # Fixed 32-byte HMAC key — matches patched get_active_key below.
 _RAW_SIGNING_SECRET = hashlib.sha256(b"pytest-event-log-hmac-secret").digest()

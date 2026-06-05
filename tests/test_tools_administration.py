@@ -1,4 +1,4 @@
-"""Tests for TriMCP Tools Dynamic Administration and Dynamic Interception."""
+"""Tests for NCE Tools Dynamic Administration and Dynamic Interception."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ import pytest
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from trimcp import admin_state
-from trimcp.admin_handlers.tools import api_admin_tools, api_admin_tools_toggle
-from trimcp.mcp_errors import McpError
-from trimcp.mcp_stdio_dispatch import execute_call_tool
-from trimcp.a2a import A2AScopeViolationError, A2AScope
-from trimcp.a2a_server import _dispatch_skill, NamespaceContext
+from nce import admin_state
+from nce.admin_handlers.tools import api_admin_tools, api_admin_tools_toggle
+from nce.mcp_errors import McpError
+from nce.mcp_stdio_dispatch import execute_call_tool
+from nce.a2a import A2AScopeViolationError, A2AScope
+from nce.a2a_server import _dispatch_skill, NamespaceContext
 
 
 class MockRedis:
@@ -52,7 +52,7 @@ async def test_api_admin_tools_list_all_enabled(mock_engine):
     redis = MockRedis()
     mock_engine.redis_client = redis
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         request = Request({"type": "http", "method": "GET", "path": "/api/admin/tools"})
         response = await api_admin_tools(request)
 
@@ -88,7 +88,7 @@ async def test_api_admin_tools_list_with_disabled_items(mock_engine):
     redis = MockRedis({"store_memory": "1", "recall_relevant_context": "1"})
     mock_engine.redis_client = redis
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         request = Request({"type": "http", "method": "GET", "path": "/api/admin/tools"})
         response = await api_admin_tools(request)
 
@@ -115,7 +115,7 @@ async def test_api_admin_tools_list_redis_fail_safe(mock_engine):
     redis.hkeys = AsyncMock(side_effect=RuntimeError("Redis connection refused"))
     mock_engine.redis_client = redis
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         request = Request({"type": "http", "method": "GET", "path": "/api/admin/tools"})
         response = await api_admin_tools(request)
 
@@ -135,7 +135,7 @@ async def test_api_admin_tools_toggle_success(mock_engine):
     async def mock_receive():
         return {"type": "http.request", "body": b'{"tool_name": "store_memory", "tool_type": "mcp", "enabled": false}'}
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         # Disable tool
         request = Request(
             {"type": "http", "method": "POST", "path": "/api/admin/tools/toggle"},
@@ -165,7 +165,7 @@ async def test_api_admin_tools_toggle_invalid_requests(mock_engine):
     redis = MockRedis()
     mock_engine.redis_client = redis
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         # Invalid tool_type
         async def mock_receive_invalid_type():
             return {"type": "http.request", "body": b'{"tool_name": "store_memory", "tool_type": "invalid", "enabled": false}'}
@@ -192,7 +192,7 @@ async def test_api_admin_tools_toggle_redis_down(mock_engine):
     async def mock_receive():
         return {"type": "http.request", "body": b'{"tool_name": "store_memory", "tool_type": "mcp", "enabled": false}'}
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         request = Request({"type": "http", "method": "POST"}, receive=mock_receive)
         response = await api_admin_tools_toggle(request)
         assert response.status_code == 500
@@ -227,15 +227,15 @@ async def test_stdio_mcp_dispatch_fail_safe(mock_engine):
     mock_engine.redis_client = redis
 
     # We patch enforce_mcp_tool_auth so it doesn't fail on missing keys
-    with patch("trimcp.mcp_stdio_dispatch.enforce_mcp_tool_auth") as mock_auth:
+    with patch("nce.mcp_stdio_dispatch.enforce_mcp_tool_auth") as mock_auth:
         # Mocking the actual tool execution to succeed or not raise dynamic auth exception
-        with patch("trimcp.mcp_stdio_tools.TOOLS") as mock_tools:
+        with patch("nce.mcp_stdio_tools.TOOLS") as mock_tools:
             # Create a mock tool that matches store_memory
             tool = MagicMock()
             tool.name = "store_memory"
             mock_tools.__iter__.return_value = [tool]
             
-            with patch("trimcp.observability.instrument_tool_call"):
+            with patch("nce.observability.instrument_tool_call"):
                 # Call execute_call_tool and check that it bypasses interception and invokes auth enforcement
                 await execute_call_tool(mock_engine, "store_memory", {})
                 mock_auth.assert_called_once()
@@ -250,7 +250,7 @@ async def test_a2a_skill_server_interception(mock_engine):
     caller_ctx = NamespaceContext(namespace_id=uuid.uuid4(), agent_id="agent-b")
     params = {"query": "hello", "namespace_id": str(uuid.uuid4())}
 
-    with patch("trimcp.a2a_server._engine", mock_engine):
+    with patch("nce.a2a_server._engine", mock_engine):
         with pytest.raises(A2AScopeViolationError) as exc:
             await _dispatch_skill("recall_relevant_context", params, caller_ctx)
         assert "disabled by the administrator" in str(exc.value)
@@ -266,7 +266,7 @@ async def test_a2a_skill_server_fail_safe(mock_engine):
     caller_ctx = NamespaceContext(namespace_id=uuid.uuid4(), agent_id="agent-b")
     params = {"query": "hello", "namespace_id": str(uuid.uuid4()), "limit": 5}
 
-    with patch("trimcp.a2a_server._engine", mock_engine):
+    with patch("nce.a2a_server._engine", mock_engine):
         # We expect a semantic search mock to be called, verifying that the interception was bypassed
         await _dispatch_skill("recall_relevant_context", params, caller_ctx)
         mock_engine.semantic_search.assert_called_once()

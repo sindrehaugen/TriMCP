@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from trimcp.config import cfg
-from trimcp.quotas import null_reservation
+from nce.config import cfg
+from nce.quotas import null_reservation
 
 
 def _parse_error_payload(result: list) -> dict:
@@ -42,14 +42,14 @@ def _server_engine(mock_engine):
 
 @pytest.fixture(autouse=True)
 def _disable_quotas(monkeypatch):
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", False)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", False)
 
 
 @pytest.fixture(autouse=True)
 def _prod_safe_errors(monkeypatch):
-    """Keep error sanitization active even if another test reloaded trimcp.config."""
+    """Keep error sanitization active even if another test reloaded nce.config."""
 
-    import trimcp.mcp_errors as mcp_errors_mod
+    import nce.mcp_errors as mcp_errors_mod
 
     monkeypatch.setattr(cfg, "IS_DEV", False)
     monkeypatch.setattr(mcp_errors_mod.cfg, "IS_DEV", False)
@@ -64,7 +64,7 @@ async def test_call_tool_internal_error_hides_detail_in_prod(monkeypatch, mock_e
     async def _boom(*_a, **_k):
         raise RuntimeError("postgresql://user:secret@db:5432/memory_meta")
 
-    import trimcp.mcp_stdio_dispatch as dispatch
+    import nce.mcp_stdio_dispatch as dispatch
 
     with patch.object(dispatch.memory_mcp_handlers, "handle_store_memory", _boom):
         err = _parse_error_payload(
@@ -91,16 +91,16 @@ async def test_call_tool_scope_error_hides_detail_in_prod(monkeypatch):
 
     import server as srv
 
-    from trimcp.auth import ScopeError
+    from nce.auth import ScopeError
 
     async def _scoped(*_a, **_k):
         raise ScopeError("admin", "invalid admin_api_key")
 
-    import trimcp.mcp_stdio_dispatch as dispatch
+    import nce.mcp_stdio_dispatch as dispatch
 
     with patch.object(dispatch.admin_mcp_handlers, "handle_manage_namespace", _scoped):
         with patch(
-            "trimcp.mcp_stdio_dispatch._consume_quota_for_mcp_tool",
+            "nce.mcp_stdio_dispatch._consume_quota_for_mcp_tool",
             AsyncMock(return_value=null_reservation()),
         ):
             err = _parse_error_payload(
@@ -116,11 +116,11 @@ async def test_call_tool_scope_error_hides_detail_in_prod(monkeypatch):
 
 
 def test_check_admin_delegates_to_validate_scope(monkeypatch):
-    monkeypatch.delenv("TRIMCP_ADMIN_OVERRIDE", raising=False)
-    monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "server-secret-key")
+    monkeypatch.delenv("NCE_ADMIN_OVERRIDE", raising=False)
+    monkeypatch.setenv("NCE_ADMIN_API_KEY", "server-secret-key")
 
     import server as srv
-    from trimcp.mcp_errors import McpError
+    from nce.mcp_errors import McpError
 
     with pytest.raises(McpError) as ei:
         srv._check_admin({"admin_api_key": "wrong"})

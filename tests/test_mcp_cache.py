@@ -19,7 +19,7 @@ from uuid import uuid4
 
 import pytest
 
-from trimcp.mcp_args import (
+from nce.mcp_args import (
     _document_cache_pattern,
     _namespace_cache_pattern,
     build_cache_key,
@@ -27,7 +27,7 @@ from trimcp.mcp_args import (
     purge_document_cache,
     purge_namespace_cache,
 )
-from trimcp.models import ManageNamespaceCommand
+from nce.models import ManageNamespaceCommand
 
 TEST_NS = str(uuid4())
 TEST_NS2 = str(uuid4())
@@ -235,7 +235,7 @@ def setup_server_engine(mock_engine):
 
 @pytest.fixture(autouse=True)
 def disable_quotas(monkeypatch):
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", False)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", False)
 
 
 # ---- tests ----

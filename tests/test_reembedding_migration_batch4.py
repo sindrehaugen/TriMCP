@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from trimcp.reembedding_migration import (
+from nce.reembedding_migration import (
     InMemoryReembeddingStore,
     MemoryEmbeddingRow,
     MigrationPhase,

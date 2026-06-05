@@ -10,12 +10,12 @@ func runMultiuser(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot
 	dsn := LookupEnv(env, "PG_DSN")
 	if dsn == "" {
 		msg := "Database connection string (PG_DSN) is missing from configuration."
-		n.Error("TriMCP", msg)
+		n.Error("NCE", msg)
 		return fmt.Errorf("PG_DSN missing")
 	}
 	host, port, err := PostgresAddrFromDSN(dsn)
 	if err != nil {
-		n.Error("TriMCP", "Could not read the Postgres address from PG_DSN. Contact IT.")
+		n.Error("NCE", "Could not read the Postgres address from PG_DSN. Contact IT.")
 		if log != nil {
 			log.Warn("pg_dsn_parse_failed", "err", err)
 		}
@@ -34,14 +34,14 @@ func runMultiuser(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot
 		}
 		addr := fmt.Sprintf("%s:%s", host, port)
 		msg := fmt.Sprintf(
-			"TriMCP cannot open a TCP connection to the database at %s.\n\n"+
+			"NCE cannot open a TCP connection to the database at %s.\n\n"+
 				"Is your VPN connected? Click Yes to try again, or No to exit.",
 			addr,
 		)
-		if n.ConfirmConnectivity("TriMCP — connection check", msg) {
+		if n.ConfirmConnectivity("NCE — connection check", msg) {
 			continue
 		}
-		n.Error("TriMCP", "Could not reach the database. Verify VPN and PG_DSN, then launch TriMCP again.")
+		n.Error("NCE", "Could not reach the database. Verify VPN and PG_DSN, then launch NCE again.")
 		return fmt.Errorf("postgres tcp: %w", tcpErr)
 	}
 

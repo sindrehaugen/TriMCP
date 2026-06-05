@@ -16,7 +16,7 @@ from unittest import mock
 
 import pytest
 
-from trimcp.background_task_manager import (
+from nce.background_task_manager import (
     create_tracked_task,
     get_active_background_tasks,
     get_background_task_stats,
@@ -53,7 +53,7 @@ async def test_create_tracked_task_exception_logged(caplog):
         await asyncio.sleep(0.01)
         raise ValueError("Test exception")
 
-    with caplog.at_level(logging.ERROR, logger="trimcp.background_task_manager"):
+    with caplog.at_level(logging.ERROR, logger="nce.background_task_manager"):
         create_tracked_task(failing_task(), name="test-failing")
         # Give the done callback time to execute
         await asyncio.sleep(0.05)
@@ -71,10 +71,10 @@ async def test_create_tracked_task_exception_metrics(monkeypatch):
     mock_totals = mock.Mock()
 
     monkeypatch.setattr(
-        "trimcp.background_task_manager.BACKGROUND_TASK_FAILURES_TOTAL",
+        "nce.background_task_manager.BACKGROUND_TASK_FAILURES_TOTAL",
         mock_failures,
     )
-    monkeypatch.setattr("trimcp.background_task_manager.BACKGROUND_TASKS_TOTAL", mock_totals)
+    monkeypatch.setattr("nce.background_task_manager.BACKGROUND_TASKS_TOTAL", mock_totals)
 
     async def failing_task():
         raise RuntimeError("Intentional failure")
@@ -246,7 +246,7 @@ async def test_background_task_reraises_to_done_callback(caplog):
     async def failing_coro():
         raise RuntimeError("Background failure")
 
-    with caplog.at_level(logging.ERROR, logger="trimcp.background_task_manager"):
+    with caplog.at_level(logging.ERROR, logger="nce.background_task_manager"):
         # create_tracked_task should return successfully even if coro fails
         create_tracked_task(failing_coro(), name="test-callback-failure")
 

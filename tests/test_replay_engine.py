@@ -1,4 +1,4 @@
-"""Unit tests for trimcp.replay engine wiring (handler registry, mode guards)."""
+"""Unit tests for nce.replay engine wiring (handler registry, mode guards)."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from trimcp.event_types import EventType
-from trimcp.replay import (
+from nce.event_types import EventType
+from nce.replay import (
     ForkedReplay,
     ObservationalReplay,
     ReconstructiveReplay,
@@ -32,7 +32,7 @@ def test_observational_and_reconstructive_handler_coverage() -> None:
 
 
 def test_handler_registry_matches_event_type_union() -> None:
-    from trimcp.replay import _HANDLER_REGISTRY
+    from nce.replay import _HANDLER_REGISTRY
 
     expected = frozenset(get_args(EventType))
     assert expected == frozenset(_HANDLER_REGISTRY)
@@ -50,7 +50,7 @@ async def test_replay_mode_error_on_invalid_llm_mode() -> None:
         params={},
         result_summary=None,
         parent_event_id=None,
-        llm_payload_uri="trimcp-llm-payloads/ns/event.json",
+        llm_payload_uri="nce-llm-payloads/ns/event.json",
         llm_payload_hash=None,
     )
 

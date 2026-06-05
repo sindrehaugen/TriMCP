@@ -1,7 +1,7 @@
 """
 tests/test_merkle_chain.py
 
-Unit coverage for Merkle tree hash chaining in trimcp.event_log.
+Unit coverage for Merkle tree hash chaining in nce.event_log.
 
 Exercises:
   - Genesis event receives chain_hash ≠ zero sentinel
@@ -29,8 +29,8 @@ import pytest
 
 from tests.fixtures.event_log_params import minimal_store_memory_params
 from tests.fixtures.fake_asyncpg import RecordingFakeConnection
-from trimcp import event_log as event_log_mod
-from trimcp.event_log import (
+from nce import event_log as event_log_mod
+from nce.event_log import (
     _GENESIS_SENTINEL,
     _compute_chain_hash,
     _compute_content_hash,

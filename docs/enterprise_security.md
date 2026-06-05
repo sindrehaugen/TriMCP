@@ -1,6 +1,6 @@
-# TriMCP Enterprise Security Guide
+# NCE Enterprise Security Guide
 
-This document covers the advanced security posture of a production TriMCP deployment: **mTLS client certificates**, **JWT/SSO integration**, **HMAC API authentication**, **signing key management**, and **RLS enforcement**.
+This document covers the advanced security posture of a production NCE deployment: **mTLS client certificates**, **JWT/SSO integration**, **HMAC API authentication**, **signing key management**, and **RLS enforcement**.
 
 For the basic signing and key-rotation mechanics, see [signing.md](signing.md).
 For all environment variables, see [configuration_reference.md](configuration_reference.md).
@@ -9,13 +9,13 @@ For all environment variables, see [configuration_reference.md](configuration_re
 
 ## 1. Authentication Layers
 
-TriMCP has three server surfaces, each with independent auth middleware stacks:
+NCE has three server surfaces, each with independent auth middleware stacks:
 
 | Surface | File | Auth mechanisms |
 |---|---|---|
-| **MCP stdio** | `server.py` | `mcp_api_key` / `TRIMCP_MCP_API_KEY` (required in production); admin tools via `admin_api_key` or `TRIMCP_ADMIN_OVERRIDE` (dev only) |
+| **MCP stdio** | `server.py` | `mcp_api_key` / `NCE_MCP_API_KEY` (required in production); admin tools via `admin_api_key` or `NCE_ADMIN_OVERRIDE` (dev only) |
 | **Admin REST API** | `admin_server.py` | HMAC-SHA256 + HTTP Basic (UI) + optional mTLS |
-| **A2A JSON-RPC** | `trimcp/a2a_server.py` | JWT Bearer + optional mTLS + cryptographic grant tokens |
+| **A2A JSON-RPC** | `nce/a2a_server.py` | JWT Bearer + optional mTLS + cryptographic grant tokens |
 
 ---
 
@@ -26,21 +26,21 @@ Production MCP clients must pass a tenant API key on every non-admin tool call:
 ```json
 {
   "mcpServers": {
-    "TriMCP": {
+    "NCE": {
       "command": "python",
       "args": ["server.py"],
       "env": {
-        "TRIMCP_MCP_API_KEY": "<long-random-secret>",
-        "TRIMCP_MASTER_KEY": "<32+ byte signing key>"
+        "NCE_MCP_API_KEY": "<long-random-secret>",
+        "NCE_MASTER_KEY": "<32+ byte signing key>"
       }
     }
   }
 }
 ```
 
-Each tool invocation should include `"mcp_api_key": "<same secret>"` in the arguments (tests inject this automatically via `tests/conftest.py`). `trimcp.config.validate()` fails closed in production when `TRIMCP_MCP_API_KEY` is unset.
+Each tool invocation should include `"mcp_api_key": "<same secret>"` in the arguments (tests inject this automatically via `tests/conftest.py`). `nce.config.validate()` fails closed in production when `NCE_MCP_API_KEY` is unset.
 
-Admin-scoped MCP tools (`start_migration`, `rotate_signing_key`, replay admin tools, etc.) require `"admin_api_key": "<TRIMCP_ADMIN_API_KEY>"` instead. In production, set `TRIMCP_DISABLE_MIGRATION_MCP=true` unless you are in an explicit migration window (`TRIMCP_ALLOW_MIGRATION_MCP_IN_PROD=true`).
+Admin-scoped MCP tools (`start_migration`, `rotate_signing_key`, replay admin tools, etc.) require `"admin_api_key": "<NCE_ADMIN_API_KEY>"` instead. In production, set `NCE_DISABLE_MIGRATION_MCP=true` unless you are in an explicit migration window (`NCE_ALLOW_MIGRATION_MCP_IN_PROD=true`).
 
 ---
 
@@ -54,11 +54,11 @@ All `/api/` routes on `admin_server.py` require an HMAC-SHA256 `Authorization` h
 Authorization: HMAC-SHA256 <timestamp>:<nonce>:<signature>
 ```
 
-Where `signature = HMAC-SHA256(TRIMCP_API_KEY, "<timestamp>\n<nonce>\n<method>\n<path>\n<body_sha256>")`.
+Where `signature = HMAC-SHA256(NCE_API_KEY, "<timestamp>\n<nonce>\n<method>\n<path>\n<body_sha256>")`.
 
 Key properties:
-- **Timestamp window**: ±`TRIMCP_CLOCK_SKEW_TOLERANCE_S` seconds (default 300 s). Requests outside this window are rejected as stale.
-- **Nonce replay protection**: Each nonce is stored in Redis (or an in-process set) for the clock-skew window. The same nonce cannot be reused. Enable `TRIMCP_DISTRIBUTED_REPLAY=true` to share the nonce store across multiple admin replicas.
+- **Timestamp window**: ±`NCE_CLOCK_SKEW_TOLERANCE_S` seconds (default 300 s). Requests outside this window are rejected as stale.
+- **Nonce replay protection**: Each nonce is stored in Redis (or an in-process set) for the clock-skew window. The same nonce cannot be reused. Enable `NCE_DISTRIBUTED_REPLAY=true` to share the nonce store across multiple admin replicas.
 - **Body integrity**: The SHA-256 hash of the request body is included in the signed string, preventing body substitution attacks.
 
 ### Enabling distributed replay protection
@@ -66,7 +66,7 @@ Key properties:
 For deployments with multiple `admin_server.py` replicas behind a load balancer:
 
 ```bash
-TRIMCP_DISTRIBUTED_REPLAY=true
+NCE_DISTRIBUTED_REPLAY=true
 REDIS_URL=redis://your-shared-redis:6379/0
 ```
 
@@ -79,8 +79,8 @@ The A2A server and agent-facing routes use JWT Bearer tokens for identity.
 ### HS256 (development / internal)
 
 ```bash
-TRIMCP_JWT_SECRET=your-32-byte-minimum-secret
-TRIMCP_JWT_ALGORITHM=HS256
+NCE_JWT_SECRET=your-32-byte-minimum-secret
+NCE_JWT_ALGORITHM=HS256
 ```
 
 ### RS256 / ES256 (production / enterprise SSO)
@@ -100,10 +100,10 @@ openssl ec -in ec_private.pem -pubout -out ec_public.pem
 Set the environment:
 
 ```bash
-TRIMCP_JWT_PUBLIC_KEY="$(cat public.pem)"   # or: file:///path/to/public.pem
-TRIMCP_JWT_ALGORITHM=RS256
-TRIMCP_JWT_ISSUER=https://your-sso-provider.example.com
-TRIMCP_JWT_AUDIENCE=trimcp-api
+NCE_JWT_PUBLIC_KEY="$(cat public.pem)"   # or: file:///path/to/public.pem
+NCE_JWT_ALGORITHM=RS256
+NCE_JWT_ISSUER=https://your-sso-provider.example.com
+NCE_JWT_AUDIENCE=nce-api
 ```
 
 ### Enterprise SSO Integration
@@ -111,16 +111,16 @@ TRIMCP_JWT_AUDIENCE=trimcp-api
 For OIDC-based SSO (Okta, Azure AD, Ping, etc.):
 
 1. Configure your IdP to issue RS256 JWTs with the `iss` and `aud` claims matching the values you set above.
-2. Export the IdP's public key or JWKS endpoint — TriMCP validates against the static public key only (no per-request JWKS fetch; the key is loaded once at startup).
-3. Set `TRIMCP_JWT_PREFIX` to the route prefix that requires the token (default `/api/v1/`).
+2. Export the IdP's public key or JWKS endpoint — NCE validates against the static public key only (no per-request JWKS fetch; the key is loaded once at startup).
+3. Set `NCE_JWT_PREFIX` to the route prefix that requires the token (default `/api/v1/`).
 
 ### Per-service audience isolation
 
 To prevent tokens issued for one service from being replayed against another, each surface can require its own `aud` claim:
 
 ```bash
-TRIMCP_A2A_JWT_AUDIENCE=trimcp_a2a          # A2A server
-TRIMCP_JWT_AUDIENCE=trimcp_mcp              # MCP / admin paths
+NCE_A2A_JWT_AUDIENCE=nce_a2a          # A2A server
+NCE_JWT_AUDIENCE=nce_mcp              # MCP / admin paths
 ```
 
 Tokens accepted by the A2A server will be rejected by the admin server and vice versa.
@@ -129,9 +129,9 @@ Tokens accepted by the A2A server will be rejected by the admin server and vice 
 
 ## 5. mTLS Client Certificate Enforcement
 
-`MTLSAuthMiddleware` (`trimcp/mtls.py`) can be applied to either the Admin server or the A2A server. It reads the client certificate from:
+`MTLSAuthMiddleware` (`nce/mtls.py`) can be applied to either the Admin server or the A2A server. It reads the client certificate from:
 - **Direct TLS** (uvicorn with `--ssl-certfile`/`--ssl-keyfile`): from the ASGI `scope["ssl_object"]`.
-- **Reverse proxy** (nginx / Caddy mTLS offload): from the `X-Forwarded-Client-Cert` header (controlled by `TRIMCP_*_MTLS_TRUSTED_PROXY_HOP`).
+- **Reverse proxy** (nginx / Caddy mTLS offload): from the `X-Forwarded-Client-Cert` header (controlled by `NCE_*_MTLS_TRUSTED_PROXY_HOP`).
 
 ### Configuring server-side TLS
 
@@ -163,7 +163,7 @@ server {
 }
 ```
 
-Set `TRIMCP_ADMIN_MTLS_TRUSTED_PROXY_HOP=1` so the middleware reads from the forwarded header.
+Set `NCE_ADMIN_MTLS_TRUSTED_PROXY_HOP=1` so the middleware reads from the forwarded header.
 
 ### Allowlist options
 
@@ -171,10 +171,10 @@ You can restrict access by **Subject Alternative Name** or **certificate fingerp
 
 ```bash
 # Allow by SAN (DNS names, lower-cased, comma-separated)
-TRIMCP_A2A_MTLS_ALLOWED_SANS=agent-a.internal,agent-b.internal
+NCE_A2A_MTLS_ALLOWED_SANS=agent-a.internal,agent-b.internal
 
 # Allow by SHA-256 fingerprint (colon-separated hex)
-TRIMCP_A2A_MTLS_ALLOWED_FINGERPRINTS=AA:BB:CC:...:FF
+NCE_A2A_MTLS_ALLOWED_FINGERPRINTS=AA:BB:CC:...:FF
 ```
 
 When both are set, a certificate must match **either** list (OR logic).
@@ -185,7 +185,7 @@ When neither is set and `strict=true`, any valid CA-signed client certificate is
 During a certificate rotation, set `strict=false` temporarily to allow connections without a client cert:
 
 ```bash
-TRIMCP_A2A_MTLS_STRICT=false   # accept missing certs during roll
+NCE_A2A_MTLS_STRICT=false   # accept missing certs during roll
 ```
 
 Restore `strict=true` once all clients have updated certificates.
@@ -215,7 +215,7 @@ sequenceDiagram
 
 ## 6. Signing Key Management
 
-All memories and events are HMAC-SHA256 signed at write time. Keys are **AES-256-GCM encrypted at rest** using `TRIMCP_MASTER_KEY`.
+All memories and events are HMAC-SHA256 signed at write time. Keys are **AES-256-GCM encrypted at rest** using `NCE_MASTER_KEY`.
 
 ### Master key requirements
 
@@ -234,19 +234,19 @@ All memories and events are HMAC-SHA256 signed at write time. Keys are **AES-256
 
 1. Decrypt all active + retired signing keys using the **current** master key.
 2. Re-encrypt them using the **new** master key.
-3. Update `TRIMCP_MASTER_KEY` in your secrets manager and restart the server.
+3. Update `NCE_MASTER_KEY` in your secrets manager and restart the server.
 
-There is no automated master-key rotation helper in v1.0 — do this offline using the `trimcp/signing.py` utilities.
+There is no automated master-key rotation helper in v1.0 — do this offline using the `nce/signing.py` utilities.
 
 ---
 
 ## 7. Row-Level Security (RLS) Enforcement
 
-RLS is enforced via a PostgreSQL session variable `trimcp.namespace_id` that must be set inside an explicit transaction before any query executes.
+RLS is enforced via a PostgreSQL session variable `nce.namespace_id` that must be set inside an explicit transaction before any query executes.
 
 ### The scoped session pattern
 
-All user-facing paths use `scoped_pg_session()` from `trimcp/db_utils.py`:
+All user-facing paths use `scoped_pg_session()` from `nce/db_utils.py`:
 
 ```python
 async with scoped_pg_session(pool, namespace_id=ns_id) as conn:
@@ -257,7 +257,7 @@ async with scoped_pg_session(pool, namespace_id=ns_id) as conn:
 This context manager:
 1. Checks out a connection from the pool (timeout: 10 s).
 2. Starts a `conn.transaction()`.
-3. Issues `SET LOCAL trimcp.namespace_id = '<uuid>'` inside the transaction.
+3. Issues `SET LOCAL nce.namespace_id = '<uuid>'` inside the transaction.
 4. Resets the variable on exit via `_reset_rls_context`.
 
 `SET LOCAL` scopes the variable to the transaction, not the session — a leaked connection cannot carry another tenant's context.
@@ -281,13 +281,13 @@ See [pii.md](pii.md) for the full pipeline. Security summary:
 
 | Item | Env var / action | Status |
 |---|---|---|
-| Master key set (≥ 32 bytes) | `TRIMCP_MASTER_KEY` | Required — server fails to start if missing |
+| Master key set (≥ 32 bytes) | `NCE_MASTER_KEY` | Required — server fails to start if missing |
 | MinIO credentials from env | `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` | Required — no defaults (FIX-013) |
-| HMAC API key set | `TRIMCP_API_KEY` | Warning if absent |
-| JWT configured for production | `TRIMCP_JWT_PUBLIC_KEY` + `RS256` | Recommended (vs. HS256 shared secret) |
-| Admin override disabled | `TRIMCP_ADMIN_OVERRIDE` unset | Enforced at startup when `ENVIRONMENT=prod` |
-| mTLS enabled on A2A | `TRIMCP_A2A_MTLS_ENABLED=true` | Recommended for production agent networks |
-| mTLS enabled on Admin | `TRIMCP_ADMIN_MTLS_ENABLED=true` | Recommended for production admin surfaces |
-| SMTP on port 587 with STARTTLS | `TRIMCP_SMTP_FROM`, `TRIMCP_SMTP_TO` | Enforced (FIX-052) |
+| HMAC API key set | `NCE_API_KEY` | Warning if absent |
+| JWT configured for production | `NCE_JWT_PUBLIC_KEY` + `RS256` | Recommended (vs. HS256 shared secret) |
+| Admin override disabled | `NCE_ADMIN_OVERRIDE` unset | Enforced at startup when `ENVIRONMENT=prod` |
+| mTLS enabled on A2A | `NCE_A2A_MTLS_ENABLED=true` | Recommended for production agent networks |
+| mTLS enabled on Admin | `NCE_ADMIN_MTLS_ENABLED=true` | Recommended for production admin surfaces |
+| SMTP on port 587 with STARTTLS | `NCE_SMTP_FROM`, `NCE_SMTP_TO` | Enforced (FIX-052) |
 | RLS enforced on all user paths | `scoped_pg_session` in orchestrators | Enforced in code |
-| OpenVINO model pinned | `TRIMCP_OPENVINO_MODEL_REVISION` | Warning logged if absent |
+| OpenVINO model pinned | `NCE_OPENVINO_MODEL_REVISION` | Warning logged if absent |

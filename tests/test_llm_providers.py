@@ -20,10 +20,10 @@ import pytest
 # ---------------------------------------------------------------------------
 from pydantic import BaseModel
 
-import trimcp.providers.base
-from trimcp.providers.anthropic_provider import AnthropicProvider
-from trimcp.providers.base import LLMProviderError, LLMTimeoutError
-from trimcp.providers.openai_compat import OpenAICompatProvider
+import nce.providers.base
+from nce.providers.anthropic_provider import AnthropicProvider
+from nce.providers.base import LLMProviderError, LLMTimeoutError
+from nce.providers.openai_compat import OpenAICompatProvider
 
 
 class _DummyResponse(BaseModel):
@@ -44,7 +44,7 @@ def anthropic_provider() -> AnthropicProvider:
         model="claude-sonnet-4-20250514",
     )
     # Disable retries — these tests verify error classification, not retry logic.
-    provider._retry_policy = trimcp.providers.base.RetryPolicy(max_retries=0)
+    provider._retry_policy = nce.providers.base.RetryPolicy(max_retries=0)
     return provider
 
 
@@ -56,7 +56,7 @@ def openai_provider() -> OpenAICompatProvider:
         base_url="https://api.openai.com/v1",
     )
     # Disable retries — these tests verify error classification, not retry logic.
-    provider._retry_policy = trimcp.providers.base.RetryPolicy(max_retries=0)
+    provider._retry_policy = nce.providers.base.RetryPolicy(max_retries=0)
     return provider
 
 

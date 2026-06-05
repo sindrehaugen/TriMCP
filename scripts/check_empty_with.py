@@ -12,7 +12,7 @@ This is a CI / pre-commit gate.  Returns exit code 1 if any violation is found.
 Usage:
     python scripts/check_empty_with.py [paths...]
 
-    If no paths given, scans trimcp/ server.py admin_server.py start_worker.py.
+    If no paths given, scans nce/ server.py admin_server.py start_worker.py.
 """
 
 from __future__ import annotations
@@ -111,7 +111,7 @@ def check_file(filepath: Path) -> list[Violation]:
 
 
 def main() -> int:
-    default_paths = ["trimcp", "server.py", "admin_server.py", "start_worker.py"]
+    default_paths = ["nce", "server.py", "admin_server.py", "start_worker.py"]
 
     if len(sys.argv) > 1:
         targets = sys.argv[1:]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from trimcp.extractors import project_ext
+from nce.extractors import project_ext
 
 
 def test_parse_mpxj_argv_rejects_shell_metacharacters():
@@ -10,12 +10,12 @@ def test_parse_mpxj_argv_rejects_shell_metacharacters():
 
 
 def test_parse_mpxj_argv_rejects_disallowed_binary(monkeypatch):
-    monkeypatch.delenv("TRIMCP_MPXJ_ALLOWED_BINARIES", raising=False)
+    monkeypatch.delenv("NCE_MPXJ_ALLOWED_BINARIES", raising=False)
     assert project_ext._parse_mpxj_argv("curl http://evil") is None
 
 
 def test_parse_mpxj_argv_accepts_allowlisted_java(monkeypatch):
-    monkeypatch.delenv("TRIMCP_MPXJ_ALLOWED_BINARIES", raising=False)
+    monkeypatch.delenv("NCE_MPXJ_ALLOWED_BINARIES", raising=False)
     argv = project_ext._parse_mpxj_argv('java -jar "/opt/mpxj/cli.jar"')
     assert argv is not None
     assert argv[0] == "java"
@@ -24,6 +24,6 @@ def test_parse_mpxj_argv_accepts_allowlisted_java(monkeypatch):
 
 
 def test_parse_mpxj_argv_honors_custom_allowlist(monkeypatch):
-    monkeypatch.setenv("TRIMCP_MPXJ_ALLOWED_BINARIES", "custom-mpp-tool")
+    monkeypatch.setenv("NCE_MPXJ_ALLOWED_BINARIES", "custom-mpp-tool")
     argv = project_ext._parse_mpxj_argv("custom-mpp-tool --json")
     assert argv == ["custom-mpp-tool", "--json"]

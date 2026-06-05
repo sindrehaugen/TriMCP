@@ -2,8 +2,8 @@ from unittest.mock import patch
 
 import pytest
 
-from trimcp.graph_extractor import _regex_extract, deduplicate_graph, extract, extract_async
-from trimcp.models import KGEdge, KGNode
+from nce.graph_extractor import _regex_extract, deduplicate_graph, extract, extract_async
+from nce.models import KGEdge, KGNode
 
 # ---------------------------------------------------------------------------
 # Existing extraction tests (unchanged)
@@ -24,7 +24,7 @@ def test_regex_extract():
     assert triplets[0].object_label.lower() == "postgresql"
 
 
-@patch("trimcp.graph_extractor._spacy_extract")
+@patch("nce.graph_extractor._spacy_extract")
 def test_extract_uses_spacy(mock_spacy):
     mock_entities = [KGNode(label="A", entity_type="CONCEPT", source_text="A")]
     mock_triplets = [KGEdge(subject_label="A", predicate="is", object_label="B")]
@@ -38,8 +38,8 @@ def test_extract_uses_spacy(mock_spacy):
     assert triplets == mock_triplets
 
 
-@patch("trimcp.graph_extractor._spacy_extract")
-@patch("trimcp.graph_extractor._regex_extract")
+@patch("nce.graph_extractor._spacy_extract")
+@patch("nce.graph_extractor._regex_extract")
 def test_extract_falls_back_to_regex(mock_regex, mock_spacy):
     mock_spacy.side_effect = ImportError("spacy not installed")
 

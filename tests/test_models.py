@@ -1,4 +1,4 @@
-"""Tests for trimcp.models — Pydantic validation contracts on MCP request models."""
+"""Tests for nce.models — Pydantic validation contracts on MCP request models."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from trimcp.models import (
+from nce.models import (
     BoostMemoryRequest,
     ForgetMemoryRequest,
     FrozenForkConfig,
@@ -22,8 +22,8 @@ from trimcp.models import (
     StoreMemoryRequest,
     UnredactMemoryRequest,
 )
-from trimcp.replay import ReplayChecksumError
-from trimcp.signing import canonical_json
+from nce.replay import ReplayChecksumError
+from nce.signing import canonical_json
 
 VALID_UUID = "550e8400-e29b-41d4-a716-446655440000"
 TARGET_UUID = "6ba7b810-9dad-41d1-80b4-00c04fd430c8"

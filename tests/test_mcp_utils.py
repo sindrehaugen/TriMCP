@@ -1,4 +1,4 @@
-"""Tests for trimcp.mcp_utils — caller context and A2A scope parsing."""
+"""Tests for nce.mcp_utils — caller context and A2A scope parsing."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from uuid import UUID
 
 import pytest
 
-from trimcp.a2a import A2AScope
-from trimcp.auth import NamespaceContext
-from trimcp.mcp_utils import (
+from nce.a2a import A2AScope
+from nce.auth import NamespaceContext
+from nce.mcp_utils import (
     _MAX_SCOPES_INPUT_BYTES,
     _MAX_SCOPES_LIST_ITEMS,
     build_caller_context,

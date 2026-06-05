@@ -8,7 +8,7 @@ import os
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from trimcp.signing import (
+from nce.signing import (
     _ENCRYPTED_KEY_BLOB_V2,
     _ENCRYPTED_KEY_BLOB_V3,
     _ENCRYPTED_KEY_BLOB_V4,

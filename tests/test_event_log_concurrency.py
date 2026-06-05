@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from tests.fixtures.event_log_params import minimal_store_memory_params
-from trimcp.event_log import append_event, verify_merkle_chain
+from nce.event_log import append_event, verify_merkle_chain
 
 
 @pytest.mark.integration

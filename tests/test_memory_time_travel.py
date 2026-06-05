@@ -3,7 +3,7 @@ Phase 2.2 — Memory Time Travel (graph_search as_of).
 
 Seeds a synthetic event_log timeline with fixed timezone.utc timestamps, drives
 ``GraphRAGTraverser.search`` through a fake asyncpg pool whose ``fetch`` implements
-the same *reconstruction rules* as ``trimcp/graph_query.py`` (latest event per
+the same *reconstruction rules* as ``nce/graph_query.py`` (latest event per
 memory at cutoff, ``store_memory`` vs ``forget_memory``).
 
 External I/O mocked: Mongo hydrate returns []. Embeddings are deterministic scalars
@@ -20,7 +20,7 @@ from uuid import UUID
 
 import pytest
 
-from trimcp.graph_query import GraphRAGTraverser
+from nce.graph_query import GraphRAGTraverser
 
 # ---------------------------------------------------------------------------
 # Deterministic timeline (timezone.utc)
@@ -479,13 +479,13 @@ async def test_as_of_after_forget_yields_no_anchor(
     assert sg.edges == []
 
 
-# --- parse_as_of (trimcp.temporal — MCP / REST boundary) ---
+# --- parse_as_of (nce.temporal — MCP / REST boundary) ---
 
 
 @pytest.fixture
 def _patch_temporal_wall_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
     """Pinned wall clock so 'future' timestamps are controllable."""
-    import trimcp.temporal as temporal_mod
+    import nce.temporal as temporal_mod
 
     fixed = datetime(2026, 5, 5, 12, 0, 0, tzinfo=TZ_UTC)
 
@@ -501,7 +501,7 @@ def _patch_temporal_wall_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
 
 
 def test_parse_as_of_none_returns_none() -> None:
-    from trimcp.temporal import parse_as_of
+    from nce.temporal import parse_as_of
 
     assert parse_as_of(None) is None
 
@@ -509,28 +509,28 @@ def test_parse_as_of_none_returns_none() -> None:
 def test_parse_as_of_accepts_naive_iso_as_utc(
     _patch_temporal_wall_clock: datetime,
 ) -> None:
-    from trimcp.temporal import parse_as_of
+    from nce.temporal import parse_as_of
 
     dt = parse_as_of("2026-03-01T10:15:30")
     assert dt == datetime(2026, 3, 1, 10, 15, 30, tzinfo=TZ_UTC)
 
 
 def test_parse_as_of_accepts_z_suffix(_patch_temporal_wall_clock: datetime) -> None:
-    from trimcp.temporal import parse_as_of
+    from nce.temporal import parse_as_of
 
     dt = parse_as_of("2026-03-01T10:15:30Z")
     assert dt.tzinfo is not None
 
 
 def test_parse_as_of_rejects_future(_patch_temporal_wall_clock: datetime) -> None:
-    from trimcp.temporal import parse_as_of
+    from nce.temporal import parse_as_of
 
     with pytest.raises(ValueError, match="future"):
         parse_as_of("2026-06-01T00:00:00Z")
 
 
 def test_parse_as_of_rejects_bad_format(_patch_temporal_wall_clock: datetime) -> None:
-    from trimcp.temporal import parse_as_of
+    from nce.temporal import parse_as_of
 
     with pytest.raises(ValueError, match="ISO 8601"):
         parse_as_of("not-a-timestamp")
@@ -542,11 +542,11 @@ def test_parse_as_of_rejects_bad_format(_patch_temporal_wall_clock: datetime) ->
 @pytest.fixture
 def _patch_lookback_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """Override the default 90-day lookback to a narrow 30-day window."""
-    import trimcp.config as cfg_mod
+    import nce.config as cfg_mod
 
     monkeypatch.setattr(
         cfg_mod.cfg,
-        "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS",
+        "NCE_MAX_TEMPORAL_LOOKBACK_DAYS",
         30,
     )
 
@@ -554,11 +554,11 @@ def _patch_lookback_config(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def _disable_lookback_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set lookback to 0 (unlimited) to test the boundary-gate bypass."""
-    import trimcp.config as cfg_mod
+    import nce.config as cfg_mod
 
     monkeypatch.setattr(
         cfg_mod.cfg,
-        "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS",
+        "NCE_MAX_TEMPORAL_LOOKBACK_DAYS",
         0,
     )
 
@@ -568,7 +568,7 @@ def test_enforce_lookback_boundary_accepts_recent_timestamp(
     _patch_lookback_config: None,
 ) -> None:
     """A timestamp within the 30-day window must be accepted."""
-    from trimcp.temporal import parse_as_of
+    from nce.temporal import parse_as_of
 
     # Wall clock is pinned to 2026-05-05T12:00:00Z, 30-day window → earliest 2026-04-05T12:00:00Z.
     # 2026-04-10 is within the window.
@@ -581,7 +581,7 @@ def test_enforce_lookback_boundary_rejects_old_timestamp(
     _patch_lookback_config: None,
 ) -> None:
     """A timestamp older than the 30-day window must be rejected."""
-    from trimcp.temporal import parse_as_of
+    from nce.temporal import parse_as_of
 
     # 2026-03-01 is 65 days before the pinned wall clock (2026-05-05) → exceeds 30-day limit.
     with pytest.raises(ValueError, match="outside the allowed lookback window"):
@@ -593,7 +593,7 @@ def test_enforce_lookback_boundary_exact_cutoff_allowed(
     _patch_lookback_config: None,
 ) -> None:
     """A timestamp exactly at the cutoff (now - 30 days) must be accepted."""
-    from trimcp.temporal import parse_as_of
+    from nce.temporal import parse_as_of
 
     # 2026-05-05 minus 30 days = 2026-04-05T12:00:00Z
     dt = parse_as_of("2026-04-05T12:00:00Z")
@@ -605,7 +605,7 @@ def test_enforce_lookback_boundary_one_second_before_cutoff_rejected(
     _patch_lookback_config: None,
 ) -> None:
     """A timestamp one second before the cutoff must be rejected (boundary precision)."""
-    from trimcp.temporal import parse_as_of
+    from nce.temporal import parse_as_of
 
     # 2026-04-05T11:59:59Z is 1 second before cutoff → should be rejected.
     with pytest.raises(ValueError, match="outside the allowed lookback window"):
@@ -616,8 +616,8 @@ def test_enforce_lookback_boundary_disabled_with_zero(
     _patch_temporal_wall_clock: datetime,
     _disable_lookback_config: None,
 ) -> None:
-    """Setting TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS=0 must disable the boundary."""
-    from trimcp.temporal import parse_as_of
+    """Setting NCE_MAX_TEMPORAL_LOOKBACK_DAYS=0 must disable the boundary."""
+    from nce.temporal import parse_as_of
 
     # 2026-03-01 is well beyond the default 90-day window but with 0 (unlimited) it must pass.
     dt = parse_as_of("2026-03-01T00:00:00Z")
@@ -628,7 +628,7 @@ def test_enforce_lookback_boundary_default_90_days(
     _patch_temporal_wall_clock: datetime,
 ) -> None:
     """With default config (90-day lookback), a timestamp 89 days ago must be accepted."""
-    from trimcp.temporal import parse_as_of
+    from nce.temporal import parse_as_of
 
     # 2026-05-05 minus 89 days = 2026-02-05.  2026-02-06 is within 90 days.
     dt = parse_as_of("2026-02-06T00:00:00Z")
@@ -639,7 +639,7 @@ def test_enforce_lookback_boundary_default_rejects_excessive(
     _patch_temporal_wall_clock: datetime,
 ) -> None:
     """With default config (90-day lookback), a timestamp 100 days ago must be rejected."""
-    from trimcp.temporal import parse_as_of
+    from nce.temporal import parse_as_of
 
     # 2026-01-26 is 99 days before pinned clock (2026-05-05) → exceeds 90-day limit.
     with pytest.raises(ValueError, match="outside the allowed lookback window"):

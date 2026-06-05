@@ -16,8 +16,8 @@ from uuid import uuid4
 
 import pytest
 
-from trimcp.models import IndexCodeFileRequest
-from trimcp.orchestrators.migration import MigrationOrchestrator
+from nce.models import IndexCodeFileRequest
+from nce.orchestrators.migration import MigrationOrchestrator
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -132,7 +132,7 @@ class TestInputHardening:
         mock_queue.enqueue.return_value = SimpleNamespace(id="index:job")
 
         with patch(
-            "trimcp.extractors.dispatch.get_priority_queue",
+            "nce.extractors.dispatch.get_priority_queue",
             return_value=mock_queue,
         ):
             await orch.index_code_file(payload)
@@ -189,7 +189,7 @@ class TestRedisAtomicity:
         redis_client.get.side_effect = slow_get
 
         with patch(
-            "trimcp.extractors.dispatch.get_priority_queue",
+            "nce.extractors.dispatch.get_priority_queue",
             return_value=mock_queue,
         ):
             result = await orch.index_code_file(payload)
@@ -214,7 +214,7 @@ class TestRedisAtomicity:
         mock_queue.enqueue.return_value = SimpleNamespace(id=f"index:{cache_key}")
 
         with patch(
-            "trimcp.extractors.dispatch.get_priority_queue",
+            "nce.extractors.dispatch.get_priority_queue",
             return_value=mock_queue,
         ):
             result = await orch.index_code_file(payload)
@@ -238,7 +238,7 @@ class TestRedisAtomicity:
         mock_queue.enqueue.return_value = SimpleNamespace(id="index:job")
 
         with patch(
-            "trimcp.extractors.dispatch.get_priority_queue",
+            "nce.extractors.dispatch.get_priority_queue",
             return_value=mock_queue,
         ):
             await orch.index_code_file(payload)
@@ -433,7 +433,7 @@ class TestErrorSanitization:
         failed_job.result = None
 
         with patch(
-            "trimcp.orchestrators.migration.asyncio.to_thread",
+            "nce.orchestrators.migration.asyncio.to_thread",
             new=AsyncMock(return_value=failed_job),
         ):
             with patch("rq.job.Job.fetch", return_value=failed_job):
@@ -448,7 +448,7 @@ class TestErrorSanitization:
         self, orch: MigrationOrchestrator
     ) -> None:
         with patch(
-            "trimcp.orchestrators.migration.asyncio.to_thread",
+            "nce.orchestrators.migration.asyncio.to_thread",
             new=AsyncMock(side_effect=Exception("No such job RedisKey")),
         ):
             result = await orch.get_job_status("missing-job")

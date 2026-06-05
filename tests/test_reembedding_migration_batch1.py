@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from trimcp.reembedding_migration import (
+from nce.reembedding_migration import (
     _MAX_BATCH_SIZE,
     _MAX_CANONICAL_TEXT_BYTES,
     InMemoryReembeddingStore,
@@ -17,7 +17,7 @@ from trimcp.reembedding_migration import (
 )
 
 DIM = 24
-_LOG = "tri-stack-reembedding-migration"
+_LOG = "nce-reembedding-migration"
 
 
 def _embed_v2(text: str, *, dimension: int) -> list[float]:

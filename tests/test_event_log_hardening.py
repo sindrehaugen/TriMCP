@@ -1,7 +1,7 @@
 """Additional event_log coverage: identifier hygiene, catalog invariants, and live PG checks.
 
 Unit tests run without Postgres. Integration tests use ``pytest.mark.integration``
-and fixtures from ``tests/conftest.py`` (``PG_DSN`` / ``TRIMCP_INTEGRATION_PG_DSN``).
+and fixtures from ``tests/conftest.py`` (``PG_DSN`` / ``NCE_INTEGRATION_PG_DSN``).
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import uuid
 import pytest
 
 from tests.fixtures.event_log_params import minimal_store_memory_params
-from trimcp.event_log import (
+from nce.event_log import (
     _GENESIS_SENTINEL,
     EXPECTED_GLOBAL_TABLES,
     EXPECTED_SPECIAL_RLS_TABLES,
@@ -22,7 +22,7 @@ from trimcp.event_log import (
     verify_event_signature,
     verify_merkle_chain,
 )
-from trimcp.event_types import VALID_EVENT_TYPES
+from nce.event_types import VALID_EVENT_TYPES
 
 # ---------------------------------------------------------------------------
 # Identifier validation (_validate_identifier)

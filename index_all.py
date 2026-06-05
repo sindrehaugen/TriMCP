@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 
-from trimcp.orchestrator import TriStackEngine
+from nce.orchestrator import NCEEngine
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger("index_all")
@@ -41,7 +41,7 @@ async def index_repo(namespace_id: str = "default"):
         namespace_id,
     )
 
-    engine = TriStackEngine()
+    engine = NCEEngine()
     await engine.connect()
 
     try:

@@ -11,7 +11,7 @@ FROM <app_role> in schema.sql.
 import asyncpg
 import pytest
 
-from trimcp.event_log import _WORM_TABLES
+from nce.event_log import _WORM_TABLES
 
 # ---------------------------------------------------------------------------
 # Layer 1 — unit
@@ -50,7 +50,7 @@ async def test_worm_tables_db_role_cannot_update(pg_app_conn):
         pytest.skip(
             f"{table_name}: UPDATE with WHERE FALSE succeeded — privilege-layer "
             "WORM is not asserted for this login. Set PG_DSN_APP to a restricted role "
-            "(e.g. trimcp_app) to run this assertion."
+            "(e.g. nce_app) to run this assertion."
         )
 
 

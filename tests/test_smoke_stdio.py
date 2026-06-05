@@ -15,15 +15,15 @@ def _stdio_smoke_enabled() -> bool:
     """Full MCP stdio smoke needs Postgres (pgvector) + Mongo + schema/RLS applied.
 
     Local ``pytest`` passes without Docker when this is unset; enable in CI or after
-    ``docker compose up`` by setting ``TRIMCP_STDIO_SMOKE=1``.
+    ``docker compose up`` by setting ``NCE_STDIO_SMOKE=1``.
     """
-    return os.environ.get("TRIMCP_STDIO_SMOKE", "").strip() == "1"
+    return os.environ.get("NCE_STDIO_SMOKE", "").strip() == "1"
 
 
 def _stdio_server_params() -> StdioServerParameters:
-    """Stdio MCP uses a restricted default env — propagate TRIMCP_MASTER_KEY for server.py."""
+    """Stdio MCP uses a restricted default env — propagate NCE_MASTER_KEY for server.py."""
     env = dict(get_default_environment())
-    env["TRIMCP_MASTER_KEY"] = os.environ.get("TRIMCP_MASTER_KEY", "x" * 32)
+    env["NCE_MASTER_KEY"] = os.environ.get("NCE_MASTER_KEY", "x" * 32)
     return StdioServerParameters(
         command=sys.executable,
         args=["server.py"],
@@ -36,7 +36,7 @@ def _stdio_server_params() -> StdioServerParameters:
 async def test_stdio_smoke_indexing():
     if not _stdio_smoke_enabled():
         pytest.skip(
-            "Set TRIMCP_STDIO_SMOKE=1 with TriMCP stack running (Postgres pgvector, Mongo, schema)."
+            "Set NCE_STDIO_SMOKE=1 with NCE stack running (Postgres pgvector, Mongo, schema)."
         )
     server_params = _stdio_server_params()
 
@@ -72,7 +72,7 @@ async def test_stdio_smoke_indexing():
 async def test_stdio_smoke_memory():
     if not _stdio_smoke_enabled():
         pytest.skip(
-            "Set TRIMCP_STDIO_SMOKE=1 with TriMCP stack running (Postgres pgvector, Mongo, schema)."
+            "Set NCE_STDIO_SMOKE=1 with NCE stack running (Postgres pgvector, Mongo, schema)."
         )
     server_params = _stdio_server_params()
 

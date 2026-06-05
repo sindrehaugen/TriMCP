@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from trimcp.extractors import cad_ext
+from nce.extractors import cad_ext
 
 
 def _text_entity():

@@ -1,4 +1,4 @@
-"""Unit tests for trimcp/mtls.py — MTLSAuthMiddleware."""
+"""Unit tests for nce/mtls.py — MTLSAuthMiddleware."""
 
 from __future__ import annotations
 
@@ -6,16 +6,16 @@ import json
 import logging
 import os
 
-os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-test-key-32chars-long!!")
+os.environ.setdefault("NCE_MASTER_KEY", "dev-test-key-32chars-long!!")
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from trimcp.a2a import A2AMTLSError
-from trimcp.mtls import DEFAULT_MTLS_ERROR_CODE, MTLSAuthMiddleware
+from nce.a2a import A2AMTLSError
+from nce.mtls import DEFAULT_MTLS_ERROR_CODE, MTLSAuthMiddleware
 
-_LOGGER = "trimcp.mtls"
+_LOGGER = "nce.mtls"
 _ANCHOR_SANS = ["example.com"]
 _ANCHOR_FP = ["aa:bb"]
 _MAX_HEADER_BYTES = 16_384
@@ -113,7 +113,7 @@ class TestPathPrefixMatching:
             allowed_sans=_ANCHOR_SANS,
         )
         with patch(
-            "trimcp.mtls.mtls_enforce", side_effect=A2AMTLSError("rejected")
+            "nce.mtls.mtls_enforce", side_effect=A2AMTLSError("rejected")
         ) as mock_enforce:
             result = await _collect_response(mw, _make_scope(path=path))
 
@@ -131,7 +131,7 @@ class TestPathPrefixMatching:
             protected_prefix="/api",
             allowed_sans=_ANCHOR_SANS,
         )
-        with patch("trimcp.mtls.mtls_enforce") as mock_enforce:
+        with patch("nce.mtls.mtls_enforce") as mock_enforce:
             await mw(_make_scope(path=path), AsyncMock(), AsyncMock())
 
         mock_enforce.assert_not_called()
@@ -155,7 +155,7 @@ class TestErrorResponse:
         )
         sensitive = "SAN=secret.example.com"
         with patch(
-            "trimcp.mtls.mtls_enforce",
+            "nce.mtls.mtls_enforce",
             side_effect=A2AMTLSError(sensitive),
         ):
             result = await _collect_response(mw, _make_scope(path="/api"))
@@ -179,7 +179,7 @@ class TestErrorResponse:
             headers=[(b"x-request-id", b"abc123")],
         )
         with patch(
-            "trimcp.mtls.mtls_enforce",
+            "nce.mtls.mtls_enforce",
             side_effect=A2AMTLSError("fail"),
         ):
             result = await _collect_response(mw, scope)
@@ -198,7 +198,7 @@ class TestErrorResponse:
             error_code=-32013,
         )
         with patch(
-            "trimcp.mtls.mtls_enforce",
+            "nce.mtls.mtls_enforce",
             side_effect=A2AMTLSError("bad fp"),
         ):
             result = await _collect_response(mw, _make_scope(path="/api"))
@@ -219,7 +219,7 @@ class TestErrorResponse:
             protected_prefix="/api",
             allowed_sans=_ANCHOR_SANS,
         )
-        with patch("trimcp.mtls.mtls_enforce", side_effect=A2AMTLSError("x")):
+        with patch("nce.mtls.mtls_enforce", side_effect=A2AMTLSError("x")):
             result = await _collect_response(mw, _make_scope(path="/api"))
 
         body = json.loads(result["body"])
@@ -252,7 +252,7 @@ class TestHeaderSizeGuard:
                 (b"x-forwarded-client-cert", b"Hash=ok"),
             ],
         )
-        with patch("trimcp.mtls.mtls_enforce", return_value=None) as mock_enforce:
+        with patch("nce.mtls.mtls_enforce", return_value=None) as mock_enforce:
             await mw(scope, AsyncMock(), AsyncMock())
 
         mock_enforce.assert_called_once()
@@ -280,7 +280,7 @@ class TestHeaderSizeGuard:
                 (b"x-client-cert", at_limit),
             ],
         )
-        with patch("trimcp.mtls.mtls_enforce", return_value=None) as mock_enforce:
+        with patch("nce.mtls.mtls_enforce", return_value=None) as mock_enforce:
             await mw(scope, AsyncMock(), AsyncMock())
 
         passed = mock_enforce.call_args.kwargs["headers"]
@@ -301,7 +301,7 @@ class TestDisabledMiddleware:
         downstream = AsyncMock()
         mw = MTLSAuthMiddleware(downstream, enabled=False, protected_prefix="/api")
 
-        with patch("trimcp.mtls.mtls_enforce") as mock_enforce:
+        with patch("nce.mtls.mtls_enforce") as mock_enforce:
             await mw(_make_scope(path="/api/v1"), AsyncMock(), AsyncMock())
 
         mock_enforce.assert_not_called()
@@ -328,7 +328,7 @@ class TestLogging:
         )
         scope = _make_scope(path="/api/secret", client=("10.0.0.5", 1234))
         with patch(
-            "trimcp.mtls.mtls_enforce",
+            "nce.mtls.mtls_enforce",
             side_effect=A2AMTLSError("rejected"),
         ):
             await _collect_response(mw, scope)
@@ -370,7 +370,7 @@ class TestEnabledValidCert:
             protected_prefix="/api",
             allowed_sans=["agent.internal"],
         )
-        with patch("trimcp.mtls.mtls_enforce", return_value="agent.internal"):
+        with patch("nce.mtls.mtls_enforce", return_value="agent.internal"):
             await mw(_make_scope(path="/api/v1"), AsyncMock(), AsyncMock())
 
         downstream.assert_awaited_once()

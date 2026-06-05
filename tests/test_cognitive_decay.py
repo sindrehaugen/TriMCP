@@ -1,4 +1,4 @@
-"""Unit tests for Phase 1.1 Ebbinghaus-style salience decay (trimcp.salience)."""
+"""Unit tests for Phase 1.1 Ebbinghaus-style salience decay (nce.salience)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from trimcp import salience
+from nce import salience
 
 
 def test_compute_decayed_score_half_life_halves_salience():

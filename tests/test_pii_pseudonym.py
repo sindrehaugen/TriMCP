@@ -7,8 +7,8 @@ import re
 import pytest
 from pydantic import ValidationError
 
-from trimcp.models import NamespacePIIConfig, PIIPolicy
-from trimcp.pii import _pseudonym_token_suffix, process
+from nce.models import NamespacePIIConfig, PIIPolicy
+from nce.pii import _pseudonym_token_suffix, process
 
 
 def _cfg_pseudo(
@@ -72,7 +72,7 @@ def test_namespace_key_too_short_raises_at_validation():
 
 @pytest.mark.asyncio
 async def test_missing_master_and_no_namespace_key_raises(monkeypatch):
-    monkeypatch.delenv("TRIMCP_MASTER_KEY", raising=False)
+    monkeypatch.delenv("NCE_MASTER_KEY", raising=False)
     cfg = NamespacePIIConfig(
         entity_types=["EMAIL"],
         policy=PIIPolicy.pseudonymise,
@@ -87,7 +87,7 @@ async def test_missing_master_and_no_namespace_key_raises(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_process_pseudonym_uses_master_when_no_namespace_key(monkeypatch):
-    monkeypatch.setenv("TRIMCP_MASTER_KEY", "m" * 32)
+    monkeypatch.setenv("NCE_MASTER_KEY", "m" * 32)
     cfg = NamespacePIIConfig(
         entity_types=["EMAIL"],
         policy=PIIPolicy.pseudonymise,
@@ -119,7 +119,7 @@ async def test_process_pseudonym_with_explicit_namespace_key():
 
 @pytest.mark.asyncio
 async def test_reversible_pseudonym_vault_token_matches_sanitized(monkeypatch):
-    monkeypatch.setenv("TRIMCP_MASTER_KEY", "z" * 32)
+    monkeypatch.setenv("NCE_MASTER_KEY", "z" * 32)
     cfg = NamespacePIIConfig(
         entity_types=["EMAIL"],
         policy=PIIPolicy.pseudonymise,

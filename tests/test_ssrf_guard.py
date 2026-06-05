@@ -15,12 +15,12 @@ from typing import Any
 
 import pytest
 
-from trimcp.net_safety import (
+from nce.net_safety import (
     BridgeURLValidationError,
     validate_extractor_url,
     validate_webhook_payload_url,
 )
-from trimcp.providers.base import LLMProviderError, validate_base_url
+from nce.providers.base import LLMProviderError, validate_base_url
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -167,14 +167,14 @@ class TestValidateBaseUrlAsync:
 
     @pytest.mark.asyncio
     async def test_public_https_passes(self, monkeypatch: pytest.MonkeyPatch):
-        from trimcp.providers.base import validate_base_url_async
+        from nce.providers.base import validate_base_url_async
 
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         await validate_base_url_async("https://api.openai.com/v1")
 
     @pytest.mark.asyncio
     async def test_loopback_rejected(self, monkeypatch: pytest.MonkeyPatch):
-        from trimcp.providers.base import validate_base_url_async
+        from nce.providers.base import validate_base_url_async
 
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("127.0.0.1"))
         with pytest.raises(LLMProviderError, match="private IP|non-public IP|loopback"):
@@ -464,10 +464,10 @@ class TestDiagramApiExtractorSSRF:
     @pytest.mark.asyncio
     async def test_miro_rejects_private_base_url(self, monkeypatch: pytest.MonkeyPatch):
         """Miro extractor must return empty_skipped when base_url resolves to private IP."""
-        from trimcp.extractors.diagram_api import miro_extract_board
+        from nce.extractors.diagram_api import miro_extract_board
 
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("10.0.0.1"))
-        monkeypatch.setenv("TRIMCP_MIRO_ACCESS_TOKEN", "fake-token")
+        monkeypatch.setenv("NCE_MIRO_ACCESS_TOKEN", "fake-token")
 
         result = await miro_extract_board(
             "board-123",
@@ -480,10 +480,10 @@ class TestDiagramApiExtractorSSRF:
     @pytest.mark.asyncio
     async def test_miro_rejects_loopback_base_url(self, monkeypatch: pytest.MonkeyPatch):
         """Miro extractor must reject loopback base_url."""
-        from trimcp.extractors.diagram_api import miro_extract_board
+        from nce.extractors.diagram_api import miro_extract_board
 
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("127.0.0.1"))
-        monkeypatch.setenv("TRIMCP_MIRO_ACCESS_TOKEN", "fake-token")
+        monkeypatch.setenv("NCE_MIRO_ACCESS_TOKEN", "fake-token")
 
         result = await miro_extract_board(
             "board-123",
@@ -495,9 +495,9 @@ class TestDiagramApiExtractorSSRF:
     @pytest.mark.asyncio
     async def test_miro_rejects_http_base_url(self, monkeypatch: pytest.MonkeyPatch):
         """Miro extractor must reject HTTP base_url (no downgrade attack)."""
-        from trimcp.extractors.diagram_api import miro_extract_board
+        from nce.extractors.diagram_api import miro_extract_board
 
-        monkeypatch.setenv("TRIMCP_MIRO_ACCESS_TOKEN", "fake-token")
+        monkeypatch.setenv("NCE_MIRO_ACCESS_TOKEN", "fake-token")
 
         result = await miro_extract_board(
             "board-123",
@@ -510,10 +510,10 @@ class TestDiagramApiExtractorSSRF:
     @pytest.mark.asyncio
     async def test_miro_accepts_default_base_url(self, monkeypatch: pytest.MonkeyPatch):
         """Miro extractor must accept the default base_url (no SSRF false positive)."""
-        from trimcp.extractors.diagram_api import miro_extract_board
+        from nce.extractors.diagram_api import miro_extract_board
 
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141"))
-        monkeypatch.setenv("TRIMCP_MIRO_ACCESS_TOKEN", "fake-token")
+        monkeypatch.setenv("NCE_MIRO_ACCESS_TOKEN", "fake-token")
 
         # The default base_url passes validation; the actual HTTP call will
         # fail because we haven't mocked httpx — but SSRF guard must not block.
@@ -524,10 +524,10 @@ class TestDiagramApiExtractorSSRF:
     @pytest.mark.asyncio
     async def test_lucid_rejects_private_base_url(self, monkeypatch: pytest.MonkeyPatch):
         """Lucid extractor must return empty_skipped when base_url resolves to private IP."""
-        from trimcp.extractors.diagram_api import lucidchart_extract_document
+        from nce.extractors.diagram_api import lucidchart_extract_document
 
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("192.168.1.1"))
-        monkeypatch.setenv("TRIMCP_LUCID_ACCESS_TOKEN", "fake-token")
+        monkeypatch.setenv("NCE_LUCID_ACCESS_TOKEN", "fake-token")
 
         result = await lucidchart_extract_document(
             "doc-456",
@@ -540,10 +540,10 @@ class TestDiagramApiExtractorSSRF:
     @pytest.mark.asyncio
     async def test_lucid_rejects_aws_metadata_url(self, monkeypatch: pytest.MonkeyPatch):
         """Lucid extractor must block AWS metadata endpoint (169.254.169.254)."""
-        from trimcp.extractors.diagram_api import lucidchart_extract_document
+        from nce.extractors.diagram_api import lucidchart_extract_document
 
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("169.254.169.254"))
-        monkeypatch.setenv("TRIMCP_LUCID_ACCESS_TOKEN", "fake-token")
+        monkeypatch.setenv("NCE_LUCID_ACCESS_TOKEN", "fake-token")
 
         result = await lucidchart_extract_document(
             "doc-456",
@@ -555,9 +555,9 @@ class TestDiagramApiExtractorSSRF:
     @pytest.mark.asyncio
     async def test_lucid_rejects_http_base_url(self, monkeypatch: pytest.MonkeyPatch):
         """Lucid extractor must reject HTTP base_url."""
-        from trimcp.extractors.diagram_api import lucidchart_extract_document
+        from nce.extractors.diagram_api import lucidchart_extract_document
 
-        monkeypatch.setenv("TRIMCP_LUCID_ACCESS_TOKEN", "fake-token")
+        monkeypatch.setenv("NCE_LUCID_ACCESS_TOKEN", "fake-token")
 
         result = await lucidchart_extract_document(
             "doc-456",
@@ -569,10 +569,10 @@ class TestDiagramApiExtractorSSRF:
     @pytest.mark.asyncio
     async def test_lucid_accepts_default_base_url(self, monkeypatch: pytest.MonkeyPatch):
         """Lucid extractor must accept the default base_url."""
-        from trimcp.extractors.diagram_api import lucidchart_extract_document
+        from nce.extractors.diagram_api import lucidchart_extract_document
 
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("52.32.1.10"))
-        monkeypatch.setenv("TRIMCP_LUCID_ACCESS_TOKEN", "fake-token")
+        monkeypatch.setenv("NCE_LUCID_ACCESS_TOKEN", "fake-token")
 
         result = await lucidchart_extract_document("doc-456")
         assert result.skip_reason != "ssrf_blocked"

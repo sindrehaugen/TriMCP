@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from trimcp.extractors.dispatch import _MAX_ATTACHMENTS_PER_MESSAGE
-from trimcp.extractors.email_ext import extract_eml
+from nce.extractors.dispatch import _MAX_ATTACHMENTS_PER_MESSAGE
+from nce.extractors.email_ext import extract_eml
 
 
 @pytest.mark.asyncio
@@ -24,12 +24,12 @@ async def test_eml_attachment_fan_out_limit():
     async def _fake_extract(*_a, **_kw):
         nonlocal calls
         calls += 1
-        from trimcp.extractors.core import ExtractionResult
+        from nce.extractors.core import ExtractionResult
 
         return ExtractionResult(method="fake", text="ok", sections=[], metadata={})
 
     with patch(
-        "trimcp.extractors.dispatch.extract_with_fallback",
+        "nce.extractors.dispatch.extract_with_fallback",
         new=AsyncMock(side_effect=_fake_extract),
     ):
         result = await extract_eml(msg.as_bytes())
@@ -49,12 +49,12 @@ async def test_eml_nested_depth_limit():
 
     async def _fake_extract(*_a, attachment_depth=0, **_kw):
         depths.append(attachment_depth)
-        from trimcp.extractors.core import ExtractionResult
+        from nce.extractors.core import ExtractionResult
 
         return ExtractionResult(method="fake", text="nested", sections=[], metadata={})
 
     with patch(
-        "trimcp.extractors.dispatch.extract_with_fallback",
+        "nce.extractors.dispatch.extract_with_fallback",
         new=AsyncMock(side_effect=_fake_extract),
     ):
         await extract_eml(outer.as_bytes())

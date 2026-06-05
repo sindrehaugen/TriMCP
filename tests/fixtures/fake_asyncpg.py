@@ -1,7 +1,7 @@
 """
 Fake asyncpg connection + pool mocks for Saga / event_log unit tests.
 
-Implements only the SQL shapes exercised by trimcp.event_log.append_event —
+Implements only the SQL shapes exercised by nce.event_log.append_event —
 no TCP, no Postgres.  Use RecordingFakePool when code expects ``pool.acquire``.
 
 This is deterministic test scaffolding (replacement for unavailable local

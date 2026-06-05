@@ -10,18 +10,18 @@ from uuid import uuid4
 import pytest
 
 from tests.fixtures.fake_asyncpg import RecordingFakeConnection
-from trimcp import event_log as event_log_mod
-from trimcp.event_log import (
+from nce import event_log as event_log_mod
+from nce.event_log import (
     InvalidEventTypeError,
     _validate_event_params,
     append_event,
 )
-from trimcp.event_types import (
+from nce.event_types import (
     EVENT_REQUIRED_PARAM_KEYS,
     VALID_EVENT_TYPES,
     EventType,
 )
-from trimcp.replay import ForkedReplay
+from nce.replay import ForkedReplay
 
 _RAW_SIGNING_SECRET = hashlib.sha256(b"pytest-event-log-hmac-secret").digest()
 

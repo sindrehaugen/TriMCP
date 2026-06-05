@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply trimcp/schema.sql to the database named by PG_DSN or DATABASE_URL."""
+"""Apply nce/schema.sql to the database named by PG_DSN or DATABASE_URL."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _dsn() -> str:
 
 
 async def _main() -> None:
-    schema_path = Path(__file__).resolve().parents[1] / "trimcp" / "schema.sql"
+    schema_path = Path(__file__).resolve().parents[1] / "nce" / "schema.sql"
     sql = schema_path.read_text(encoding="utf-8")
     conn = await asyncpg.connect(_dsn())
     try:

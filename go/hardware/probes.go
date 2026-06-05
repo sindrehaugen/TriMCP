@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/trimcp/tri-stack/internal/executil"
+	"github.com/nce/tri-stack/internal/executil"
 )
 
 func probeNVIDIA(ctx context.Context) bool {

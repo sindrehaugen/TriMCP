@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import pytest
 
-from trimcp.models import AssertionType, MemoryType, StoreMemoryRequest
+from nce.models import AssertionType, MemoryType, StoreMemoryRequest
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -67,7 +67,7 @@ def mock_redis_client():
 
 @pytest.fixture
 def orchestrator(mock_pg_pool, mock_mongo_client, mock_redis_client):
-    from trimcp.orchestrators.memory import MemoryOrchestrator
+    from nce.orchestrators.memory import MemoryOrchestrator
 
     pool, _ = mock_pg_pool
     mongo, _ = mock_mongo_client
@@ -107,7 +107,7 @@ class TestOutboxEnqueueInStoreMemory:
         pool, conn = mock_pg_pool
 
         # Patch PII pipeline
-        from trimcp.models import PIIProcessResult
+        from nce.models import PIIProcessResult
 
         monkeypatch.setattr(
             orchestrator,
@@ -129,12 +129,12 @@ class TestOutboxEnqueueInStoreMemory:
         )
 
         # Patch embedding
-        from trimcp import embeddings as emb_mod
+        from nce import embeddings as emb_mod
 
         monkeypatch.setattr(emb_mod, "embed_batch", AsyncMock(return_value=[[0.1] * 768]))
 
         # Patch event_log.append_event to avoid signing deps
-        monkeypatch.setattr("trimcp.event_log.append_event", AsyncMock(return_value=None))
+        monkeypatch.setattr("nce.event_log.append_event", AsyncMock(return_value=None))
 
         # Patch saga execution log helpers (added by parallel session)
         monkeypatch.setattr(orchestrator, "_saga_log_start", AsyncMock(return_value="saga-1"))
@@ -145,7 +145,7 @@ class TestOutboxEnqueueInStoreMemory:
         async def _fake_scoped(pg_pool, namespace_id):
             yield conn
 
-        monkeypatch.setattr("trimcp.orchestrators.memory.scoped_pg_session", _fake_scoped)
+        monkeypatch.setattr("nce.orchestrators.memory.scoped_pg_session", _fake_scoped)
 
         await orchestrator.store_memory(store_payload)
 
@@ -167,7 +167,7 @@ class TestOutboxEnqueueInStoreMemory:
         """The outbox payload must include the memory_id and payload_ref."""
         pool, conn = mock_pg_pool
 
-        from trimcp.models import PIIProcessResult
+        from nce.models import PIIProcessResult
 
         monkeypatch.setattr(
             orchestrator,
@@ -188,10 +188,10 @@ class TestOutboxEnqueueInStoreMemory:
             ),
         )
 
-        from trimcp import embeddings as emb_mod
+        from nce import embeddings as emb_mod
 
         monkeypatch.setattr(emb_mod, "embed_batch", AsyncMock(return_value=[[0.1] * 768]))
-        monkeypatch.setattr("trimcp.event_log.append_event", AsyncMock(return_value=None))
+        monkeypatch.setattr("nce.event_log.append_event", AsyncMock(return_value=None))
 
         monkeypatch.setattr(orchestrator, "_saga_log_start", AsyncMock(return_value="saga-1"))
         monkeypatch.setattr(orchestrator, "_saga_log_transition", AsyncMock(return_value=None))
@@ -200,7 +200,7 @@ class TestOutboxEnqueueInStoreMemory:
         async def _fake_scoped(pg_pool, namespace_id):
             yield conn
 
-        monkeypatch.setattr("trimcp.orchestrators.memory.scoped_pg_session", _fake_scoped)
+        monkeypatch.setattr("nce.orchestrators.memory.scoped_pg_session", _fake_scoped)
 
         await orchestrator.store_memory(store_payload)
 
@@ -221,7 +221,7 @@ class TestOutboxEnqueueInStoreMemory:
         """If the PG transaction fails, the outbox insert is never committed."""
         pool, conn = mock_pg_pool
 
-        from trimcp.models import PIIProcessResult
+        from nce.models import PIIProcessResult
 
         monkeypatch.setattr(
             orchestrator,
@@ -242,7 +242,7 @@ class TestOutboxEnqueueInStoreMemory:
             ),
         )
 
-        from trimcp import embeddings as emb_mod
+        from nce import embeddings as emb_mod
 
         monkeypatch.setattr(emb_mod, "embed_batch", AsyncMock(return_value=[[0.1] * 768]))
 
@@ -256,7 +256,7 @@ class TestOutboxEnqueueInStoreMemory:
         async def _fake_scoped(pg_pool, namespace_id):
             yield conn
 
-        monkeypatch.setattr("trimcp.orchestrators.memory.scoped_pg_session", _fake_scoped)
+        monkeypatch.setattr("nce.orchestrators.memory.scoped_pg_session", _fake_scoped)
 
         with pytest.raises(RuntimeError, match="PG deadlock"):
             await orchestrator.store_memory(store_payload)
@@ -279,7 +279,7 @@ class TestOutboxRelay:
     @pytest.mark.asyncio
     async def test_poll_outbox_returns_unpublished_rows(self):
         """poll_outbox must return rows with published_at IS NULL."""
-        from trimcp.outbox_relay import poll_outbox
+        from nce.outbox_relay import poll_outbox
 
         conn = AsyncMock()
 
@@ -305,7 +305,7 @@ class TestOutboxRelay:
     @pytest.mark.asyncio
     async def test_poll_outbox_uses_batch_size(self):
         """The LIMIT must match the batch_size parameter."""
-        from trimcp.outbox_relay import poll_outbox
+        from nce.outbox_relay import poll_outbox
 
         conn = AsyncMock()
         conn.fetch = AsyncMock(return_value=[])

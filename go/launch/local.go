@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/trimcp/tri-stack/internal/executil"
+	"github.com/nce/tri-stack/internal/executil"
 )
 
 func runLocal(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot string, env []string) error {
@@ -16,7 +16,7 @@ func runLocal(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot str
 	defer cancel()
 	if err := executil.Run(dctx, "docker", "info"); err != nil {
 		msg := "Docker does not appear to be running. Start Docker Desktop and try again."
-		n.Error("TriMCP", msg)
+		n.Error("NCE", msg)
 		if log != nil {
 			log.Warn("docker_probe_failed", "err", err)
 		}
@@ -26,7 +26,7 @@ func runLocal(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot str
 	composeFile := resolveComposeFile(appRoot)
 	if _, err := os.Stat(composeFile); err != nil {
 		msg := fmt.Sprintf("Compose file not found: %s", filepath.Base(composeFile))
-		n.Error("TriMCP", msg)
+		n.Error("NCE", msg)
 		return err
 	}
 
@@ -38,8 +38,8 @@ func runLocal(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot str
 	ccmd.Stdout = os.Stderr // compose progress to stderr; keep stdout for MCP
 	ccmd.Stderr = os.Stderr
 	if err := ccmd.Run(); err != nil {
-		msg := "Could not start local TriMCP containers. See log file for details."
-		n.Error("TriMCP", msg)
+		msg := "Could not start local NCE containers. See log file for details."
+		n.Error("NCE", msg)
 		if log != nil {
 			log.Warn("compose_up_failed", "err", err)
 		}
@@ -52,7 +52,7 @@ func runLocal(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot str
 	for _, p := range []struct{ path, label string }{{serverPy, "server.py"}, {workerPy, "start_worker.py"}} {
 		if _, err := os.Stat(p.path); err != nil {
 			msg := fmt.Sprintf("Missing %s under application folder.", p.label)
-			n.Error("TriMCP", msg)
+			n.Error("NCE", msg)
 			return err
 		}
 	}
@@ -78,7 +78,7 @@ func runLocal(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot str
 	wcmd.Stderr = wlog
 	if err := wcmd.Start(); err != nil {
 		msg := "Could not start the background worker process."
-		n.Error("TriMCP", msg)
+		n.Error("NCE", msg)
 		return fmt.Errorf("start_worker: %w", err)
 	}
 	defer func() {
@@ -89,7 +89,7 @@ func runLocal(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot str
 }
 
 func resolveComposeFile(appRoot string) string {
-	if v := os.Getenv("TRIMCP_COMPOSE_FILE"); v != "" {
+	if v := os.Getenv("NCE_COMPOSE_FILE"); v != "" {
 		return v
 	}
 	for _, name := range []string{"docker-compose.local.yml", "docker-compose.yml"} {
@@ -102,7 +102,7 @@ func resolveComposeFile(appRoot string) string {
 }
 
 func pythonExe() string {
-	if v := os.Getenv("TRIMCP_PYTHON"); v != "" {
+	if v := os.Getenv("NCE_PYTHON"); v != "" {
 		return v
 	}
 	return "python"

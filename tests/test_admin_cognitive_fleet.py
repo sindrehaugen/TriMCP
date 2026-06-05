@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from starlette.requests import Request
 
-os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-test-key-32chars-long!!")
+os.environ.setdefault("NCE_MASTER_KEY", "dev-test-key-32chars-long!!")
 
 
 class AttrDict(dict):
@@ -22,7 +22,7 @@ class AttrDict(dict):
 
 @pytest.mark.asyncio
 async def test_fetch_pg_rls_snapshot_fills_missing_tables():
-    from trimcp.admin_routes import ADMIN_FLEET_RLS_TABLES, fetch_pg_rls_snapshot
+    from nce.admin_routes import ADMIN_FLEET_RLS_TABLES, fetch_pg_rls_snapshot
 
     conn = AsyncMock()
     conn.fetch = AsyncMock(
@@ -41,7 +41,7 @@ async def test_fetch_pg_rls_snapshot_fills_missing_tables():
 
 @pytest.mark.asyncio
 async def test_fetch_fleet_overview_page_slug_prefix_sql_args():
-    from trimcp.admin_routes import fetch_fleet_overview_page
+    from nce.admin_routes import fetch_fleet_overview_page
 
     now = datetime.now(timezone.utc)
     row = AttrDict(
@@ -91,7 +91,7 @@ async def test_fetch_fleet_overview_page_slug_prefix_sql_args():
 
 @pytest.mark.asyncio
 async def test_fetch_fleet_quota_entries_json_string_parsed():
-    from trimcp.admin_routes import fetch_fleet_overview_page
+    from nce.admin_routes import fetch_fleet_overview_page
 
     quota_json = json.dumps(
         [{"resource_type": "q", "agent_id": "", "used_amount": 0, "limit_amount": 1}]
@@ -124,7 +124,7 @@ async def test_fetch_fleet_quota_entries_json_string_parsed():
 
 @pytest.mark.asyncio
 async def test_fetch_salience_map_points_shapes_output():
-    from trimcp.admin_routes import fetch_salience_map_points
+    from nce.admin_routes import fetch_salience_map_points
 
     ns = uuid.uuid4()
     mid = uuid.uuid4()
@@ -177,7 +177,7 @@ async def test_fetch_salience_map_points_shapes_output():
 @pytest.mark.asyncio
 async def test_api_admin_salience_map_requires_namespace_id():
     mock_engine = MagicMock()
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_salience_map
 
         request = Request(
@@ -195,7 +195,7 @@ async def test_api_admin_salience_map_requires_namespace_id():
 @pytest.mark.asyncio
 async def test_api_admin_llm_payload_missing_ids():
     mock_engine = MagicMock()
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_llm_payload
 
         request = Request(
@@ -221,9 +221,9 @@ async def test_api_admin_llm_payload_fetches_when_uri_present():
     mock_engine.pg_pool.acquire.return_value.__aenter__.return_value = mock_conn
     mock_conn.fetchrow.return_value = {"llm_payload_uri": uri}
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         with patch(
-            "trimcp.salience.fetch_llm_payload",
+            "nce.salience.fetch_llm_payload",
             AsyncMock(return_value={"prompt": "x", "response": "y"}),
         ) as fetch_minio:
             from admin_server import api_admin_llm_payload
@@ -255,13 +255,13 @@ async def test_api_admin_fleet_overview_includes_rls():
     rls = {"memories": True, "replay_runs": False}
     items = [{"namespace_id": str(uuid.uuid4()), "slug": "a"}]
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         with patch(
-            "trimcp.admin_handlers.fleet.fetch_pg_rls_snapshot",
+            "nce.admin_handlers.fleet.fetch_pg_rls_snapshot",
             AsyncMock(return_value=rls),
         ):
             with patch(
-                "trimcp.admin_handlers.fleet.fetch_fleet_overview_page",
+                "nce.admin_handlers.fleet.fetch_fleet_overview_page",
                 AsyncMock(return_value=(items, 1)),
             ):
                 from admin_server import api_admin_fleet_overview
@@ -299,9 +299,9 @@ async def test_api_admin_bridge_renew_audit_and_dispatch():
 
     mock_renew = AsyncMock(return_value=None)
 
-    with patch("trimcp.admin_state.engine", mock_engine):
-        with patch("trimcp.admin_handlers._shared.logger") as log:
-            with patch("trimcp.bridge_renewal.renew_gdrive", mock_renew):
+    with patch("nce.admin_state.engine", mock_engine):
+        with patch("nce.admin_handlers._shared.logger") as log:
+            with patch("nce.bridge_renewal.renew_gdrive", mock_renew):
                 from admin_server import api_admin_bridge_renew
 
                 request = Request(
@@ -333,7 +333,7 @@ async def test_api_admin_memory_boost_calls_engine():
     mock_engine = MagicMock()
     mock_engine.boost_memory = AsyncMock(return_value={"status": "success", "boosted_by": 0.2})
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_memory_boost
 
         request = MagicMock()
@@ -377,9 +377,9 @@ async def test_api_admin_contradictions_recent_lists_items():
         }
     ]
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         with patch(
-            "trimcp.admin_handlers.fleet.fetch_recent_open_contradictions",
+            "nce.admin_handlers.fleet.fetch_recent_open_contradictions",
             AsyncMock(return_value=sample),
         ):
             from admin_server import api_admin_contradictions_recent
@@ -403,7 +403,7 @@ async def test_api_admin_contradictions_recent_lists_items():
 @pytest.mark.asyncio
 async def test_api_admin_namespace_bridges_requires_uuid():
     mock_engine = MagicMock()
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_namespace_bridges
 
         request = Request(
@@ -443,7 +443,7 @@ async def test_api_admin_events_include_details():
     mock_conn.fetchrow = AsyncMock(return_value=AttrDict(total=1))
     mock_conn.fetch = AsyncMock(return_value=[row])
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_events
 
         qs = f"namespace_id={ns}&include_details=1&limit=5".encode()

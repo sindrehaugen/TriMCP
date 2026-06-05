@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/trimcp/tri-stack/internal/executil"
+	"github.com/nce/tri-stack/internal/executil"
 )
 
 func cpuModel(ctx context.Context) string {

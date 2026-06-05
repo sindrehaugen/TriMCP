@@ -1,6 +1,6 @@
 """Tests for DSN / URI credential redaction in logs (Item 9 observability)."""
 
-from trimcp.config import redact_dsn, redact_secrets_in_text
+from nce.config import redact_dsn, redact_secrets_in_text
 
 
 def test_redact_dsn_postgresql() -> None:

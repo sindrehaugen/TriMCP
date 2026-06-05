@@ -1,4 +1,4 @@
-# TriMCP Database Architecture
+# NCE Database Architecture
 
 Deep-dive into the quad-database stack: connection pooling, transaction boundaries, RLS enforcement, Saga rollbacks, and the GraphRAG hydration pipeline.
 
@@ -17,7 +17,7 @@ Each database is assigned exclusively to the data structure it is optimal for:
 | **Working memory & queues** | Redis | `redis.asyncio` + `redis` (sync) | Cache, RQ job queue, HMAC nonce store, quota counters |
 | **Media store** | MinIO | `minio` | Binary blobs: audio, video, images, replay caches |
 
-The `TriStackEngine` (`trimcp/orchestrator.py`) initialises and owns all four connections.
+The `TriStackEngine` (`nce/orchestrator.py`) initialises and owns all four connections.
 
 ---
 
@@ -26,7 +26,7 @@ The `TriStackEngine` (`trimcp/orchestrator.py`) initialises and owns all four co
 ### 2a. PostgreSQL — asyncpg pool
 
 ```python
-# trimcp/orchestrator.py — TriStackEngine.connect()
+# nce/orchestrator.py — TriStackEngine.connect()
 self.pg_pool = await asyncpg.create_pool(
     cfg.PG_DSN,
     min_size=cfg.PG_MIN_POOL,    # PG_MIN_POOL, default 1
@@ -37,7 +37,7 @@ self.pg_pool = await asyncpg.create_pool(
 
 **Read replica** (optional): When `DB_READ_URL` differs from `PG_DSN`, a second pool (`pg_read_pool`) is created with identical sizing. Orchestrators that receive a `pg_read_pool` reference use it for `SELECT`-only paths.
 
-**Pool acquire timeout**: Every checkout is bounded by `POOL_ACQUIRE_TIMEOUT = 10.0 s` (constant in `trimcp/db_utils.py`). This prevents event-loop stall when the pool is exhausted (FIX-010).
+**Pool acquire timeout**: Every checkout is bounded by `POOL_ACQUIRE_TIMEOUT = 10.0 s` (constant in `nce/db_utils.py`). This prevents event-loop stall when the pool is exhausted (FIX-010).
 
 ```python
 # Never acquire without timeout:
@@ -103,16 +103,16 @@ MinIO operations run in a thread pool via `asyncio.to_thread()` because the `min
 All user-facing SQL must run inside a `scoped_pg_session`. This is the **only** correct way to acquire a PostgreSQL connection for tenant-scoped work:
 
 ```python
-from trimcp.db_utils import scoped_pg_session
+from nce.db_utils import scoped_pg_session
 
 async with scoped_pg_session(pool, namespace_id=ns_id) as conn:
-    # SET LOCAL trimcp.namespace_id = '<uuid>' is active here
+    # SET LOCAL nce.namespace_id = '<uuid>' is active here
     # All queries are RLS-filtered to ns_id
     rows = await conn.fetch("SELECT id, content FROM memories")
 # Connection returned to pool; namespace context reset
 ```
 
-**Implementation** (`trimcp/db_utils.py`):
+**Implementation** (`nce/db_utils.py`):
 
 ```python
 async with pool.acquire(timeout=POOL_ACQUIRE_TIMEOUT) as conn:
@@ -127,14 +127,14 @@ async with pool.acquire(timeout=POOL_ACQUIRE_TIMEOUT) as conn:
 ### 3b. Admin / background paths (unmanaged)
 
 ```python
-from trimcp.db_utils import unmanaged_pg_connection
+from nce.db_utils import unmanaged_pg_connection
 
 async with unmanaged_pg_connection(pool) as conn:
     # No RLS — use ONLY for admin paths or background workers
     await conn.execute("...")
 ```
 
-`unmanaged_pg_connection` still enforces the 10 s acquire timeout but does not set `trimcp.namespace_id`.
+`unmanaged_pg_connection` still enforces the 10 s acquire timeout but does not set `nce.namespace_id`.
 
 ---
 
@@ -183,7 +183,7 @@ flowchart TD
   A["Client: semantic_search(query, top_k, as_of?)"] --> B
 
   subgraph PG["PostgreSQL (asyncpg)"]
-    B["Generate query embedding\n(trimcp/embeddings)"]
+    B["Generate query embedding\n(nce/embeddings)"]
     B --> C["pgvector ANN search\nmemories.embedding <=> query\nWHERE created_at <= as_of\nLIMIT top_k × 4 candidates"]
     C --> D["RLS filter\n(namespace_id = current_setting(...))"]
     D --> E["Top-k memory rows\n(id, mongo_ref_id, confidence)"]
@@ -226,7 +226,7 @@ Several high-volume tables use **PostgreSQL RANGE partitioning**:
 
 **Constraint**: PostgreSQL requires all primary key and unique constraints on partitioned tables to include the partition key. This means child tables **cannot** declare standard `FOREIGN KEY ... REFERENCES memories(id)` — they must include `created_at` in the reference, which is impractical for application code.
 
-**Solution** (see `architecture-v1.md` §8): TriMCP uses **application-layer consistency** enforced by:
+**Solution** (see `architecture-v1.md` §8): NCE uses **application-layer consistency** enforced by:
 1. Saga atomicity on every write path.
 2. Trigger-based parent-FK verification on `event_log`.
 3. The background GC sweeping for orphans on a configurable interval.
@@ -237,10 +237,10 @@ Several high-volume tables use **PostgreSQL RANGE partitioning**:
 
 `event_log` is **append-only** (Write-Once, Read-Many). No row is ever `UPDATE`d or `DELETE`d by the application:
 
-- All inserts go through `append_event()` in `trimcp/event_log.py`.
+- All inserts go through `append_event()` in `nce/event_log.py`.
 - `append_event()` must be called **inside** the same `conn.transaction()` as the data write — never as a fire-and-forget (FIX-012).
 - An advisory-lock sequence counter ensures monotonic `event_seq` values within a namespace.
-- Monthly partitions are pre-created by `trimcp_ensure_event_log_monthly_partitions()` at startup and renewed by the admin server lifespan.
+- Monthly partitions are pre-created by `nce_ensure_event_log_monthly_partitions()` at startup and renewed by the admin server lifespan.
 - Merkle chain integrity is verified at startup via `verify_merkle_chain()`.
 
 ---
@@ -249,14 +249,14 @@ Several high-volume tables use **PostgreSQL RANGE partitioning**:
 
 | Module | Responsibility |
 |---|---|
-| `trimcp/orchestrator.py` | `TriStackEngine` — pool init, orchestrator wiring, `connect()` / `disconnect()` |
-| `trimcp/db_utils.py` | `scoped_pg_session`, `unmanaged_pg_connection`, `POOL_ACQUIRE_TIMEOUT` |
-| `trimcp/orchestrators/memory.py` | Memory CRUD, Saga pattern, PII integration |
-| `trimcp/orchestrators/graph.py` | KG write path, GraphOrchestrator |
-| `trimcp/orchestrators/temporal.py` | Temporal (as_of) query filters |
-| `trimcp/orchestrators/namespace.py` | Namespace lifecycle management |
-| `trimcp/graph_query.py` | `GraphRAGTraverser` — BFS recursive CTE |
-| `trimcp/event_log.py` | `append_event()`, Merkle chain, `verify_merkle_chain()` |
-| `trimcp/garbage_collector.py` | Keyset-paginated orphan sweep |
-| `trimcp/signing.py` | HMAC-SHA256 signing, key rotation |
-| `trimcp/pii.py` | PII detection / redaction pipeline |
+| `nce/orchestrator.py` | `TriStackEngine` — pool init, orchestrator wiring, `connect()` / `disconnect()` |
+| `nce/db_utils.py` | `scoped_pg_session`, `unmanaged_pg_connection`, `POOL_ACQUIRE_TIMEOUT` |
+| `nce/orchestrators/memory.py` | Memory CRUD, Saga pattern, PII integration |
+| `nce/orchestrators/graph.py` | KG write path, GraphOrchestrator |
+| `nce/orchestrators/temporal.py` | Temporal (as_of) query filters |
+| `nce/orchestrators/namespace.py` | Namespace lifecycle management |
+| `nce/graph_query.py` | `GraphRAGTraverser` — BFS recursive CTE |
+| `nce/event_log.py` | `append_event()`, Merkle chain, `verify_merkle_chain()` |
+| `nce/garbage_collector.py` | Keyset-paginated orphan sweep |
+| `nce/signing.py` | HMAC-SHA256 signing, key rotation |
+| `nce/pii.py` | PII detection / redaction pipeline |

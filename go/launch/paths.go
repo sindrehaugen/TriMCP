@@ -7,7 +7,7 @@ import (
 	"runtime"
 )
 
-// DataDir returns %APPDATA%\TriMCP on Windows, ~/Library/Application Support/TriMCP on macOS, ~/.config/trimcp elsewhere.
+// DataDir returns %APPDATA%\NCE on Windows, ~/Library/Application Support/NCE on macOS, ~/.config/nce elsewhere.
 func DataDir() (string, error) {
 	switch runtime.GOOS {
 	case "windows":
@@ -15,19 +15,19 @@ func DataDir() (string, error) {
 		if appData == "" {
 			return "", fmt.Errorf("APPDATA is not set")
 		}
-		return filepath.Join(appData, "TriMCP"), nil
+		return filepath.Join(appData, "NCE"), nil
 	case "darwin":
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(home, "Library", "Application Support", "TriMCP"), nil
+		return filepath.Join(home, "Library", "Application Support", "NCE"), nil
 	default:
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(home, ".config", "trimcp"), nil
+		return filepath.Join(home, ".config", "nce"), nil
 	}
 }
 
@@ -40,7 +40,7 @@ func ModeFilePath() (string, error) {
 	return filepath.Join(d, "mode.txt"), nil
 }
 
-// EnvFilePath is <DataDir>/.env (TriMCP per-user config layered by installer).
+// EnvFilePath is <DataDir>/.env (NCE per-user config layered by installer).
 func EnvFilePath() (string, error) {
 	d, err := DataDir()
 	if err != nil {
@@ -59,9 +59,9 @@ func LogDir() (string, error) {
 }
 
 // AppRoot returns the directory containing server.py, start_worker.py, and compose files.
-// Resolution: TRIMCP_APP_ROOT env, else directory of executable, else current working directory.
+// Resolution: NCE_APP_ROOT env, else directory of executable, else current working directory.
 func AppRoot() (string, error) {
-	if v := os.Getenv("TRIMCP_APP_ROOT"); v != "" {
+	if v := os.Getenv("NCE_APP_ROOT"); v != "" {
 		return filepath.Clean(v), nil
 	}
 	exe, err := os.Executable()

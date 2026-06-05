@@ -1,4 +1,4 @@
-"""Contract tests for A2A MCP handlers (trimcp.a2a_mcp_handlers).
+"""Contract tests for A2A MCP handlers (nce.a2a_mcp_handlers).
 
 Mocks engine.pg_pool and domain functions — no live Postgres.
 """
@@ -14,15 +14,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from trimcp import a2a_mcp_handlers
-from trimcp.a2a import (
+from nce import a2a_mcp_handlers
+from nce.a2a import (
     A2AAuthorizationError,
     A2AGrantResponse,
     A2AScope,
     A2AScopeViolationError,
     VerifiedGrant,
 )
-from trimcp.mcp_errors import MCP_INVALID_PARAMS, McpError
+from nce.mcp_errors import MCP_INVALID_PARAMS, McpError
 
 NS = "00000000-0000-4000-8000-000000000001"
 CONSUMER_NS = "00000000-0000-4000-8000-000000000002"
@@ -125,7 +125,7 @@ async def test_revoke_grant_invalid_uuid_raises(engine: MagicMock) -> None:
 @pytest.mark.asyncio
 async def test_revoke_grant_valid_uuid_passed_to_domain(engine: MagicMock) -> None:
     grant_id = uuid.uuid4()
-    with patch("trimcp.a2a_mcp_handlers.revoke_grant", new_callable=AsyncMock) as revoke:
+    with patch("nce.a2a_mcp_handlers.revoke_grant", new_callable=AsyncMock) as revoke:
         revoke.return_value = True
         out = await a2a_mcp_handlers.handle_a2a_revoke_grant(
             engine,
@@ -145,7 +145,7 @@ async def test_revoke_grant_valid_uuid_passed_to_domain(engine: MagicMock) -> No
 async def test_list_grants_serializes_uuid_and_status_ok(engine: MagicMock) -> None:
     grant_id = uuid.uuid4()
     expires = datetime.now(timezone.utc)
-    with patch("trimcp.a2a_mcp_handlers.list_grants", new_callable=AsyncMock) as list_grants:
+    with patch("nce.a2a_mcp_handlers.list_grants", new_callable=AsyncMock) as list_grants:
         list_grants.return_value = [
             {"grant_id": grant_id, "expires_at": expires},
         ]
@@ -197,8 +197,8 @@ async def test_query_shared_valid_token_calls_verify_token(
 ) -> None:
     verified = _verified_grant(scopes=scopes)
     with (
-        patch("trimcp.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
-        patch("trimcp.a2a_mcp_handlers.enforce_scope"),
+        patch("nce.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
+        patch("nce.a2a_mcp_handlers.enforce_scope"),
     ):
         verify.return_value = verified
         await a2a_mcp_handlers.handle_a2a_query_shared(engine, _query_shared_base())
@@ -222,8 +222,8 @@ async def test_query_shared_memory_without_resource_id_raises(
 ) -> None:
     verified = _verified_grant(scopes=scopes)
     with (
-        patch("trimcp.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
-        patch("trimcp.a2a_mcp_handlers.enforce_scope") as enforce,
+        patch("nce.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
+        patch("nce.a2a_mcp_handlers.enforce_scope") as enforce,
     ):
         verify.return_value = verified
         with pytest.raises(ValueError, match="resource_id"):
@@ -241,8 +241,8 @@ async def test_query_shared_namespace_without_resource_id_uses_owner_fallback(
     owner_ns = uuid.UUID(OWNER_NS)
     verified = _verified_grant(owner_namespace_id=owner_ns, scopes=scopes)
     with (
-        patch("trimcp.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
-        patch("trimcp.a2a_mcp_handlers.enforce_scope") as enforce,
+        patch("nce.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
+        patch("nce.a2a_mcp_handlers.enforce_scope") as enforce,
     ):
         verify.return_value = verified
         await a2a_mcp_handlers.handle_a2a_query_shared(
@@ -271,8 +271,8 @@ async def test_query_shared_top_k_passed_to_semantic_search(
     verified = _verified_grant(scopes=scopes)
     engine.semantic_search = AsyncMock(return_value=[])
     with (
-        patch("trimcp.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
-        patch("trimcp.a2a_mcp_handlers.enforce_scope"),
+        patch("nce.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
+        patch("nce.a2a_mcp_handlers.enforce_scope"),
     ):
         verify.return_value = verified
         await a2a_mcp_handlers.handle_a2a_query_shared(engine, _query_shared_base(top_k=5))
@@ -296,8 +296,8 @@ async def test_query_shared_results_datetime_json_default_str(
     ts = datetime.now(timezone.utc)
     engine.semantic_search = AsyncMock(return_value=[{"created_at": ts}])
     with (
-        patch("trimcp.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
-        patch("trimcp.a2a_mcp_handlers.enforce_scope"),
+        patch("nce.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
+        patch("nce.a2a_mcp_handlers.enforce_scope"),
     ):
         verify.return_value = verified
         out = await a2a_mcp_handlers.handle_a2a_query_shared(engine, _query_shared_base())
@@ -316,10 +316,10 @@ async def test_query_shared_self_access_logs_warning(
 ) -> None:
     owner_ns = uuid.UUID(CONSUMER_NS)
     verified = _verified_grant(owner_namespace_id=owner_ns, scopes=scopes)
-    caplog.set_level(logging.WARNING, logger="trimcp.a2a_mcp_handlers")
+    caplog.set_level(logging.WARNING, logger="nce.a2a_mcp_handlers")
     with (
-        patch("trimcp.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
-        patch("trimcp.a2a_mcp_handlers.enforce_scope"),
+        patch("nce.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
+        patch("nce.a2a_mcp_handlers.enforce_scope"),
     ):
         verify.return_value = verified
         await a2a_mcp_handlers.handle_a2a_query_shared(
@@ -334,10 +334,10 @@ async def test_query_shared_different_namespace_no_self_access_warning(
     engine: MagicMock, caplog: pytest.LogCaptureFixture, scopes: list[A2AScope]
 ) -> None:
     verified = _verified_grant(scopes=scopes)
-    caplog.set_level(logging.WARNING, logger="trimcp.a2a_mcp_handlers")
+    caplog.set_level(logging.WARNING, logger="nce.a2a_mcp_handlers")
     with (
-        patch("trimcp.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
-        patch("trimcp.a2a_mcp_handlers.enforce_scope"),
+        patch("nce.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
+        patch("nce.a2a_mcp_handlers.enforce_scope"),
     ):
         verify.return_value = verified
         await a2a_mcp_handlers.handle_a2a_query_shared(engine, _query_shared_base())
@@ -355,8 +355,8 @@ async def test_query_shared_enforce_scope_failure_propagates(
 ) -> None:
     verified = _verified_grant(scopes=scopes)
     with (
-        patch("trimcp.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
-        patch("trimcp.a2a_mcp_handlers.enforce_scope") as enforce,
+        patch("nce.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
+        patch("nce.a2a_mcp_handlers.enforce_scope") as enforce,
     ):
         verify.return_value = verified
         enforce.side_effect = A2AScopeViolationError("scope denied")
@@ -369,7 +369,7 @@ async def test_query_shared_enforce_scope_failure_propagates(
 async def test_query_shared_verify_token_failure_propagates(
     engine: MagicMock,
 ) -> None:
-    with patch("trimcp.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify:
+    with patch("nce.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify:
         verify.side_effect = A2AAuthorizationError("Invalid or revoked sharing token.")
         with pytest.raises(McpError):
             await a2a_mcp_handlers.handle_a2a_query_shared(engine, _query_shared_base())
@@ -392,7 +392,7 @@ async def test_create_grant_returns_json(engine: MagicMock) -> None:
     scopes_json = json.dumps(
         [{"resource_type": "namespace", "resource_id": NS, "permissions": ["read"]}]
     )
-    with patch("trimcp.a2a_mcp_handlers.create_grant", new_callable=AsyncMock) as create:
+    with patch("nce.a2a_mcp_handlers.create_grant", new_callable=AsyncMock) as create:
         create.return_value = grant
         out = await a2a_mcp_handlers.handle_a2a_create_grant(
             engine,

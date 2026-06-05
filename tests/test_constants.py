@@ -1,7 +1,7 @@
 """
 tests/test_constants.py
 
-Structural contracts for trimcp.constants — verifies the canonical values
+Structural contracts for nce.constants — verifies the canonical values
 that were previously scattered across three modules.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from trimcp.constants import (
+from nce.constants import (
     ALLOWED_LANGUAGES,
     MAX_GRAPH_DEPTH,
     MAX_TOP_K,

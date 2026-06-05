@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from trimcp.signing import (
+from nce.signing import (
     _ACTIVE_KEY_CACHE_KEY,
     MutableKeyBuffer,
     _CachedKey,
@@ -176,7 +176,7 @@ class TestGetActiveKeyTTLCache:
         cache = _key_cache
         cache.clear()
         # Simulate an encrypted key blob — use a simple v2 blob with known key
-        from trimcp.signing import (
+        from nce.signing import (
             MasterKey,
             encrypt_signing_key,
         )
@@ -188,10 +188,10 @@ class TestGetActiveKeyTTLCache:
 
         conn = _make_mock_conn({"key_id": "sk-db", "encrypted_key": encrypted})
 
-        # Must have TRIMCP_MASTER_KEY set for require_master_key()
+        # Must have NCE_MASTER_KEY set for require_master_key()
         import os
 
-        os.environ["TRIMCP_MASTER_KEY"] = "M" * 32
+        os.environ["NCE_MASTER_KEY"] = "M" * 32
 
         key_id, raw = await get_active_key(conn)
         assert key_id == "sk-db"
@@ -210,10 +210,10 @@ class TestGetActiveKeyTTLCache:
 
         import os
 
-        os.environ["TRIMCP_MASTER_KEY"] = "M" * 32
+        os.environ["NCE_MASTER_KEY"] = "M" * 32
 
         conn = _make_mock_conn(None)  # No row returned
-        from trimcp.signing import NoActiveSigningKeyError
+        from nce.signing import NoActiveSigningKeyError
 
         with pytest.raises(NoActiveSigningKeyError, match="No active signing key"):
             await get_active_key(conn)
@@ -261,7 +261,7 @@ class TestGetKeyByIdTTLCache:
         cache = _key_cache
         cache.clear()
 
-        from trimcp.signing import MasterKey, encrypt_signing_key
+        from nce.signing import MasterKey, encrypt_signing_key
 
         mk = MasterKey(b"M" * 32)
         raw_key = b"E" * 32
@@ -272,7 +272,7 @@ class TestGetKeyByIdTTLCache:
 
         import os
 
-        os.environ["TRIMCP_MASTER_KEY"] = "M" * 32
+        os.environ["NCE_MASTER_KEY"] = "M" * 32
 
         raw = await get_key_by_id(conn, "sk-miss")
         assert raw == b"E" * 32
@@ -287,10 +287,10 @@ class TestGetKeyByIdTTLCache:
 
         import os
 
-        os.environ["TRIMCP_MASTER_KEY"] = "M" * 32
+        os.environ["NCE_MASTER_KEY"] = "M" * 32
 
         conn = _make_mock_conn(None)
-        from trimcp.signing import NoActiveSigningKeyError
+        from nce.signing import NoActiveSigningKeyError
 
         with pytest.raises(NoActiveSigningKeyError, match="not found"):
             await get_key_by_id(conn, "sk-nonexistent")

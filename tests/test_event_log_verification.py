@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from trimcp.event_log import DataIntegrityError, verify_event_signature
-from trimcp.replay import ObservationalReplay
+from nce.event_log import DataIntegrityError, verify_event_signature
+from nce.replay import ObservationalReplay
 
 
 @pytest.mark.asyncio
@@ -28,9 +28,9 @@ async def test_verify_event_signature_tampered_record_raises_error():
     }
 
     # Patch get_key_by_id and verify_fields
-    with patch("trimcp.signing.get_key_by_id", new_callable=AsyncMock) as mock_get_key:
+    with patch("nce.signing.get_key_by_id", new_callable=AsyncMock) as mock_get_key:
         mock_get_key.return_value = b"raw_secret_key"
-        with patch("trimcp.signing.verify_fields", return_value=False) as mock_verify:
+        with patch("nce.signing.verify_fields", return_value=False) as mock_verify:
             with pytest.raises(DataIntegrityError, match="Event signature mismatch for event_id="):
                 await verify_event_signature(conn, record)
             mock_verify.assert_called_once()
@@ -78,17 +78,17 @@ async def test_observational_replay_yields_error_on_tampering():
 
     replay = ObservationalReplay(pool)
 
-    with patch("trimcp.replay.verify_event_signature", new_callable=AsyncMock) as mock_verify:
+    with patch("nce.replay.verify_event_signature", new_callable=AsyncMock) as mock_verify:
         mock_verify.side_effect = DataIntegrityError("Tampering detected.")
 
         # We need to mock _create_run and _build_event_query to not fail
         with patch(
-            "trimcp.replay._create_run",
+            "nce.replay._create_run",
             new_callable=AsyncMock,
             return_value=uuid.uuid4(),
         ):
-            with patch("trimcp.replay._build_event_query", return_value=("SQL", [])):
-                with patch("trimcp.replay._finish_run", new_callable=AsyncMock):
+            with patch("nce.replay._build_event_query", return_value=("SQL", [])):
+                with patch("nce.replay._finish_run", new_callable=AsyncMock):
                     with pytest.raises(DataIntegrityError):
                         async for item in replay.execute(source_namespace_id=uuid.uuid4()):
                             if item["type"] == "error":

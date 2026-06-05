@@ -1,5 +1,5 @@
 """
-TriMCP Internal Health Probe
+NCE Internal Health Probe
 Verifies connectivity to all required backends (Redis, PG, Mongo)
 and checks embedding model readiness.
 """
@@ -12,14 +12,14 @@ import asyncpg
 from motor.motor_asyncio import AsyncIOMotorClient
 from redis import from_url as redis_from_url
 
-from trimcp.config import cfg
+from nce.config import cfg
 
 logging.basicConfig(level=logging.ERROR)
 
 
 async def probe():
     # 0. P0 Security Check: Master Key
-    if not cfg.TRIMCP_MASTER_KEY or len(cfg.TRIMCP_MASTER_KEY) < 32:
+    if not cfg.NCE_MASTER_KEY or len(cfg.NCE_MASTER_KEY) < 32:
         print("CRITICAL: TRIMCP_MASTER_KEY is missing or too short")
         return False
 
@@ -58,12 +58,12 @@ async def probe():
     # 5. Embedding Engine Check (Soft Check)
     # We check if the model is reachable or loaded if we are the worker/server
     # For now, reaching the cognitive sidecar is a good proxy.
-    if cfg.TRIMCP_COGNITIVE_BASE_URL:
+    if cfg.NCE_COGNITIVE_BASE_URL:
         import httpx
 
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
-                resp = await client.get(f"{cfg.TRIMCP_COGNITIVE_BASE_URL}/health")
+                resp = await client.get(f"{cfg.NCE_COGNITIVE_BASE_URL}/health")
                 if resp.status_code != 200:
                     print(f"Cognitive Engine Unhealthy: {resp.status_code}")
                     return False

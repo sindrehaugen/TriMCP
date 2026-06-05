@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from trimcp.models import NamespacePIIConfig, PIIEntity, PIIPolicy
-from trimcp.pii import (
+from nce.models import NamespacePIIConfig, PIIEntity, PIIPolicy
+from nce.pii import (
     _MAX_ENTITIES,
     _MAX_TEXT_BYTES,
     _pseudonym_hmac_key_material,
@@ -50,7 +50,7 @@ def test_scan_sync_entity_cap_clears_values_and_raises():
 
 
 def test_master_key_fallback_differs_by_namespace_id(monkeypatch):
-    monkeypatch.setenv("TRIMCP_MASTER_KEY", "m" * 32)
+    monkeypatch.setenv("NCE_MASTER_KEY", "m" * 32)
     cfg_a = NamespacePIIConfig(pseudonym_hmac_key=None, namespace_id="namespace-a")
     cfg_b = NamespacePIIConfig(pseudonym_hmac_key=None, namespace_id="namespace-b")
     key_a = _pseudonym_hmac_key_material(cfg_a, namespace_id=cfg_a.namespace_id)
@@ -61,7 +61,7 @@ def test_master_key_fallback_differs_by_namespace_id(monkeypatch):
 
 
 def test_same_namespace_master_key_fallback_is_deterministic(monkeypatch):
-    monkeypatch.setenv("TRIMCP_MASTER_KEY", "m" * 32)
+    monkeypatch.setenv("NCE_MASTER_KEY", "m" * 32)
     cfg = NamespacePIIConfig(pseudonym_hmac_key=None, namespace_id="ns-stable")
     key = _pseudonym_hmac_key_material(cfg, namespace_id=cfg.namespace_id)
     a = _pseudonym_token_suffix("EMAIL", "user@example.com", key)
@@ -71,7 +71,7 @@ def test_same_namespace_master_key_fallback_is_deterministic(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_process_same_namespace_identical_pseudonyms(monkeypatch):
-    monkeypatch.setenv("TRIMCP_MASTER_KEY", "m" * 32)
+    monkeypatch.setenv("NCE_MASTER_KEY", "m" * 32)
     cfg = NamespacePIIConfig(
         entity_types=["EMAIL"],
         policy=PIIPolicy.pseudonymise,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from trimcp.dead_letter_queue import _sanitize_dlq_kwargs
+from nce.dead_letter_queue import _sanitize_dlq_kwargs
 
 
 class TestSanitizeDlqKwargs:

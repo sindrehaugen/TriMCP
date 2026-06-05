@@ -1,4 +1,4 @@
-// Package launch implements trimcp-launch orchestration (TriMCP Enterprise Deployment Plan §6.4).
+// Package launch implements nce-launch orchestration (NCE Enterprise Deployment Plan §6.4).
 //
 // Orphan-process note (RCA): SIGKILL (kill -9), “End task”, or taskkill /F cannot run deferred cleanup
 // or signal handlers. Child Python processes (server.py, start_worker.py) and Docker containers started

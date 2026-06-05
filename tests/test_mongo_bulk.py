@@ -1,4 +1,4 @@
-"""Unit tests for trimcp.mongo_bulk (FIX-021 / FIX-024 hardened batch reads)."""
+"""Unit tests for nce.mongo_bulk (FIX-021 / FIX-024 hardened batch reads)."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ from unittest.mock import MagicMock
 import pytest
 from bson import ObjectId
 
-from trimcp.mongo_bulk import (
+from nce.mongo_bulk import (
     _fetch_field_by_refs,
     normalize_payload_ref,
 )
 
-_LOGGER = "trimcp.mongo_bulk"
+_LOGGER = "nce.mongo_bulk"
 
 
 class AsyncIteratorMock:

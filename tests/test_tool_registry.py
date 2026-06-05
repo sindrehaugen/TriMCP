@@ -1,4 +1,4 @@
-"""Structural contract tests for trimcp.tool_registry.
+"""Structural contract tests for nce.tool_registry.
 
 These tests pin the exact shape of TOOL_REGISTRY and its derived sets so that
 accidental additions, removals, or mis-classification of tool metadata are
@@ -15,7 +15,7 @@ import inspect
 
 import pytest
 
-from trimcp.tool_registry import (
+from nce.tool_registry import (
     ADMIN_ONLY_TOOLS,
     CACHEABLE_TOOLS,
     MIGRATION_TOOLS,
@@ -90,7 +90,7 @@ _EXPECTED_MUTATION_TOOLS: frozenset[str] = frozenset(
         "replay_dlq",
         "purge_dlq",
         # migration mutations (3) — always present in the registry;
-        # the dispatch gate (TRIMCP_DISABLE_MIGRATION_MCP) is applied separately.
+        # the dispatch gate (NCE_DISABLE_MIGRATION_MCP) is applied separately.
         "start_migration",
         "commit_migration",
         "abort_migration",

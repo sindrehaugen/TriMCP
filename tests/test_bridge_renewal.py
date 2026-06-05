@@ -8,15 +8,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import jwt
 import pytest
 
-from trimcp.bridge_renewal import (
+from nce.bridge_renewal import (
     _acquire_refresh_lock,
     _perform_oauth_refresh,
     _release_refresh_lock,
     ensure_fresh_oauth_token,
     get_token_expiry,
 )
-from trimcp.config import cfg
-from trimcp.signing import decrypt_signing_key, encrypt_signing_key, require_master_key
+from nce.config import cfg
+from nce.signing import decrypt_signing_key, encrypt_signing_key, require_master_key
 
 
 def _generate_jwt(expires_at_dt: datetime) -> str:
@@ -94,7 +94,7 @@ async def test_ensure_fresh_oauth_token_background_warning_refresh() -> None:
     row = {"id": uuid.uuid4(), "provider": "sharepoint", "oauth_access_token_enc": enc}
 
     # Use patch to check if bg refresh was scheduled
-    with patch("trimcp.bridge_renewal._bg_refresh_token", new_callable=AsyncMock) as mock_bg:
+    with patch("nce.bridge_renewal._bg_refresh_token", new_callable=AsyncMock) as mock_bg:
         res = await ensure_fresh_oauth_token(pool, row, "")
         # Returns current access token immediately
         assert res == "warning_access_123"
@@ -141,7 +141,7 @@ async def test_ensure_fresh_oauth_token_expired_synchronous_refresh() -> None:
     }
 
     with patch(
-        "trimcp.bridge_renewal._perform_oauth_refresh",
+        "nce.bridge_renewal._perform_oauth_refresh",
         new_callable=AsyncMock,
         return_value=refreshed_payload,
     ) as mock_refresh:
@@ -196,7 +196,7 @@ async def test_perform_oauth_refresh_sharepoint(
     mock_client.post = AsyncMock(return_value=MockResponse())
     mock_client.__aenter__.return_value = mock_client
 
-    with patch("trimcp.bridge_renewal.httpx.AsyncClient", return_value=mock_client):
+    with patch("nce.bridge_renewal.httpx.AsyncClient", return_value=mock_client):
         res = await _perform_oauth_refresh("sharepoint", "old_refresh")
         assert res["access_token"] == "new_sp_access"
         assert res["refresh_token"] == "new_sp_refresh"
@@ -228,7 +228,7 @@ async def test_perform_oauth_refresh_gdrive(monkeypatch: pytest.MonkeyPatch) -> 
     mock_client.post = AsyncMock(return_value=MockResponse())
     mock_client.__aenter__.return_value = mock_client
 
-    with patch("trimcp.bridge_renewal.httpx.AsyncClient", return_value=mock_client):
+    with patch("nce.bridge_renewal.httpx.AsyncClient", return_value=mock_client):
         res = await _perform_oauth_refresh("gdrive", "old_refresh")
         assert res["access_token"] == "new_gd_access"
         # Since Google doesn't always return a new refresh token unless prompted, fallback to original refresh
@@ -260,7 +260,7 @@ async def test_perform_oauth_refresh_dropbox(monkeypatch: pytest.MonkeyPatch) ->
     mock_client.post = AsyncMock(return_value=MockResponse())
     mock_client.__aenter__.return_value = mock_client
 
-    with patch("trimcp.bridge_renewal.httpx.AsyncClient", return_value=mock_client):
+    with patch("nce.bridge_renewal.httpx.AsyncClient", return_value=mock_client):
         res = await _perform_oauth_refresh("dropbox", "old_refresh")
         assert res["access_token"] == "new_db_access"
         assert res["refresh_token"] is None
@@ -281,7 +281,7 @@ async def test_acquire_refresh_lock_success():
 
     mock_cls = MagicMock()
     mock_cls.from_url = MagicMock(return_value=mock_redis)
-    with patch("trimcp.bridge_renewal.AsyncRedis", mock_cls):
+    with patch("nce.bridge_renewal.AsyncRedis", mock_cls):
         client = await _acquire_refresh_lock("sharepoint", "bridge-123")
         assert client is mock_redis
         mock_redis.set.assert_awaited_once()
@@ -298,7 +298,7 @@ async def test_acquire_refresh_lock_already_held():
 
     mock_cls = MagicMock()
     mock_cls.from_url = MagicMock(return_value=mock_redis)
-    with patch("trimcp.bridge_renewal.AsyncRedis", mock_cls):
+    with patch("nce.bridge_renewal.AsyncRedis", mock_cls):
         client = await _acquire_refresh_lock("gdrive", "bridge-456")
         assert client is None
         mock_redis.close.assert_awaited_once()

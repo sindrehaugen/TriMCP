@@ -1,4 +1,4 @@
-# TriMCP Service Integrations
+# NCE Service Integrations
 
 End-to-end data flow, retry logic, and state management for all supported downstream document bridges:
 **SharePoint / OneDrive** (Microsoft Graph), **Google Workspace / Drive**, and **Dropbox**.
@@ -10,7 +10,7 @@ For all environment variables, see [configuration_reference.md](configuration_re
 
 ## 1. Architecture Overview
 
-The bridge system uses a **push (webhook) model**: TriMCP registers a subscription with each cloud provider, and the provider delivers change notifications to TriMCP's webhook receiver. Only changed documents are re-indexed — no polling waste.
+The bridge system uses a **push (webhook) model**: NCE registers a subscription with each cloud provider, and the provider delivers change notifications to NCE's webhook receiver. Only changed documents are re-indexed — no polling waste.
 
 ```mermaid
 flowchart TB
@@ -20,11 +20,11 @@ flowchart TB
     DB[Dropbox]
   end
 
-  subgraph TriMCP["TriMCP"]
-    WR["Webhook Receiver\n(trimcp/webhook_receiver)"]
+  subgraph NCE["NCE"]
+    WR["Webhook Receiver\n(nce/webhook_receiver)"]
     BRepo["bridge_repo.py\n(subscription state — Postgres)"]
     BRenew["bridge_renewal.py\n(cron refresh)"]
-    Cron["trimcp.cron\n(APScheduler)"]
+    Cron["nce.cron\n(APScheduler)"]
     TSE["TriStackEngine\n(index_file / store_memory)"]
     RQ["Redis Queue\n(start_worker.py)"]
   end
@@ -69,7 +69,7 @@ It queries `bridge_subscriptions` for entries expiring within `BRIDGE_RENEWAL_LO
 
 ```mermaid
 sequenceDiagram
-  participant CR as trimcp.cron (APScheduler)
+  participant CR as nce.cron (APScheduler)
   participant BR as bridge_renewal.py
   participant PG as Postgres (bridge_subscriptions)
   participant SP as SharePoint API
@@ -178,7 +178,7 @@ If the receiver fails to enqueue to Redis (queue full or Redis down), it logs an
 
 ### 4b. RQ worker layer (async)
 
-The `index_file` RQ job handles indexing failures with TriMCP's standard retry policy:
+The `index_file` RQ job handles indexing failures with NCE's standard retry policy:
 
 | Attempt | Back-off | Behaviour |
 |---|---|---|

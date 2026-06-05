@@ -7,7 +7,7 @@ import math
 
 import pytest
 
-from trimcp.reembedding_migration import (
+from nce.reembedding_migration import (
     InMemoryReembeddingStore,
     MemoryEmbeddingRow,
     MigrationPhase,

@@ -1,7 +1,7 @@
 """
 Minimal cognitive sidecar stub for local development.
 
-Exposes the same surface as ghcr.io/sindrehaugen/trimcp-cognitive:v1:
+Exposes the same surface as ghcr.io/sindrehaugen/nce-cognitive:v1:
   GET  /health                — liveness probe
   POST /v1/chat/completions   — OpenAI-compatible chat (returns empty JSON object)
   POST /v1/embeddings         — OpenAI-compatible embeddings (768-dim zero vector)

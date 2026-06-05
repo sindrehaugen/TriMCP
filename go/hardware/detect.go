@@ -1,5 +1,5 @@
-w// Package hardware implements installer-time host detection for TriMCP (§8.4).
-// All subprocess probes use bounded contexts (<5s) so trimcp-launch cannot hang on boot.
+w// Package hardware implements installer-time host detection for NCE (§8.4).
+// All subprocess probes use bounded contexts (<5s) so nce-launch cannot hang on boot.
 package hardware
 
 import (
@@ -15,7 +15,7 @@ const (
 	probeTimeout  = 4 * time.Second
 )
 
-// HardwareInfo mirrors §8.4 (detectHardware / HardwareInfo) and maps to TRIMCP_BACKEND in .env.
+// HardwareInfo mirrors §8.4 (detectHardware / HardwareInfo) and maps to NCE_BACKEND in .env.
 // CPUModel is the §8.4 detectCPU() string.
 type HardwareInfo struct {
 	CUDA     bool   `json:"cuda"`      // NVIDIA — nvidia-smi
@@ -99,7 +99,7 @@ func DetectHardware() HardwareInfo {
 	return info
 }
 
-// SuggestedBackend matches trimcp.embeddings.detect_backend priority (CUDA → ROCm → XPU → OpenVINO NPU → MPS → CPU).
+// SuggestedBackend matches nce.embeddings.detect_backend priority (CUDA → ROCm → XPU → OpenVINO NPU → MPS → CPU).
 func SuggestedBackend(h HardwareInfo) string {
 	switch {
 	case h.CUDA:

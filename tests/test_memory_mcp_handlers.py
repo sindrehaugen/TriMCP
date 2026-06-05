@@ -1,4 +1,4 @@
-"""Contract tests for trimcp.memory_mcp_handlers (serialization, agent_id, async paths)."""
+"""Contract tests for nce.memory_mcp_handlers (serialization, agent_id, async paths)."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from trimcp import memory_mcp_handlers
-from trimcp.mcp_errors import MCP_INVALID_PARAMS, McpError
+from nce import memory_mcp_handlers
+from nce.mcp_errors import MCP_INVALID_PARAMS, McpError
 
 NS = "00000000-0000-4000-8000-000000000001"
 

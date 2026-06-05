@@ -8,14 +8,14 @@ from unittest.mock import patch
 
 import pytest
 
-os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-test-key-32chars-long!!")
+os.environ.setdefault("NCE_MASTER_KEY", "dev-test-key-32chars-long!!")
 
 
 def test_update_dotenv_raises_when_persist_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     from admin_server import update_dotenv
 
-    with patch("trimcp.admin_http_support.cfg") as mock_cfg:
-        mock_cfg.TRIMCP_ALLOW_ADMIN_DOTENV_PERSIST = False
+    with patch("nce.admin_http_support.cfg") as mock_cfg:
+        mock_cfg.NCE_ALLOW_ADMIN_DOTENV_PERSIST = False
         with pytest.raises(RuntimeError, match="disabled"):
             update_dotenv({"FOO": "bar"})
 
@@ -27,8 +27,8 @@ def test_update_dotenv_atomic_write(tmp_path, monkeypatch: pytest.MonkeyPatch) -
     dotenv.write_text("EXISTING=old\nOTHER=keep\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    with patch("trimcp.admin_http_support.cfg") as mock_cfg:
-        mock_cfg.TRIMCP_ALLOW_ADMIN_DOTENV_PERSIST = True
+    with patch("nce.admin_http_support.cfg") as mock_cfg:
+        mock_cfg.NCE_ALLOW_ADMIN_DOTENV_PERSIST = True
         update_dotenv({"EXISTING": "new", "ADDED": "yes"})
 
     text = dotenv.read_text(encoding="utf-8")
@@ -41,7 +41,7 @@ def test_update_dotenv_atomic_write(tmp_path, monkeypatch: pytest.MonkeyPatch) -
 def test_admin_error_response_hides_detail_in_prod() -> None:
     from admin_server import _admin_error_response
 
-    with patch("trimcp.admin_http_support.cfg") as mock_cfg:
+    with patch("nce.admin_http_support.cfg") as mock_cfg:
         mock_cfg.IS_PROD = True
         resp = _admin_error_response("boom", ValueError("secret internals"))
     body = json.loads(resp.body)
@@ -52,7 +52,7 @@ def test_admin_error_response_hides_detail_in_prod() -> None:
 def test_admin_error_response_includes_detail_in_dev() -> None:
     from admin_server import _admin_error_response
 
-    with patch("trimcp.admin_http_support.cfg") as mock_cfg:
+    with patch("nce.admin_http_support.cfg") as mock_cfg:
         mock_cfg.IS_PROD = False
         resp = _admin_error_response("boom", ValueError("secret internals"))
     body = json.loads(resp.body)
@@ -62,7 +62,7 @@ def test_admin_error_response_includes_detail_in_dev() -> None:
 def test_admin_validation_error_hides_pydantic_detail_in_prod() -> None:
     from pydantic import BaseModel, ValidationError
 
-    from trimcp.admin_http_support import admin_validation_error
+    from nce.admin_http_support import admin_validation_error
 
     class _M(BaseModel):
         x: int
@@ -70,7 +70,7 @@ def test_admin_validation_error_hides_pydantic_detail_in_prod() -> None:
     try:
         _M.model_validate({"x": "nope"})
     except ValidationError as exc:
-        with patch("trimcp.admin_http_support.cfg") as mock_cfg:
+        with patch("nce.admin_http_support.cfg") as mock_cfg:
             mock_cfg.IS_PROD = True
             resp = admin_validation_error(exc, status_code=422)
     body = json.loads(resp.body)
@@ -79,9 +79,9 @@ def test_admin_validation_error_hides_pydantic_detail_in_prod() -> None:
 
 
 def test_sanitize_admin_reason_redacts_unexpected_in_prod() -> None:
-    from trimcp.admin_http_support import sanitize_admin_reason
+    from nce.admin_http_support import sanitize_admin_reason
 
-    with patch("trimcp.admin_http_support.cfg") as mock_cfg:
+    with patch("nce.admin_http_support.cfg") as mock_cfg:
         mock_cfg.IS_PROD = True
         reason = sanitize_admin_reason(RuntimeError("connection string leaked"))
     assert reason == "RuntimeError"

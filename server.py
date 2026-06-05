@@ -1,6 +1,6 @@
 """
 Tri-Stack MCP Server
-Wraps TriStackEngine in the official MCP Python SDK (stdio transport).
+Wraps NCEEngine in the official MCP Python SDK (stdio transport).
 Exposes MCP tools to any MCP-compatible LLM client (Claude Desktop, Cursor, etc.).
 GC background task is co-launched on startup for absolute data purity.
 
@@ -9,7 +9,7 @@ only to the Starlette **admin** stack in ``admin_server.py``. This process does 
 mount ``HMACAuthMiddleware``.
 
 MCP stdio tenant tools require ``mcp_api_key`` matching ``TRIMCP_MCP_API_KEY`` (required
-in production via ``trimcp.config.validate``). Admin MCP tools require ``admin_api_key``.
+in production via ``nce.config.validate``). Admin MCP tools require ``admin_api_key``.
 Configure both in the MCP client ``env`` block (see ``mcp_config.json.example``).
 
 When ``TRIMCP_DISTRIBUTED_REPLAY`` is truthy and ``REDIS_URL`` is configured, admins
@@ -28,21 +28,21 @@ from typing import Any
 from mcp.server import Server
 from mcp.types import TextContent, Tool
 
-from trimcp import TriStackEngine
-from trimcp.correlation import correlation_id_var
-from trimcp.mcp_stdio_dispatch import execute_call_tool
-from trimcp.mcp_stdio_rpc import _check_admin
-from trimcp.mcp_stdio_tools import TOOLS
+from nce import NCEEngine
+from nce.correlation import correlation_id_var
+from nce.mcp_stdio_dispatch import execute_call_tool
+from nce.mcp_stdio_rpc import _check_admin
+from nce.mcp_stdio_tools import TOOLS
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [MCP] %(levelname)s %(message)s",
 )
-log = logging.getLogger("tri-stack-mcp")
+log = logging.getLogger("nce-mcp")
 
 # --- Global engine instance (lifecycle managed by lifespan) ---
-engine: TriStackEngine | None = None
-app = Server("tri-stack-memory")
+engine: NCEEngine | None = None
+app = Server("nce-memory")
 
 # Backward-compatible re-exports for tests and legacy imports.
 __all__ = [
@@ -71,10 +71,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
 
 async def main() -> None:
-    from trimcp.mcp_stdio_main import run_stdio_server
+    from nce.mcp_stdio_main import run_stdio_server
 
     global engine
-    engine = TriStackEngine()
+    engine = NCEEngine()
     try:
         await run_stdio_server(app=app, engine=engine)
     finally:

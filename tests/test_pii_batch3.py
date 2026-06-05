@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from trimcp import pii as pii_mod
-from trimcp.models import NamespacePIIConfig
-from trimcp.pii import _get_analyzer, _scan_sync
+from nce import pii as pii_mod
+from nce.models import NamespacePIIConfig
+from nce.pii import _get_analyzer, _scan_sync
 
 
 @pytest.fixture(autouse=True)

@@ -1,4 +1,4 @@
-"""Unit tests for trimcp.snapshot_mcp_handlers (streaming export, row serialization)."""
+"""Unit tests for nce.snapshot_mcp_handlers (streaming export, row serialization)."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from uuid import uuid4
 
 import pytest
 
-from trimcp.orchestrator import TriStackEngine
-from trimcp.snapshot_mcp_handlers import (
+from nce.orchestrator import NCEEngine
+from nce.snapshot_mcp_handlers import (
     _MAX_EXPORT_ROWS,
     _STREAM_PROGRESS_INTERVAL,
     _serialize_memory_row,
@@ -74,9 +74,9 @@ def _mock_pool_with_conn(
 
 
 @pytest.fixture
-def mock_engine_with_pool() -> TriStackEngine:
+def mock_engine_with_pool() -> NCEEngine:
     """Minimal engine with pg_pool set (unused on invalid-UUID path)."""
-    engine = TriStackEngine()
+    engine = NCEEngine()
     engine.pg_pool = MagicMock()
     return engine
 
@@ -88,7 +88,7 @@ def mock_engine_with_pool() -> TriStackEngine:
 
 @pytest.mark.asyncio
 async def test_stream_snapshot_export_invalid_uuid_yields_single_error(
-    mock_engine_with_pool: TriStackEngine,
+    mock_engine_with_pool: NCEEngine,
 ) -> None:
     lines = await _collect(stream_snapshot_export(mock_engine_with_pool, "not-a-valid-uuid"))
 
@@ -106,7 +106,7 @@ async def test_stream_snapshot_export_invalid_uuid_yields_single_error(
 
 @pytest.mark.asyncio
 async def test_stream_snapshot_export_exception_message_sanitized(
-    mock_engine_with_pool: TriStackEngine,
+    mock_engine_with_pool: NCEEngine,
 ) -> None:
     mock_engine_with_pool.pg_pool.acquire.side_effect = RuntimeError("secret db failure")
 
@@ -133,7 +133,7 @@ async def test_stream_snapshot_export_exception_message_sanitized(
 
 @pytest.mark.asyncio
 async def test_stream_snapshot_export_over_max_rows_yields_error(
-    mock_engine_with_pool: TriStackEngine,
+    mock_engine_with_pool: NCEEngine,
 ) -> None:
     pool, conn, _ = _mock_pool_with_conn(_MAX_EXPORT_ROWS + 1)
     mock_engine_with_pool.pg_pool = pool
@@ -150,7 +150,7 @@ async def test_stream_snapshot_export_over_max_rows_yields_error(
 
 @pytest.mark.asyncio
 async def test_stream_snapshot_export_at_max_rows_boundary_proceeds(
-    mock_engine_with_pool: TriStackEngine,
+    mock_engine_with_pool: NCEEngine,
 ) -> None:
     pool, conn, _ = _mock_pool_with_conn(_MAX_EXPORT_ROWS)
     mock_engine_with_pool.pg_pool = pool
@@ -168,7 +168,7 @@ async def test_stream_snapshot_export_at_max_rows_boundary_proceeds(
 
 @pytest.mark.asyncio
 async def test_stream_snapshot_export_zero_rows_metadata_and_complete_only(
-    mock_engine_with_pool: TriStackEngine,
+    mock_engine_with_pool: NCEEngine,
 ) -> None:
     pool, _, _ = _mock_pool_with_conn(0)
     mock_engine_with_pool.pg_pool = pool
@@ -184,7 +184,7 @@ async def test_stream_snapshot_export_zero_rows_metadata_and_complete_only(
 
 @pytest.mark.asyncio
 async def test_stream_snapshot_export_cursor_sql_stable_order_by(
-    mock_engine_with_pool: TriStackEngine,
+    mock_engine_with_pool: NCEEngine,
 ) -> None:
     pool, conn, _ = _mock_pool_with_conn(0)
     mock_engine_with_pool.pg_pool = pool
@@ -203,13 +203,13 @@ async def test_stream_snapshot_export_cursor_sql_stable_order_by(
 
 @pytest.mark.asyncio
 async def test_stream_snapshot_export_fetchmany_timeout_yields_error(
-    mock_engine_with_pool: TriStackEngine,
+    mock_engine_with_pool: NCEEngine,
 ) -> None:
     pool, _, _ = _mock_pool_with_conn(1)
     mock_engine_with_pool.pg_pool = pool
 
     with patch(
-        "trimcp.snapshot_mcp_handlers.asyncio.wait_for",
+        "nce.snapshot_mcp_handlers.asyncio.wait_for",
         side_effect=asyncio.TimeoutError,
     ):
         lines = await _collect(stream_snapshot_export(mock_engine_with_pool, str(uuid4())))
@@ -223,7 +223,7 @@ async def test_stream_snapshot_export_fetchmany_timeout_yields_error(
 
 @pytest.mark.asyncio
 async def test_stream_snapshot_export_fetchmany_within_timeout_streams_rows(
-    mock_engine_with_pool: TriStackEngine,
+    mock_engine_with_pool: NCEEngine,
 ) -> None:
     row = _memory_row_dict()
     pool, _, _ = _mock_pool_with_conn(1, fetchmany=_fetchmany_from_batches([row], []))
@@ -243,7 +243,7 @@ async def test_stream_snapshot_export_fetchmany_within_timeout_streams_rows(
 
 @pytest.mark.asyncio
 async def test_stream_snapshot_export_progress_at_every_1000th_row(
-    mock_engine_with_pool: TriStackEngine,
+    mock_engine_with_pool: NCEEngine,
 ) -> None:
     assert _STREAM_PROGRESS_INTERVAL == 1000
     rows = [_memory_row_dict() for _ in range(2500)]
@@ -262,7 +262,7 @@ async def test_stream_snapshot_export_progress_at_every_1000th_row(
 
 @pytest.mark.asyncio
 async def test_stream_snapshot_export_no_progress_when_under_interval(
-    mock_engine_with_pool: TriStackEngine,
+    mock_engine_with_pool: NCEEngine,
 ) -> None:
     rows = [_memory_row_dict() for _ in range(500)]
     pool, _, _ = _mock_pool_with_conn(500, fetchmany=_fetchmany_from_batches(rows))

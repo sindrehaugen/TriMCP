@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from trimcp.background_task_manager import (
+from nce.background_task_manager import (
     TaskRegistry,
     TrackedTask,
     _mark_complete_sync,
@@ -86,7 +86,7 @@ async def test_task_registry_stats_failure() -> None:
 @pytest.mark.asyncio
 async def test_stub_metrics_parity() -> None:
     """Ensure _StubMetric stub objects behave cleanly like Prometheus clients."""
-    from trimcp.background_task_manager import _StubMetric
+    from nce.background_task_manager import _StubMetric
 
     stub = _StubMetric("test_metric", "doc")
     # All fluent api calls should chain safely

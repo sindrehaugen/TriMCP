@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from trimcp.auth import _IN_MEMORY_LIMITS, RateLimitError, admin_rate_limit
+from nce.auth import _IN_MEMORY_LIMITS, RateLimitError, admin_rate_limit
 
 
 @pytest.mark.asyncio
@@ -79,7 +79,7 @@ async def test_admin_rate_limit_key_resolution():
 
     # 1. Namespace ID
     with patch(
-        "trimcp.auth._check_in_memory_rate_limit",
+        "nce.auth._check_in_memory_rate_limit",
         side_effect=lambda k, lim, p: ns_calls.append(k) or True,
     ):
         await sample_tool(engine, {"namespace_id": "ns-123"})
@@ -87,7 +87,7 @@ async def test_admin_rate_limit_key_resolution():
 
     # 2. Admin Identity
     with patch(
-        "trimcp.auth._check_in_memory_rate_limit",
+        "nce.auth._check_in_memory_rate_limit",
         side_effect=lambda k, lim, p: id_calls.append(k) or True,
     ):
         await sample_tool(engine, {"admin_identity": "support-agent"})
@@ -95,7 +95,7 @@ async def test_admin_rate_limit_key_resolution():
 
     # 3. Tool Name fallback
     with patch(
-        "trimcp.auth._check_in_memory_rate_limit",
+        "nce.auth._check_in_memory_rate_limit",
         side_effect=lambda k, lim, p: tool_calls.append(k) or True,
     ):
         await sample_tool(engine, {})
@@ -172,16 +172,16 @@ async def test_server_call_tool_translates_rate_limit_error():
     mock_reservation.rollback = AsyncMock()
 
     with patch("server.engine", engine):
-        with patch("trimcp.quotas.consume_for_tool", AsyncMock(return_value=mock_reservation)):
+        with patch("nce.quotas.consume_for_tool", AsyncMock(return_value=mock_reservation)):
             with patch(
-                "trimcp.admin_mcp_handlers.handle_get_health",
+                "nce.admin_mcp_handlers.handle_get_health",
                 side_effect=RateLimitError("test", 1, 60),
             ):
                 # call_tool now returns JSON-RPC 2.0 error responses as TextContent
                 # instead of raising ValueError.
                 result = await call_tool(
                     "get_health",
-                    {"admin_api_key": os.environ["TRIMCP_ADMIN_API_KEY"]},
+                    {"admin_api_key": os.environ["NCE_ADMIN_API_KEY"]},
                 )
 
             assert len(result) == 1

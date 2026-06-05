@@ -10,7 +10,7 @@ Verification strategy:
 
 from __future__ import annotations
 
-from trimcp.models import PIIEntity
+from nce.models import PIIEntity
 
 
 class TestPIIEntityRepr:

@@ -1,4 +1,4 @@
-"""Tests for trimcp.mcp_errors — @mcp_handler exception mapping and security."""
+"""Tests for nce.mcp_errors — @mcp_handler exception mapping and security."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import uuid
 
 import pytest
 
-from trimcp.config import cfg
-from trimcp.mcp_errors import (
+from nce.config import cfg
+from nce.mcp_errors import (
     MCP_INTERNAL_ERROR,
     MCP_INVALID_PARAMS,
     MCP_QUOTA_EXCEEDED,
@@ -28,7 +28,7 @@ async def raises_validation_error(engine, arguments):
 
 @mcp_handler
 async def raises_quota_exceeded(engine, arguments):
-    from trimcp.quotas import QuotaExceededError
+    from nce.quotas import QuotaExceededError
 
     raise QuotaExceededError("Quota exceeded for namespace=abc resource='memory' (daily limit)")
 
@@ -55,7 +55,7 @@ async def raises_generic_exception(engine, arguments):
 
 @mcp_handler
 async def raises_scope_error(engine, arguments):
-    from trimcp.auth import ScopeError
+    from nce.auth import ScopeError
 
     raise ScopeError("admin scope required")
 
@@ -119,7 +119,7 @@ class TestMcpHandlerMapping:
 
     @pytest.mark.asyncio
     async def test_scope_error_propagates_unchanged(self):
-        from trimcp.auth import ScopeError
+        from nce.auth import ScopeError
 
         with pytest.raises(ScopeError):
             await raises_scope_error(None, {})

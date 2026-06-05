@@ -7,13 +7,13 @@ import (
 	"strings"
 )
 
-// TriMCPEnv models the subset of TriMCP .env keys the shim may rewrite after hardware detection (Phase 4).
-type TriMCPEnv struct {
-	TRIMCP_BACKEND string
+// NCEEnv models the subset of NCE .env keys the shim may rewrite after hardware detection (Phase 4).
+type NCEEnv struct {
+	NCE_BACKEND string
 }
 
 // Load parses known keys from an existing .env (best-effort; ignores comments and unknown keys).
-func (e *TriMCPEnv) Load(path string) error {
+func (e *NCEEnv) Load(path string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -28,20 +28,20 @@ func (e *TriMCPEnv) Load(path string) error {
 			continue
 		}
 		switch strings.TrimSpace(k) {
-		case "TRIMCP_BACKEND":
-			e.TRIMCP_BACKEND = strings.TrimSpace(v)
+		case "NCE_BACKEND":
+			e.NCE_BACKEND = strings.TrimSpace(v)
 		}
 	}
 	return nil
 }
 
-// MergeIntoFile inserts or replaces TRIMCP_BACKEND without discarding unrelated keys or comments.
+// MergeIntoFile inserts or replaces NCE_BACKEND without discarding unrelated keys or comments.
 // Creates parent directories and the file atomically when possible.
-func (e *TriMCPEnv) MergeIntoFile(path string) error {
-	if strings.TrimSpace(e.TRIMCP_BACKEND) == "" {
-		return fmt.Errorf("TRIMCP_BACKEND is empty")
+func (e *NCEEnv) MergeIntoFile(path string) error {
+	if strings.TrimSpace(e.NCE_BACKEND) == "" {
+		return fmt.Errorf("NCE_BACKEND is empty")
 	}
-	val := strings.TrimSpace(e.TRIMCP_BACKEND)
+	val := strings.TrimSpace(e.NCE_BACKEND)
 	raw, err := os.ReadFile(path)
 	var lines []string
 	if err != nil {
@@ -53,7 +53,7 @@ func (e *TriMCPEnv) MergeIntoFile(path string) error {
 		lines = strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
 	}
 
-	const key = "TRIMCP_BACKEND"
+	const key = "NCE_BACKEND"
 	prefix := key + "="
 	replaced := false
 OUTER:

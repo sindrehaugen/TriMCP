@@ -1,4 +1,4 @@
-"""Unit tests for trimcp.semantic_search (batch 1–3 hardening)."""
+"""Unit tests for nce.semantic_search (batch 1–3 hardening)."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from bson import ObjectId
 
-from trimcp.embeddings import VECTOR_DIM
-from trimcp.semantic_search import (
+from nce.embeddings import VECTOR_DIM
+from nce.semantic_search import (
     _MAX_RAW_DATA_CHARS,
     semantic_search,
 )
@@ -85,15 +85,15 @@ async def _run_search(
         return MagicMock()
 
     create_task_patch = (
-        patch("trimcp.semantic_search.asyncio.create_task")
+        patch("nce.semantic_search.asyncio.create_task")
         if schedule_reinforcement
         else patch(
-            "trimcp.semantic_search.asyncio.create_task",
+            "nce.semantic_search.asyncio.create_task",
             side_effect=_discard_background_task,
         )
     )
 
-    with patch("trimcp.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
+    with patch("nce.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
         with create_task_patch:
             return await semantic_search(
                 pg_pool=pool,
@@ -117,7 +117,7 @@ class TestBatch1EmbeddingProtection:
         async def slow_embed(_query: str):
             await asyncio.sleep(999)
 
-        with patch("trimcp.semantic_search._EMBED_TIMEOUT_SECONDS", 0.05):
+        with patch("nce.semantic_search._EMBED_TIMEOUT_SECONDS", 0.05):
             with pytest.raises(asyncio.TimeoutError):
                 await _run_search(embedding_fn=slow_embed)
 
@@ -139,9 +139,9 @@ class TestBatch1SortStability:
         async def embed(_query: str):
             return [0.0] * VECTOR_DIM
 
-        with patch("trimcp.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
+        with patch("nce.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
             with patch(
-                "trimcp.semantic_search.asyncio.create_task",
+                "nce.semantic_search.asyncio.create_task",
                 side_effect=lambda coro: (coro.close(), MagicMock())[1],
             ):
                 await semantic_search(
@@ -165,9 +165,9 @@ class TestBatch1SortStability:
         for _ in range(3):
             mock_conn = _base_pg_conn([])
             pool = MagicMock()
-            with patch("trimcp.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
+            with patch("nce.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
                 with patch(
-                    "trimcp.semantic_search.asyncio.create_task",
+                    "nce.semantic_search.asyncio.create_task",
                     side_effect=lambda coro: (coro.close(), MagicMock())[1],
                 ):
                     await semantic_search(
@@ -220,9 +220,9 @@ class TestBatch2JoinAndHydration:
         async def embed(_query: str):
             return [0.0] * VECTOR_DIM
 
-        with patch("trimcp.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
+        with patch("nce.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
             with patch(
-                "trimcp.semantic_search.asyncio.create_task",
+                "nce.semantic_search.asyncio.create_task",
                 side_effect=lambda coro: (coro.close(), MagicMock())[1],
             ):
                 await semantic_search(
@@ -300,9 +300,9 @@ class TestBatch2JoinAndHydration:
 
         mock_conn = _base_pg_conn(rows)
         pool = MagicMock()
-        with patch("trimcp.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
+        with patch("nce.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
             with patch(
-                "trimcp.semantic_search.asyncio.create_task",
+                "nce.semantic_search.asyncio.create_task",
                 side_effect=lambda coro: (coro.close(), MagicMock())[1],
             ):
                 await semantic_search(
@@ -372,8 +372,8 @@ class TestBatch3BackgroundReinforcement:
 
         mock_conn = _base_pg_conn(rows)
         pool = MagicMock()
-        with patch("trimcp.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
-            with patch("trimcp.salience.reinforce", side_effect=slow_reinforce):
+        with patch("nce.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
+            with patch("nce.salience.reinforce", side_effect=slow_reinforce):
                 started = time.monotonic()
                 out = await semantic_search(
                     pg_pool=pool,
@@ -401,8 +401,8 @@ class TestBatch3BackgroundReinforcement:
 
         mock_conn = _base_pg_conn([_pg_row(payload_ref=oid, memory_id=mid, score=1.0)])
         pool = MagicMock()
-        with patch("trimcp.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
-            with patch("trimcp.salience.reinforce", side_effect=failing_reinforce):
+        with patch("nce.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
+            with patch("nce.salience.reinforce", side_effect=failing_reinforce):
                 out = await semantic_search(
                     pg_pool=pool,
                     mongo_client=_mongo_client(),
@@ -439,8 +439,8 @@ class TestBatch3BackgroundReinforcement:
 
         mock_conn = _base_pg_conn(rows)
         pool = MagicMock()
-        with patch("trimcp.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
-            with patch("trimcp.salience.reinforce", side_effect=track_reinforce):
+        with patch("nce.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
+            with patch("nce.salience.reinforce", side_effect=track_reinforce):
                 await semantic_search(
                     pg_pool=pool,
                     mongo_client=_mongo_client(),

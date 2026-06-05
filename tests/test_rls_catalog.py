@@ -2,7 +2,7 @@
 
 import pytest
 
-from trimcp.event_log import EXPECTED_TENANT_RLS_TABLES, verify_rls_catalog_consistency
+from nce.event_log import EXPECTED_TENANT_RLS_TABLES, verify_rls_catalog_consistency
 
 
 async def _require_current_tenant_columns(conn) -> None:
@@ -42,7 +42,7 @@ async def _require_current_tenant_columns(conn) -> None:
     if missing:
         sample = "; ".join(missing[:12])
         pytest.skip(
-            "RLS catalog test needs current trimcp/schema.sql tenant tables — gaps: "
+            "RLS catalog test needs current nce/schema.sql tenant tables — gaps: "
             f"{sample}" + ("; …" if len(missing) > 12 else ""),
         )
 

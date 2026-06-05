@@ -1,5 +1,5 @@
 """
-BATCH 1 — trimcp.temporal UTC normalization and future-timestamp guards.
+BATCH 1 — nce.temporal UTC normalization and future-timestamp guards.
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trimcp.temporal import (
+from nce.temporal import (
     _normalize_to_utc,
     as_of_query,
     parse_as_of,
@@ -21,7 +21,7 @@ TZ_UTC = timezone.utc
 @pytest.fixture
 def _patch_temporal_wall_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
     """Pinned wall clock so 'future' timestamps are controllable."""
-    import trimcp.temporal as temporal_mod
+    import nce.temporal as temporal_mod
 
     fixed = datetime(2026, 5, 5, 12, 0, 0, tzinfo=TZ_UTC)
 
@@ -38,9 +38,9 @@ def _patch_temporal_wall_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
 
 @pytest.fixture
 def _disable_temporal_lookback(monkeypatch: pytest.MonkeyPatch) -> None:
-    from trimcp.config import cfg
+    from nce.config import cfg
 
-    monkeypatch.setattr(cfg, "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS", 0)
+    monkeypatch.setattr(cfg, "NCE_MAX_TEMPORAL_LOOKBACK_DAYS", 0)
 
 
 def test_parse_as_of_plus0200_normalizes_to_utc(

@@ -1,14 +1,14 @@
 """
-Saga rollback tests for TriStackEngine.store_memory().
+Saga rollback tests for NCEEngine.store_memory().
 
 Verifies the phase-aware universal rollback across Mongo, Postgres, and the
 Knowledge Graph.  Each test simulates a failure at a specific saga stage and
 asserts that all artefacts from earlier stages are cleanly removed.
 
 NOTE: graph_extract and pii_process are imported *inside* store_memory() with
-  from trimcp.graph_extractor import extract as graph_extract
-  from trimcp.pii import process as pii_process
-so patches must target the source modules, not trimcp.orchestrator.
+  from nce.graph_extractor import extract as graph_extract
+  from nce.pii import process as pii_process
+so patches must target the source modules, not nce.orchestrator.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import pytest
 
 
 def _make_payload(**overrides):
-    from trimcp.models import AssertionType, MemoryType, StoreMemoryRequest
+    from nce.models import AssertionType, MemoryType, StoreMemoryRequest
 
     defaults = dict(
         namespace_id="00000000-0000-4000-8000-000000000001",
@@ -109,10 +109,10 @@ def _pii_mock(sanitized="sanitized", redacted=False, entities_found=0, vault_ent
 # Patch targets — graph_extract/pii_process/append_event are imported inside
 # store_memory(), so we patch the SOURCE modules, not orchestrator.
 # ---------------------------------------------------------------------------
-_P_EMBED = "trimcp.orchestrator._embeddings.embed_batch"
-_P_GRAPH = "trimcp.graph_extractor.extract"
-_P_PII = "trimcp.pii.process"
-_P_EVENT = "trimcp.event_log.append_event"
+_P_EMBED = "nce.orchestrator._embeddings.embed_batch"
+_P_GRAPH = "nce.graph_extractor.extract"
+_P_PII = "nce.pii.process"
+_P_EVENT = "nce.event_log.append_event"
 
 
 # ---------------------------------------------------------------------------
@@ -122,9 +122,9 @@ _P_EVENT = "trimcp.event_log.append_event"
 
 @pytest.fixture
 def engine():
-    from trimcp.orchestrator import TriStackEngine
+    from nce.orchestrator import NCEEngine
 
-    eng = TriStackEngine()
+    eng = NCEEngine()
     eng.mongo_client, eng._mongo_collection = _make_mongo_mock()
     eng.pg_pool, eng._pg_conn = _make_pg_mock()
     eng.redis_client = AsyncMock()
@@ -172,7 +172,7 @@ async def test_rollback_all_stores_when_post_pg_failure(engine):
     )
     engine.redis_client.setex = AsyncMock(side_effect=Exception("Redis exploded"))
 
-    from trimcp.models import KGEdge, KGNode
+    from nce.models import KGEdge, KGNode
 
     entities = [KGNode(label="Alice", entity_type="Person", source_text="Alice")]
     triplets = [

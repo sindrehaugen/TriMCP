@@ -1,4 +1,4 @@
-"""Tests for trimcp.mcp_args — metadata validation, cache keys, namespace extraction."""
+"""Tests for nce.mcp_args — metadata validation, cache keys, namespace extraction."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 from pydantic import BaseModel
 
-from trimcp.mcp_args import (
+from nce.mcp_args import (
     _canonicalize,
     _validate_metadata_values,
     build_cache_key,

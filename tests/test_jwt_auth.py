@@ -1,7 +1,7 @@
 """
 tests/test_jwt_auth.py
 
-Unit tests for ``trimcp/jwt_auth.py`` — decode, key loading, and middleware.
+Unit tests for ``nce/jwt_auth.py`` — decode, key loading, and middleware.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from trimcp.config import cfg
-from trimcp.jwt_auth import (
+from nce.config import cfg
+from nce.jwt_auth import (
     JWTAuthMiddleware,
     JWTDecodeError,
     _build_jwt_key,
@@ -68,13 +68,13 @@ def _base_payload(**overrides: Any) -> dict[str, Any]:
 
 @pytest.fixture
 def hs256_cfg(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cfg, "TRIMCP_JWT_SECRET", hs256_secret)
-    monkeypatch.setattr(cfg, "TRIMCP_JWT_ALGORITHM", "HS256")
-    monkeypatch.setattr(cfg, "TRIMCP_JWT_ISSUER", "")
-    monkeypatch.setattr(cfg, "TRIMCP_JWT_AUDIENCE", "")
+    monkeypatch.setattr(cfg, "NCE_JWT_SECRET", hs256_secret)
+    monkeypatch.setattr(cfg, "NCE_JWT_ALGORITHM", "HS256")
+    monkeypatch.setattr(cfg, "NCE_JWT_ISSUER", "")
+    monkeypatch.setattr(cfg, "NCE_JWT_AUDIENCE", "")
     monkeypatch.setattr(cfg, "IS_PROD", False)
-    monkeypatch.setattr(cfg, "TRIMCP_JWT_LEEWAY_SECONDS", 0)
-    monkeypatch.setattr(cfg, "TRIMCP_JWT_PUBLIC_KEY", "")
+    monkeypatch.setattr(cfg, "NCE_JWT_LEEWAY_SECONDS", 0)
+    monkeypatch.setattr(cfg, "NCE_JWT_PUBLIC_KEY", "")
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ class TestRequiredClaimsPolicy:
     def test_iss_required_when_issuer_configured(
         self, hs256_cfg: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_ISSUER", "trimcp-issuer")
+        monkeypatch.setattr(cfg, "NCE_JWT_ISSUER", "nce-issuer")
         token = make_token(_base_payload())
         with pytest.raises(JWTDecodeError) as excinfo:
             decode_agent_token(token)
@@ -159,8 +159,8 @@ class TestRequiredClaimsPolicy:
     def test_iss_validated_when_configured(
         self, hs256_cfg: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_ISSUER", "trimcp-issuer")
-        token = make_token(_base_payload(iss="trimcp-issuer"))
+        monkeypatch.setattr(cfg, "NCE_JWT_ISSUER", "nce-issuer")
+        token = make_token(_base_payload(iss="nce-issuer"))
         ctx = decode_agent_token(token)
         assert ctx.namespace_id == UUID(valid_ns_id)
 
@@ -172,25 +172,25 @@ class TestRequiredClaimsPolicy:
     def test_aud_required_when_audience_arg_provided(self, hs256_cfg: None) -> None:
         token = make_token(_base_payload())
         with pytest.raises(JWTDecodeError) as excinfo:
-            decode_agent_token(token, audience="trimcp_a2a")
+            decode_agent_token(token, audience="nce_a2a")
         assert "aud" in excinfo.value.reason or excinfo.value.reason == ("jwt_audience_mismatch")
 
     def test_aud_validated_when_audience_arg_provided(self, hs256_cfg: None) -> None:
-        token = make_token(_base_payload(aud="trimcp_web"))
+        token = make_token(_base_payload(aud="nce_web"))
         with pytest.raises(JWTDecodeError) as excinfo:
-            decode_agent_token(token, audience="trimcp_a2a")
+            decode_agent_token(token, audience="nce_a2a")
         assert excinfo.value.reason == "jwt_audience_mismatch"
 
     def test_correct_aud_accepted(self, hs256_cfg: None) -> None:
-        token = make_token(_base_payload(aud="trimcp_a2a"))
-        ctx = decode_agent_token(token, audience="trimcp_a2a")
+        token = make_token(_base_payload(aud="nce_a2a"))
+        ctx = decode_agent_token(token, audience="nce_a2a")
         assert ctx.namespace_id == UUID(valid_ns_id)
 
     def test_aud_from_global_config_used_when_not_overridden(
         self, hs256_cfg: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_AUDIENCE", "trimcp_global")
-        token = make_token(_base_payload(aud="trimcp_global"))
+        monkeypatch.setattr(cfg, "NCE_JWT_AUDIENCE", "nce_global")
+        token = make_token(_base_payload(aud="nce_global"))
         ctx = decode_agent_token(token, audience=None)
         assert ctx.namespace_id == UUID(valid_ns_id)
 
@@ -204,29 +204,29 @@ class TestBuildJwtKey:
     def test_public_key_with_hmac_algorithm_raises_runtime_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_PUBLIC_KEY", _SAMPLE_PEM)
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_ALGORITHM", "HS256")
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_SECRET", "")
+        monkeypatch.setattr(cfg, "NCE_JWT_PUBLIC_KEY", _SAMPLE_PEM)
+        monkeypatch.setattr(cfg, "NCE_JWT_ALGORITHM", "HS256")
+        monkeypatch.setattr(cfg, "NCE_JWT_SECRET", "")
         with pytest.raises(RuntimeError, match="not asymmetric"):
             _build_jwt_key("HS256")
 
     def test_asymmetric_algorithm_without_public_key_raises(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_PUBLIC_KEY", "")
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_SECRET", hs256_secret)
-        with pytest.raises(RuntimeError, match="requires TRIMCP_JWT_PUBLIC_KEY"):
+        monkeypatch.setattr(cfg, "NCE_JWT_PUBLIC_KEY", "")
+        monkeypatch.setattr(cfg, "NCE_JWT_SECRET", hs256_secret)
+        with pytest.raises(RuntimeError, match="requires NCE_JWT_PUBLIC_KEY"):
             _build_jwt_key("RS256")
 
     def test_unsupported_algorithm_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_PUBLIC_KEY", "")
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_SECRET", hs256_secret)
+        monkeypatch.setattr(cfg, "NCE_JWT_PUBLIC_KEY", "")
+        monkeypatch.setattr(cfg, "NCE_JWT_SECRET", hs256_secret)
         with pytest.raises(RuntimeError, match="Unsupported JWT algorithm"):
             _build_jwt_key("RS9999")
 
     def test_no_key_configured_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_PUBLIC_KEY", "")
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_SECRET", "")
+        monkeypatch.setattr(cfg, "NCE_JWT_PUBLIC_KEY", "")
+        monkeypatch.setattr(cfg, "NCE_JWT_SECRET", "")
         with pytest.raises(RuntimeError, match="JWT key not configured"):
             _build_jwt_key("HS256")
 
@@ -249,7 +249,7 @@ class TestLoadPublicKey:
         key_file = key_dir / "pub.pem"
         pem_content = _SAMPLE_PEM.strip()
         key_file.write_text(pem_content, encoding="utf-8")
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_KEY_DIR", str(key_dir))
+        monkeypatch.setattr(cfg, "NCE_JWT_KEY_DIR", str(key_dir))
         uri = f"file://{key_file.resolve()}"
         assert _load_public_key(uri) == pem_content
 
@@ -260,7 +260,7 @@ class TestLoadPublicKey:
         allowed.mkdir()
         outside = tmp_path / "outside.pem"
         outside.write_text(_SAMPLE_PEM, encoding="utf-8")
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_KEY_DIR", str(allowed))
+        monkeypatch.setattr(cfg, "NCE_JWT_KEY_DIR", str(allowed))
         uri = f"file://{outside.resolve()}"
         with pytest.raises(ValueError, match="escapes allowed directory"):
             _load_public_key(uri)
@@ -268,9 +268,9 @@ class TestLoadPublicKey:
     def test_nonexistent_key_dir_gives_clean_valueerror(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        missing = "/nonexistent/trimcp-jwt-key-dir"
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_KEY_DIR", missing)
-        with pytest.raises(ValueError, match="TRIMCP_JWT_KEY_DIR does not exist"):
+        missing = "/nonexistent/nce-jwt-key-dir"
+        monkeypatch.setattr(cfg, "NCE_JWT_KEY_DIR", missing)
+        with pytest.raises(ValueError, match="NCE_JWT_KEY_DIR does not exist"):
             _load_public_key(f"file://{missing}/key.pem")
 
     def test_missing_file_raises_valueerror(
@@ -278,7 +278,7 @@ class TestLoadPublicKey:
     ) -> None:
         key_dir = tmp_path / "keys"
         key_dir.mkdir()
-        monkeypatch.setattr(cfg, "TRIMCP_JWT_KEY_DIR", str(key_dir))
+        monkeypatch.setattr(cfg, "NCE_JWT_KEY_DIR", str(key_dir))
         missing = key_dir / "missing.pem"
         with pytest.raises(ValueError, match="file not found"):
             _load_public_key(f"file://{missing.resolve()}")
@@ -402,7 +402,7 @@ class TestJWTAuthMiddleware:
         with TestClient(app) as client:
             resp = client.get("/api/v1/something")
         assert resp.status_code == 401
-        assert resp.headers.get("www-authenticate") == 'Bearer realm="trimcp"'
+        assert resp.headers.get("www-authenticate") == 'Bearer realm="nce"'
 
     def test_oversized_token_rejected(self, hs256_cfg: None) -> None:
         oversized = "a" * 8193

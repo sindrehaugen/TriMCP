@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from trimcp.a2a import (
+from nce.a2a import (
     A2AAuthorizationError,
     A2AGrantRequest,
     A2AMTLSError,
@@ -33,7 +33,7 @@ from trimcp.a2a import (
     validate_mtls_cert,
     verify_token,
 )
-from trimcp.auth import NamespaceContext
+from nce.auth import NamespaceContext
 
 
 def _future_expiry() -> datetime:
@@ -121,7 +121,7 @@ class TestVerifyTokenIsolation:
         )
         consumer = NamespaceContext(namespace_id=wrong_ns, agent_id="agent-b")
         with pytest.raises(A2AAuthorizationError, match="not valid for this namespace"):
-            await verify_token(conn, "trimcp_a2a_x", consumer)
+            await verify_token(conn, "nce_a2a_x", consumer)
 
     @pytest.mark.asyncio
     async def test_unknown_token_raises(self) -> None:
@@ -129,7 +129,7 @@ class TestVerifyTokenIsolation:
         conn.fetchrow = AsyncMock(return_value=None)
         consumer = NamespaceContext(namespace_id=uuid.uuid4(), agent_id="b")
         with pytest.raises(A2AAuthorizationError, match="Invalid or revoked"):
-            await verify_token(conn, "trimcp_a2a_y", consumer)
+            await verify_token(conn, "nce_a2a_y", consumer)
 
     @pytest.mark.asyncio
     async def test_wrong_consumer_agent_raises(self) -> None:
@@ -153,7 +153,7 @@ class TestVerifyTokenIsolation:
         )
         consumer = NamespaceContext(namespace_id=consumer_ns, agent_id="other-bot")
         with pytest.raises(A2AAuthorizationError, match="not valid for this agent"):
-            await verify_token(conn, "trimcp_a2a_za", consumer)
+            await verify_token(conn, "nce_a2a_za", consumer)
 
     @pytest.mark.asyncio
     async def test_verify_success_returns_owner(self) -> None:
@@ -176,7 +176,7 @@ class TestVerifyTokenIsolation:
             )
         )
         consumer = NamespaceContext(namespace_id=consumer_ns, agent_id="agent-b")
-        v = await verify_token(conn, "trimcp_a2a_zb", consumer)
+        v = await verify_token(conn, "nce_a2a_zb", consumer)
         assert v.owner_namespace_id == owner_ns
         assert v.owner_agent_id == "agent-a"
         assert len(v.scopes) == 1
@@ -212,7 +212,7 @@ class TestVerifyTokenExpiry:
         conn.execute = AsyncMock()
         consumer = NamespaceContext(namespace_id=consumer_ns, agent_id="agent-b")
         with pytest.raises(A2AAuthorizationError, match="expired"):
-            await verify_token(conn, "trimcp_a2a_zc", consumer)
+            await verify_token(conn, "nce_a2a_zc", consumer)
         conn.execute.assert_awaited()
 
 
@@ -241,11 +241,11 @@ class TestCreateGrantSqlShape:
             expires_in_seconds=120,
         )
         with (
-            patch("trimcp.a2a.set_namespace_context", new_callable=AsyncMock),
-            patch("trimcp.event_log.append_event", new_callable=AsyncMock),
+            patch("nce.a2a.set_namespace_context", new_callable=AsyncMock),
+            patch("nce.event_log.append_event", new_callable=AsyncMock),
         ):
             resp = await create_grant(conn, owner, req)
-        assert resp.sharing_token.startswith("trimcp_a2a_")
+        assert resp.sharing_token.startswith("nce_a2a_")
         conn.execute.assert_awaited_once()
 
 
@@ -278,14 +278,14 @@ class TestNormaliseFingerprint:
 
 class TestParseSansFromCertDict:
     def test_san_list_of_strings(self) -> None:
-        cert = {"san": ["DNS:agent-a.trimcp.local", "DNS:agent-b.trimcp.local"]}
+        cert = {"san": ["DNS:agent-a.nce.local", "DNS:agent-b.nce.local"]}
         sans = _parse_sans_from_cert_dict(cert)
-        assert sans == {"agent-a.trimcp.local", "agent-b.trimcp.local"}
+        assert sans == {"agent-a.nce.local", "agent-b.nce.local"}
 
     def test_common_name_fallback(self) -> None:
-        cert = {"commonName": "agent-c.trimcp.local"}
+        cert = {"commonName": "agent-c.nce.local"}
         sans = _parse_sans_from_cert_dict(cert)
-        assert sans == {"agent-c.trimcp.local"}
+        assert sans == {"agent-c.nce.local"}
 
     def test_empty_cert(self) -> None:
         sans = _parse_sans_from_cert_dict({})

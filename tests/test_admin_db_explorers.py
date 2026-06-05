@@ -10,12 +10,12 @@ import pytest
 from starlette.requests import Request
 
 # Ensure master key is populated for imports
-os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-test-key-32chars-long!!")
+os.environ.setdefault("NCE_MASTER_KEY", "dev-test-key-32chars-long!!")
 
 
 @pytest.fixture
 def mock_admin_engine():
-    """Fixture to provide a fully mocked TriStackEngine for the Admin server."""
+    """Fixture to provide a fully mocked NCEEngine for the Admin server."""
     engine = MagicMock()
 
     # Mock Postgres pool & connection
@@ -55,13 +55,13 @@ def mock_admin_engine():
             "db0": {"keys": 120},
         }
     )
-    redis_mock.scan = AsyncMock(return_value=(0, [b"trimcp:cache:xyz", b"trimcp:lock:abc"]))
+    redis_mock.scan = AsyncMock(return_value=(0, [b"nce:cache:xyz", b"nce:lock:abc"]))
     engine.redis_client = redis_mock
 
     # Mock MinIO S3 client
     minio_mock = MagicMock()
     b1 = MagicMock()
-    b1.name = "trimcp-audio"
+    b1.name = "nce-audio"
     minio_mock.list_buckets = MagicMock(return_value=[b1])
     obj1 = MagicMock()
     obj1.size = 2048
@@ -74,7 +74,7 @@ def mock_admin_engine():
 @pytest.mark.asyncio
 async def test_postgres_status_endpoint(mock_admin_engine):
     """Verify that the PostgreSQL status endpoint retrieves and formats estimates."""
-    with patch("trimcp.admin_state.engine", mock_admin_engine):
+    with patch("nce.admin_state.engine", mock_admin_engine):
         from admin_server import api_admin_db_postgres_status
 
         request = Request(
@@ -93,7 +93,7 @@ async def test_postgres_status_endpoint(mock_admin_engine):
 @pytest.mark.asyncio
 async def test_mongo_status_endpoint(mock_admin_engine):
     """Verify that the MongoDB status explorer lists collection sizes and indices."""
-    with patch("trimcp.admin_state.engine", mock_admin_engine):
+    with patch("nce.admin_state.engine", mock_admin_engine):
         from admin_server import api_admin_db_mongo_status
 
         request = Request({"type": "http", "method": "GET", "path": "/api/admin/db/mongo/status"})
@@ -110,7 +110,7 @@ async def test_mongo_status_endpoint(mock_admin_engine):
 @pytest.mark.asyncio
 async def test_redis_status_endpoint(mock_admin_engine):
     """Verify that the Redis status explorer categorizes caches vs locks using SCAN."""
-    with patch("trimcp.admin_state.engine", mock_admin_engine):
+    with patch("nce.admin_state.engine", mock_admin_engine):
         from admin_server import api_admin_db_redis_status
 
         request = Request({"type": "http", "method": "GET", "path": "/api/admin/db/redis/status"})
@@ -122,14 +122,14 @@ async def test_redis_status_endpoint(mock_admin_engine):
         assert data["info"]["used_memory_human"] == "5.2M"
         assert len(data["keyspaces"]) == 3
         # Match pattern allocations
-        assert data["keyspaces"][0]["count"] == 1  # trimcp:cache:xyz
-        assert data["keyspaces"][1]["count"] == 1  # trimcp:lock:abc
+        assert data["keyspaces"][0]["count"] == 1  # nce:cache:xyz
+        assert data["keyspaces"][1]["count"] == 1  # nce:lock:abc
 
 
 @pytest.mark.asyncio
 async def test_minio_status_endpoint(mock_admin_engine):
     """Verify that the MinIO status explorer parses S3 bucket footprints asynchronously."""
-    with patch("trimcp.admin_state.engine", mock_admin_engine):
+    with patch("nce.admin_state.engine", mock_admin_engine):
         from admin_server import api_admin_db_minio_status
 
         request = Request({"type": "http", "method": "GET", "path": "/api/admin/db/minio/status"})
@@ -139,7 +139,7 @@ async def test_minio_status_endpoint(mock_admin_engine):
         data = json.loads(response.body.decode())
         assert "buckets" in data
         assert len(data["buckets"]) == 1
-        assert data["buckets"][0]["name"] == "trimcp-audio"
+        assert data["buckets"][0]["name"] == "nce-audio"
         assert data["buckets"][0]["object_count"] == 1
         assert data["buckets"][0]["total_size_bytes"] == 2048
 
@@ -147,7 +147,7 @@ async def test_minio_status_endpoint(mock_admin_engine):
 @pytest.mark.asyncio
 async def test_connectors_status_endpoint():
     """Verify that Document Bridges configurations and active models are read from configuration."""
-    with patch("trimcp.admin_handlers._shared.cfg") as mock_cfg:
+    with patch("nce.admin_handlers._shared.cfg") as mock_cfg:
         mock_cfg.GDRIVE_OAUTH_CLIENT_ID = "gdrive-id"
         mock_cfg.GDRIVE_BRIDGE_TOKEN = "gdrive-token"
         mock_cfg.DROPBOX_OAUTH_CLIENT_ID = ""
@@ -155,7 +155,7 @@ async def test_connectors_status_endpoint():
         mock_cfg.AZURE_CLIENT_ID = "azure-id"
         mock_cfg.GRAPH_BRIDGE_TOKEN = ""
         mock_cfg.BRIDGE_CRON_INTERVAL_MINUTES = 45
-        mock_cfg.TRIMCP_COGNITIVE_BASE_URL = ""
+        mock_cfg.NCE_COGNITIVE_BASE_URL = ""
         mock_cfg.NLI_MODEL_ID = "nli-deberta"
 
         from admin_server import api_admin_connectors_status
@@ -181,7 +181,7 @@ async def test_connectors_status_endpoint():
 @pytest.mark.asyncio
 async def test_endpoints_unconnected_fallbacks():
     """Verify that datastore endpoints fail-closed gracefully if database engines are disconnected."""
-    with patch("trimcp.admin_state.engine", None):
+    with patch("nce.admin_state.engine", None):
         from admin_server import (
             api_admin_db_minio_status,
             api_admin_db_mongo_status,

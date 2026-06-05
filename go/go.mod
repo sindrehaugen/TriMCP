@@ -1,4 +1,4 @@
-module github.com/trimcp/tri-stack
+module github.com/nce/tri-stack
 
 go 1.22
 
