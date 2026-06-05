@@ -279,6 +279,7 @@ async def adapt_synaptic_weights(
                       AND source_node_id = $2 
                       AND edge_type = $3 
                       AND target_node_id = $4 
+                      AND valid_to IS NULL
                     FOR UPDATE NOWAIT
                     """,
                     ns_uuid,
@@ -296,6 +297,7 @@ async def adapt_synaptic_weights(
                           (source_node_id = $2 AND target_node_id = $3)
                           OR (source_node_id = $3 AND target_node_id = $2)
                       )
+                      AND valid_to IS NULL
                     FOR UPDATE NOWAIT
                     """,
                     ns_uuid,

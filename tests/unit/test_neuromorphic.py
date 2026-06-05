@@ -194,6 +194,26 @@ class TestAdaptSynapticWeights:
         )
         assert count == 0
 
+    async def test_topology_graph_valid_to_filter(self) -> None:
+        ns = uuid.uuid4()
+        fetch_results = {
+            "select id, confidence from kg_edges": [{"id": uuid.uuid4(), "confidence": 0.5}],
+            "select id, confidence_score from topology_graph": [{"id": uuid.uuid4(), "confidence_score": 0.6}],
+        }
+        conn = MockConnection(fetch_results)
+
+        await adapt_synaptic_weights(
+            conn=conn,
+            namespace_id=ns,
+            decision_outcome="success",
+            reinforced_edges=[("device_A", "device_B")],
+            learning_rate=0.1,
+        )
+
+        # Verify that the fetch call for topology_graph had 'valid_to is null' in the query
+        topo_fetch = next(c for c in conn.fetch_calls if "topology_graph" in c[0].lower())
+        assert "valid_to is null" in topo_fetch[0].lower()
+
 
 # ---------------------------------------------------------------------------
 # 3. GraphRAGTraverser.neuromorphic_search Unit Tests
