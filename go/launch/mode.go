@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// DeployMode is the TriMCP deployment mode from mode.txt.
+// DeployMode is the NCE deployment mode from mode.txt.
 type DeployMode string
 
 const (

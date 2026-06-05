@@ -52,7 +52,7 @@ def main() -> None:
         "postgres_port": val("postgres_port", "5432"),
         "postgres_database": val("postgres_database_name", "memory_meta"),
         "mongo_hosts": val("documentdb_endpoint") or val("mongo_hosts"),
-        "mongo_database": val("mongo_database_name", "trimcp"),
+        "mongo_database": val("mongo_database_name", "nce"),
         "redis_host": val("redis_primary_endpoint") or val("redis_host"),
         "redis_port": val("redis_port", "6379"),
         "blob_endpoint": val("blob_endpoint")

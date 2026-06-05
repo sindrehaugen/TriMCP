@@ -1,6 +1,6 @@
-# TriMCP cloud infrastructure (Phase 3)
+# NCE cloud infrastructure (Phase 3)
 
-Infrastructure-as-code for **TriMCP Cloud mode** per the Enterprise Deployment Plan — **Section 5** and **Appendix I**.
+Infrastructure-as-code for **NCE Cloud mode** per the Enterprise Deployment Plan — **Section 5** and **Appendix I**.
 
 ## Layout
 
@@ -32,7 +32,7 @@ See `shared/post-deploy-checklist.md`. Per-cloud scripts live under `azure/scrip
 After `terraform apply` / `az deployment sub create`, run:
 
 ```bash
-./scripts/render-env.sh --cloud aws --infra-dir trimcp-infra/aws
+./scripts/render-env.sh --cloud aws --infra-dir nce-infra/aws
 ```
 
-(or `gcp`) to emit a `.env` fragment for the TriMCP client bundle. The script lives at the **repository root** (`scripts/render-env.sh`), not under `trimcp-infra/`. Requires cloud CLI and credentials that can **read** the provisioned secrets.
+(or `gcp`) to emit a `.env` fragment for the NCE client bundle. The script lives at the **repository root** (`scripts/render-env.sh`), not under `nce-infra/`. Requires cloud CLI and credentials that can **read** the provisioned secrets.

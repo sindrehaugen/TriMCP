@@ -1,6 +1,6 @@
-# TriMCP v1.0 — System architecture
+# NCE v1.0 — System architecture
 
-This document is the **public, code-aligned** view of the TriMCP **v1.0** runtime: quad-database memory stack, **temporal** (time-travel) queries, **A2A** (agent-to-agent) sharing, and **cognitive / background** workers. For namespaces and signing, see [multi_tenancy.md](./multi_tenancy.md) and [signing.md](./signing.md). Compose layout: [deploy/README.md](../deploy/README.md).
+This document is the **public, code-aligned** view of the NCE **v1.0** runtime: quad-database memory stack, **temporal** (time-travel) queries, **A2A** (agent-to-agent) sharing, and **cognitive / background** workers. For namespaces and signing, see [multi_tenancy.md](./multi_tenancy.md) and [signing.md](./signing.md). Compose layout: [deploy/README.md](../deploy/README.md).
 
 ---
 
@@ -15,11 +15,11 @@ flowchart TB
     HTTPc[HTTP clients]
   end
 
-  subgraph Processes["TriMCP processes"]
+  subgraph Processes["NCE processes"]
     MCPsrv["server.py\n(MCP stdio)"]
-    A2Asrv["trimcp/a2a_server.py\n(JSON-RPC skills)"]
+    A2Asrv["nce/a2a_server.py\n(JSON-RPC skills)"]
     Admin["admin_server.py\n(HMAC + REST)"]
-    Cron["python -m trimcp.cron\n(APScheduler)"]
+    Cron["python -m nce.cron\n(APScheduler)"]
     Worker["start_worker.py\n(RQ consumer)"]
   end
 
@@ -31,7 +31,7 @@ flowchart TB
   end
 
   subgraph Cognitive["Inference"]
-    Emb["Embeddings\n(trimcp/embeddings)"]
+    Emb["Embeddings\n(nce/embeddings)"]
     Prov["LLM provider\n(consolidation, contradictions, reembed)"]
   end
 
@@ -73,7 +73,7 @@ flowchart TB
 
 | Artifact | Role |
 |----------|------|
-| `trimcp/temporal.py` | `parse_as_of()` — ISO 8601 in, UTC-normalised `datetime` or `None`; rejects malformed input and future times. |
+| `nce/temporal.py` | `parse_as_of()` — ISO 8601 in, UTC-normalised `datetime` or `None`; rejects malformed input and future times. |
 | `TriStackEngine.semantic_search(..., as_of=)` | Adds SQL predicates on `memories.created_at` (and optional namespace retention window from metadata). |
 | `TriStackEngine.graph_search(..., as_of=)` | Restricts graph visibility to the same temporal cut. |
 | MCP tools | `semantic_search` and `graph_search` expose optional `as_of` in `server.py`. |
@@ -109,9 +109,9 @@ sequenceDiagram
 
 | Artifact | Role |
 |----------|------|
-| `trimcp/a2a.py` | Grant creation, token verification, JSON-RPC error codes (-32010 / -32011 / -32012). |
-| `trimcp/a2a_server.py` | Starlette app: agent card, JSON-RPC skill dispatch, `TriStackEngine` lifespan. |
-| `trimcp/schema.sql` | `a2a_grants` table + indexes. |
+| `nce/a2a.py` | Grant creation, token verification, JSON-RPC error codes (-32010 / -32011 / -32012). |
+| `nce/a2a_server.py` | Starlette app: agent card, JSON-RPC skill dispatch, `TriStackEngine` lifespan. |
+| `nce/schema.sql` | `a2a_grants` table + indexes. |
 
 ```mermaid
 sequenceDiagram
@@ -149,7 +149,7 @@ Skills (non-exhaustive) are declared on the agent card in `a2a_server.py` and ma
 
 | Artifact | Role |
 |----------|------|
-| `trimcp/pii.py` | Core pipeline: detection via **Microsoft Presidio** (primary) or **Regex** (fallback); policies: `redact`, `pseudonymise`, `reject`, `flag`. |
+| `nce/pii.py` | Core pipeline: detection via **Microsoft Presidio** (primary) or **Regex** (fallback); policies: `redact`, `pseudonymise`, `reject`, `flag`. |
 | `pii_redactions` | Reversible vault (PostgreSQL) storing encrypted original values (AES-256-GCM). |
 | `unredact_memory` | Admin tool to temporarily restore PII context for authorized requests. |
 
@@ -161,7 +161,7 @@ Skills (non-exhaustive) are declared on the agent card in `a2a_server.py` and ma
 
 | Artifact | Role |
 |----------|------|
-| `trimcp/replay.py` | `ForkedReplayEngine` — async generator based; supports `deterministic` (MinIO cache) and `re-execute` (fresh LLM) modes. |
+| `nce/replay.py` | `ForkedReplayEngine` — async generator based; supports `deterministic` (MinIO cache) and `re-execute` (fresh LLM) modes. |
 | `replay_runs` | PostgreSQL table tracking replay progress and parent-child event causal links. |
 | Causal signatures | Every replayed event is signed with a fresh HMAC-SHA256, providing **alternate causal provenance**. |
 
@@ -173,15 +173,15 @@ These components run **outside** the MCP hot path (batch / scheduled / optional 
 
 | Component | Entry | Function |
 |-----------|--------|----------|
-| **Re-embedding** | `trimcp/reembedding_worker.py`, invoked from `trimcp/cron.py` | Keyset-paginated sweep: refresh embeddings when the active model changes; optional Mongo text hydration; rate-limited batches; audit via `reembedding_runs`. |
-| **Bridge renewal** | `trimcp/cron.py` → `trimcp/bridge_renewal.py` | Interval job: renew expiring document-bridge subscriptions (SharePoint / Drive / Dropbox). |
-| **Orphan GC** | `trimcp/garbage_collector.py`, `run_gc_loop` from `server.py` startup | Safety net for Mongo payloads without matching Postgres references. |
-| **Sleep consolidation** | `trimcp/consolidation.py` | `ConsolidationWorker` clusters episodic memories via configured **LLMProvider** and writes abstractions (validated Pydantic output); wire to your scheduler or ops workflow as needed. |
-| **Contradictions** | `trimcp/contradictions.py` + MCP tools `list_contradictions` / `resolve_contradiction` | Detection and resolution workflow tied to namespace memory. |
+| **Re-embedding** | `nce/reembedding_worker.py`, invoked from `nce/cron.py` | Keyset-paginated sweep: refresh embeddings when the active model changes; optional Mongo text hydration; rate-limited batches; audit via `reembedding_runs`. |
+| **Bridge renewal** | `nce/cron.py` → `nce/bridge_renewal.py` | Interval job: renew expiring document-bridge subscriptions (SharePoint / Drive / Dropbox). |
+| **Orphan GC** | `nce/garbage_collector.py`, `run_gc_loop` from `server.py` startup | Safety net for Mongo payloads without matching Postgres references. |
+| **Sleep consolidation** | `nce/consolidation.py` | `ConsolidationWorker` clusters episodic memories via configured **LLMProvider** and writes abstractions (validated Pydantic output); wire to your scheduler or ops workflow as needed. |
+| **Contradictions** | `nce/contradictions.py` + MCP tools `list_contradictions` / `resolve_contradiction` | Detection and resolution workflow tied to namespace memory. |
 
 ```mermaid
 flowchart LR
-  subgraph Scheduler["trimcp.cron (APScheduler)"]
+  subgraph Scheduler["nce.cron (APScheduler)"]
     J1[bridge_subscription_renewal]
     J2[phase_2_1_reembedding]
   end
@@ -215,9 +215,9 @@ an oversight:
 
 **Mitigation:** System-level connections are only used by background workers that do not
 serve user requests directly.  All user-facing paths (MCP tools, A2A, admin HTTP) go through
-`scoped_session()` which sets `trimcp.namespace_id` via `SET LOCAL`.
+`scoped_session()` which sets `nce.namespace_id` via `SET LOCAL`.
 
-**Future:** Add a dedicated `trimcp_background` Postgres role with CROSS-NAMESPACE READ
+**Future:** Add a dedicated `nce_background` Postgres role with CROSS-NAMESPACE READ
 grant but no WRITE privilege on user-data tables. This would limit the blast radius of a
 compromised background worker while preserving the necessary cross-tenant scan capability.
 
@@ -264,9 +264,9 @@ flowchart TD
   A["Client: semantic_search(query, top_k, as_of?)"] --> B
 
   subgraph PG["PostgreSQL — asyncpg"]
-    B["Embed query\ntrimcp/embeddings"]
+    B["Embed query\nnce/embeddings"]
     B --> C["pgvector ANN scan\nmemories.embedding <=> query_vec\nWHERE created_at <= as_of\nLIMIT top_k × 4 candidates"]
-    C --> D["RLS filter\nnamespace_id = current_setting(trimcp.namespace_id)"]
+    C --> D["RLS filter\nnamespace_id = current_setting(nce.namespace_id)"]
     D --> E["Top-k rows\n(id, mongo_ref_id, confidence)"]
   end
 
@@ -298,7 +298,7 @@ flowchart TD
 | Mongo batch fetch | Single `find({'_id': {'$in': [...]}})` instead of one `find_one` per memory row. Prevents O(n) round-trips on large result sets (FIX-024). |
 | Temporal isolation | `WHERE created_at <= as_of` in the ANN scan ensures KG and payload results also respect the time-travel anchor — nodes added after `as_of` are never returned. |
 
-**Code location**: `trimcp/graph_query.py` (`GraphRAGTraverser`), `trimcp/orchestrators/memory.py` (`semantic_search`).
+**Code location**: `nce/graph_query.py` (`GraphRAGTraverser`), `nce/orchestrators/memory.py` (`semantic_search`).
 
 ---
 
@@ -306,7 +306,7 @@ flowchart TD
 
 **Design tradeoff — Partitioning on composite keys (`id, created_at`):**
 
-To support high-throughput temporal operations and efficient time-based pruning, TriMCP leverages **PostgreSQL RANGE partitioning** on several high-volume tables (e.g., `memories` on `created_at`, `event_log` on `occurred_at`, `contradictions` on `detected_at`). 
+To support high-throughput temporal operations and efficient time-based pruning, NCE leverages **PostgreSQL RANGE partitioning** on several high-volume tables (e.g., `memories` on `created_at`, `event_log` on `occurred_at`, `contradictions` on `detected_at`). 
 
 PostgreSQL imposes a strict rule on partitioned tables: **any primary key or unique constraint must include all partition key columns**. 
 

@@ -10,8 +10,8 @@ os.environ.setdefault("DROPBOX_APP_SECRET", "test_dropbox_secret")
 os.environ.setdefault("GRAPH_CLIENT_STATE", "test_graph_state")
 os.environ.setdefault("DRIVE_CHANNEL_TOKEN", "test_drive_token")
 
-import trimcp.webhook_receiver.main as wh
-from trimcp.webhook_receiver.main import (
+import nce.webhook_receiver.main as wh
+from nce.webhook_receiver.main import (
     DRIVE_CHANNEL_TOKEN,
     DROPBOX_APP_SECRET,
     GRAPH_CLIENT_STATE,
@@ -308,7 +308,7 @@ def test_claim_dedup_fail_closed_when_redis_unavailable(monkeypatch):
     mock_redis = MagicMock()
     mock_redis.set.side_effect = ConnectionError("redis down")
     monkeypatch.setattr(wh, "_redis_client", lambda: mock_redis)
-    assert wh._claim_dedup("trimcp:webhook:dedup:test-key") is False
+    assert wh._claim_dedup("nce:webhook:dedup:test-key") is False
 
 
 def test_claim_dedup_fail_open_when_configured(monkeypatch):
@@ -317,7 +317,7 @@ def test_claim_dedup_fail_open_when_configured(monkeypatch):
     mock_redis = MagicMock()
     mock_redis.set.side_effect = ConnectionError("redis down")
     monkeypatch.setattr(wh, "_redis_client", lambda: mock_redis)
-    assert wh._claim_dedup("trimcp:webhook:dedup:test-key") is True
+    assert wh._claim_dedup("nce:webhook:dedup:test-key") is True
 
 
 def test_webhook_rate_limit_returns_429(client, monkeypatch):

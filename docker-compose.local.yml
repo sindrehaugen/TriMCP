@@ -1,4 +1,4 @@
-# TriMCP — D1: localhost-bound single-machine Compose stack (Phase 0.1 data + cognitive).
+# NCE — D1: localhost-bound single-machine Compose stack (Phase 0.1 data + cognitive).
 # No edge/worker services — run MCP server and workers on the host against these ports.
 #
 # Optional: use repo-root docker-compose.yml or deploy/multiuser/docker-compose.yml for full stack.
@@ -6,7 +6,7 @@
 services:
   redis:
     image: redis:7.4-alpine
-    container_name: tri-stack-redis-local
+    container_name: nce-redis-local
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
@@ -20,7 +20,7 @@ services:
 
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: tri-stack-postgres-local
+    container_name: nce-postgres-local
     environment:
       POSTGRES_USER: mcp_user
       POSTGRES_PASSWORD: mcp_password
@@ -30,7 +30,7 @@ services:
     volumes:
       - pg_data_local:/var/lib/postgresql/data
       # Initialize schema on first boot (idempotent)
-      - ./trimcp/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ./nce/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mcp_user -d memory_meta"]
       interval: 5s
@@ -40,7 +40,7 @@ services:
 
   mongodb:
     image: mongo:7.0
-    container_name: tri-stack-mongo-local
+    container_name: nce-mongo-local
     ports:
       - "127.0.0.1:27017:27017"
     volumes:
@@ -54,7 +54,7 @@ services:
 
   minio:
     image: minio/minio:RELEASE.2024-11-07T00-52-20Z
-    container_name: trimcp-minio-local
+    container_name: nce-minio-local
     environment:
       MINIO_ROOT_USER: mcp_admin
       MINIO_ROOT_PASSWORD: super_secure_minio_password
@@ -74,14 +74,14 @@ services:
   cognitive:
     # pull_policy: missing — tries to pull the real image first; falls back to
     # building the local stub automatically when the registry is unreachable.
-    # No manual swap needed: once ghcr.io/sindrehaugen/trimcp-cognitive:v1 is
+    # No manual swap needed: once ghcr.io/sindrehaugen/nce-cognitive:v1 is
     # available and pulled, subsequent `make local-up` uses it automatically.
-    image: ghcr.io/sindrehaugen/trimcp-cognitive:v1
+    image: ghcr.io/sindrehaugen/nce-cognitive:v1
     build:
       context: ./deploy/cognitive-stub
       dockerfile: Dockerfile
     pull_policy: missing
-    container_name: trimcp-cognitive-local
+    container_name: nce-cognitive-local
     environment:
       COGNITIVE_PORT: "11435"
       EMBEDDING_VECTOR_DIM: "${EMBEDDING_VECTOR_DIM:-768}"

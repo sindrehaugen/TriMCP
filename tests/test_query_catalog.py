@@ -1,7 +1,7 @@
 """
 tests/test_query_catalog.py
 
-Unit coverage for trimcp.query_catalog.CatalogManager.
+Unit coverage for nce.query_catalog.CatalogManager.
 
 Exercises:
   - _compile_template: bind macro emits $N positional params correctly
@@ -27,8 +27,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-import trimcp.query_catalog as catalog_mod
-from trimcp.query_catalog import CatalogManager, GraphSchema, TemplateSuggestion
+import nce.query_catalog as catalog_mod
+from nce.query_catalog import CatalogManager, GraphSchema, TemplateSuggestion
 
 
 # ---------------------------------------------------------------------------

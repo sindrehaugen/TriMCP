@@ -1,6 +1,6 @@
-# TriMCP Usage Modes
+# NCE Usage Modes
 
-TriMCP exposes two distinct runtime surfaces. Choosing the right one depends on whether the caller is an LLM client or a programmatic service.
+NCE exposes two distinct runtime surfaces. Choosing the right one depends on whether the caller is an LLM client or a programmatic service.
 
 | | MCP / LLM stdio | Admin REST API |
 |---|---|---|
@@ -29,10 +29,10 @@ python server.py
 # or via Claude Desktop config:
 {
   "mcpServers": {
-    "tri-stack-memory": {
+    "nce-memory": {
       "command": "python",
-      "args": ["/path/to/TriMCP-1/server.py"],
-      "env": { "TRIMCP_MASTER_KEY": "...", "PG_DSN": "..." }
+      "args": ["/path/to/NCE-1/server.py"],
+      "env": { "NCE_MASTER_KEY": "...", "PG_DSN": "..." }
     }
   }
 }
@@ -236,7 +236,7 @@ Every `/api/` request requires an `Authorization` header:
 Authorization: HMAC-SHA256 <timestamp>:<nonce>:<signature>
 ```
 
-Where `signature = HMAC-SHA256(TRIMCP_API_KEY, "<timestamp>\n<nonce>\n<method>\n<path>\n<body_sha256>")`.
+Where `signature = HMAC-SHA256(NCE_API_KEY, "<timestamp>\n<nonce>\n<method>\n<path>\n<body_sha256>")`.
 
 See [enterprise_security.md](enterprise_security.md) §2 for the full signing algorithm and replay protection details.
 

@@ -1,5 +1,5 @@
 """
-HTTP mock helpers aligned with trimcp.auth.HMACAuthMiddleware.
+HTTP mock helpers aligned with nce.auth.HMACAuthMiddleware.
 
 Provides deterministic request signing so tests and trivial mock ASGI mounts
 mirror production admin API auth without a real network boundary.
@@ -43,12 +43,12 @@ def admin_hmac_headers(
     Return headers dict suitable for Starlette TestClient / httpx.
 
     ``hex_key_material`` is the ASCII secret — it is UTF-8 encoded as the MAC
-    key (same semantics as cfg.TRIMCP_API_KEY env string).
+    key (same semantics as cfg.NCE_API_KEY env string).
     """
     canonical = canonical_hmac_payload(method, path, timestamp, body or None)
     sig = compute_admin_hmac(hex_key_material, canonical)
     return {
-        "X-TriMCP-Timestamp": str(timestamp),
+        "X-NCE-Timestamp": str(timestamp),
         "Authorization": f"HMAC-SHA256 {sig}",
     }
 

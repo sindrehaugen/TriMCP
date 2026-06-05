@@ -9,15 +9,15 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from trimcp.models import (
+from nce.models import (
     FrozenForkConfig,
     ReplayConfigOverrides,
     ReplayForkRequest,
     ReplayLlmProvider,
     normalize_replay_config_overrides,
 )
-from trimcp.replay import ReplayChecksumError
-from trimcp.signing import canonical_json
+from nce.replay import ReplayChecksumError
+from nce.signing import canonical_json
 
 
 def _expected_replay_checksum(
@@ -105,7 +105,7 @@ def test_replay_config_overrides_frozen_object_setattr_known_limitation() -> Non
 
     Pydantic v2 ``frozen=True`` hooks ``__setattr__`` but not
     ``object.__setattr__``.  This is a documented Pydantic v2 behavior,
-    not a TriMCP security gap.  Mitigations:
+    not a NCE security gap.  Mitigations:
 
     * Type checkers flag ``object.__setattr__`` as a type error.
     * Code paths using ``object.__setattr__`` on typed models are

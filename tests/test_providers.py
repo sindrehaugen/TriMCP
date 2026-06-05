@@ -14,13 +14,13 @@ import asyncio
 
 import pytest
 
-import trimcp.providers._http_utils
-import trimcp.providers.base
-from trimcp.providers.anthropic_provider import AnthropicProvider
-from trimcp.providers.base import _redact_api_key
-from trimcp.providers.google_gemini import GoogleGeminiProvider
-from trimcp.providers.local_cognitive import LocalCognitiveProvider
-from trimcp.providers.openai_compat import OpenAICompatProvider
+import nce.providers._http_utils
+import nce.providers.base
+from nce.providers.anthropic_provider import AnthropicProvider
+from nce.providers.base import _redact_api_key
+from nce.providers.google_gemini import GoogleGeminiProvider
+from nce.providers.local_cognitive import LocalCognitiveProvider
+from nce.providers.openai_compat import OpenAICompatProvider
 
 # ---------------------------------------------------------------------------
 # _redact_api_key edge cases
@@ -156,7 +156,7 @@ class TestRetryPolicy:
 
     def test_delays_are_non_deterministic(self):
         """Multiple calls for the same attempt produce different values."""
-        rp = trimcp.providers.base.RetryPolicy(
+        rp = nce.providers.base.RetryPolicy(
             base_delay_ms=10_000,
             backoff_factor=2.0,
             max_delay_ms=60_000,
@@ -167,7 +167,7 @@ class TestRetryPolicy:
         )
 
     def test_delay_never_exceeds_cap(self):
-        rp = trimcp.providers.base.RetryPolicy(
+        rp = nce.providers.base.RetryPolicy(
             base_delay_ms=10_000,
             backoff_factor=2.0,
             max_delay_ms=5_000,
@@ -176,7 +176,7 @@ class TestRetryPolicy:
             assert rp.delay_for_attempt(attempt) <= rp.max_delay_ms
 
     def test_delay_never_zero(self):
-        rp = trimcp.providers.base.RetryPolicy(
+        rp = nce.providers.base.RetryPolicy(
             base_delay_ms=1_000,
             backoff_factor=2.0,
         )
@@ -185,7 +185,7 @@ class TestRetryPolicy:
 
     def test_delays_increase_with_attempt(self):
         """Median of many samples should increase (jitter can cross over)."""
-        rp = trimcp.providers.base.RetryPolicy(
+        rp = nce.providers.base.RetryPolicy(
             base_delay_ms=100,
             backoff_factor=4.0,
             max_delay_ms=100_000,
@@ -213,24 +213,24 @@ class TestCircuitBreaker:
 
     @pytest.mark.asyncio
     async def test_initial_state_is_closed(self):
-        cb = trimcp.providers.base.CircuitBreaker()
-        assert cb.state == trimcp.providers.base.CircuitBreakerState.CLOSED
+        cb = nce.providers.base.CircuitBreaker()
+        assert cb.state == nce.providers.base.CircuitBreakerState.CLOSED
         assert await cb.check() is True
 
     @pytest.mark.asyncio
     async def test_consecutive_failures_open_circuit(self):
-        cb = trimcp.providers.base.CircuitBreaker(
+        cb = nce.providers.base.CircuitBreaker(
             failure_threshold=3,
             recovery_timeout=60.0,
         )
         for _ in range(3):
             await cb.record_failure()
-        assert cb.state == trimcp.providers.base.CircuitBreakerState.OPEN
+        assert cb.state == nce.providers.base.CircuitBreakerState.OPEN
         assert await cb.check() is False
 
     @pytest.mark.asyncio
     async def test_open_circuit_rejects_all_requests(self):
-        cb = trimcp.providers.base.CircuitBreaker(
+        cb = nce.providers.base.CircuitBreaker(
             failure_threshold=1,
             recovery_timeout=3600.0,
         )
@@ -240,30 +240,30 @@ class TestCircuitBreaker:
 
     @pytest.mark.asyncio
     async def test_success_resets_failure_count(self):
-        cb = trimcp.providers.base.CircuitBreaker(failure_threshold=3)
+        cb = nce.providers.base.CircuitBreaker(failure_threshold=3)
         await cb.record_failure()
         await cb.record_failure()
         await cb.record_success()
         await cb.record_failure()
         # 2 failures then reset, then 1 failure → still below threshold
-        assert cb.state == trimcp.providers.base.CircuitBreakerState.CLOSED
+        assert cb.state == nce.providers.base.CircuitBreakerState.CLOSED
 
     @pytest.mark.asyncio
     async def test_half_open_transitions_after_recovery_timeout(self):
-        cb = trimcp.providers.base.CircuitBreaker(
+        cb = nce.providers.base.CircuitBreaker(
             failure_threshold=2,
             recovery_timeout=0.01,
         )
         await cb.record_failure()
         await cb.record_failure()
-        assert cb.state == trimcp.providers.base.CircuitBreakerState.OPEN
+        assert cb.state == nce.providers.base.CircuitBreakerState.OPEN
         await asyncio.sleep(0.02)
         assert await cb.check() is True
-        assert cb.state == trimcp.providers.base.CircuitBreakerState.HALF_OPEN
+        assert cb.state == nce.providers.base.CircuitBreakerState.HALF_OPEN
 
     @pytest.mark.asyncio
     async def test_half_open_success_closes_circuit(self):
-        cb = trimcp.providers.base.CircuitBreaker(
+        cb = nce.providers.base.CircuitBreaker(
             failure_threshold=2,
             recovery_timeout=0.01,
         )
@@ -272,11 +272,11 @@ class TestCircuitBreaker:
         await asyncio.sleep(0.02)
         assert await cb.check() is True  # → HALF_OPEN
         await cb.record_success()
-        assert cb.state == trimcp.providers.base.CircuitBreakerState.CLOSED
+        assert cb.state == nce.providers.base.CircuitBreakerState.CLOSED
 
     @pytest.mark.asyncio
     async def test_half_open_failure_reopens_circuit(self):
-        cb = trimcp.providers.base.CircuitBreaker(
+        cb = nce.providers.base.CircuitBreaker(
             failure_threshold=2,
             recovery_timeout=0.01,
         )
@@ -285,13 +285,13 @@ class TestCircuitBreaker:
         await asyncio.sleep(0.02)
         assert await cb.check() is True  # → HALF_OPEN
         await cb.record_failure()
-        assert cb.state == trimcp.providers.base.CircuitBreakerState.OPEN
+        assert cb.state == nce.providers.base.CircuitBreakerState.OPEN
         # Still at threshold (2) so next failure keeps it open
         assert await cb.check() is False
 
     @pytest.mark.asyncio
     async def test_half_open_limits_probe_requests(self):
-        cb = trimcp.providers.base.CircuitBreaker(
+        cb = nce.providers.base.CircuitBreaker(
             failure_threshold=2,
             recovery_timeout=0.01,
             half_open_max_requests=1,
@@ -302,11 +302,11 @@ class TestCircuitBreaker:
         assert await cb.check() is True  # 1st probe allowed
         assert await cb.check() is False  # 2nd probe blocked
         await cb.record_success()
-        assert cb.state == trimcp.providers.base.CircuitBreakerState.CLOSED
+        assert cb.state == nce.providers.base.CircuitBreakerState.CLOSED
 
     @pytest.mark.asyncio
     async def test_repr_contains_state_and_failure_count(self):
-        cb = trimcp.providers.base.CircuitBreaker(failure_threshold=3)
+        cb = nce.providers.base.CircuitBreaker(failure_threshold=3)
         rep = repr(cb)
         assert "closed" in rep
         assert "0/3" in rep
@@ -317,7 +317,7 @@ class TestCircuitBreaker:
 # ---------------------------------------------------------------------------
 
 
-class _FakeProvider(trimcp.providers.base.LLMProvider):
+class _FakeProvider(nce.providers.base.LLMProvider):
     """Minimal LLMProvider subclass for testing execute_with_retry."""
 
     def __init__(self, identifier: str = "test/fake"):
@@ -353,7 +353,7 @@ class TestExecuteWithRetry:
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise trimcp.providers.base.LLMRateLimitError(
+                raise nce.providers.base.LLMRateLimitError(
                     "too fast",
                     provider="test/fake",
                     retry_after=1,
@@ -362,7 +362,7 @@ class TestExecuteWithRetry:
 
         result = await provider.execute_with_retry(
             flaky_operation,
-            retry_policy=trimcp.providers.base.RetryPolicy(
+            retry_policy=nce.providers.base.RetryPolicy(
                 max_retries=3,
                 base_delay_ms=1,
             ),
@@ -375,20 +375,20 @@ class TestExecuteWithRetry:
         provider = _FakeProvider()
 
         async def always_fails():
-            raise trimcp.providers.base.LLMTimeoutError(
+            raise nce.providers.base.LLMTimeoutError(
                 "timeout",
                 provider="test/fake",
             )
 
-        with pytest.raises(trimcp.providers.base.LLMRetriesExhaustedError) as excinfo:
+        with pytest.raises(nce.providers.base.LLMRetriesExhaustedError) as excinfo:
             await provider.execute_with_retry(
                 always_fails,
-                retry_policy=trimcp.providers.base.RetryPolicy(
+                retry_policy=nce.providers.base.RetryPolicy(
                     max_retries=2,
                     base_delay_ms=1,
                 ),
             )
-        assert isinstance(excinfo.value.last_error, trimcp.providers.base.LLMTimeoutError)
+        assert isinstance(excinfo.value.last_error, nce.providers.base.LLMTimeoutError)
 
     @pytest.mark.asyncio
     async def test_non_retryable_error_not_retried(self):
@@ -398,15 +398,15 @@ class TestExecuteWithRetry:
         async def auth_error():
             nonlocal call_count
             call_count += 1
-            raise trimcp.providers.base.LLMAuthenticationError(
+            raise nce.providers.base.LLMAuthenticationError(
                 "bad key",
                 provider="test/fake",
             )
 
-        with pytest.raises(trimcp.providers.base.LLMAuthenticationError):
+        with pytest.raises(nce.providers.base.LLMAuthenticationError):
             await provider.execute_with_retry(
                 auth_error,
-                retry_policy=trimcp.providers.base.RetryPolicy(
+                retry_policy=nce.providers.base.RetryPolicy(
                     max_retries=3,
                     base_delay_ms=1,
                 ),
@@ -416,37 +416,37 @@ class TestExecuteWithRetry:
     @pytest.mark.asyncio
     async def test_circuit_breaker_opens_and_blocks(self):
         provider = _FakeProvider()
-        cb = trimcp.providers.base.CircuitBreaker(
+        cb = nce.providers.base.CircuitBreaker(
             failure_threshold=2,
             recovery_timeout=3600.0,
         )
 
         async def failing_op():
-            raise trimcp.providers.base.LLMUpstreamError(
+            raise nce.providers.base.LLMUpstreamError(
                 "server error",
                 provider="test/fake",
             )
 
         # Exhaust retries — circuit breaker records failures
-        with pytest.raises(trimcp.providers.base.LLMRetriesExhaustedError) as excinfo:
+        with pytest.raises(nce.providers.base.LLMRetriesExhaustedError) as excinfo:
             await provider.execute_with_retry(
                 failing_op,
-                retry_policy=trimcp.providers.base.RetryPolicy(
+                retry_policy=nce.providers.base.RetryPolicy(
                     max_retries=1,
                     base_delay_ms=1,
                 ),
                 circuit_breaker=cb,
             )
-        assert isinstance(excinfo.value.last_error, trimcp.providers.base.LLMUpstreamError)
+        assert isinstance(excinfo.value.last_error, nce.providers.base.LLMUpstreamError)
 
         # Circuit should now be open
-        assert cb.state == trimcp.providers.base.CircuitBreakerState.OPEN
+        assert cb.state == nce.providers.base.CircuitBreakerState.OPEN
 
         # Next call should fail fast with "circuit breaker open"
-        with pytest.raises(trimcp.providers.base.LLMCircuitOpenError) as excinfo:
+        with pytest.raises(nce.providers.base.LLMCircuitOpenError) as excinfo:
             await provider.execute_with_retry(
                 failing_op,
-                retry_policy=trimcp.providers.base.RetryPolicy(
+                retry_policy=nce.providers.base.RetryPolicy(
                     max_retries=1,
                     base_delay_ms=1,
                 ),
@@ -457,7 +457,7 @@ class TestExecuteWithRetry:
     @pytest.mark.asyncio
     async def test_success_closes_circuit_and_resets(self):
         provider = _FakeProvider()
-        cb = trimcp.providers.base.CircuitBreaker(
+        cb = nce.providers.base.CircuitBreaker(
             failure_threshold=1,
             recovery_timeout=0.01,
         )
@@ -472,11 +472,11 @@ class TestExecuteWithRetry:
 
         result = await provider.execute_with_retry(
             ok_op,
-            retry_policy=trimcp.providers.base.RetryPolicy(max_retries=0, base_delay_ms=1),
+            retry_policy=nce.providers.base.RetryPolicy(max_retries=0, base_delay_ms=1),
             circuit_breaker=cb,
         )
         assert result == "recovered"
-        assert cb.state == trimcp.providers.base.CircuitBreakerState.CLOSED
+        assert cb.state == nce.providers.base.CircuitBreakerState.CLOSED
 
 
 # ---------------------------------------------------------------------------
@@ -506,8 +506,8 @@ class TestHttpErrorClassification:
 
         monkeypatch.setattr("httpx.AsyncClient.post", _mock_post)
 
-        with pytest.raises(trimcp.providers.base.LLMRateLimitError) as excinfo:
-            await trimcp.providers._http_utils.post_with_error_handling(
+        with pytest.raises(nce.providers.base.LLMRateLimitError) as excinfo:
+            await nce.providers._http_utils.post_with_error_handling(
                 url="https://api.test/v1/chat",
                 body={"model": "test"},
                 timeout=10.0,
@@ -534,8 +534,8 @@ class TestHttpErrorClassification:
 
         monkeypatch.setattr("httpx.AsyncClient.post", _mock_post)
 
-        with pytest.raises(trimcp.providers.base.LLMUpstreamError) as excinfo:
-            await trimcp.providers._http_utils.post_with_error_handling(
+        with pytest.raises(nce.providers.base.LLMUpstreamError) as excinfo:
+            await nce.providers._http_utils.post_with_error_handling(
                 url="https://api.test/v1/chat",
                 body={"model": "test"},
                 timeout=10.0,
@@ -561,8 +561,8 @@ class TestHttpErrorClassification:
 
         monkeypatch.setattr("httpx.AsyncClient.post", _mock_post)
 
-        with pytest.raises(trimcp.providers.base.LLMAuthenticationError) as excinfo:
-            await trimcp.providers._http_utils.post_with_error_handling(
+        with pytest.raises(nce.providers.base.LLMAuthenticationError) as excinfo:
+            await nce.providers._http_utils.post_with_error_handling(
                 url="https://api.test/v1/chat",
                 body={"model": "test"},
                 timeout=10.0,

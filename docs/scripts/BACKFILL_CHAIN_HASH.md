@@ -5,7 +5,7 @@ One-off migration: `scripts/backfill_chain_hash.py`
 ## Preconditions
 
 - PostgreSQL role with `TRIGGER` privilege on `event_log` (owner or superuser).
-- `TRIMCP_MASTER_KEY` set (same as production signing).
+- `NCE_MASTER_KEY` set (same as production signing).
 - Maintenance window — no concurrent appends to `event_log` during the WORM-disabled window.
 - Backup or snapshot taken before running.
 

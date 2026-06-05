@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/trimcp/tri-stack/hardware"
+	"github.com/nce/tri-stack/hardware"
 )
 
 // Run executes the mode-aware startup sequence until server.py exits or ctx is cancelled.
@@ -30,14 +30,14 @@ func Run(ctx context.Context, n UserNotifier, log *slog.Logger) error {
 
 	modePath, err := ModeFilePath()
 	if err != nil {
-		msg := "TriMCP data directory is not available."
-		n.Error("TriMCP", msg)
+		msg := "NCE data directory is not available."
+		n.Error("NCE", msg)
 		return err
 	}
 
 	mode, err := ReadMode(modePath)
 	if err != nil {
-		n.Error("TriMCP", "TriMCP mode is not set. Re-run the installer.")
+		n.Error("NCE", "NCE mode is not set. Re-run the installer.")
 		if log != nil {
 			log.Warn("read_mode_failed", "err", err)
 		}
@@ -50,7 +50,7 @@ func Run(ctx context.Context, n UserNotifier, log *slog.Logger) error {
 	}
 	env, err := MergeEnv(envPath)
 	if err != nil {
-		n.Error("TriMCP", "Could not read your TriMCP configuration file.")
+		n.Error("NCE", "Could not read your NCE configuration file.")
 		if log != nil {
 			log.Warn("merge_env_failed", "err", err)
 		}
@@ -59,12 +59,12 @@ func Run(ctx context.Context, n UserNotifier, log *slog.Logger) error {
 
 	h, backend, hwErr := hardware.DetectAndPersistBackendIfUnset(envPath)
 	if hwErr != nil && log != nil {
-		log.Warn("trimcp_backend_env", "err", hwErr)
+		log.Warn("nce_backend_env", "err", hwErr)
 	}
-	env = UpsertEnv(env, "TRIMCP_BACKEND", backend)
+	env = UpsertEnv(env, "NCE_BACKEND", backend)
 	if log != nil {
 		log.Info("hardware_snapshot",
-			"trimcp_backend", backend,
+			"nce_backend", backend,
 			"cuda", h.CUDA,
 			"rocm", h.ROCm,
 			"intel_npu", h.IntelNPU,
@@ -74,12 +74,12 @@ func Run(ctx context.Context, n UserNotifier, log *slog.Logger) error {
 
 	appRoot, err := AppRoot()
 	if err != nil {
-		n.Error("TriMCP", "Could not locate the TriMCP application folder.")
+		n.Error("NCE", "Could not locate the NCE application folder.")
 		return err
 	}
 
 	if log != nil {
-		log.Info("trimcp_launch", "mode", string(mode), "app_root", appRoot)
+		log.Info("nce_launch", "mode", string(mode), "app_root", appRoot)
 	}
 
 	switch mode {
@@ -111,7 +111,7 @@ func SetupLogger(w io.Writer) (*slog.Logger, *os.File, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "trimcp-launch.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(filepath.Join(dir, "nce-launch.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, nil, err
 	}

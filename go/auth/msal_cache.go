@@ -23,7 +23,7 @@ type dualMSALCache struct {
 func newDualMSALCache(path string, mirrorToKeychain bool) *dualMSALCache {
 	d := &dualMSALCache{path: path, mirrorToKeychain: mirrorToKeychain}
 	kr, err := keyring.Open(keyring.Config{
-		ServiceName: "TriMCP-cloud-msal",
+		ServiceName: "NCE-cloud-msal",
 	})
 	if err == nil {
 		d.ring = kr
@@ -71,7 +71,7 @@ func (d *dualMSALCache) Export(ctx context.Context, m cache.Marshaler, _ cache.E
 		_ = d.ring.Set(keyring.Item{
 			Key:   keyringMSALKey,
 			Data:  data,
-			Label: "TriMCP MSAL token cache (opaque)",
+			Label: "NCE MSAL token cache (opaque)",
 		})
 	}
 	return nil

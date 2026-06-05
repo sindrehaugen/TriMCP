@@ -1,4 +1,4 @@
-"""Batch 1: overlap merging and span validation (trimcp/pii.py)."""
+"""Batch 1: overlap merging and span validation (nce/pii.py)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from trimcp.models import NamespacePIIConfig, PIIEntity, PIIPolicy
-from trimcp.pii import _merge_overlapping_entities, process
+from nce.models import NamespacePIIConfig, PIIEntity, PIIPolicy
+from nce.pii import _merge_overlapping_entities, process
 
 
 def test_merge_overlapping_keeps_longer_span_at_same_start():
@@ -36,7 +36,7 @@ async def test_process_overlapping_spans_only_email_in_output():
     entities = _merge_overlapping_entities(raw)
     cfg = NamespacePIIConfig(entity_types=["EMAIL", "PERSON"], policy=PIIPolicy.redact)
 
-    with patch("trimcp.pii.scan", new_callable=AsyncMock, return_value=entities):
+    with patch("nce.pii.scan", new_callable=AsyncMock, return_value=entities):
         out = await process(text, cfg)
 
     assert "alic" not in out.sanitized_text
@@ -54,7 +54,7 @@ async def test_process_adjacent_non_overlapping_spans_both_replaced():
     entities = _merge_overlapping_entities(raw)
     cfg = NamespacePIIConfig(entity_types=["EMAIL", "PHONE"], policy=PIIPolicy.redact)
 
-    with patch("trimcp.pii.scan", new_callable=AsyncMock, return_value=entities):
+    with patch("nce.pii.scan", new_callable=AsyncMock, return_value=entities):
         out = await process(text, cfg)
 
     assert out.sanitized_text == "<EMAIL> <PHONE>"
@@ -68,7 +68,7 @@ async def test_process_negative_start_clears_raw_values_and_raises():
     ]
     cfg = NamespacePIIConfig(entity_types=["EMAIL"], policy=PIIPolicy.redact)
 
-    with patch("trimcp.pii.scan", new_callable=AsyncMock, return_value=entities):
+    with patch("nce.pii.scan", new_callable=AsyncMock, return_value=entities):
         with pytest.raises(ValueError, match="Invalid entity span"):
             await process(text, cfg)
 
@@ -83,7 +83,7 @@ async def test_process_end_beyond_text_clears_raw_values_and_raises():
     ]
     cfg = NamespacePIIConfig(entity_types=["EMAIL"], policy=PIIPolicy.redact)
 
-    with patch("trimcp.pii.scan", new_callable=AsyncMock, return_value=entities):
+    with patch("nce.pii.scan", new_callable=AsyncMock, return_value=entities):
         with pytest.raises(ValueError, match="Invalid entity span"):
             await process(text, cfg)
 

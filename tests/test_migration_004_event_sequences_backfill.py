@@ -9,7 +9,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 
-MIGRATION_PATH = Path("trimcp/migrations/004_event_sequences_backfill.sql")
+MIGRATION_PATH = Path("nce/migrations/004_event_sequences_backfill.sql")
 
 
 def _migration_sql() -> str:
@@ -30,7 +30,7 @@ async def _require_event_tables(conn: asyncpg.Connection) -> None:
             table,
         )
         if not exists:
-            pytest.skip(f"{table} missing — apply trimcp/schema.sql first")
+            pytest.skip(f"{table} missing — apply nce/schema.sql first")
 
 
 async def _set_sequence_stale(conn: asyncpg.Connection, namespace_id: uuid.UUID, seq: int) -> None:

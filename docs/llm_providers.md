@@ -1,10 +1,10 @@
 # LLM Providers and Structured Output
 
-TriMCP is architected to be Large Language Model (LLM) provider-agnostic. It supports a diverse range of backends for embeddings, semantic search, memory consolidation, and reasoning, with mandatory schema validation for all outputs.
+NCE is architected to be Large Language Model (LLM) provider-agnostic. It supports a diverse range of backends for embeddings, semantic search, memory consolidation, and reasoning, with mandatory schema validation for all outputs.
 
 ## Supported Providers
 
-TriMCP currently supports the following provider labels:
+NCE currently supports the following provider labels:
 
 | Label | Engine | Typical Use Case |
 | :--- | :--- | :--- |
@@ -18,13 +18,13 @@ TriMCP currently supports the following provider labels:
 
 ## Structured Output Strategy (Pydantic V2)
 
-A core mandate of TriMCP is that LLMs must never return "loose" text for cognitive operations. Every response that modifies the system state (e.g., creating a Knowledge Graph edge) is validated against a Pydantic V2 model.
+A core mandate of NCE is that LLMs must never return "loose" text for cognitive operations. Every response that modifies the system state (e.g., creating a Knowledge Graph edge) is validated against a Pydantic V2 model.
 
 ### Validation Signal Flow
 
 ```mermaid
 sequenceDiagram
-    participant Engine as TriMCP Core
+    participant Engine as NCE Core
     participant Factory as ProviderFactory
     participant Provider as LLM Provider (e.g., Gemini)
     participant LLM as External API
@@ -54,14 +54,14 @@ sequenceDiagram
 
 Providers are resolved in the following order:
 1.  **Namespace Metadata**: `metadata["consolidation"]["llm_provider"]` allows for per-tenant model selection.
-2.  **Global Default**: `TRIMCP_LLM_PROVIDER` in the environment configuration.
+2.  **Global Default**: `NCE_LLM_PROVIDER` in the environment configuration.
 
 ### Credential Resolution (BYO Keys)
-TriMCP follows a "Bring Your Own Key" (BYO) model. Credentials can be provided as:
--   **Environment Variables**: `TRIMCP_GEMINI_API_KEY`, etc.
+NCE follows a "Bring Your Own Key" (BYO) model. Credentials can be provided as:
+-   **Environment Variables**: `NCE_GEMINI_API_KEY`, etc.
 -   **References**: `ref:env/MY_CUSTOM_KEY` in namespace metadata.
 -   **Vault (Phase 3)**: Secure retrieval from a secret manager (planned).
 
 ## Local Embedding Backend
 
-For high-security or low-latency requirements, TriMCP can run embedding models locally using **Sentence-Transformers** or **Intel OpenVINO**, avoiding any external API calls for the semantic search hot path.
+For high-security or low-latency requirements, NCE can run embedding models locally using **Sentence-Transformers** or **Intel OpenVINO**, avoiding any external API calls for the semantic search hot path.

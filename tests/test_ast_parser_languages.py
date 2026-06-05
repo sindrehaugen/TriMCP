@@ -1,5 +1,5 @@
 import pytest
-from trimcp.ast_parser import parse_file, CodeChunk
+from nce.ast_parser import parse_file, CodeChunk
 
 
 def test_java_parsing():
@@ -90,7 +90,7 @@ def test_semantic_fallback_chunking():
     assert "Paragraph 2" in chunks[0].code_string
     
     # 2. Budget enforcement test with small limits
-    from trimcp import ast_parser
+    from nce import ast_parser
     old_chars = ast_parser._FALLBACK_CHUNK_CHARS
     old_lines = ast_parser._FALLBACK_CHUNK_LINES
     try:

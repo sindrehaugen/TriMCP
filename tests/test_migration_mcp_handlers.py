@@ -1,4 +1,4 @@
-"""Contract tests for trimcp.migration_mcp_handlers (validation, audit gate, serialization)."""
+"""Contract tests for nce.migration_mcp_handlers (validation, audit gate, serialization)."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from trimcp import auth as auth_mod
-from trimcp import migration_mcp_handlers
-from trimcp.mcp_errors import MCP_INTERNAL_ERROR, McpError
+from nce import auth as auth_mod
+from nce import migration_mcp_handlers
+from nce.mcp_errors import MCP_INTERNAL_ERROR, McpError
 
 _ADMIN_KEY = "test-admin-mcp-key"
 
@@ -33,9 +33,9 @@ def _bare_handler(handler):
 
 @pytest.fixture
 def admin_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", _ADMIN_KEY)
-    monkeypatch.setattr(auth_mod.cfg, "TRIMCP_ADMIN_API_KEY", _ADMIN_KEY)
-    monkeypatch.setattr(auth_mod.cfg, "TRIMCP_ADMIN_OVERRIDE", False)
+    monkeypatch.setenv("NCE_ADMIN_API_KEY", _ADMIN_KEY)
+    monkeypatch.setattr(auth_mod.cfg, "NCE_ADMIN_API_KEY", _ADMIN_KEY)
+    monkeypatch.setattr(auth_mod.cfg, "NCE_ADMIN_OVERRIDE", False)
 
 
 def _engine_with_pool() -> MagicMock:
@@ -341,7 +341,7 @@ class TestAuditExtraParamsBounds:
             calls.append(kwargs.get("event_type", ""))
             return SimpleNamespace(event_id=uuid.uuid4(), event_seq=1)
 
-        with patch("trimcp.migration_mcp_handlers.append_event", side_effect=_append):
+        with patch("nce.migration_mcp_handlers.append_event", side_effect=_append):
             await migration_mcp_handlers._audit_migration_action(
                 pool,
                 event_type="migration_test",
@@ -369,9 +369,9 @@ class TestAdminIdentityLogging:
         async def _append(*, conn, **kwargs):
             return SimpleNamespace(event_id=uuid.uuid4(), event_seq=7)
 
-        caplog.set_level(logging.INFO, logger="trimcp.migration_mcp_handlers")
+        caplog.set_level(logging.INFO, logger="nce.migration_mcp_handlers")
 
-        with patch("trimcp.migration_mcp_handlers.append_event", side_effect=_append):
+        with patch("nce.migration_mcp_handlers.append_event", side_effect=_append):
             await migration_mcp_handlers._audit_migration_action(
                 pool,
                 event_type="migration_test",
@@ -383,10 +383,10 @@ class TestAdminIdentityLogging:
         assert any(
             expected_logged in rec.message and "admin=" in rec.message
             for rec in caplog.records
-            if rec.name == "trimcp.migration_mcp_handlers"
+            if rec.name == "nce.migration_mcp_handlers"
         )
         assert not any(
             long_identity in rec.message
             for rec in caplog.records
-            if rec.name == "trimcp.migration_mcp_handlers"
+            if rec.name == "nce.migration_mcp_handlers"
         )

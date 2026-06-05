@@ -1,6 +1,6 @@
-# TriMCP Documentation Index
+# NCE Documentation Index
 
-Technical specifications, architectural guides, and operational references for TriMCP v1.0.
+Technical specifications, architectural guides, and operational references for NCE v1.0.
 
 ---
 

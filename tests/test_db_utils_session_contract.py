@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from trimcp.db_utils import POOL_ACQUIRE_TIMEOUT, scoped_pg_session, unmanaged_pg_connection
+from nce.db_utils import POOL_ACQUIRE_TIMEOUT, scoped_pg_session, unmanaged_pg_connection
 
 
 @pytest.mark.asyncio
@@ -55,8 +55,8 @@ async def test_scoped_pg_session_passes_acquire_timeout() -> None:
     pool = MagicMock()
     pool.acquire = acquire
 
-    with patch("trimcp.auth.set_namespace_context", new_callable=AsyncMock):
-        with patch("trimcp.auth._reset_rls_context", new_callable=AsyncMock):
+    with patch("nce.auth.set_namespace_context", new_callable=AsyncMock):
+        with patch("nce.auth._reset_rls_context", new_callable=AsyncMock):
             async with scoped_pg_session(pool, ns):
                 pass
 
@@ -91,8 +91,8 @@ async def test_scoped_pg_session_opens_transaction_before_namespace_and_body() -
     async def reset(_c: object) -> None:
         order.append("reset")
 
-    with patch("trimcp.auth.set_namespace_context", set_ns):
-        with patch("trimcp.auth._reset_rls_context", reset):
+    with patch("nce.auth.set_namespace_context", set_ns):
+        with patch("nce.auth._reset_rls_context", reset):
             async with scoped_pg_session(pool, ns) as c:
                 assert c is conn
                 order.append("body")

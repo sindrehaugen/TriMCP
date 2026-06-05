@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from trimcp.bridges.sharepoint import GRAPH_DELTA_URL_PREFIXES, SharePointBridge
-from trimcp.net_safety import BridgeURLValidationError, assert_url_allowed_prefix
+from nce.bridges.sharepoint import GRAPH_DELTA_URL_PREFIXES, SharePointBridge
+from nce.net_safety import BridgeURLValidationError, assert_url_allowed_prefix
 
 
 def test_sharepoint_delta_prefix_allows_graph_https() -> None:
@@ -36,9 +36,9 @@ def test_sharepoint_delta_pages_rejects_poisoned_next_link() -> None:
     mock_redis = MagicMock()
     mock_redis.get.return_value = poisoned.encode("utf-8")
 
-    with patch("trimcp.bridges.sharepoint.redis_client", return_value=mock_redis):
+    with patch("nce.bridges.sharepoint.redis_client", return_value=mock_redis):
         with patch(
-            "trimcp.net_safety._resolve_ips",
+            "nce.net_safety._resolve_ips",
             return_value=[ipaddress.ip_address("8.8.8.8")],
         ):
             with pytest.raises(BridgeURLValidationError, match="allowed prefixes"):

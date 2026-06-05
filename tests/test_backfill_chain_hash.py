@@ -8,7 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
-os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-test-key-32chars-long!!")
+os.environ.setdefault("NCE_MASTER_KEY", "dev-test-key-32chars-long!!")
 
 # Import the functions under test via the script (it adds repo root to sys.path)
 import sys
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from trimcp.event_log import _GENESIS_SENTINEL
+from nce.event_log import _GENESIS_SENTINEL
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 

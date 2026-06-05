@@ -1,6 +1,6 @@
 # PII Detection and Redaction
 
-TriMCP provides an automated PII (Personally Identifiable Information) safety net. It identifies and masks sensitive data before it reaches the LLM provider or is permanently archived in long-term memory.
+NCE provides an automated PII (Personally Identifiable Information) safety net. It identifies and masks sensitive data before it reaches the LLM provider or is permanently archived in long-term memory.
 
 ## The Redaction Pipeline
 
@@ -36,7 +36,7 @@ sequenceDiagram
 
 ## Detection Engines
 
-TriMCP uses a multi-layered detection strategy:
+NCE uses a multi-layered detection strategy:
 -   **Microsoft Presidio**: The primary engine for high-confidence entity recognition using advanced NLP models.
 -   **Regex Fallback**: A set of battle-tested regular expressions for common patterns (emails, credit cards, SSNs) used when NLP models are unavailable or for performance-critical paths.
 
@@ -53,7 +53,7 @@ Each namespace can define its own PII policy:
 
 ## Reversible Redaction (The Vault)
 
-When a policy is marked as `reversible`, TriMCP encrypts the original sensitive values and stores them in the `pii_redactions` table. 
+When a policy is marked as `reversible`, NCE encrypts the original sensitive values and stores them in the `pii_redactions` table. 
 -   Authorized agents can call the `unredact_memory` tool.
 -   The engine retrieves the encrypted values from the vault, decrypts them using the system master key, and restores them to the memory context for the specific request.
 -   All unredaction events are logged to the `event_log` for security auditing.

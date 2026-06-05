@@ -6,15 +6,18 @@ import os
 import uuid
 from collections.abc import AsyncGenerator
 
-# `trimcp.config` fails fast on import if unset; tests often import the package
+# `nce.config` fails fast on import if unset; tests often import the package
 # without a local .env — provide deterministic dev keys for collection only.
 for _key, _default in {
-    "TRIMCP_MASTER_KEY": "x" * 32,
-    "TRIMCP_ADMIN_API_KEY": "test-admin-api-key-for-unit-tests",
-    "TRIMCP_MCP_API_KEY": "test-mcp-api-key-for-unit-tests",
+    "NCE_MASTER_KEY": "x" * 32,
+    "NCE_ADMIN_API_KEY": "test-admin-api-key-for-unit-tests",
+    "NCE_MCP_API_KEY": "test-mcp-api-key-for-unit-tests",
     "DROPBOX_APP_SECRET": "test-dropbox-secret",
     "GRAPH_CLIENT_STATE": "test-graph-state",
     "DRIVE_CHANNEL_TOKEN": "test-drive-token",
+    # mTLS strict mode is disabled in unit tests — bridges don't have certs.
+    # Production deployments must set NCE_MTLS_STRICT=true (default).
+    "NCE_MTLS_STRICT": "false",
 }.items():
     os.environ.setdefault(_key, _default)
 
@@ -24,7 +27,7 @@ import pytest_asyncio
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Run ``test_init_public_api`` last — it purges ``trimcp`` from ``sys.modules``."""
+    """Run ``test_init_public_api`` last — it purges ``nce`` from ``sys.modules``."""
     purge_last: list[pytest.Item] = []
     rest: list[pytest.Item] = []
     for item in items:
@@ -38,21 +41,21 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 @pytest.fixture(autouse=True)
 def _inject_mcp_tenant_api_key_for_tool_calls(monkeypatch):
     """Tenant MCP tools require mcp_api_key in production; tests often omit it."""
-    from trimcp.auth import MCP_ADMIN_TOOL_NAMES, enforce_mcp_tool_auth
+    from nce.auth import MCP_ADMIN_TOOL_NAMES, enforce_mcp_tool_auth
 
     _real = enforce_mcp_tool_auth
 
     def _enforce_with_test_keys(tool_name: str, arguments: dict) -> None:
         args = dict(arguments)
         if tool_name in MCP_ADMIN_TOOL_NAMES:
-            args.setdefault("admin_api_key", os.environ.get("TRIMCP_ADMIN_API_KEY", ""))
+            args.setdefault("admin_api_key", os.environ.get("NCE_ADMIN_API_KEY", ""))
         elif not args.get("admin_api_key"):
-            args.setdefault("mcp_api_key", os.environ.get("TRIMCP_MCP_API_KEY", ""))
+            args.setdefault("mcp_api_key", os.environ.get("NCE_MCP_API_KEY", ""))
         return _real(tool_name, args)
 
-    monkeypatch.setattr("trimcp.auth.enforce_mcp_tool_auth", _enforce_with_test_keys)
+    monkeypatch.setattr("nce.auth.enforce_mcp_tool_auth", _enforce_with_test_keys)
     monkeypatch.setattr(
-        "trimcp.mcp_stdio_dispatch.enforce_mcp_tool_auth", _enforce_with_test_keys
+        "nce.mcp_stdio_dispatch.enforce_mcp_tool_auth", _enforce_with_test_keys
     )
 
 
@@ -72,9 +75,9 @@ def first_recorded_contradiction(out: dict | None) -> dict | None:
 
 
 _TEST_ENV_DEFAULTS: dict[str, str] = {
-    "TRIMCP_MASTER_KEY": "x" * 32,
-    "TRIMCP_ADMIN_API_KEY": "test-admin-api-key-for-unit-tests",
-    "TRIMCP_MCP_API_KEY": "test-mcp-api-key-for-unit-tests",
+    "NCE_MASTER_KEY": "x" * 32,
+    "NCE_ADMIN_API_KEY": "test-admin-api-key-for-unit-tests",
+    "NCE_MCP_API_KEY": "test-mcp-api-key-for-unit-tests",
     "DROPBOX_APP_SECRET": "test-dropbox-secret",
     "GRAPH_CLIENT_STATE": "test-graph-state",
     "DRIVE_CHANNEL_TOKEN": "test-drive-token",
@@ -88,44 +91,44 @@ def _restore_mcp_env_api_keys() -> None:
             os.environ[key] = default
 
 
-def _restore_trimcp_cfg_from_env() -> None:
+def _restore_nce_cfg_from_env() -> None:
     """Reset module-level ``cfg`` fields tests often mutate on the shared singleton."""
-    from trimcp.config import cfg
+    from nce.config import cfg
 
     _restore_mcp_env_api_keys()
 
-    env = os.environ.get("TRIMCP_ENV", "dev").strip().lower()
+    env = os.environ.get("NCE_ENV", "dev").strip().lower()
     cfg.ENVIRONMENT = env
     cfg.IS_PROD = env in {"prod", "production"}
     cfg.IS_TEST = env in {"test", "testing", "ci"}
     cfg.IS_DEV = not cfg.IS_PROD and not cfg.IS_TEST
     cfg.REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-    cfg.TRIMCP_API_KEY = os.environ.get("TRIMCP_API_KEY", getattr(cfg, "TRIMCP_API_KEY", ""))
-    cfg.TRIMCP_MCP_API_KEY = os.environ.get(
-        "TRIMCP_MCP_API_KEY", "test-mcp-api-key-for-unit-tests"
+    cfg.NCE_API_KEY = os.environ.get("NCE_API_KEY", getattr(cfg, "NCE_API_KEY", ""))
+    cfg.NCE_MCP_API_KEY = os.environ.get(
+        "NCE_MCP_API_KEY", "test-mcp-api-key-for-unit-tests"
     )
-    cfg.TRIMCP_MCP_NAMESPACE_ID = os.environ.get("TRIMCP_MCP_NAMESPACE_ID", "")
-    cfg.TRIMCP_ADMIN_API_KEY = os.environ.get(
-        "TRIMCP_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests"
+    cfg.NCE_MCP_NAMESPACE_ID = os.environ.get("NCE_MCP_NAMESPACE_ID", "")
+    cfg.NCE_ADMIN_API_KEY = os.environ.get(
+        "NCE_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests"
     )
-    cfg.TRIMCP_ADMIN_OVERRIDE = _env_bool("TRIMCP_ADMIN_OVERRIDE", default=False)
-    cfg.TRIMCP_QUOTAS_ENABLED = _env_bool("TRIMCP_QUOTAS_ENABLED", default=True)
-    cfg.TRIMCP_QUOTA_REDIS_COUNTERS = _env_bool("TRIMCP_QUOTA_REDIS_COUNTERS", default=True)
-    cfg.TRIMCP_OBSERVABILITY_ENABLED = _env_bool("TRIMCP_OBSERVABILITY_ENABLED", default=True)
-    cfg.TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS = int(
-        os.environ.get("TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS", "90")
+    cfg.NCE_ADMIN_OVERRIDE = _env_bool("NCE_ADMIN_OVERRIDE", default=False)
+    cfg.NCE_QUOTAS_ENABLED = _env_bool("NCE_QUOTAS_ENABLED", default=True)
+    cfg.NCE_QUOTA_REDIS_COUNTERS = _env_bool("NCE_QUOTA_REDIS_COUNTERS", default=True)
+    cfg.NCE_OBSERVABILITY_ENABLED = _env_bool("NCE_OBSERVABILITY_ENABLED", default=True)
+    cfg.NCE_MAX_TEMPORAL_LOOKBACK_DAYS = int(
+        os.environ.get("NCE_MAX_TEMPORAL_LOOKBACK_DAYS", "90")
     )
-    cfg.TRIMCP_JWT_SECRET = os.environ.get("TRIMCP_JWT_SECRET", "")
-    cfg.TRIMCP_JWT_PUBLIC_KEY = os.environ.get("TRIMCP_JWT_PUBLIC_KEY", "")
-    cfg.TRIMCP_JWT_ALGORITHM = (os.environ.get("TRIMCP_JWT_ALGORITHM") or "HS256").upper().strip()
-    cfg.TRIMCP_JWT_ISSUER = os.environ.get("TRIMCP_JWT_ISSUER", "")
-    cfg.TRIMCP_JWT_AUDIENCE = os.environ.get("TRIMCP_JWT_AUDIENCE", "")
-    cfg.TRIMCP_JWT_LEEWAY_SECONDS = int(os.environ.get("TRIMCP_JWT_LEEWAY_SECONDS", "30"))
-    cfg.TRIMCP_DISABLE_MIGRATION_MCP = _env_bool(
-        "TRIMCP_DISABLE_MIGRATION_MCP", default=cfg.IS_PROD
+    cfg.NCE_JWT_SECRET = os.environ.get("NCE_JWT_SECRET", "")
+    cfg.NCE_JWT_PUBLIC_KEY = os.environ.get("NCE_JWT_PUBLIC_KEY", "")
+    cfg.NCE_JWT_ALGORITHM = (os.environ.get("NCE_JWT_ALGORITHM") or "HS256").upper().strip()
+    cfg.NCE_JWT_ISSUER = os.environ.get("NCE_JWT_ISSUER", "")
+    cfg.NCE_JWT_AUDIENCE = os.environ.get("NCE_JWT_AUDIENCE", "")
+    cfg.NCE_JWT_LEEWAY_SECONDS = int(os.environ.get("NCE_JWT_LEEWAY_SECONDS", "30"))
+    cfg.NCE_DISABLE_MIGRATION_MCP = _env_bool(
+        "NCE_DISABLE_MIGRATION_MCP", default=cfg.IS_PROD
     )
-    cfg.TRIMCP_MINIO_REQUIRED = _env_bool("TRIMCP_MINIO_REQUIRED", default=True)
-    cfg.TRIMCP_EMBEDDING_MODEL_REVISION = os.environ.get("TRIMCP_EMBEDDING_MODEL_REVISION", "")
+    cfg.NCE_MINIO_REQUIRED = _env_bool("NCE_MINIO_REQUIRED", default=True)
+    cfg.NCE_EMBEDDING_MODEL_REVISION = os.environ.get("NCE_EMBEDDING_MODEL_REVISION", "")
     cfg.AZURE_CLIENT_ID = os.environ.get("AZURE_CLIENT_ID", "")
     cfg.AZURE_CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
     cfg.GDRIVE_OAUTH_CLIENT_ID = os.environ.get("GDRIVE_OAUTH_CLIENT_ID", "")
@@ -154,50 +157,50 @@ def _restore_trimcp_cfg_from_env() -> None:
     cfg.DRIVE_CHANNEL_TOKEN = os.environ.get(
         "DRIVE_CHANNEL_TOKEN", _TEST_ENV_DEFAULTS["DRIVE_CHANNEL_TOKEN"]
     )
-    cfg.TRIMCP_WEBHOOK_TRUST_PROXY = _env_bool("TRIMCP_WEBHOOK_TRUST_PROXY", default=False)
+    cfg.NCE_WEBHOOK_TRUST_PROXY = _env_bool("NCE_WEBHOOK_TRUST_PROXY", default=False)
 
 
-def _ensure_trimcp_package_loaded() -> None:
-    """Re-import ``trimcp`` after ``test_init_public_api`` purges ``sys.modules``."""
+def _ensure_nce_package_loaded() -> None:
+    """Re-import ``nce`` after ``test_init_public_api`` purges ``sys.modules``."""
     import importlib
     import sys
 
-    if "trimcp" in sys.modules:
+    if "nce" in sys.modules:
         return
-    importlib.import_module("trimcp")
+    importlib.import_module("nce")
 
 
-def _restore_trimcp_temporal_datetime() -> None:
-    """Undo tests that monkeypatch ``trimcp.temporal.datetime`` with a fixed clock."""
+def _restore_nce_temporal_datetime() -> None:
+    """Undo tests that monkeypatch ``nce.temporal.datetime`` with a fixed clock."""
     import datetime as std_datetime
 
-    import trimcp.temporal as temporal_mod
+    import nce.temporal as temporal_mod
 
     temporal_mod.datetime = std_datetime.datetime
 
 
 @pytest.fixture(autouse=True)
-def _reset_trimcp_cfg_singleton_after_test() -> None:
-    """Prevent order-dependent failures when tests patch ``trimcp.config.cfg``."""
-    _restore_trimcp_cfg_from_env()
-    _restore_trimcp_temporal_datetime()
+def _reset_nce_cfg_singleton_after_test() -> None:
+    """Prevent order-dependent failures when tests patch ``nce.config.cfg``."""
+    _restore_nce_cfg_from_env()
+    _restore_nce_temporal_datetime()
     yield
-    _restore_trimcp_cfg_from_env()
-    _restore_trimcp_temporal_datetime()
+    _restore_nce_cfg_from_env()
+    _restore_nce_temporal_datetime()
 
 
 def pytest_runtest_teardown(item: pytest.Item) -> None:
-    """``test_init_public_api`` purges ``trimcp`` from ``sys.modules`` — restore for teardown hooks."""
+    """``test_init_public_api`` purges ``nce`` from ``sys.modules`` — restore for teardown hooks."""
     if "test_init_public_api" in item.nodeid:
-        _ensure_trimcp_package_loaded()
-        _restore_trimcp_cfg_from_env()
-        _restore_trimcp_temporal_datetime()
+        _ensure_nce_package_loaded()
+        _restore_nce_cfg_from_env()
+        _restore_nce_temporal_datetime()
 
 
 @pytest.fixture(autouse=True)
 def _reset_admin_state_engine_after_test() -> None:
-    """Handlers read ``trimcp.admin_state.engine``; do not leak mocks across tests."""
-    import trimcp.admin_state as admin_state
+    """Handlers read ``nce.admin_state.engine``; do not leak mocks across tests."""
+    import nce.admin_state as admin_state
 
     admin_state.engine = None
     try:
@@ -233,12 +236,12 @@ def _reset_server_engine_after_test() -> None:
 def _integration_pool_dsn() -> str | None:
     """DSN used by ``pg_pool`` (mutations + ``append_event`` integration tests).
 
-    Operators may point CI at an isolated database via ``TRIMCP_INTEGRATION_PG_DSN``.
+    Operators may point CI at an isolated database via ``NCE_INTEGRATION_PG_DSN``.
     Defaults to twelve-factor aliases so ``PG_DSN`` / ``DATABASE_URL`` work.
     """
 
     raw = (
-        os.getenv("TRIMCP_INTEGRATION_PG_DSN")
+        os.getenv("NCE_INTEGRATION_PG_DSN")
         or os.getenv("PG_DSN")
         or os.getenv("DATABASE_URL")
         or ""
@@ -257,7 +260,7 @@ def _reset_signing_key_cache_after_test() -> None:
     """
     yield
     try:
-        import trimcp.signing as signing_mod
+        import nce.signing as signing_mod
 
         # _key_cache is a _SigningKeyCache(TTLCache) — clear() removes all
         # entries and __delitem__ zeros their MutableKeyBuffer.
@@ -273,9 +276,9 @@ def _reset_signing_key_cache_after_test() -> None:
 
 
 def _refresh_signing_when_decrypt_fails() -> bool:
-    """When true, rotate signing keys if ``TRIMCP_MASTER_KEY`` cannot decrypt the active blob."""
+    """When true, rotate signing keys if ``NCE_MASTER_KEY`` cannot decrypt the active blob."""
 
-    return os.getenv("TRIMCP_INTEGRATION_REFRESH_SIGNING_ON_DECRYPT_FAIL", "").strip().lower() in {
+    return os.getenv("NCE_INTEGRATION_REFRESH_SIGNING_ON_DECRYPT_FAIL", "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -301,14 +304,14 @@ async def _require_append_event_schema(pool: asyncpg.Pool) -> None:
     if not ok:
         pytest.skip(
             "Postgres schema is missing public.event_log.chain_hash — "
-            "apply the current trimcp/schema.sql before integration tests.",
+            "apply the current nce/schema.sql before integration tests.",
         )
 
 
 async def _ensure_active_signing_key(pool: asyncpg.Pool) -> None:
     """Ensure ``get_active_key`` succeeds (rotate when empty / optionally on decrypt mismatch)."""
 
-    from trimcp.signing import (
+    from nce.signing import (
         NoActiveSigningKeyError,
         SigningKeyDecryptionError,
         get_active_key,
@@ -327,9 +330,9 @@ async def _ensure_active_signing_key(pool: asyncpg.Pool) -> None:
                 await rotate_key(conn)
                 return
             pytest.skip(
-                "TRIMCP_MASTER_KEY does not decrypt signing_keys in this database. "
+                "NCE_MASTER_KEY does not decrypt signing_keys in this database. "
                 "Use the deployment master key or set "
-                "TRIMCP_INTEGRATION_REFRESH_SIGNING_ON_DECRYPT_FAIL=1 "
+                "NCE_INTEGRATION_REFRESH_SIGNING_ON_DECRYPT_FAIL=1 "
                 "(rotates active signing keys — use only on disposable databases).",
             )
 
@@ -339,7 +342,7 @@ async def pg_pool() -> AsyncGenerator[asyncpg.Pool, None]:
     dsn = _integration_pool_dsn()
     if not dsn:
         pytest.skip(
-            "Integration tests need TRIMCP_INTEGRATION_PG_DSN, PG_DSN, or DATABASE_URL",
+            "Integration tests need NCE_INTEGRATION_PG_DSN, PG_DSN, or DATABASE_URL",
         )
     try:
         pool = await asyncpg.create_pool(
@@ -384,14 +387,14 @@ async def pg_app_conn(
     if not app_dsn or app_dsn == primary:
         from urllib.parse import urlparse, urlunparse
 
-        from trimcp.config import cfg
+        from nce.config import cfg
         try:
             parsed = urlparse(primary)
             netloc = parsed.hostname or ""
             if parsed.port:
                 netloc = f"{netloc}:{parsed.port}"
-            app_pass = cfg.TRIMCP_APP_PASSWORD or "trimcp_app_secret"
-            netloc = f"trimcp_app:{app_pass}@{netloc}"
+            app_pass = cfg.NCE_APP_PASSWORD or "nce_app_secret"
+            netloc = f"nce_app:{app_pass}@{netloc}"
             app_dsn = urlunparse(parsed._replace(netloc=netloc))
         except Exception:
             async with pg_pool.acquire() as conn:

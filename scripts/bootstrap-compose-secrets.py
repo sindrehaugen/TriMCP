@@ -25,46 +25,46 @@ HEADER = """# AUTO-GENERATED — do not commit real secrets. Added by scripts/bo
 
 KEY_SPECS: list[tuple[str, Callable[[str], bool]]] = [
     (
-        "TRIMCP_MASTER_KEY",
+        "NCE_MASTER_KEY",
         lambda v: _weak(v, min_len=32)
         or "dev" in v.lower()
         or "change" in v.lower()
         or "replace_me" in v.lower(),
     ),
     (
-        "TRIMCP_API_KEY",
+        "NCE_API_KEY",
         lambda v: _weak(v, min_len=16)
         or "change" in v.lower()
         or v.lower().startswith("dev-")
         or "replace_me" in v.lower(),
     ),
     (
-        "TRIMCP_ADMIN_API_KEY",
+        "NCE_ADMIN_API_KEY",
         lambda v: _weak(v, min_len=16)
         or "change" in v.lower()
         or v.lower().startswith("dev-")
         or "replace_me" in v.lower(),
     ),
     (
-        "TRIMCP_MCP_API_KEY",
+        "NCE_MCP_API_KEY",
         lambda v: _weak(v, min_len=16)
         or "change" in v.lower()
         or v.lower().startswith("dev-")
         or "replace_me" in v.lower(),
     ),
     (
-        "TRIMCP_APP_PASSWORD",
+        "NCE_APP_PASSWORD",
         lambda v: _weak(v, min_len=8)
         or "change" in v.lower()
         or "replace_me" in v.lower()
-        or v == "trimcp_app_secret",
+        or v == "nce_app_secret",
     ),
     (
-        "TRIMCP_JWT_SECRET",
+        "NCE_JWT_SECRET",
         lambda v: _weak(v, min_len=32) or "dev-jwt" in v.lower() or "replace_me" in v.lower(),
     ),
     (
-        "TRIMCP_ADMIN_PASSWORD",
+        "NCE_ADMIN_PASSWORD",
         lambda v: _weak(v, min_len=8)
         or v.lower() in ("changeme", "admin", "password")
         or "replace_me" in v.lower()
@@ -122,17 +122,17 @@ def _hash_pbkdf2(password: str) -> str:
 
 
 def _gen_for_key(key: str) -> str:
-    if key == "TRIMCP_ADMIN_PASSWORD":
+    if key == "NCE_ADMIN_PASSWORD":
         raw_pass = secrets.token_urlsafe(18)
         hashed_pass = _hash_pbkdf2(raw_pass)
         print("=" * 60)
-        print(" TriMCP ADMINISTRATOR PASSWORD GENERATED ")
+        print(" NCE ADMINISTRATOR PASSWORD GENERATED ")
         print(f" Plaintext Password:  {raw_pass}")
         print(" Keep this password secure! It will NOT be written to disk in plaintext.")
         print(" Only the PBKDF2 hash is written to deploy/compose.stack.env.generated.")
         print("=" * 60)
         return hashed_pass
-    if key == "TRIMCP_APP_PASSWORD":
+    if key == "NCE_APP_PASSWORD":
         return secrets.token_urlsafe(16)
     return secrets.token_hex(32)
 

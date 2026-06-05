@@ -1,7 +1,7 @@
 """
 tests/test_correlation_propagation.py
 
-Unit coverage for trimcp.correlation ContextVar isolation.
+Unit coverage for nce.correlation ContextVar isolation.
 
 Exercises:
   - get_correlation_id() returns None outside a request context
@@ -23,13 +23,13 @@ import pytest
 
 from tests.fixtures.event_log_params import minimal_store_memory_params
 from tests.fixtures.fake_asyncpg import RecordingFakeConnection
-from trimcp import event_log as event_log_mod
-from trimcp.correlation import (
+from nce import event_log as event_log_mod
+from nce.correlation import (
     correlation_id_var,
     get_correlation_id,
     require_correlation_id,
 )
-from trimcp.event_log import append_event
+from nce.event_log import append_event
 
 _RAW_SIGNING_SECRET = hashlib.sha256(b"pytest-correlation-hmac-secret").digest()
 

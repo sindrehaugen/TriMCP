@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from trimcp.reembedding_migration import (
+from nce.reembedding_migration import (
     _EMBED_MAX_RETRIES,
     InMemoryReembeddingStore,
     MemoryEmbeddingRow,
@@ -135,7 +135,7 @@ async def test_embed_retry_sleeps_with_increasing_delay() -> None:
     )
 
     sleep_mock = AsyncMock()
-    with patch("trimcp.reembedding_migration.asyncio.sleep", sleep_mock):
+    with patch("nce.reembedding_migration.asyncio.sleep", sleep_mock):
         written = await orch.process_batch(10)
 
     assert written == 1
@@ -166,7 +166,7 @@ async def test_timeout_error_on_all_attempts_raises_after_max_retries() -> None:
             coro.close()
         raise TimeoutError("embed timed out")
 
-    with patch("trimcp.reembedding_migration.asyncio.wait_for", raising_wait_for):
+    with patch("nce.reembedding_migration.asyncio.wait_for", raising_wait_for):
         written = await orch.process_batch(10)
 
     assert written == 0

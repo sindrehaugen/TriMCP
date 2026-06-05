@@ -5,7 +5,7 @@ import uuid
 
 import pytest
 
-from trimcp import outbox_relay
+from nce import outbox_relay
 
 
 @pytest.mark.integration

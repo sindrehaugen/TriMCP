@@ -7,17 +7,17 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
-from trimcp.auth import _reset_rls_context, set_namespace_context
+from nce.auth import _reset_rls_context, set_namespace_context
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_get_trimcp_namespace_fails_without_context(pg_pool) -> None:
+async def test_get_nce_namespace_fails_without_context(pg_pool) -> None:
     async with pg_pool.acquire() as conn:
         async with conn.transaction():
             await _reset_rls_context(conn)
-            with pytest.raises(asyncpg.PostgresError, match="trimcp.namespace_id"):
-                await conn.fetchval("SELECT get_trimcp_namespace()")
+            with pytest.raises(asyncpg.PostgresError, match="nce.namespace_id"):
+                await conn.fetchval("SELECT get_nce_namespace()")
 
 
 @pytest.mark.integration
@@ -67,7 +67,7 @@ async def test_resource_quotas_cross_namespace_isolation(
 @pytest.mark.asyncio
 async def test_rls_catalog_force_enabled(pg_app_conn) -> None:
     """FORCE ROW LEVEL SECURITY must be on for tenant tables (catalog probe)."""
-    from trimcp.event_log import EXPECTED_TENANT_RLS_TABLES
+    from nce.event_log import EXPECTED_TENANT_RLS_TABLES
 
     for table in EXPECTED_TENANT_RLS_TABLES:
         force_on = await pg_app_conn.fetchval(

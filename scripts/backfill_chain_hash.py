@@ -40,8 +40,8 @@ import asyncpg
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from trimcp.config import cfg
-from trimcp.event_log import (
+from nce.config import cfg
+from nce.event_log import (
     _GENESIS_SENTINEL,
     _build_signing_fields,
     _compute_chain_hash,

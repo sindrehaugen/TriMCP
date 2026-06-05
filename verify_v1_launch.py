@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TriMCP v1.0 launch verification.
+NCE v1.0 launch verification.
 
 Checks (in order):
   1. Admin REST ``GET /api/health`` — Postgres, Mongo, Redis up (HMAC auth).
@@ -48,10 +48,10 @@ except ModuleNotFoundError as _e:
     ) from _e
 import httpx
 
-from trimcp.config import cfg
-from trimcp.consolidation import ConsolidationWorker
+from nce.config import cfg
+from nce.consolidation import ConsolidationWorker
 
-VERIFY_NS_SLUG = "trimcp-v1-launch-verify"
+VERIFY_NS_SLUG = "nce-v1-launch-verify"
 
 
 class _NoopLLM:
@@ -72,7 +72,7 @@ def _admin_hmac_headers(api_key: str, method: str, path: str, body: bytes = b"")
     canonical = "\n".join(parts)
     sig = hmac.new(api_key.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
     return {
-        "X-TriMCP-Timestamp": str(ts),
+        "X-NCE-Timestamp": str(ts),
         "Authorization": f"HMAC-SHA256 {sig}",
     }
 
@@ -202,7 +202,7 @@ async def _step_event_log(client: httpx.AsyncClient, api_key: str) -> None:
 
 async def _async_main(admin_base: str, a2a_base: str) -> None:
     cfg.validate()
-    api_key = cfg.TRIMCP_API_KEY
+    api_key = cfg.NCE_API_KEY
     if not api_key:
         _fail("Configuration", "TRIMCP_API_KEY is empty (required for HMAC admin calls)")
 
@@ -220,7 +220,7 @@ async def _async_main(admin_base: str, a2a_base: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="TriMCP v1.0 launch verification")
+    parser = argparse.ArgumentParser(description="NCE v1.0 launch verification")
     parser.add_argument(
         "--admin-url",
         default=os.environ.get("TRIMCP_ADMIN_BASE_URL", "http://127.0.0.1:8003"),
@@ -233,7 +233,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    print("=== TriMCP v1.0 Launch Verification ===")
+    print("=== NCE v1.0 Launch Verification ===")
     print()
 
     try:

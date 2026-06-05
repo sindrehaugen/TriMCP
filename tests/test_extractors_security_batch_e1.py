@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from trimcp.extractors import libreoffice
-from trimcp.extractors.dispatch import _is_security_relevant_mismatch, extract_bytes
-from trimcp.extractors.libreoffice import _safe_source_ext
+from nce.extractors import libreoffice
+from nce.extractors.dispatch import _is_security_relevant_mismatch, extract_bytes
+from nce.extractors.libreoffice import _safe_source_ext
 
 
 class TestLibreOfficeExt:
@@ -28,8 +28,8 @@ class TestDispatchMimePolyglot:
     async def test_zip_bytes_named_pdf_skipped(self):
         zip_head = b"PK\x03\x04" + b"\x00" * 64
         with (
-            patch("trimcp.extractors.dispatch.ensure_registered"),
-            patch("trimcp.extractors.dispatch._REGISTRY", {"pdf": AsyncMock()}),
+            patch("nce.extractors.dispatch.ensure_registered"),
+            patch("nce.extractors.dispatch._REGISTRY", {"pdf": AsyncMock()}),
         ):
             result = await extract_bytes(zip_head, filename="evil.pdf")
         assert result.skip_reason == "mime_mismatch"
@@ -38,9 +38,9 @@ class TestDispatchMimePolyglot:
 class TestDiagramApiBoardId:
     @pytest.mark.asyncio
     async def test_invalid_board_id_skipped_without_http(self):
-        from trimcp.extractors.diagram_api import miro_extract_board
+        from nce.extractors.diagram_api import miro_extract_board
 
-        with patch("trimcp.extractors.diagram_api.validate_extractor_url"):
+        with patch("nce.extractors.diagram_api.validate_extractor_url"):
             result = await miro_extract_board(
                 "foo/bar",
                 access_token="tok",
@@ -52,7 +52,7 @@ class TestDiagramApiBoardId:
 class TestOcrLimits:
     @pytest.mark.asyncio
     async def test_ocr_pdf_page_limit_warning(self, monkeypatch):
-        from trimcp.extractors import ocr as ocr_mod
+        from nce.extractors import ocr as ocr_mod
 
         monkeypatch.setattr(ocr_mod, "_MAX_OCR_PAGES", 2)
 

@@ -50,7 +50,7 @@ def mock_pg_pool(sample_namespaces):
 
 @pytest.mark.asyncio
 async def test_fetch_all_namespaces_returns_uuids(mock_pg_pool, sample_namespaces):
-    from trimcp.garbage_collector import _fetch_all_namespaces
+    from nce.garbage_collector import _fetch_all_namespaces
 
     result = await _fetch_all_namespaces(mock_pg_pool)
     assert result == sample_namespaces
@@ -58,7 +58,7 @@ async def test_fetch_all_namespaces_returns_uuids(mock_pg_pool, sample_namespace
 
 @pytest.mark.asyncio
 async def test_fetch_all_namespaces_empty():
-    from trimcp.garbage_collector import _fetch_all_namespaces
+    from nce.garbage_collector import _fetch_all_namespaces
 
     pool = MagicMock()
     conn = AsyncMock()
@@ -79,7 +79,7 @@ async def test_fetch_all_namespaces_empty():
 @pytest.mark.asyncio
 async def test_clean_orphaned_cascade_sets_context(mock_pg_pool, sample_namespaces):
     """Verify set_namespace_context is called before the unified CTE cascade."""
-    from trimcp.garbage_collector import _clean_orphaned_cascade
+    from nce.garbage_collector import _clean_orphaned_cascade
 
     # Provide a row so the cascade returns counts
     conn = mock_pg_pool.acquire.return_value.__aenter__.return_value
@@ -92,7 +92,7 @@ async def test_clean_orphaned_cascade_sets_context(mock_pg_pool, sample_namespac
     )
 
     with patch(
-        "trimcp.garbage_collector.set_namespace_context", new_callable=AsyncMock
+        "nce.garbage_collector.set_namespace_context", new_callable=AsyncMock
     ) as mock_set_ctx:
         counts = await _clean_orphaned_cascade(mock_pg_pool, sample_namespaces[0])
 
@@ -109,12 +109,12 @@ async def test_clean_orphaned_cascade_sets_context(mock_pg_pool, sample_namespac
 @pytest.mark.asyncio
 async def test_clean_orphaned_cascade_returns_zero_on_error():
     """If the DB query fails, return all-zero counts (don't crash)."""
-    from trimcp.garbage_collector import _clean_orphaned_cascade
+    from nce.garbage_collector import _clean_orphaned_cascade
 
     bad_pool = MagicMock()
     bad_pool.acquire.side_effect = RuntimeError("Connection refused")
 
-    with patch("trimcp.garbage_collector.set_namespace_context", new_callable=AsyncMock):
+    with patch("nce.garbage_collector.set_namespace_context", new_callable=AsyncMock):
         counts = await _clean_orphaned_cascade(bad_pool, uuid4())
     assert counts == {"salience": 0, "contradictions": 0}
 
@@ -122,7 +122,7 @@ async def test_clean_orphaned_cascade_returns_zero_on_error():
 @pytest.mark.asyncio
 async def test_clean_orphaned_cascade_handles_null_row(mock_pg_pool):
     """If fetchrow returns None, return all-zero counts gracefully."""
-    from trimcp.garbage_collector import _clean_orphaned_cascade
+    from nce.garbage_collector import _clean_orphaned_cascade
 
     conn = mock_pg_pool.acquire.return_value.__aenter__.return_value
     conn.fetchrow = AsyncMock(return_value=None)
@@ -134,7 +134,7 @@ async def test_clean_orphaned_cascade_handles_null_row(mock_pg_pool):
 @pytest.mark.asyncio
 async def test_clean_orphaned_cascade_passes_namespace_id_to_cte(mock_pg_pool):
     """Verify namespace_id is passed as a query parameter to the CTE fetchrow call."""
-    from trimcp.garbage_collector import _clean_orphaned_cascade
+    from nce.garbage_collector import _clean_orphaned_cascade
 
     ns_id = uuid4()
 
@@ -152,7 +152,7 @@ async def test_clean_orphaned_cascade_passes_namespace_id_to_cte(mock_pg_pool):
         ]
     )
 
-    with patch("trimcp.garbage_collector.set_namespace_context", new_callable=AsyncMock):
+    with patch("nce.garbage_collector.set_namespace_context", new_callable=AsyncMock):
         counts = await _clean_orphaned_cascade(mock_pg_pool, ns_id)
 
     # Verify the namespace_id UUID was passed as the second argument to fetchrow
@@ -177,7 +177,7 @@ async def test_clean_orphaned_cascade_passes_namespace_id_to_cte(mock_pg_pool):
 @pytest.mark.asyncio
 async def test_fetch_pg_refs_sets_context_per_namespace():
     """Verify _fetch_pg_refs sets namespace context for each namespace."""
-    from trimcp.garbage_collector import _fetch_pg_refs
+    from nce.garbage_collector import _fetch_pg_refs
 
     ns_list = [uuid4(), uuid4()]
 
@@ -194,7 +194,7 @@ async def test_fetch_pg_refs_sets_context_per_namespace():
     pool.acquire = MagicMock(return_value=acq)
 
     with patch(
-        "trimcp.garbage_collector.set_namespace_context", new_callable=AsyncMock
+        "nce.garbage_collector.set_namespace_context", new_callable=AsyncMock
     ) as mock_set_ctx:
         refs = await _fetch_pg_refs(pool, ns_list)
 
@@ -224,7 +224,7 @@ async def test_collect_orphans_iterates_over_all_namespaces(mock_pg_pool, sample
     """Verify _collect_orphans calls unified cascade for each namespace."""
     from datetime import datetime, timedelta
 
-    from trimcp.garbage_collector import _collect_orphans
+    from nce.garbage_collector import _collect_orphans
 
     stale = {
         "_id": "507f1f77bcf86cd799439011",
@@ -253,12 +253,12 @@ async def test_collect_orphans_iterates_over_all_namespaces(mock_pg_pool, sample
 
     with (
         patch(
-            "trimcp.garbage_collector._clean_orphaned_cascade",
+            "nce.garbage_collector._clean_orphaned_cascade",
             new_callable=AsyncMock,
             return_value={"salience": 0, "contradictions": 0, "events": 0},
         ) as mock_cascade,
         patch(
-            "trimcp.garbage_collector._fetch_pg_refs",
+            "nce.garbage_collector._fetch_pg_refs",
             new_callable=AsyncMock,
             return_value=set(),
         ),
@@ -285,7 +285,7 @@ async def test_collect_orphans_handles_no_namespaces():
     """When no namespaces exist, abort before Mongo/PG deletion to prevent data loss."""
     from datetime import datetime, timedelta
 
-    from trimcp.garbage_collector import _collect_orphans
+    from nce.garbage_collector import _collect_orphans
 
     stale = {
         "_id": "507f1f77bcf86cd799439011",
@@ -320,10 +320,10 @@ async def test_collect_orphans_handles_no_namespaces():
 
     with (
         patch(
-            "trimcp.garbage_collector._clean_orphaned_cascade", new_callable=AsyncMock
+            "nce.garbage_collector._clean_orphaned_cascade", new_callable=AsyncMock
         ) as mock_cascade,
         patch(
-            "trimcp.garbage_collector._fetch_pg_refs",
+            "nce.garbage_collector._fetch_pg_refs",
             new_callable=AsyncMock,
         ) as mock_pg_refs,
     ):
@@ -349,12 +349,12 @@ async def test_clean_orphaned_cascade_sql_no_trailing_comma_before_select(
     mock_pg_pool,
 ):
     """deleted_contradictions CTE must not have a trailing comma before SELECT."""
-    from trimcp.garbage_collector import _clean_orphaned_cascade
+    from nce.garbage_collector import _clean_orphaned_cascade
 
     conn = mock_pg_pool.acquire.return_value.__aenter__.return_value
     conn.fetchrow = AsyncMock(return_value={"salience_count": 0, "contradictions_count": 0})
 
-    with patch("trimcp.garbage_collector.set_namespace_context", new_callable=AsyncMock):
+    with patch("nce.garbage_collector.set_namespace_context", new_callable=AsyncMock):
         await _clean_orphaned_cascade(mock_pg_pool, uuid4())
 
     sql = conn.fetchrow.call_args[0][0]
@@ -367,7 +367,7 @@ async def test_collect_orphans_empty_namespaces_never_deletes_mongo():
     """Empty namespace list must abort before any Mongo delete_one calls."""
     from datetime import datetime, timedelta
 
-    from trimcp.garbage_collector import _collect_orphans
+    from nce.garbage_collector import _collect_orphans
 
     stale_docs = [
         {
@@ -399,7 +399,7 @@ async def test_collect_orphans_empty_namespaces_never_deletes_mongo():
     pool = MagicMock()
 
     with patch(
-        "trimcp.garbage_collector._fetch_all_namespaces",
+        "nce.garbage_collector._fetch_all_namespaces",
         new_callable=AsyncMock,
         return_value=[],
     ):
@@ -417,7 +417,7 @@ async def test_collect_orphans_empty_namespaces_never_deletes_mongo():
 @pytest.mark.asyncio
 async def test_connect_with_retry_closes_mongo_when_pg_fails():
     """Mongo client must be closed when PG pool creation fails mid-connect."""
-    from trimcp.garbage_collector import _connect_with_retry
+    from nce.garbage_collector import _connect_with_retry
 
     first_mongo = MagicMock()
     first_mongo.admin.command = AsyncMock(return_value={"ok": 1})
@@ -430,15 +430,15 @@ async def test_connect_with_retry_closes_mongo_when_pg_fails():
 
     with (
         patch(
-            "trimcp.garbage_collector.AsyncIOMotorClient",
+            "nce.garbage_collector.AsyncIOMotorClient",
             side_effect=[first_mongo, second_mongo],
         ),
         patch(
-            "trimcp.garbage_collector.asyncpg.create_pool",
+            "nce.garbage_collector.asyncpg.create_pool",
             new_callable=AsyncMock,
             side_effect=[RuntimeError("pg down"), mock_pool],
         ),
-        patch("trimcp.garbage_collector.asyncio.sleep", new_callable=AsyncMock),
+        patch("nce.garbage_collector.asyncio.sleep", new_callable=AsyncMock),
     ):
         mongo, pool = await _connect_with_retry()
 
@@ -449,7 +449,7 @@ async def test_connect_with_retry_closes_mongo_when_pg_fails():
 
 @pytest.mark.asyncio
 async def test_acquire_gc_lock_returns_none_when_not_acquired():
-    from trimcp.garbage_collector import _acquire_gc_lock
+    from nce.garbage_collector import _acquire_gc_lock
 
     mock_client = AsyncMock()
     mock_client.set = AsyncMock(return_value=False)
@@ -461,7 +461,7 @@ async def test_acquire_gc_lock_returns_none_when_not_acquired():
 
 @pytest.mark.asyncio
 async def test_acquire_gc_lock_returns_client_when_acquired():
-    from trimcp.garbage_collector import _acquire_gc_lock
+    from nce.garbage_collector import _acquire_gc_lock
 
     mock_client = AsyncMock()
     mock_client.set = AsyncMock(return_value=True)
@@ -473,7 +473,7 @@ async def test_acquire_gc_lock_returns_client_when_acquired():
 
 @pytest.mark.asyncio
 async def test_release_gc_lock_deletes_key_and_closes():
-    from trimcp.garbage_collector import _release_gc_lock
+    from nce.garbage_collector import _release_gc_lock
 
     mock_client = AsyncMock()
     mock_client.eval = AsyncMock(return_value=1)
@@ -485,7 +485,7 @@ async def test_release_gc_lock_deletes_key_and_closes():
 
 @pytest.mark.asyncio
 async def test_run_gc_loop_releases_lock_on_collect_error():
-    from trimcp.garbage_collector import run_gc_loop
+    from nce.garbage_collector import run_gc_loop
 
     mock_mongo = MagicMock()
     mock_mongo.close = MagicMock()
@@ -503,25 +503,25 @@ async def test_run_gc_loop_releases_lock_on_collect_error():
 
     with (
         patch(
-            "trimcp.garbage_collector._connect_with_retry",
+            "nce.garbage_collector._connect_with_retry",
             new_callable=AsyncMock,
             return_value=(mock_mongo, mock_pool),
         ),
         patch(
-            "trimcp.garbage_collector._acquire_gc_lock",
+            "nce.garbage_collector._acquire_gc_lock",
             new_callable=AsyncMock,
             return_value=mock_lock,
         ),
         patch(
-            "trimcp.garbage_collector._collect_orphans",
+            "nce.garbage_collector._collect_orphans",
             new_callable=AsyncMock,
             side_effect=RuntimeError("collect boom"),
         ),
         patch(
-            "trimcp.garbage_collector._release_gc_lock",
+            "nce.garbage_collector._release_gc_lock",
             new_callable=AsyncMock,
         ) as mock_release,
-        patch("trimcp.garbage_collector.asyncio.sleep", side_effect=_sleep),
+        patch("nce.garbage_collector.asyncio.sleep", side_effect=_sleep),
     ):
         with pytest.raises(asyncio.CancelledError):
             await run_gc_loop()
@@ -532,7 +532,7 @@ async def test_run_gc_loop_releases_lock_on_collect_error():
 
 @pytest.mark.asyncio
 async def test_run_gc_loop_skips_collect_when_lock_not_acquired():
-    from trimcp.garbage_collector import run_gc_loop
+    from nce.garbage_collector import run_gc_loop
 
     mock_mongo = MagicMock()
     mock_mongo.close = MagicMock()
@@ -541,21 +541,21 @@ async def test_run_gc_loop_skips_collect_when_lock_not_acquired():
 
     with (
         patch(
-            "trimcp.garbage_collector._connect_with_retry",
+            "nce.garbage_collector._connect_with_retry",
             new_callable=AsyncMock,
             return_value=(mock_mongo, mock_pool),
         ),
         patch(
-            "trimcp.garbage_collector._acquire_gc_lock",
+            "nce.garbage_collector._acquire_gc_lock",
             new_callable=AsyncMock,
             return_value=None,
         ),
         patch(
-            "trimcp.garbage_collector._collect_orphans",
+            "nce.garbage_collector._collect_orphans",
             new_callable=AsyncMock,
         ) as mock_collect,
         patch(
-            "trimcp.garbage_collector.asyncio.sleep",
+            "nce.garbage_collector.asyncio.sleep",
             new_callable=AsyncMock,
             side_effect=asyncio.CancelledError(),
         ),
@@ -570,7 +570,7 @@ async def test_run_gc_loop_skips_collect_when_lock_not_acquired():
 async def test_collect_orphans_find_uses_max_time_ms(mock_pg_pool, sample_namespaces):
     from datetime import datetime, timedelta
 
-    from trimcp.garbage_collector import _collect_orphans
+    from nce.garbage_collector import _collect_orphans
 
     stale = {
         "_id": "507f1f77bcf86cd799439011",
@@ -601,17 +601,17 @@ async def test_collect_orphans_find_uses_max_time_ms(mock_pg_pool, sample_namesp
 
     with (
         patch(
-            "trimcp.garbage_collector._fetch_all_namespaces",
+            "nce.garbage_collector._fetch_all_namespaces",
             new_callable=AsyncMock,
             return_value=sample_namespaces,
         ),
         patch(
-            "trimcp.garbage_collector._fetch_pg_refs",
+            "nce.garbage_collector._fetch_pg_refs",
             new_callable=AsyncMock,
             return_value=set(),
         ),
         patch(
-            "trimcp.garbage_collector._clean_orphaned_cascade",
+            "nce.garbage_collector._clean_orphaned_cascade",
             new_callable=AsyncMock,
             return_value={"salience": 0, "contradictions": 0},
         ),
@@ -624,7 +624,7 @@ async def test_collect_orphans_find_uses_max_time_ms(mock_pg_pool, sample_namesp
 
 @pytest.mark.asyncio
 async def test_run_gc_loop_cancelled_error_propagates():
-    from trimcp.garbage_collector import run_gc_loop
+    from nce.garbage_collector import run_gc_loop
 
     mock_mongo = MagicMock()
     mock_mongo.close = MagicMock()
@@ -641,25 +641,25 @@ async def test_run_gc_loop_cancelled_error_propagates():
 
     with (
         patch(
-            "trimcp.garbage_collector._connect_with_retry",
+            "nce.garbage_collector._connect_with_retry",
             new_callable=AsyncMock,
             return_value=(mock_mongo, mock_pool),
         ),
         patch(
-            "trimcp.garbage_collector._acquire_gc_lock",
+            "nce.garbage_collector._acquire_gc_lock",
             new_callable=AsyncMock,
             return_value=mock_lock,
         ),
         patch(
-            "trimcp.garbage_collector._collect_orphans",
+            "nce.garbage_collector._collect_orphans",
             new_callable=AsyncMock,
             return_value={"deleted_docs": 0, "deleted_salience": 0, "deleted_contradictions": 0},
         ),
         patch(
-            "trimcp.garbage_collector._release_gc_lock",
+            "nce.garbage_collector._release_gc_lock",
             new_callable=AsyncMock,
         ),
-        patch("trimcp.garbage_collector.asyncio.sleep", side_effect=_sleep),
+        patch("nce.garbage_collector.asyncio.sleep", side_effect=_sleep),
     ):
         with pytest.raises(asyncio.CancelledError):
             await run_gc_loop()

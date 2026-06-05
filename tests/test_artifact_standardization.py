@@ -1,13 +1,13 @@
 import pytest
 
-from trimcp import TriStackEngine
-from trimcp.models import ArtifactPayload, MediaPayload
+from nce import NCEEngine
+from nce.models import ArtifactPayload, MediaPayload
 
 
 @pytest.mark.asyncio
 async def test_store_artifact_delegation():
     """Verify store_artifact delegates to the same logic as store_media and handles aliases."""
-    engine = TriStackEngine()
+    engine = NCEEngine()
     # Mocking parts to avoid full MinIO/DB dependency in this unit-ish integration test
     # but the orchestrator level should be fine.
 
@@ -22,7 +22,7 @@ async def test_store_artifact_delegation():
 @pytest.mark.asyncio
 async def test_orchestrator_artifact_alias():
     """Verify the orchestrator has the correct artifact methods."""
-    engine = TriStackEngine()
+    engine = NCEEngine()
 
     # We don't necessarily need to run it against a live MinIO to check the delegation
     # but let's see if we can at least initialize the engine.

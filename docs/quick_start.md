@@ -1,6 +1,6 @@
-# TriMCP Quick Start Guide
+# NCE Quick Start Guide
 
-Welcome to **TriMCP v1.0**. This guide covers running the engine **from source** (Docker + Python), selecting a deployment posture, and connecting the MCP server to Cursor or Claude Desktop. Package installers, when available, layer on top of the same `server.py` and Compose stack.
+Welcome to **NCE v1.0**. This guide covers running the engine **from source** (Docker + Python), selecting a deployment posture, and connecting the MCP server to Cursor or Claude Desktop. Package installers, when available, layer on top of the same `server.py` and Compose stack.
 
 ## 1. Prerequisite: stack and repo
 
@@ -24,16 +24,16 @@ Welcome to **TriMCP v1.0**. This guide covers running the engine **from source**
 
 ## 3. Connect to your LLM client
 
-TriMCP operates as a Model Context Protocol (MCP) server over standard input/output (`stdio`). Once installed, configure your client to point to the `server.py` entrypoint.
+NCE operates as a Model Context Protocol (MCP) server over standard input/output (`stdio`). Once installed, configure your client to point to the `server.py` entrypoint.
 
 ### Cursor
 
 1. Open Cursor Settings -> **MCP** -> **Add Server**.
 2. Set the type to `command`.
 3. Configure the server:
-   - **Name**: `tri-stack-memory`
+   - **Name**: `nce-memory`
    - **Command**: `python`
-   - **Args**: `/absolute/path/to/TriMCP/server.py` (Use double backslashes `\\` or forward slashes `/` on Windows).
+   - **Args**: `/absolute/path/to/NCE/server.py` (Use double backslashes `\\` or forward slashes `/` on Windows).
 
 ### Claude Desktop
 
@@ -46,9 +46,9 @@ Add the following configuration:
 ```json
 {
   "mcpServers": {
-    "tri-stack-memory": {
+    "nce-memory": {
       "command": "python",
-      "args": ["/absolute/path/to/TriMCP/server.py"]
+      "args": ["/absolute/path/to/NCE/server.py"]
     }
   }
 }
@@ -59,14 +59,14 @@ Add the following configuration:
 ## 4. Verify installation
 
 Once connected, restart your LLM client and ask:
-> "What MCP tools do you have available for TriMCP?"
+> "What MCP tools do you have available for NCE?"
 
 You should see tools such as `semantic_search` (with optional `as_of`), `graph_search`, `store_memory`, `index_code_file`, bridge tools, salience, contradictions, replay, and migration tools — see `server.py` for the authoritative list.
 
 ## 5. Administrative Operations
 
-Certain tools in TriMCP (like `manage_namespace`, `rotate_signing_key`, or `get_health`) require administrative privileges. To use these tools via an LLM client:
-1.  Ensure you have set `TRIMCP_ADMIN_OVERRIDE=true` in your environment (for local dev) OR
+Certain tools in NCE (like `manage_namespace`, `rotate_signing_key`, or `get_health`) require administrative privileges. To use these tools via an LLM client:
+1.  Ensure you have set `NCE_ADMIN_OVERRIDE=true` in your environment (for local dev) OR
 2.  Pass `"is_admin": true` in the tool's input arguments.
 
 Note: In production environments, admin tools should be restricted to authorized maintenance accounts via the `admin_server.py` HMAC layer.

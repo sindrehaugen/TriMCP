@@ -1,10 +1,10 @@
-# TriMCP IT Admin Guide
+# NCE IT Admin Guide
 
-This guide provides IT administrators with the necessary instructions to deploy, configure, and maintain TriMCP in an enterprise environment. It focuses on infrastructure-as-code (IaC) deployments, network security, and identity integration.
+This guide provides IT administrators with the necessary instructions to deploy, configure, and maintain NCE in an enterprise environment. It focuses on infrastructure-as-code (IaC) deployments, network security, and identity integration.
 
 ## 1. Infrastructure Deployment (Cloud Mode)
 
-TriMCP supports automated deployment to major cloud providers using Terraform (AWS/GCP) or Bicep (Azure).
+NCE supports automated deployment to major cloud providers using Terraform (AWS/GCP) or Bicep (Azure).
 
 ### 1.1 AWS Deployment (Terraform)
 
@@ -17,7 +17,7 @@ The AWS deployment provisions RDS (PostgreSQL), DocumentDB (MongoDB), ElastiCach
 **Steps:**
 1. Navigate to the AWS infrastructure directory:
    ```bash
-   cd trimcp-infra/aws
+   cd nce-infra/aws
    ```
 2. Copy the example variables file and configure your parameters:
    ```bash
@@ -40,7 +40,7 @@ The Azure deployment provisions Azure Database for PostgreSQL, Cosmos DB (MongoD
 **Steps:**
 1. Navigate to the Azure infrastructure directory:
    ```bash
-   cd trimcp-infra/azure
+   cd nce-infra/azure
    ```
 2. Update the `parameters.example.json` with your specific values and rename it to `parameters.json`.
 3. Deploy the Bicep template:
@@ -53,10 +53,10 @@ The Azure deployment provisions Azure Database for PostgreSQL, Cosmos DB (MongoD
 
 ## 2. Network Security & Firewall Rules
 
-Whether deploying on-premise (Multi-User Mode) or in the cloud, specific ports must be accessible for TriMCP components to communicate.
+Whether deploying on-premise (Multi-User Mode) or in the cloud, specific ports must be accessible for NCE components to communicate.
 
 ### 2.1 Internal Database Ports
-These ports should **only** be accessible to the TriMCP application servers and workers. They must **never** be exposed to the public internet.
+These ports should **only** be accessible to the NCE application servers and workers. They must **never** be exposed to the public internet.
 
 | Service | Port | Protocol | Description |
 |---------|------|----------|-------------|
@@ -69,22 +69,22 @@ These ports handle client traffic and webhook callbacks.
 
 | Service | Port | Protocol | Description |
 |---------|------|----------|-------------|
-| TriMCP API | `9000` | TCP | Main MCP API endpoint. Expose to internal network/VPN for client access. |
+| NCE API | `9000` | TCP | Main MCP API endpoint. Expose to internal network/VPN for client access. |
 | Webhook Receiver | `443` | TCP | Must be exposed to the public internet to receive callbacks from SharePoint, Google Drive, and Dropbox. |
 
 *Note: In Local mode, all services run on `localhost` and do not require inbound firewall rules.*
 
 ## 3. Active Directory & Identity Integration
 
-TriMCP relies on accurate user identity to enforce document-level permissions and access controls.
+NCE relies on accurate user identity to enforce document-level permissions and access controls.
 
 ### 3.1 UPN Resolution
-TriMCP uses the User Principal Name (UPN) as the primary identifier (`user_id`). 
+NCE uses the User Principal Name (UPN) as the primary identifier (`user_id`). 
 - Ensure that the UPN provided by your SAML/OIDC Identity Provider exactly matches the UPN used in your document libraries (e.g., SharePoint/OneDrive).
 - If your organization uses alternate login IDs or email addresses that differ from the UPN, you must configure a mapping rule in your IdP to pass the correct UPN in the authentication token.
 
 ### 3.2 OAuth Configuration for Document Bridges
-To enable the Document Bridge System (Push Architecture), you must register TriMCP as an application in your respective cloud providers.
+To enable the Document Bridge System (Push Architecture), you must register NCE as an application in your respective cloud providers.
 
 **Microsoft Entra ID (SharePoint/OneDrive):**
 1. Register a new application in the Entra ID portal.
@@ -97,15 +97,15 @@ To enable the Document Bridge System (Push Architecture), you must register TriM
 2. Enable Domain-Wide Delegation.
 3. Grant the `https://www.googleapis.com/auth/drive.readonly` scope.
 
-Provide the resulting client IDs and secrets to the TriMCP configuration via the `.env` file or your cloud provider's secret management service (e.g., AWS Secrets Manager, Azure Key Vault).
+Provide the resulting client IDs and secrets to the NCE configuration via the `.env` file or your cloud provider's secret management service (e.g., AWS Secrets Manager, Azure Key Vault).
 
 ## 4. Dynamic Tools & Skills Management Console
 
-TriMCP features a dynamic administration console within the Starlette Admin panel (`admin/index.html` serviced by `admin_server.py`) for managing local stdio Model Context Protocol (MCP) tools and public Agent-to-Agent (A2A) network skills.
+NCE features a dynamic administration console within the Starlette Admin panel (`admin/index.html` serviced by `admin_server.py`) for managing local stdio Model Context Protocol (MCP) tools and public Agent-to-Agent (A2A) network skills.
 
 ### 4.1 System Architecture
 - **Control Plane**: Administrators mutate toggle states via Basic/HMAC-secured REST endpoints `/api/admin/tools` and `/api/admin/tools/toggle`.
-- **Data Plane (Redis Registry)**: Toggle states are stored inside the Redis hash key `trimcp:tools:disabled`.
+- **Data Plane (Redis Registry)**: Toggle states are stored inside the Redis hash key `nce:tools:disabled`.
   - When a tool is **disabled**, its name is registered in the hash with a value of `1`.
   - When a tool is **enabled**, its key is deleted from the hash.
 - **Routing Interceptors**:

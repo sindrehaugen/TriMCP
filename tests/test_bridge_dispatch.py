@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from trimcp.bridges import dispatch_bridge_event
-from trimcp.tasks import process_bridge_event
+from nce.bridges import dispatch_bridge_event
+from nce.tasks import process_bridge_event
 
 
 def test_dispatch_bridge_event_unknown_provider() -> None:
@@ -15,10 +15,10 @@ def test_dispatch_bridge_event_unknown_provider() -> None:
         dispatch_bridge_event("onedrive", {})
 
 
-@patch("trimcp.bridges.dispatch_bridge_event", return_value={"status": "ok"})
-@patch("trimcp.tasks._clear_attempt")
-@patch("trimcp.tasks._get_redis")
-@patch("trimcp.tasks._get_job_id", return_value="job-1")
+@patch("nce.bridges.dispatch_bridge_event", return_value={"status": "ok"})
+@patch("nce.tasks._clear_attempt")
+@patch("nce.tasks._get_redis")
+@patch("nce.tasks._get_job_id", return_value="job-1")
 def test_process_bridge_event_success(
     _job: object,
     _redis: object,
@@ -31,11 +31,11 @@ def test_process_bridge_event_success(
 
 
 @patch(
-    "trimcp.bridges.dispatch_bridge_event",
+    "nce.bridges.dispatch_bridge_event",
     side_effect=ValueError("bad payload"),
 )
-@patch("trimcp.tasks._get_redis")
-@patch("trimcp.tasks._get_job_id", return_value="job-2")
+@patch("nce.tasks._get_redis")
+@patch("nce.tasks._get_job_id", return_value="job-2")
 def test_process_bridge_event_value_error_returns_error_dict(
     _job: object,
     _redis: object,

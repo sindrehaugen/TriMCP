@@ -1,10 +1,10 @@
 # Airgapped and Edge Deployment
 
-TriMCP is designed for high-sovereignty environments where data must never leave the local network. It supports full offline operation and hardware-accelerated local inference.
+NCE is designed for high-sovereignty environments where data must never leave the local network. It supports full offline operation and hardware-accelerated local inference.
 
 ## The Local Inference Stack
 
-In airgapped mode, TriMCP replaces external API dependencies with local equivalents:
+In airgapped mode, NCE replaces external API dependencies with local equivalents:
 
 1.  **Local Embeddings**: Uses the `jinaai/jina-embeddings-v2-base-code` model running locally.
 2.  **Local Cognitive Model**: Uses models like Llama 3 or Mistral running via a `local-cognitive-model` provider (compatible with Ollama or `llama.cpp`).
@@ -12,7 +12,7 @@ In airgapped mode, TriMCP replaces external API dependencies with local equivale
 
 ## Hardware Acceleration: Intel OpenVINO
 
-To achieve production-grade performance on edge hardware without discrete GPUs, TriMCP integrates with the **Intel OpenVINO** toolkit. This allows embedding models to run on the **Integrated GPU** or **Intel NPU**.
+To achieve production-grade performance on edge hardware without discrete GPUs, NCE integrates with the **Intel OpenVINO** toolkit. This allows embedding models to run on the **Integrated GPU** or **Intel NPU**.
 
 ### Model Export Signal Flow
 
@@ -39,20 +39,20 @@ To enable full offline operation, configure the following environment variables:
 
 ```bash
 # Enable offline mode (blocks external HTTP attempts)
-TRIMCP_OFFLINE_MODE=true
+NCE_OFFLINE_MODE=true
 
 # Set hardware backend to OpenVINO
-TRIMCP_BACKEND=openvino_npu
+NCE_BACKEND=openvino_npu
 
 # Path to the exported model directory
-TRIMCP_OPENVINO_MODEL_DIR=/opt/trimcp/models/jina-v2-npu
+NCE_OPENVINO_MODEL_DIR=/opt/nce/models/jina-v2-npu
 
 # Base URL for the local cognitive model (e.g., Ollama sidecar)
-TRIMCP_COGNITIVE_BASE_URL=http://localhost:11435
+NCE_COGNITIVE_BASE_URL=http://localhost:11435
 ```
 
 ## Data Sovereignty and Security
 
--   **Zero Telemetry**: TriMCP does not phone home.
+-   **Zero Telemetry**: NCE does not phone home.
 -   **On-Premise Storage**: All memory payloads and Knowledge Graph data remain within the boundary of your infrastructure.
 -   **Auditability**: The cryptographic signing layer remains active, ensuring the integrity of local data and providing a verifiable audit trail of all agent interactions.

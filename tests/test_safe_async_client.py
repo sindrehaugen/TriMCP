@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 import pytest
 
-from trimcp._http_utils import SafeAsyncClient, UnsafeURLError, _resolve_safe_ip
+from nce._http_utils import SafeAsyncClient, UnsafeURLError, _resolve_safe_ip
 
 
 class TestSafeAsyncClient:
@@ -280,7 +280,7 @@ class TestSsrfHardeningBatch6:
 
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo)
 
-        caplog.set_level(logging.WARNING, logger="trimcp._http_utils")
+        caplog.set_level(logging.WARNING, logger="nce._http_utils")
 
         async with SafeAsyncClient() as client:
             with pytest.raises(UnsafeURLError):

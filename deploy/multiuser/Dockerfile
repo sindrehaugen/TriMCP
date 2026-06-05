@@ -1,4 +1,4 @@
-# TriMCP application image (RQ worker + optional webhook command overrides).
+# NCE application image (RQ worker + optional webhook command overrides).
 # Build from repo root:
 #   docker compose -f deploy/multiuser/docker-compose.yml build
 #
@@ -30,18 +30,18 @@ RUN pip install --no-cache-dir -r requirements.txt --no-index --find-links=/whee
     # Download spaCy model required for Graphify (Phase 2) with pinned version
     && python -m spacy download en_core_web_sm \
     # Create non-root user
-    && useradd --system --uid 10001 --create-home trimcp
+    && useradd --system --uid 10001 --create-home nce
 
 # Copy application code
-COPY trimcp ./trimcp
+COPY nce ./nce
 COPY start_worker.py health_probe.py ./
 COPY admin_server.py server.py ./
 COPY admin ./admin
 
 # Ensure the app directory is owned by our non-root user
-RUN chown -R trimcp:trimcp /app
+RUN chown -R nce:nce /app
 
-USER trimcp
+USER nce
 
 ENV XDG_CACHE_HOME=/tmp
 ENV PYTHONUNBUFFERED=1

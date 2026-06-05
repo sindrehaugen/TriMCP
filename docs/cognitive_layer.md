@@ -1,6 +1,6 @@
 # Cognitive Layer: Consolidation and Salience
 
-The Cognitive Layer is the "brain" of TriMCP, transforming raw episodic events into structured semantic knowledge and managing the lifecycle of information based on its relevance and age.
+The Cognitive Layer is the "brain" of NCE, transforming raw episodic events into structured semantic knowledge and managing the lifecycle of information based on its relevance and age.
 
 ## 1. Memory Consolidation (The Sleep Cycle)
 
@@ -37,7 +37,7 @@ sequenceDiagram
 
 ## 2. Salience and The Forgetting Curve
 
-TriMCP uses the **Ebbinghaus Forgetting Curve** to model how the importance of a memory decays over time.
+NCE uses the **Ebbinghaus Forgetting Curve** to model how the importance of a memory decays over time.
 
 ### Salience Score ($s$)
 The salience of a memory is a value between `0.0` and `1.0`. It decays exponentially:
@@ -51,7 +51,7 @@ This "resets" the forgetting curve, keeping frequently accessed information at t
 
 ## 3. Contradiction Detection
 
-TriMCP automatically flags logical conflicts when new factual information contradicts existing knowledge.
+NCE automatically flags logical conflicts when new factual information contradicts existing knowledge.
 
 ### Detection Path
 1.  **Semantic Match**: Find similar existing memories using vector search.

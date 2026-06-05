@@ -6,8 +6,8 @@ This test suite proves that:
   2. Missing ``admin_api_key`` is rejected.
   3. Wrong ``admin_api_key`` is rejected (constant-time comparison).
   4. Correct ``admin_api_key`` grants access.
-  5. TRIMCP_ADMIN_OVERRIDE=true still works (dev bypass).
-  6. Missing TRIMCP_ADMIN_API_KEY env var fails safely (no accidental open door).
+  5. NCE_ADMIN_OVERRIDE=true still works (dev bypass).
+  6. Missing NCE_ADMIN_API_KEY env var fails safely (no accidental open door).
   7. Admin tools have ``admin_api_key`` in their required fields.
   8. Admin tools do not expose ``is_admin`` in inputSchema properties (Prompt 48).
 """
@@ -27,42 +27,42 @@ class TestCheckAdminHardening(unittest.TestCase):
 
     def setUp(self):
         # Import the function under test
-        from trimcp.auth import _validate_scope
+        from nce.auth import _validate_scope
 
         self._validate_scope = _validate_scope
 
         # Save original env
-        self._orig_admin_override = os.environ.pop("TRIMCP_ADMIN_OVERRIDE", None)
-        self._orig_admin_api_key = os.environ.pop("TRIMCP_ADMIN_API_KEY", None)
+        self._orig_admin_override = os.environ.pop("NCE_ADMIN_OVERRIDE", None)
+        self._orig_admin_api_key = os.environ.pop("NCE_ADMIN_API_KEY", None)
 
     def tearDown(self):
         # Restore env
-        for key in ("TRIMCP_ADMIN_OVERRIDE", "TRIMCP_ADMIN_API_KEY"):
+        for key in ("NCE_ADMIN_OVERRIDE", "NCE_ADMIN_API_KEY"):
             os.environ.pop(key, None)
         if self._orig_admin_override is not None:
-            os.environ["TRIMCP_ADMIN_OVERRIDE"] = self._orig_admin_override
+            os.environ["NCE_ADMIN_OVERRIDE"] = self._orig_admin_override
         if self._orig_admin_api_key is not None:
-            os.environ["TRIMCP_ADMIN_API_KEY"] = self._orig_admin_api_key
+            os.environ["NCE_ADMIN_API_KEY"] = self._orig_admin_api_key
 
     # ── 1. Client-supplied is_admin is IGNORED ──────────────────────────
 
     def test_client_is_admin_true_rejected_when_no_key_set(self):
         """Sending is_admin=true should NOT grant access."""
-        os.environ["TRIMCP_ADMIN_API_KEY"] = "secret-key-123"
+        os.environ["NCE_ADMIN_API_KEY"] = "secret-key-123"
         with self.assertRaises(Exception) as ctx:
             self._validate_scope("admin", {"is_admin": True})
         self.assertIn("missing admin_api_key", str(ctx.exception).lower())
 
     def test_client_is_admin_true_rejected_when_wrong_key(self):
         """Sending is_admin=true with wrong key should NOT grant access."""
-        os.environ["TRIMCP_ADMIN_API_KEY"] = "secret-key-123"
+        os.environ["NCE_ADMIN_API_KEY"] = "secret-key-123"
         with self.assertRaises(Exception) as ctx:
             self._validate_scope("admin", {"is_admin": True, "admin_api_key": "wrong"})
         self.assertIn("invalid admin_api_key", str(ctx.exception).lower())
 
     def test_client_is_admin_false_with_correct_key_still_works(self):
         """is_admin=false is also ignored — only admin_api_key matters."""
-        os.environ["TRIMCP_ADMIN_API_KEY"] = "secret-key-123"
+        os.environ["NCE_ADMIN_API_KEY"] = "secret-key-123"
         # Should NOT raise
         self._validate_scope("admin", {"is_admin": False, "admin_api_key": "secret-key-123"})
 
@@ -70,21 +70,21 @@ class TestCheckAdminHardening(unittest.TestCase):
 
     def test_missing_admin_api_key_rejected(self):
         """No admin_api_key in arguments -> rejected."""
-        os.environ["TRIMCP_ADMIN_API_KEY"] = "secret-key-123"
+        os.environ["NCE_ADMIN_API_KEY"] = "secret-key-123"
         with self.assertRaises(Exception) as ctx:
             self._validate_scope("admin", {})
         self.assertIn("missing admin_api_key", str(ctx.exception).lower())
 
     def test_empty_admin_api_key_rejected(self):
         """Empty string admin_api_key -> rejected."""
-        os.environ["TRIMCP_ADMIN_API_KEY"] = "secret-key-123"
+        os.environ["NCE_ADMIN_API_KEY"] = "secret-key-123"
         with self.assertRaises(Exception) as ctx:
             self._validate_scope("admin", {"admin_api_key": ""})
         self.assertIn("missing admin_api_key", str(ctx.exception).lower())
 
     def test_whitespace_only_admin_api_key_rejected(self):
         """Whitespace-only admin_api_key -> rejected."""
-        os.environ["TRIMCP_ADMIN_API_KEY"] = "secret-key-123"
+        os.environ["NCE_ADMIN_API_KEY"] = "secret-key-123"
         with self.assertRaises(Exception) as ctx:
             self._validate_scope("admin", {"admin_api_key": "   "})
         self.assertIn("missing admin_api_key", str(ctx.exception).lower())
@@ -93,14 +93,14 @@ class TestCheckAdminHardening(unittest.TestCase):
 
     def test_wrong_admin_api_key_rejected(self):
         """Incorrect admin_api_key -> rejected with constant-time compare."""
-        os.environ["TRIMCP_ADMIN_API_KEY"] = "correct-horse-battery-staple"
+        os.environ["NCE_ADMIN_API_KEY"] = "correct-horse-battery-staple"
         with self.assertRaises(Exception) as ctx:
             self._validate_scope("admin", {"admin_api_key": "wrong-key"})
         self.assertIn("invalid admin_api_key", str(ctx.exception).lower())
 
     def test_case_sensitive_key_comparison(self):
         """admin_api_key comparison must be case-sensitive."""
-        os.environ["TRIMCP_ADMIN_API_KEY"] = "SecretKey"
+        os.environ["NCE_ADMIN_API_KEY"] = "SecretKey"
         with self.assertRaises(Exception) as ctx:
             self._validate_scope("admin", {"admin_api_key": "secretkey"})
         self.assertIn("invalid admin_api_key", str(ctx.exception).lower())
@@ -111,7 +111,7 @@ class TestCheckAdminHardening(unittest.TestCase):
         We test that keys of same length but different content fail,
         which is a basic property of constant-time comparison.
         """
-        os.environ["TRIMCP_ADMIN_API_KEY"] = "aaaaaaaa"
+        os.environ["NCE_ADMIN_API_KEY"] = "aaaaaaaa"
         with self.assertRaises(Exception):
             self._validate_scope("admin", {"admin_api_key": "bbbbbbbb"})
 
@@ -119,46 +119,46 @@ class TestCheckAdminHardening(unittest.TestCase):
 
     def test_correct_admin_api_key_grants_access(self):
         """Correct admin_api_key -> function returns without error."""
-        os.environ["TRIMCP_ADMIN_API_KEY"] = "my-secret-admin-key"
+        os.environ["NCE_ADMIN_API_KEY"] = "my-secret-admin-key"
         # Should NOT raise
         self._validate_scope("admin", {"admin_api_key": "my-secret-admin-key"})
 
     def test_correct_key_with_whitespace_stripping(self):
         """Whitespace around admin_api_key is stripped."""
-        os.environ["TRIMCP_ADMIN_API_KEY"] = "key123"
+        os.environ["NCE_ADMIN_API_KEY"] = "key123"
         self._validate_scope("admin", {"admin_api_key": "  key123  "})
 
-    # ── 5. TRIMCP_ADMIN_OVERRIDE ────────────────────────────────────────
+    # ── 5. NCE_ADMIN_OVERRIDE ────────────────────────────────────────
 
     def test_override_grants_access_without_key(self):
-        """TRIMCP_ADMIN_OVERRIDE=true bypasses all checks."""
-        os.environ["TRIMCP_ADMIN_OVERRIDE"] = "true"
+        """NCE_ADMIN_OVERRIDE=true bypasses all checks."""
+        os.environ["NCE_ADMIN_OVERRIDE"] = "true"
         # No admin_api_key at all — should pass
         self._validate_scope("admin", {})
         self._validate_scope("admin", {"is_admin": False})
         self._validate_scope("admin", {"admin_api_key": "garbage"})
 
     def test_override_works_when_api_key_not_set(self):
-        """Override works even when TRIMCP_ADMIN_API_KEY is absent."""
-        os.environ["TRIMCP_ADMIN_OVERRIDE"] = "true"
+        """Override works even when NCE_ADMIN_API_KEY is absent."""
+        os.environ["NCE_ADMIN_OVERRIDE"] = "true"
         # Ensure API key env var is NOT set
-        os.environ.pop("TRIMCP_ADMIN_API_KEY", None)
+        os.environ.pop("NCE_ADMIN_API_KEY", None)
         self._validate_scope("admin", {})
 
-    # ── 6. Missing TRIMCP_ADMIN_API_KEY fails safe ───────────────────────
+    # ── 6. Missing NCE_ADMIN_API_KEY fails safe ───────────────────────
 
     def test_no_key_and_no_override_fails_safe(self):
-        """When neither TRIMCP_ADMIN_API_KEY nor override is set, fail closed."""
+        """When neither NCE_ADMIN_API_KEY nor override is set, fail closed."""
         # Both env vars absent
-        os.environ.pop("TRIMCP_ADMIN_API_KEY", None)
-        os.environ.pop("TRIMCP_ADMIN_OVERRIDE", None)
+        os.environ.pop("NCE_ADMIN_API_KEY", None)
+        os.environ.pop("NCE_ADMIN_OVERRIDE", None)
         with self.assertRaises(Exception) as ctx:
             self._validate_scope("admin", {"admin_api_key": "anything"})
         self.assertIn("misconfigured", str(ctx.exception).lower())
 
     def test_empty_api_key_env_var_fails_safe(self):
-        """Empty TRIMCP_ADMIN_API_KEY env var -> fail closed."""
-        os.environ["TRIMCP_ADMIN_API_KEY"] = ""
+        """Empty NCE_ADMIN_API_KEY env var -> fail closed."""
+        os.environ["NCE_ADMIN_API_KEY"] = ""
         with self.assertRaises(Exception) as ctx:
             self._validate_scope("admin", {"admin_api_key": "anything"})
         self.assertIn("misconfigured", str(ctx.exception).lower())
@@ -287,14 +287,14 @@ class TestAdminToolHandlerArgumentFiltering(unittest.TestCase):
 
     def test_manage_namespace_argument_filtering(self):
         """ManageNamespaceRequest should not receive admin_api_key or is_admin."""
-        from trimcp.models import ManageNamespaceRequest
+        from nce.models import ManageNamespaceRequest
 
         arguments = {
             "command": "list",
             "admin_api_key": "secret",
             "is_admin": True,
         }
-        from trimcp.mcp_args import model_kwargs
+        from nce.mcp_args import model_kwargs
 
         filtered = model_kwargs(arguments)
         try:
@@ -306,7 +306,7 @@ class TestAdminToolHandlerArgumentFiltering(unittest.TestCase):
 
     def test_manage_quotas_argument_filtering(self):
         """ManageQuotasRequest should not receive admin_api_key or is_admin."""
-        from trimcp.models import ManageQuotasRequest
+        from nce.models import ManageQuotasRequest
 
         arguments = {
             "command": "list",
@@ -314,7 +314,7 @@ class TestAdminToolHandlerArgumentFiltering(unittest.TestCase):
             "admin_api_key": "secret",
             "is_admin": False,
         }
-        from trimcp.mcp_args import model_kwargs
+        from nce.mcp_args import model_kwargs
 
         filtered = model_kwargs(arguments)
         try:

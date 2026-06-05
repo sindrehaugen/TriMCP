@@ -1,5 +1,5 @@
 """
-BATCH 3 — trimcp.temporal lookback ceiling, injected _now, and absolute max cap.
+BATCH 3 — nce.temporal lookback ceiling, injected _now, and absolute max cap.
 """
 
 from __future__ import annotations
@@ -8,8 +8,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trimcp.config import cfg
-from trimcp.temporal import parse_as_of
+from nce.config import cfg
+from nce.temporal import parse_as_of
 
 TZ_UTC = timezone.utc
 
@@ -21,7 +21,7 @@ def _iso_z(dt: datetime) -> str:
 @pytest.fixture
 def _patch_temporal_wall_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
     """Pinned wall clock (May 2026) — distinct from injected _now in boundary tests."""
-    import trimcp.temporal as temporal_mod
+    import nce.temporal as temporal_mod
 
     fixed = datetime(2026, 5, 5, 12, 0, 0, tzinfo=TZ_UTC)
 
@@ -39,7 +39,7 @@ def _patch_temporal_wall_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
 def test_absolute_max_lookback_caps_config_at_3650_days(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cfg, "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS", 999_999)
+    monkeypatch.setattr(cfg, "NCE_MAX_TEMPORAL_LOOKBACK_DAYS", 999_999)
     now = datetime(2026, 1, 15, 12, 0, 0, tzinfo=TZ_UTC)
 
     within_cap = now - timedelta(days=3649)
@@ -55,7 +55,7 @@ def test_absolute_max_lookback_caps_config_at_3650_days(
 def test_lookback_zero_disables_cap_very_old_timestamp_accepted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cfg, "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS", 0)
+    monkeypatch.setattr(cfg, "NCE_MAX_TEMPORAL_LOOKBACK_DAYS", 0)
     now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=TZ_UTC)
     ancient = datetime(2000, 1, 1, 0, 0, 0, tzinfo=TZ_UTC)
 
@@ -66,7 +66,7 @@ def test_lookback_zero_disables_cap_very_old_timestamp_accepted(
 def test_parse_as_of_injected_now_rejects_one_second_in_future(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cfg, "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS", 0)
+    monkeypatch.setattr(cfg, "NCE_MAX_TEMPORAL_LOOKBACK_DAYS", 0)
     now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=TZ_UTC)
     future = now + timedelta(seconds=1)
 
@@ -77,7 +77,7 @@ def test_parse_as_of_injected_now_rejects_one_second_in_future(
 def test_parse_as_of_injected_now_accepts_one_second_in_past(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cfg, "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS", 0)
+    monkeypatch.setattr(cfg, "NCE_MAX_TEMPORAL_LOOKBACK_DAYS", 0)
     now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=TZ_UTC)
     past = now - timedelta(seconds=1)
 
@@ -90,7 +90,7 @@ def test_parse_as_of_lookback_uses_injected_now_not_wall_clock(
     _patch_temporal_wall_clock: datetime,
 ) -> None:
     """Wall clock is 2026-05-05; injected _now is 2026-06-01 with 30-day lookback."""
-    monkeypatch.setattr(cfg, "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS", 30)
+    monkeypatch.setattr(cfg, "NCE_MAX_TEMPORAL_LOOKBACK_DAYS", 30)
     injected_now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=TZ_UTC)
     cutoff = injected_now - timedelta(days=30)
 

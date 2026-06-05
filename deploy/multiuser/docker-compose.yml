@@ -1,4 +1,4 @@
-# TriMCP v1.0 — prefer repository-root docker-compose.yml (admin + cron + a2a + Caddy).
+# NCE v1.0 — prefer repository-root docker-compose.yml (admin + cron + a2a + Caddy).
 #
 # This file remains for alternate port mappings. Shared env: ../compose.stack.env
 #   cd deploy/multiuser && docker compose up -d --build
@@ -13,7 +13,7 @@ services:
   # ---------------------------------------------------------------------------
   env-validator:
     image: busybox:1.36
-    container_name: trimcp-env-validator
+    container_name: nce-env-validator
     env_file:
       - ../compose.stack.env
     environment:
@@ -25,10 +25,10 @@ services:
       sh -c '
         rc=0;
         for v in
-          TRIMCP_MASTER_KEY
-          TRIMCP_API_KEY
-          TRIMCP_JWT_SECRET
-          TRIMCP_ADMIN_PASSWORD
+          NCE_MASTER_KEY
+          NCE_API_KEY
+          NCE_JWT_SECRET
+          NCE_ADMIN_PASSWORD
           PG_DSN
           MONGO_URI
           REDIS_URL
@@ -49,7 +49,7 @@ services:
 
   redis:
     image: redis:7.4-alpine
-    container_name: trimcp-redis
+    container_name: nce-redis
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
@@ -63,7 +63,7 @@ services:
 
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: trimcp-postgres
+    container_name: nce-postgres
     environment:
       POSTGRES_USER: mcp_user
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mcp_password}
@@ -72,7 +72,7 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
-      - ../../trimcp/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ../../nce/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mcp_user -d memory_meta"]
       interval: 5s
@@ -82,7 +82,7 @@ services:
 
   mongodb:
     image: mongo:7.0
-    container_name: trimcp-mongo
+    container_name: nce-mongo
     ports:
       - "${MONGO_PORT:-27017}:27017"
     volumes:
@@ -96,7 +96,7 @@ services:
 
   minio:
     image: minio/minio:RELEASE.2024-11-07T00-52-20Z
-    container_name: trimcp-minio
+    container_name: nce-minio
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
@@ -115,8 +115,8 @@ services:
 
   # [D7] Never bundled in the worker image — HTTP OpenAI-compatible surface on 11435.
   cognitive:
-    image: ghcr.io/sindrehaugen/trimcp-cognitive:v1
-    container_name: trimcp-cognitive
+    image: ghcr.io/sindrehaugen/nce-cognitive:v1
+    container_name: nce-cognitive
     ports:
       - "${COGNITIVE_PORT:-11435}:11435"
     restart: unless-stopped
@@ -133,13 +133,13 @@ services:
     command:
       [
         "uvicorn",
-        "trimcp.webhook_receiver.main:app",
+        "nce.webhook_receiver.main:app",
         "--host",
         "0.0.0.0",
         "--port",
         "8080",
       ]
-    container_name: trimcp-webhooks
+    container_name: nce-webhooks
     env_file:
       - ../compose.stack.env
     environment:
@@ -162,7 +162,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/multiuser/Dockerfile
-    container_name: trimcp-worker
+    container_name: nce-worker
     env_file:
       - ../compose.stack.env
     environment:
@@ -197,8 +197,8 @@ services:
     build:
       context: ../..
       dockerfile: deploy/multiuser/Dockerfile
-    command: ["python", "-m", "trimcp.cron"]
-    container_name: trimcp-cron
+    command: ["python", "-m", "nce.cron"]
+    container_name: nce-cron
     env_file:
       - ../compose.stack.env
     environment:
@@ -233,7 +233,7 @@ services:
         "--port",
         "8003",
       ]
-    container_name: trimcp-admin
+    container_name: nce-admin
     env_file:
       - ../compose.stack.env
     environment:
@@ -274,13 +274,13 @@ services:
     command:
       [
         "uvicorn",
-        "trimcp.a2a_server:app",
+        "nce.a2a_server:app",
         "--host",
         "0.0.0.0",
         "--port",
         "8004",
       ]
-    container_name: trimcp-a2a
+    container_name: nce-a2a
     env_file:
       - ../compose.stack.env
     environment:
@@ -307,7 +307,7 @@ services:
 
   caddy:
     image: caddy:2.8-alpine
-    container_name: trimcp-caddy
+    container_name: nce-caddy
     ports:
       - "${CADDY_HTTP_PORT:-80}:80"
       - "${CADDY_HTTPS_PORT:-443}:443"

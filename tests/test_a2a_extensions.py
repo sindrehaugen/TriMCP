@@ -9,15 +9,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from trimcp import a2a_mcp_handlers
-from trimcp.a2a import (
+from nce import a2a_mcp_handlers
+from nce.a2a import (
     A2AAuthorizationError,
     A2AScope,
     verify_grant_status,
     update_grant_scopes,
     inspect_grant,
 )
-from trimcp.auth import NamespaceContext
+from nce.auth import NamespaceContext
 
 
 class _FakeAcquire:
@@ -216,8 +216,8 @@ async def test_update_grant_scopes_success_strategies() -> None:
     conn.fetchrow = AsyncMock(return_value=row)
 
     # 1. Replace mode
-    with patch("trimcp.a2a.set_namespace_context", AsyncMock()) as mock_set_ctx:
-        with patch("trimcp.event_log.append_event", AsyncMock()) as mock_append:
+    with patch("nce.a2a.set_namespace_context", AsyncMock()) as mock_set_ctx:
+        with patch("nce.event_log.append_event", AsyncMock()) as mock_append:
             res = await update_grant_scopes(conn, owner_ctx, grant_id, new_scopes, mode="replace")
             assert len(res["scopes"]) == 1
             assert res["scopes"][0]["resource_id"] == new_scope_id
@@ -231,8 +231,8 @@ async def test_update_grant_scopes_success_strategies() -> None:
     # 2. Append mode
     conn.execute.reset_mock()
     conn.fetchrow = AsyncMock(return_value=row)
-    with patch("trimcp.a2a.set_namespace_context", AsyncMock()):
-        with patch("trimcp.event_log.append_event", AsyncMock()) as mock_append:
+    with patch("nce.a2a.set_namespace_context", AsyncMock()):
+        with patch("nce.event_log.append_event", AsyncMock()) as mock_append:
             res = await update_grant_scopes(conn, owner_ctx, grant_id, new_scopes, mode="append")
             assert len(res["scopes"]) == 2
             # Verify both original and new exist
@@ -306,7 +306,7 @@ async def test_handle_a2a_verify_grant_status_mcp() -> None:
         "scopes": []
     }
 
-    with patch("trimcp.a2a_mcp_handlers.verify_grant_status", AsyncMock(return_value=mock_res)) as mock_domain:
+    with patch("nce.a2a_mcp_handlers.verify_grant_status", AsyncMock(return_value=mock_res)) as mock_domain:
         res_str = await a2a_mcp_handlers.handle_a2a_verify_grant_status(engine, args)
         res = json.loads(res_str)
         assert res["status"] == "active"
@@ -339,7 +339,7 @@ async def test_handle_a2a_update_grant_scopes_mcp() -> None:
         "scopes": []
     }
 
-    with patch("trimcp.a2a_mcp_handlers.update_grant_scopes", AsyncMock(return_value=mock_res)) as mock_domain:
+    with patch("nce.a2a_mcp_handlers.update_grant_scopes", AsyncMock(return_value=mock_res)) as mock_domain:
         res_str = await a2a_mcp_handlers.handle_a2a_update_grant_scopes(engine, args)
         res = json.loads(res_str)
         assert res["status"] == "updated"
@@ -366,7 +366,7 @@ async def test_handle_a2a_inspect_grant_mcp() -> None:
         "status": "active"
     }
 
-    with patch("trimcp.a2a_mcp_handlers.inspect_grant", AsyncMock(return_value=mock_res)) as mock_domain:
+    with patch("nce.a2a_mcp_handlers.inspect_grant", AsyncMock(return_value=mock_res)) as mock_domain:
         res_str = await a2a_mcp_handlers.handle_a2a_inspect_grant(engine, args)
         res = json.loads(res_str)
         assert res["grant_id"] == str(grant_id)

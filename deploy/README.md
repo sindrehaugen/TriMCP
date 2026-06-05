@@ -1,6 +1,6 @@
-# TriMCP deployment guide
+# NCE deployment guide
 
-Operational defaults for TriMCP v1.0 assume **self-hosted Docker Compose** on one machine unless your team chooses otherwise.
+Operational defaults for NCE v1.0 assume **self-hosted Docker Compose** on one machine unless your team chooses otherwise.
 
 ---
 
@@ -44,7 +44,7 @@ set MINIO_ENDPOINT=127.0.0.1:9002
 python server.py
 ```
 
-Optional: create a project **`.env`** for Compose **interpolation** only (`POSTGRES_PASSWORD`, port overrides, `TRIMCP_A2A_PUBLIC_URL`). Application env for containers comes from **`deploy/compose.stack.env`**.
+Optional: create a project **`.env`** for Compose **interpolation** only (`POSTGRES_PASSWORD`, port overrides, `NCE_A2A_PUBLIC_URL`). Application env for containers comes from **`deploy/compose.stack.env`**.
 
 ---
 
@@ -65,16 +65,16 @@ The multiuser compose file publishes MinIO on host **9000** (API) and **9001** (
 
 ## D2 / D7 — Cognitive model
 
-- Image **`ghcr.io/sindrehaugen/trimcp-cognitive:v1`** on **11435**.
-- Stack sets **`TRIMCP_COGNITIVE_BASE_URL=http://cognitive:11435`** for in-network services.
+- Image **`ghcr.io/sindrehaugen/nce-cognitive:v1`** on **11435**.
+- Stack sets **`NCE_COGNITIVE_BASE_URL=http://cognitive:11435`** for in-network services.
 
 ---
 
 ## Operations
 
 - **Backups**: volumes `pg_data`, `mongo_data`, `redis_data`, `minio_data`, `caddy_*` + rotate secrets in **`deploy/compose.stack.env`**.
-- **Consolidation**: `trimcp/cron.py` runs `ConsolidationWorker` on an interval for namespaces whose metadata sets `consolidation.enabled=true`. Use the MCP `trigger_consolidation` tool for ad-hoc runs.
-- **Outbox relay**: `trimcp/cron.py` polls `outbox_events` on `OUTBOX_RELAY_INTERVAL_SECONDS` (default 5s) and delivers to the RQ worker queue. The MCP stdio process (`server.py` / `trimcp/mcp_stdio_main.py`) runs the same relay loop for single-process dev setups.
+- **Consolidation**: `nce/cron.py` runs `ConsolidationWorker` on an interval for namespaces whose metadata sets `consolidation.enabled=true`. Use the MCP `trigger_consolidation` tool for ad-hoc runs.
+- **Outbox relay**: `nce/cron.py` polls `outbox_events` on `OUTBOX_RELAY_INTERVAL_SECONDS` (default 5s) and delivers to the RQ worker queue. The MCP stdio process (`server.py` / `nce/mcp_stdio_main.py`) runs the same relay loop for single-process dev setups.
 
 ### Webhook receiver hardening
 
@@ -83,7 +83,7 @@ The **webhook-receiver** service depends on **Redis** for sliding-window rate li
 | Variable | Production guidance |
 |----------|---------------------|
 | `WEBHOOK_DEDUP_FAIL_OPEN` | Keep **`false`** (default). When Redis is down, dedup must **not** enqueue duplicate bridge jobs. |
-| `TRIMCP_WEBHOOK_TRUST_PROXY` | Set **`true`** only when **Caddy** (or another trusted reverse proxy) terminates TLS and sets `X-Forwarded-For`. Leave **`false`** if clients connect directly to the receiver. |
+| `NCE_WEBHOOK_TRUST_PROXY` | Set **`true`** only when **Caddy** (or another trusted reverse proxy) terminates TLS and sets `X-Forwarded-For`. Leave **`false`** if clients connect directly to the receiver. |
 
 Bridge webhook secrets (`DROPBOX_APP_SECRET`, `GRAPH_CLIENT_STATE`, `DRIVE_CHANNEL_TOKEN`) are required at process start — generate them via `scripts/bootstrap-compose-secrets.py` and store them in **`deploy/compose.stack.env.generated`** (never commit).
 
@@ -97,7 +97,7 @@ The stack includes built-in HTTP-based process and connection checks suitable fo
 
 ### Running GPU-Accelerated Workloads
 
-For re-embedding, alignment, and dense search operations, TriMCP supports GPU/CUDA hardware acceleration:
+For re-embedding, alignment, and dense search operations, NCE supports GPU/CUDA hardware acceleration:
 
 - **NVIDIA GPU Support:** Separate resource requirements are encapsulated under the `gpu` profile.
 - **Run on GPU:** Include the `--profile gpu` flag:
@@ -114,38 +114,38 @@ When rolling out schema upgrades or applying major system changes:
    ```bash
    docker compose down -v
    ```
-2. **Schema & Migration Playbooks:** The PostgreSQL schema is loaded dynamically from `trimcp/schema.sql` during the first database bootstrap or orchestrator connect. To manually apply migrations to a running instance, execute:
+2. **Schema & Migration Playbooks:** The PostgreSQL schema is loaded dynamically from `nce/schema.sql` during the first database bootstrap or orchestrator connect. To manually apply migrations to a running instance, execute:
    ```bash
    python scripts/apply_integration_schema.py
    ```
 
 ---
 
-## Native installers (`trimcp-launch` shim)
+## Native installers (`nce-launch` shim)
 
-The **mode-aware MCP stdio shim** is built from `go/cmd/trimcp-launch/` (Enterprise Deployment Plan section 6.4). Release automation is **`.github/workflows/release.yml`** (runs on annotated tags `v*`).
+The **mode-aware MCP stdio shim** is built from `go/cmd/nce-launch/` (Enterprise Deployment Plan section 6.4). Release automation is **`.github/workflows/release.yml`** (runs on annotated tags `v*`).
 
 ### Build outputs (CI expectations)
 
 | Platform | Artifact | Shim path inside package |
 |----------|----------|---------------------------|
-| **Windows (Inno)** | `build/windows/Output/TriMCP-Setup.exe` | `{app}\trimcp-launch.exe` — Start Menu shortcut and post-install run target (`TriMCP-Setup.iss`) |
-| **Windows (WiX)** | `build/windows/TriMCP.msi` | `%ProgramFiles%\TriMCP\trimcp-launch.exe` (`TriMCP.wxs`). MSI ships shim + `Patch-IDEConfig.ps1` / `Write-UserConfig.ps1`; use **Inno** for embedded Python + full app tree (`trimcp`, `admin`, compose files, wheels). |
-| **macOS** | `build/macos/TriMCP-universal.dmg` | `TriMCP.app/Contents/MacOS/TriMCP` — binary is the universal `build/macos/trimcp-launch` copied into bundle (`build/macos/build-dmg.sh`) |
+| **Windows (Inno)** | `build/windows/Output/NCE-Setup.exe` | `{app}\nce-launch.exe` — Start Menu shortcut and post-install run target (`NCE-Setup.iss`) |
+| **Windows (WiX)** | `build/windows/NCE.msi` | `%ProgramFiles%\NCE\nce-launch.exe` (`NCE.wxs`). MSI ships shim + `Patch-IDEConfig.ps1` / `Write-UserConfig.ps1`; use **Inno** for embedded Python + full app tree (`nce`, `admin`, compose files, wheels). |
+| **macOS** | `build/macos/NCE-universal.dmg` | `NCE.app/Contents/MacOS/NCE` — binary is the universal `build/macos/nce-launch` copied into bundle (`build/macos/build-dmg.sh`) |
 
 ### Preconditions
 
-- **Windows:** `dotnet tool install --global wix` (CI step) consumes `TrimcpLaunchExe Source="trimcp-launch.exe"` relative to `build/windows/`. Inno compiles `TriMCP-Setup.iss` with working directory **`build/windows/`** so relative `..\..\` repo paths resolve to the project root.
+- **Windows:** `dotnet tool install --global wix` (CI step) consumes `TrimcpLaunchExe Source="nce-launch.exe"` relative to `build/windows/`. Inno compiles `NCE-Setup.iss` with working directory **`build/windows/`** so relative `..\..\` repo paths resolve to the project root.
 
-- **macOS:** Produce `build/macos/trimcp-launch` (universal binary via `lipo`) before `./build/macos/build-dmg.sh`; script copies it as the bundle executable named `TriMCP` per `Info.plist`.
+- **macOS:** Produce `build/macos/nce-launch` (universal binary via `lipo`) before `./build/macos/build-dmg.sh`; script copies it as the bundle executable named `NCE` per `Info.plist`.
 
 ### Verification checklist (release engineering)
 
-1. Tag push triggers **`TriMCP Enterprise Release`** workflow; confirm `trimcp-launch.exe` build step exits 0.
-2. **Inno artifact:** Inspect `{app}` — `trimcp-launch.exe` present; `%APPDATA%\TriMCP\mode.txt` / `.env` written by Pascal `CurStepChanged` (`ssPostInstall`).
-3. **MSI artifact:** `msiexec /i TriMCP.msi MODE=local` (or silent equivalent) — `trimcp-launch.exe` and `scripts\*.ps1` under install root.
+1. Tag push triggers **`NCE Enterprise Release`** workflow; confirm `nce-launch.exe` build step exits 0.
+2. **Inno artifact:** Inspect `{app}` — `nce-launch.exe` present; `%APPDATA%\NCE\mode.txt` / `.env` written by Pascal `CurStepChanged` (`ssPostInstall`).
+3. **MSI artifact:** `msiexec /i NCE.msi MODE=local` (or silent equivalent) — `nce-launch.exe` and `scripts\*.ps1` under install root.
 4. **DMG:** `codesign --verify --deep` on `.app` when signing identities are set (`APPLE_*` secrets).
-5. **Optional:** Smoke-run shim from installed location with expected `TRIMCP_*` env (see `.env.example`).
+5. **Optional:** Smoke-run shim from installed location with expected `NCE_*` env (see `.env.example`).
 
 ---
 

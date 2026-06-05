@@ -20,9 +20,9 @@ from starlette.middleware import Middleware
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-import trimcp.quotas as quotas
-from trimcp.auth import HMACAuthMiddleware
-from trimcp.quotas import QuotaExceededError
+import nce.quotas as quotas
+from nce.auth import HMACAuthMiddleware
+from nce.quotas import QuotaExceededError
 
 
 def _register_mcp_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -63,7 +63,7 @@ def _register_mcp_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_consume_skips_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", False)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", False)
     pool = MagicMock()
     ns = uuid.uuid4()
     res = await quotas.consume_resources(
@@ -78,7 +78,7 @@ async def test_consume_skips_when_disabled(monkeypatch: pytest.MonkeyPatch) -> N
 
 @pytest.mark.asyncio
 async def test_consume_updates_matching_rows(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
 
     ns_id = uuid.uuid4()
     qrow_ns = uuid.uuid4()
@@ -112,7 +112,7 @@ async def test_consume_updates_matching_rows(monkeypatch: pytest.MonkeyPatch) ->
 
 @pytest.mark.asyncio
 async def test_consume_raises_when_limit_hit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
 
     ns_id = uuid.uuid4()
     qrow_ns = uuid.uuid4()
@@ -268,7 +268,7 @@ async def test_concurrent_multi_connection_overallocation_prevented(
     to the quota row.  The test uses per-task connections with shared state
     to simulate the Postgres row-level lock.
     """
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
 
     ns_id = uuid.uuid4()
     qid = uuid.uuid4()
@@ -308,7 +308,7 @@ async def test_concurrent_multi_conn_exact_fill(
     When the quota limit divides evenly, exactly N workers succeed with
     zero remaining capacity — the (N+1)th worker is rejected.
     """
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
 
     ns_id = uuid.uuid4()
     qid = uuid.uuid4()
@@ -344,7 +344,7 @@ async def test_concurrent_multi_conn_last_unit_consumed(
     Boundary case: only 1 unit of quota remains. One worker consumes it,
     all others are rejected.
     """
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
 
     ns_id = uuid.uuid4()
     qid = uuid.uuid4()
@@ -380,7 +380,7 @@ async def test_concurrent_multi_conn_namespace_and_agent_quotas(
     When both namespace-level and agent-specific quota rows exist, concurrent
     workers should respect both limits.
     """
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
 
     ns_id = uuid.uuid4()
     ns_qid = uuid.uuid4()
@@ -466,7 +466,7 @@ async def test_concurrent_multi_conn_partial_near_limit(
     When remaining quota is less than one delta but greater than zero,
     the consume should still be rejected (no partial consumption).
     """
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
 
     ns_id = uuid.uuid4()
     qid = uuid.uuid4()
@@ -511,7 +511,7 @@ async def test_concurrent_quota_consumption_no_overallocation(
     With row-level locking, only K workers should succeed where K
     is the number of times the quota fits into the limit.
     """
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
 
     ns_id = uuid.uuid4()
     qid = uuid.uuid4()
@@ -579,7 +579,7 @@ async def test_concurrent_quota_no_deadlock_on_exceeded(
     When the very first worker exceeds the quota, the FOR UPDATE lock
     should not cause a deadlock — all workers should get QuotaExceededError.
     """
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
 
     ns_id = uuid.uuid4()
     qid = uuid.uuid4()
@@ -622,7 +622,7 @@ async def test_concurrent_quota_single_consumer_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A single consumer within quota should always succeed."""
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
 
     ns_id = uuid.uuid4()
     qid = uuid.uuid4()
@@ -660,7 +660,7 @@ async def test_concurrent_quota_sql_contains_for_update(
     Verify the SQL sent to Postgres contains ``FOR UPDATE``.
     This is a structural assertion that the fix is applied.
     """
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
 
     ns_id = uuid.uuid4()
     qid = uuid.uuid4()
@@ -708,7 +708,7 @@ async def test_concurrent_quota_multi_resource_no_deadlock(
     When consuming multiple resource types in the same call, no deadlock
     should occur (the loop iterates deterministically over sorted keys).
     """
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
 
     ns_id = uuid.uuid4()
     qid_tokens = uuid.uuid4()
@@ -785,7 +785,7 @@ def _signed_post(path: str, body: dict) -> tuple[bytes, dict[str, str]]:
     canonical = "\n".join(parts)
     sig = _hmac.new(_HMAC_KEY.encode(), canonical.encode(), hashlib.sha256).hexdigest()
     headers = {
-        "X-TriMCP-Timestamp": str(ts),
+        "X-NCE-Timestamp": str(ts),
         "Authorization": f"HMAC-SHA256 {sig}",
         "Content-Type": "application/json",
     }
@@ -817,12 +817,12 @@ def test_admin_api_search_returns_429_when_quota_exceeded(
     async def _boom(*_a, **_k):
         raise QuotaExceededError("namespace cap reached")
 
-    monkeypatch.setattr("trimcp.quotas.consume_for_tool", _boom)
+    monkeypatch.setattr("nce.quotas.consume_for_tool", _boom)
     mock_engine = MagicMock()
     mock_engine.pg_pool = MagicMock()
     mock_engine.redis_client = MagicMock()
     mock_engine.semantic_search = AsyncMock(return_value=[])
-    monkeypatch.setattr("trimcp.admin_state.engine", mock_engine)
+    monkeypatch.setattr("nce.admin_state.engine", mock_engine)
     monkeypatch.setattr(adm, "engine", mock_engine)
 
     app = Starlette(
@@ -873,7 +873,7 @@ async def test_mcp_call_tool_surfaces_quota_as_32013(
     async def _boom(*_a, **_k):
         raise QuotaExceededError("no capacity")
 
-    monkeypatch.setattr("trimcp.quotas.consume_for_tool", _boom)
+    monkeypatch.setattr("nce.quotas.consume_for_tool", _boom)
 
     result = await srv.call_tool(
         "semantic_search",
@@ -916,8 +916,8 @@ def test_quota_incr_failed_contract(result: object, expected_failed: bool) -> No
 async def test_consume_rejects_delta_above_max_pg_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTA_REDIS_COUNTERS", False)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTA_REDIS_COUNTERS", False)
 
     pool = MagicMock()
     ns = uuid.uuid4()
@@ -956,8 +956,8 @@ async def test_consume_resources_redis_rejects_delta_above_max() -> None:
 async def test_consume_skips_zero_and_negative_delta_without_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTAS_ENABLED", True)
-    monkeypatch.setattr("trimcp.quotas.cfg.TRIMCP_QUOTA_REDIS_COUNTERS", False)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTA_REDIS_COUNTERS", False)
 
     pool = MagicMock()
     ns = uuid.uuid4()
@@ -1198,7 +1198,7 @@ async def test_flush_quota_counters_sql_uses_greatest(
         assert namespace_id == ns_id
         yield conn
 
-    monkeypatch.setattr("trimcp.db_utils.scoped_pg_session", _fake_scoped)
+    monkeypatch.setattr("nce.db_utils.scoped_pg_session", _fake_scoped)
 
     pool = MagicMock()
     flushed = await quotas.flush_quota_counters_to_postgres(redis, pool)
@@ -1239,7 +1239,7 @@ async def test_flush_greatest_prevents_regressing_higher_pg_used(
     async def _fake_scoped(pool: object, namespace_id: object):
         yield conn
 
-    monkeypatch.setattr("trimcp.db_utils.scoped_pg_session", _fake_scoped)
+    monkeypatch.setattr("nce.db_utils.scoped_pg_session", _fake_scoped)
 
     await quotas.flush_quota_counters_to_postgres(redis, MagicMock())
 

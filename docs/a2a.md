@@ -11,14 +11,14 @@ Sharing is initiated via a handshake that produces a secure, single-use sharing 
 ```mermaid
 sequenceDiagram
     participant AgentA as Agent A (Owner)
-    participant EngineA as TriMCP Engine (A)
+    participant EngineA as NCE Engine (A)
     participant DB as Postgres (a2a_grants)
     participant AgentB as Agent B (Consumer)
-    participant EngineB as TriMCP Engine (B)
+    participant EngineB as NCE Engine (B)
 
     AgentA->>EngineA: create_grant(target_ns, target_agent, scopes)
     EngineA->>DB: INSERT grant (persists SHA-256 hash)
-    EngineA-->>AgentA: Raw Token (trimcp_a2a_...)
+    EngineA-->>AgentA: Raw Token (nce_a2a_...)
     AgentA->>AgentB: Out-of-band Token Exchange
     
     AgentB->>EngineB: query_shared(token, query)
@@ -49,7 +49,7 @@ Currently, the protocol only supports `read` permissions.
 
 ## Security Controls
 
-1.  **Token Hashing**: The raw sharing token is never stored in the database. TriMCP only stores the SHA-256 hash, making it impossible to reconstruct tokens from a database leak.
+1.  **Token Hashing**: The raw sharing token is never stored in the database. NCE only stores the SHA-256 hash, making it impossible to reconstruct tokens from a database leak.
 2.  **Binding Constraints**: Grants can be optionally restricted to a specific receiving `namespace_id` or `agent_id`, preventing unauthorized agents from using an intercepted token.
 3.  **Auto-Expiration**: All tokens have a mandatory expiration window (default 1 hour, max 30 days).
 4.  **Instant Revocation**: Owners can revoke a grant at any time via the `revoke_grant` tool, instantly invalidating the token.

@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 
 from tests.conftest import first_recorded_contradiction as _first_recorded_contradiction
-from trimcp.contradictions import ContradictionResult, detect_contradictions
+from nce.contradictions import ContradictionResult, detect_contradictions
 
 
 def _mock_pg_pool(conn: AsyncMock) -> MagicMock:
@@ -55,9 +55,9 @@ async def test_detect_uses_nli_and_skips_llm_on_strong_agreement():
 
     # Mock NLI to return high contradiction score
     with (
-        patch("trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock) as mock_nli,
+        patch("nce.contradictions.check_nli_contradiction", new_callable=AsyncMock) as mock_nli,
         patch(
-            "trimcp.contradictions.fetch_episodes_raw_by_ref",
+            "nce.contradictions.fetch_episodes_raw_by_ref",
             new_callable=AsyncMock,
         ) as fetch_ep,
     ):
@@ -74,7 +74,7 @@ async def test_detect_uses_nli_and_skips_llm_on_strong_agreement():
         llm = StubLLM(
             ContradictionResult(is_contradiction=True, confidence=0.95, explanation="LLM agrees")
         )
-        with patch("trimcp.contradictions.get_provider", return_value=llm):
+        with patch("nce.contradictions.get_provider", return_value=llm):
             out = await detect_contradictions(
                 _mock_pg_pool(conn),
                 mongo,
@@ -115,9 +115,9 @@ async def test_detect_llm_tiebreaker_prefers_llm_decision():
 
     # Mock NLI to return high contradiction score (hit)
     with (
-        patch("trimcp.contradictions.check_nli_contradiction", new_callable=AsyncMock) as mock_nli,
+        patch("nce.contradictions.check_nli_contradiction", new_callable=AsyncMock) as mock_nli,
         patch(
-            "trimcp.contradictions.fetch_episodes_raw_by_ref",
+            "nce.contradictions.fetch_episodes_raw_by_ref",
             new_callable=AsyncMock,
         ) as fetch_ep,
     ):
@@ -132,7 +132,7 @@ async def test_detect_llm_tiebreaker_prefers_llm_decision():
                 explanation="Not a contradiction",
             )
         )
-        with patch("trimcp.contradictions.get_provider", return_value=llm):
+        with patch("nce.contradictions.get_provider", return_value=llm):
             # KG says NO (empty triplets)
             out = await detect_contradictions(
                 _mock_pg_pool(conn),
@@ -157,7 +157,7 @@ async def test_detect_llm_tiebreaker_prefers_llm_decision():
 
 @pytest.mark.anyio
 async def test_nli_caching():
-    from trimcp.contradictions import _load_nli_model
+    from nce.contradictions import _load_nli_model
 
     # We can't easily test lru_cache behavior without actual imports,
     # but we can verify the function is defined.

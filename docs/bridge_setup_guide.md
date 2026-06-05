@@ -1,6 +1,6 @@
 # Bridge Setup Guide
 
-This guide details the configuration of the Document Bridge System (Push Architecture) for TriMCP. The push architecture ensures that document changes trigger near-instant indexing (seconds, not hours) without polling waste, as only changed files are processed. This requires a publicly-reachable HTTPS endpoint to receive webhook callbacks from cloud providers.
+This guide details the configuration of the Document Bridge System (Push Architecture) for NCE. The push architecture ensures that document changes trigger near-instant indexing (seconds, not hours) without polling waste, as only changed files are processed. This requires a publicly-reachable HTTPS endpoint to receive webhook callbacks from cloud providers.
 
 ## 1. SharePoint / OneDrive (Microsoft Graph)
 
@@ -68,7 +68,7 @@ This guide details the configuration of the Document Bridge System (Push Archite
 
 ## 4. Webhook Receiver Configuration
 
-The FastAPI webhook receiver (`trimcp/webhook_receiver/main.py`) requires specific environment variables to validate incoming payloads from the cloud providers.
+The FastAPI webhook receiver (`nce/webhook_receiver/main.py`) requires specific environment variables to validate incoming payloads from the cloud providers.
 
 Configure the following environment variables in your deployment environment:
 

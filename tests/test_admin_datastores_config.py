@@ -9,19 +9,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 from starlette.requests import Request
 
-os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-test-key-32chars-long!!")
+os.environ.setdefault("NCE_MASTER_KEY", "dev-test-key-32chars-long!!")
 
 
 @pytest.mark.asyncio
 async def test_datastores_status_endpoint():
     """Verify datastore status fetches correctly and masks secrets."""
-    with patch("trimcp.admin_handlers._shared.cfg") as mock_cfg:
-        mock_cfg.PG_DSN = "postgresql://user:password@localhost/trimcp"
-        mock_cfg.DB_READ_URL = "postgresql://user:password@localhost/trimcp_replica"
-        mock_cfg.DB_WRITE_URL = "postgresql://user:password@localhost/trimcp"
+    with patch("nce.admin_handlers._shared.cfg") as mock_cfg:
+        mock_cfg.PG_DSN = "postgresql://user:password@localhost/nce"
+        mock_cfg.DB_READ_URL = "postgresql://user:password@localhost/nce_replica"
+        mock_cfg.DB_WRITE_URL = "postgresql://user:password@localhost/nce"
         mock_cfg.PG_MIN_POOL = 3
         mock_cfg.PG_MAX_POOL = 15
-        mock_cfg.MONGO_URI = "mongodb://user:pwd@host:27017/trimcp"
+        mock_cfg.MONGO_URI = "mongodb://user:pwd@host:27017/nce"
         mock_cfg.REDIS_URL = "redis://:foobar@host:6379/0"
         mock_cfg.REDIS_TTL = 3600
         mock_cfg.REDIS_MAX_CONNECTIONS = 50
@@ -44,7 +44,7 @@ async def test_datastores_status_endpoint():
         assert "minio" in data
 
         # Check postgres fields are populated
-        assert data["postgres"]["pg_dsn"] == "postgresql://user:••••••••@localhost/trimcp"
+        assert data["postgres"]["pg_dsn"] == "postgresql://user:••••••••@localhost/nce"
         assert data["postgres"]["pg_min_pool"] == 3
 
         # Check secrets are masked and reported properly (has_secret_key is True, actual secret is not leaked)
@@ -57,17 +57,17 @@ async def test_datastores_save_endpoint_with_secret_masked():
     mock_engine = MagicMock()
     mock_update_dotenv = MagicMock()
     with (
-        patch("trimcp.admin_state.engine", mock_engine),
-        patch("trimcp.admin_handlers._shared.cfg") as mock_cfg,
-        patch("trimcp.admin_handlers._shared.update_dotenv", mock_update_dotenv),
-        patch("trimcp.admin_handlers.fleet.update_dotenv", mock_update_dotenv),
+        patch("nce.admin_state.engine", mock_engine),
+        patch("nce.admin_handlers._shared.cfg") as mock_cfg,
+        patch("nce.admin_handlers._shared.update_dotenv", mock_update_dotenv),
+        patch("nce.admin_handlers.fleet.update_dotenv", mock_update_dotenv),
     ):
-        mock_cfg.PG_DSN = "postgresql://user:password@localhost/trimcp"
-        mock_cfg.DB_READ_URL = "postgresql://user:password@localhost/trimcp_replica"
-        mock_cfg.DB_WRITE_URL = "postgresql://user:password@localhost/trimcp"
+        mock_cfg.PG_DSN = "postgresql://user:password@localhost/nce"
+        mock_cfg.DB_READ_URL = "postgresql://user:password@localhost/nce_replica"
+        mock_cfg.DB_WRITE_URL = "postgresql://user:password@localhost/nce"
         mock_cfg.PG_MIN_POOL = 3
         mock_cfg.PG_MAX_POOL = 15
-        mock_cfg.MONGO_URI = "mongodb://user:pwd@host:27017/trimcp"
+        mock_cfg.MONGO_URI = "mongodb://user:pwd@host:27017/nce"
         mock_cfg.REDIS_URL = "redis://:foobar@host:6379/0"
         mock_cfg.REDIS_TTL = 3600
         mock_cfg.REDIS_MAX_CONNECTIONS = 50
@@ -75,7 +75,7 @@ async def test_datastores_save_endpoint_with_secret_masked():
         mock_cfg.MINIO_ACCESS_KEY = "minio_user"
         mock_cfg.MINIO_SECRET_KEY = "real_password"
         mock_cfg.MINIO_SECURE = False
-        mock_cfg.TRIMCP_ALLOW_ADMIN_DOTENV_PERSIST = True
+        mock_cfg.NCE_ALLOW_ADMIN_DOTENV_PERSIST = True
 
         from admin_server import api_admin_datastores_save
 

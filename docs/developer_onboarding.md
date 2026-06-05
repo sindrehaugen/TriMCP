@@ -1,4 +1,4 @@
-# TriMCP Developer Onboarding
+# NCE Developer Onboarding
 
 Quick start for local development, test execution, and contribution standards.
 
@@ -40,13 +40,13 @@ docker compose logs postgres --tail 20   # look for "database system is ready to
 PostgreSQL schema initialisation runs automatically when using the full `docker compose up -d --build` path. For a manual setup (or after resetting the `postgres` container):
 
 ```bash
-docker exec -i trimcp-postgres-1 psql -U mcp_user memory_meta < trimcp/schema.sql
+docker exec -i nce-postgres-1 psql -U mcp_user memory_meta < nce/schema.sql
 ```
 
 Verify extensions:
 
 ```bash
-docker exec trimcp-postgres-1 psql -U mcp_user memory_meta -c "\dx" | grep -E "pgvector|uuid"
+docker exec nce-postgres-1 psql -U mcp_user memory_meta -c "\dx" | grep -E "pgvector|uuid"
 ```
 
 ### 2c. Environment variables
@@ -61,12 +61,12 @@ Minimum overrides for local development (the rest of the defaults in `.env.examp
 
 ```bash
 # .env (local only — never commit)
-TRIMCP_MASTER_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx   # any 32+ chars for local dev
+NCE_MASTER_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx   # any 32+ chars for local dev
 MINIO_ACCESS_KEY=mcp_admin
 MINIO_SECRET_KEY=super_secure_minio_password
 ```
 
-`tests/conftest.py` sets `TRIMCP_MASTER_KEY` automatically for the test runner — you only need it in `.env` when running `server.py` or `admin_server.py` directly.
+`tests/conftest.py` sets `NCE_MASTER_KEY` automatically for the test runner — you only need it in `.env` when running `server.py` or `admin_server.py` directly.
 
 For a full variable reference, see [configuration_reference.md](configuration_reference.md).
 
@@ -154,7 +154,7 @@ pytest -m integration
 
 | File | What it covers |
 |---|---|
-| `tests/conftest.py` | `TRIMCP_MASTER_KEY` bootstrap; signing key cache reset between tests |
+| `tests/conftest.py` | `NCE_MASTER_KEY` bootstrap; signing key cache reset between tests |
 | `tests/fixtures/fake_asyncpg.py` | In-process fake asyncpg pool used by unit tests |
 | `tests/fixtures/http_hmac_helpers.py` | HMAC request signing helpers for admin API tests |
 | `tests/test_signing_cache.py` | Key cache isolation and TTL |
@@ -169,7 +169,7 @@ pytest -m integration
 
 ### 3d. Why tests use real databases for integration paths
 
-Unit tests mock the asyncpg pool via `FakeAsyncpgPool` (in `tests/fixtures/`). Integration tests hit real Postgres — this is intentional. TriMCP's correctness depends on RLS `SET LOCAL` semantics, transaction isolation, and trigger behaviour that cannot be reproduced in a pure in-process mock. Running `pytest -m integration` with live services is the definitive correctness check for the storage layer.
+Unit tests mock the asyncpg pool via `FakeAsyncpgPool` (in `tests/fixtures/`). Integration tests hit real Postgres — this is intentional. NCE's correctness depends on RLS `SET LOCAL` semantics, transaction isolation, and trigger behaviour that cannot be reproduced in a pure in-process mock. Running `pytest -m integration` with live services is the definitive correctness check for the storage layer.
 
 ---
 
@@ -179,22 +179,22 @@ Unit tests mock the asyncpg pool via `FakeAsyncpgPool` (in `tests/fixtures/`). I
 |---|---|
 | `server.py` | MCP stdio entry point; tool definitions and dispatch |
 | `admin_server.py` | Admin REST API; Starlette routes; HMAC + mTLS middleware |
-| `trimcp/orchestrator.py` | `TriStackEngine` — connection lifecycle, health checks |
-| `trimcp/config.py` | `_Config` — all env vars; `validate()` runs at import |
-| `trimcp/db_utils.py` | `scoped_pg_session`, `unmanaged_pg_connection`, `POOL_ACQUIRE_TIMEOUT` |
-| `trimcp/orchestrators/memory.py` | `store_memory`, `semantic_search`, Saga pattern |
-| `trimcp/orchestrators/graph.py` | KG write path |
-| `trimcp/orchestrators/temporal.py` | `as_of` time-travel query filters |
-| `trimcp/graph_query.py` | `GraphRAGTraverser` — BFS recursive CTE |
-| `trimcp/event_log.py` | `append_event()`, Merkle chain, `verify_merkle_chain()` |
-| `trimcp/signing.py` | HMAC-SHA256 signing, key rotation, master key |
-| `trimcp/pii.py` | Presidio NER + regex redaction pipeline |
-| `trimcp/auth.py` | `HMACAuthMiddleware`, `BasicAuthMiddleware`, `RateLimitError` |
-| `trimcp/mtls.py` | `MTLSAuthMiddleware` for client certificate enforcement |
-| `trimcp/garbage_collector.py` | Keyset-paginated orphan sweep |
-| `trimcp/ast_parser.py` | Tree-sitter AST → code chunks |
-| `trimcp/graph_extractor.py` | spaCy NLP → KG triplets; `@lru_cache` model loader |
-| `trimcp/schema.sql` | Full PostgreSQL schema, RLS policies, indexes, triggers |
+| `nce/orchestrator.py` | `TriStackEngine` — connection lifecycle, health checks |
+| `nce/config.py` | `_Config` — all env vars; `validate()` runs at import |
+| `nce/db_utils.py` | `scoped_pg_session`, `unmanaged_pg_connection`, `POOL_ACQUIRE_TIMEOUT` |
+| `nce/orchestrators/memory.py` | `store_memory`, `semantic_search`, Saga pattern |
+| `nce/orchestrators/graph.py` | KG write path |
+| `nce/orchestrators/temporal.py` | `as_of` time-travel query filters |
+| `nce/graph_query.py` | `GraphRAGTraverser` — BFS recursive CTE |
+| `nce/event_log.py` | `append_event()`, Merkle chain, `verify_merkle_chain()` |
+| `nce/signing.py` | HMAC-SHA256 signing, key rotation, master key |
+| `nce/pii.py` | Presidio NER + regex redaction pipeline |
+| `nce/auth.py` | `HMACAuthMiddleware`, `BasicAuthMiddleware`, `RateLimitError` |
+| `nce/mtls.py` | `MTLSAuthMiddleware` for client certificate enforcement |
+| `nce/garbage_collector.py` | Keyset-paginated orphan sweep |
+| `nce/ast_parser.py` | Tree-sitter AST → code chunks |
+| `nce/graph_extractor.py` | spaCy NLP → KG triplets; `@lru_cache` model loader |
+| `nce/schema.sql` | Full PostgreSQL schema, RLS policies, indexes, triggers |
 
 For deep-dives on specific subsystems:
 
@@ -217,7 +217,7 @@ These invariants are enforced in code and tests. Violating them will break integ
 
 ```python
 # Correct — RLS is active, namespace is isolated
-from trimcp.db_utils import scoped_pg_session
+from nce.db_utils import scoped_pg_session
 
 async with scoped_pg_session(pool, namespace_id=ns_id) as conn:
     rows = await conn.fetch("SELECT id, content FROM memories")
@@ -258,16 +258,16 @@ ON CONFLICT (subject_label, predicate, object_label) DO NOTHING
 
 ### 5e. `SET LOCAL` requires an explicit transaction
 
-`scoped_pg_session` wraps every connection in `conn.transaction()` because `SET LOCAL trimcp.namespace_id` only survives the transaction boundary. Without the explicit `BEGIN`, the variable reverts at the next statement and RLS is silently unenforced (FIX-011).
+`scoped_pg_session` wraps every connection in `conn.transaction()` because `SET LOCAL nce.namespace_id` only survives the transaction boundary. Without the explicit `BEGIN`, the variable reverts at the next statement and RLS is silently unenforced (FIX-011).
 
 ---
 
 ## 6. Contribution Standards
 
 - Follow PEP 8. `ruff` is the linter (`ruff check .`).
-- Type-annotate all public functions. `mypy --strict` passes on the `trimcp/` package.
-- No magic numbers — use module-level named constants (see `_MAX_AST_DEPTH` in `trimcp/ast_parser.py` as an example).
+- Type-annotate all public functions. `mypy --strict` passes on the `nce/` package.
+- No magic numbers — use module-level named constants (see `_MAX_AST_DEPTH` in `nce/ast_parser.py` as an example).
 - Comments explain *why*, not *what*. One short line max; no multi-line docstring blocks.
 - New storage paths must use `scoped_pg_session` (§5a) and call `append_event()` inside the same transaction (§5b).
 - Tests for new write paths must cover the compensating-delete (Saga) failure branch.
-- PRs that touch `trimcp/schema.sql` must include a migration file under `migrations/`.
+- PRs that touch `nce/schema.sql` must include a migration file under `migrations/`.

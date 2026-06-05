@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from bson import ObjectId
 
-from trimcp.re_embedder import run_re_embedding_worker
+from nce.re_embedder import run_re_embedding_worker
 
 # --------------------------------------------------------------------------- #
 # Helpers & Mocks
@@ -75,7 +75,7 @@ async def test_re_embedder_no_active_migrations():
 
 
 @pytest.mark.asyncio
-@patch("trimcp.embeddings.embed_batch", new_callable=AsyncMock)
+@patch("nce.embeddings.embed_batch", new_callable=AsyncMock)
 async def test_re_embedder_processes_memories_batch_successfully(mock_embed):
     conn = _make_conn()
     pool = _make_pool(conn)
@@ -138,7 +138,7 @@ async def test_re_embedder_processes_memories_batch_successfully(mock_embed):
 
 
 @pytest.mark.asyncio
-@patch("trimcp.embeddings.embed_batch", new_callable=AsyncMock)
+@patch("nce.embeddings.embed_batch", new_callable=AsyncMock)
 async def test_re_embedder_skips_invalid_payload_refs(mock_embed):
     conn = _make_conn()
     pool = _make_pool(conn)

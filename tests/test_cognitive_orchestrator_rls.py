@@ -51,7 +51,7 @@ def orchestrator(mock_pool: MagicMock, scoped_conn: AsyncMock, monkeypatch: Any)
     """
     from contextlib import asynccontextmanager
 
-    from trimcp.orchestrators.cognitive import CognitiveOrchestrator
+    from nce.orchestrators.cognitive import CognitiveOrchestrator
 
     orch = CognitiveOrchestrator(pg_pool=mock_pool)
 
@@ -76,7 +76,7 @@ class TestForgetMemoryRls:
         """forget_memory aquires via scoped_session, not pg_pool.acquire."""
         ns_id = str(uuid4())
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock):
+        with patch("nce.event_log.append_event", new_callable=AsyncMock):
             result = await orchestrator.forget_memory(
                 memory_id=str(uuid4()),
                 agent_id="test-agent",
@@ -96,7 +96,7 @@ class TestForgetMemoryRls:
         ns_id = str(uuid4())
         mem_id = str(uuid4())
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
+        with patch("nce.event_log.append_event", new_callable=AsyncMock) as mock_append:
             await orchestrator.forget_memory(
                 memory_id=mem_id,
                 agent_id="test-agent",
@@ -118,7 +118,7 @@ class TestForgetMemoryRls:
     @pytest.mark.asyncio
     async def test_wrapped_in_transaction(self, orchestrator: Any, scoped_conn: AsyncMock) -> None:
         """The INSERT and event log are inside a transaction."""
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock):
+        with patch("nce.event_log.append_event", new_callable=AsyncMock):
             await orchestrator.forget_memory(
                 memory_id=str(uuid4()),
                 agent_id="test-agent",
@@ -156,7 +156,7 @@ class TestResolveContradictionRls:
             }
         )
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock):
+        with patch("nce.event_log.append_event", new_callable=AsyncMock):
             result = await orchestrator.resolve_contradiction(
                 contradiction_id=cont_id,
                 namespace_id=ns_id,
@@ -186,7 +186,7 @@ class TestResolveContradictionRls:
             }
         )
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock):
+        with patch("nce.event_log.append_event", new_callable=AsyncMock):
             await orchestrator.resolve_contradiction(
                 contradiction_id=cont_id,
                 namespace_id=ns_id,
@@ -207,7 +207,7 @@ class TestResolveContradictionRls:
         scoped_conn.fetchrow = AsyncMock(return_value=None)
 
         with (
-            patch("trimcp.event_log.append_event", new_callable=AsyncMock),
+            patch("nce.event_log.append_event", new_callable=AsyncMock),
             pytest.raises(PermissionError, match="not accessible in your namespace"),
         ):
             await orchestrator.resolve_contradiction(
@@ -233,7 +233,7 @@ class TestResolveContradictionRls:
             }
         )
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
+        with patch("nce.event_log.append_event", new_callable=AsyncMock) as mock_append:
             await orchestrator.resolve_contradiction(
                 contradiction_id=cont_id,
                 namespace_id=ns_id,
@@ -265,7 +265,7 @@ class TestResolveContradictionRls:
             }
         )
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock):
+        with patch("nce.event_log.append_event", new_callable=AsyncMock):
             await orchestrator.resolve_contradiction(
                 contradiction_id=str(uuid4()),
                 namespace_id=str(uuid4()),

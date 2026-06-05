@@ -1,4 +1,4 @@
-"""Tests for trimcp.snapshot_serializer — batch 1 (create) and batch 2 (compare/serialize)."""
+"""Tests for nce.snapshot_serializer — batch 1 (create) and batch 2 (compare/serialize)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from trimcp.models import (
+from nce.models import (
     _MAX_TOP_K,
     AssertionType,
     MemoryType,
@@ -16,7 +16,7 @@ from trimcp.models import (
     SnapshotRecord,
     StateDiffResult,
 )
-from trimcp.snapshot_serializer import (
+from nce.snapshot_serializer import (
     SNAPSHOT_ARG_KEYS,
     build_compare_states_request,
     build_create_snapshot_request,
@@ -53,8 +53,8 @@ def _compare_arguments(**overrides: object) -> dict:
 @pytest.fixture
 def _compare_states_temporal_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin wall clock and disable lookback so fixed 2024 ISO timestamps parse."""
-    import trimcp.config as cfg_mod
-    import trimcp.temporal as temporal_mod
+    import nce.config as cfg_mod
+    import nce.temporal as temporal_mod
 
     fixed = datetime(2026, 5, 5, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -66,7 +66,7 @@ def _compare_states_temporal_env(monkeypatch: pytest.MonkeyPatch) -> None:
             return fixed.astimezone(tz)
 
     monkeypatch.setattr(temporal_mod, "datetime", _DT)
-    monkeypatch.setattr(cfg_mod.cfg, "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS", 0)
+    monkeypatch.setattr(cfg_mod.cfg, "NCE_MAX_TEMPORAL_LOOKBACK_DAYS", 0)
 
 
 class TestBuildCreateSnapshotRequest:

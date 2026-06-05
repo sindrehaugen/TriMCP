@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from trimcp.reembedding_migration import (
+from nce.reembedding_migration import (
     InMemoryReembeddingStore,
     MemoryEmbeddingRow,
     ReembeddingMigrationOrchestrator,
@@ -62,7 +62,7 @@ async def test_process_batch_uses_gather_once_for_ten_rows() -> None:
         return await real_gather(*aws, **kwargs)
 
     with patch(
-        "trimcp.reembedding_migration.asyncio.gather",
+        "nce.reembedding_migration.asyncio.gather",
         side_effect=tracking_gather,
     ):
         written = await orch.process_batch(10)
@@ -95,7 +95,7 @@ async def test_process_batch_timeout_on_one_row_writes_nine() -> None:
     )
 
     with patch(
-        "trimcp.reembedding_migration._EMBED_TIMEOUT_SECONDS",
+        "nce.reembedding_migration._EMBED_TIMEOUT_SECONDS",
         0.05,
     ):
         written = await orch.process_batch(10)

@@ -5,7 +5,7 @@ Verifies that the OTel span and SagaMetrics context managers in
 ``MemoryOrchestrator.store_memory`` and ``.store_media`` actually wrap the
 full method body (not just ``pass``), so that:
 
-- ``trimcp_saga_duration_seconds`` records realistic (non-zero) durations
+- ``nce_saga_duration_seconds`` records realistic (non-zero) durations
 - OTel spans contain child operations (Mongo insert, PG transaction, etc.)
 - The metrics histogram can drive accurate SLO dashboards
 
@@ -15,7 +15,7 @@ Bug description (from to-do-v1-phase2.md)::
     via ``pass`` before any Saga work begins. All actual work executes outside
     the instrumented block.
 
-    Consequence: ``trimcp_saga_duration_seconds`` records sub-microsecond
+    Consequence: ``nce_saga_duration_seconds`` records sub-microsecond
     durations for every ``store_memory`` call. When a real latency incident
     occurs — slow Mongo commit, PG lock contention, embedding timeout — it
     is completely invisible to on-call.
@@ -37,8 +37,8 @@ from uuid import uuid4
 
 import pytest
 
-from trimcp.config import cfg
-from trimcp.observability import SagaMetrics
+from nce.config import cfg
+from nce.observability import SagaMetrics
 
 # ===========================================================================
 # 1. SagaMetrics wrapping — direct unit tests
@@ -52,11 +52,11 @@ class TestSagaMetricsWrapsRealWork:
 
     def test_duration_non_zero_with_work(self, monkeypatch) -> None:
         """SagaMetrics must record duration > 0 when work happens inside."""
-        monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
+        monkeypatch.setattr(cfg, "NCE_OBSERVABILITY_ENABLED", True)
         observed_duration = [0.0]
 
         # Monkeypatch SAGA_DURATION.observe to capture the duration
-        from trimcp.observability import SAGA_DURATION
+        from nce.observability import SAGA_DURATION
 
         def _capture_observe(self_hist, value: float) -> None:
             observed_duration[0] = value
@@ -82,10 +82,10 @@ class TestSagaMetricsWrapsRealWork:
     @pytest.mark.asyncio
     async def test_duration_non_zero_with_async_work(self, monkeypatch) -> None:
         """Same as above but with async work inside the context."""
-        monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
+        monkeypatch.setattr(cfg, "NCE_OBSERVABILITY_ENABLED", True)
         observed_duration = [0.0]
 
-        from trimcp.observability import SAGA_DURATION
+        from nce.observability import SAGA_DURATION
 
         def _capture_observe(self_hist, value: float) -> None:
             observed_duration[0] = value
@@ -103,10 +103,10 @@ class TestSagaMetricsWrapsRealWork:
     def test_duration_near_zero_with_pass(self, monkeypatch) -> None:
         """Regression guard: if ``pass`` is used instead of real work,
         the recorded duration should be near-zero (the bug pattern)."""
-        monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
+        monkeypatch.setattr(cfg, "NCE_OBSERVABILITY_ENABLED", True)
         observed_duration = [0.0]
 
-        from trimcp.observability import SAGA_DURATION
+        from nce.observability import SAGA_DURATION
 
         def _capture_observe(self_hist, value: float) -> None:
             observed_duration[0] = value
@@ -128,10 +128,10 @@ class TestSagaMetricsSuccessFailureRecording:
 
     def test_success_records_ok_result(self, monkeypatch) -> None:
         """A successful saga must record result='success'."""
-        monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
+        monkeypatch.setattr(cfg, "NCE_OBSERVABILITY_ENABLED", True)
         results: list[str] = []
 
-        from trimcp.observability import SAGA_DURATION
+        from nce.observability import SAGA_DURATION
 
         original_labels = SAGA_DURATION.labels
 
@@ -149,10 +149,10 @@ class TestSagaMetricsSuccessFailureRecording:
 
     def test_failure_records_failure_result(self, monkeypatch) -> None:
         """A failing saga must record result='failure'."""
-        monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
+        monkeypatch.setattr(cfg, "NCE_OBSERVABILITY_ENABLED", True)
         results: list[str] = []
 
-        from trimcp.observability import SAGA_DURATION
+        from nce.observability import SAGA_DURATION
 
         original_labels = SAGA_DURATION.labels
 
@@ -207,7 +207,7 @@ class TestTracerSpanWrapsWork:
 
     def test_span_entered_and_exited(self, monkeypatch) -> None:
         """The tracer's start_as_current_span must be entered and exited."""
-        monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
+        monkeypatch.setattr(cfg, "NCE_OBSERVABILITY_ENABLED", True)
         entered = [False]
         exited = [False]
 
@@ -227,7 +227,7 @@ class TestTracerSpanWrapsWork:
                 return _CaptureSpan()
 
         monkeypatch.setattr(
-            "trimcp.orchestrators.memory.get_tracer",
+            "nce.orchestrators.memory.get_tracer",
             lambda: _CaptureTracer(),
         )
 
@@ -237,7 +237,7 @@ class TestTracerSpanWrapsWork:
         # the span context manager wraps the entire SagaMetrics context.
         tracer = _CaptureTracer()
         with tracer.start_as_current_span("orchestrator.store_memory") as span:
-            span.set_attribute("trimcp.namespace_id", "test")
+            span.set_attribute("nce.namespace_id", "test")
             with SagaMetrics("store_memory"):
                 for _ in range(100):
                     _ = [i**2 for i in range(10)]
@@ -261,7 +261,7 @@ class TestMemoryModuleStructure:
     @staticmethod
     def _get_method_ast(method_name: str) -> ast.FunctionDef:
         """Extract the AST of a method from MemoryOrchestrator."""
-        import trimcp.orchestrators.memory as mem_mod
+        import nce.orchestrators.memory as mem_mod
 
         raw = inspect.getsource(mem_mod)
         module = ast.parse(raw)
@@ -432,7 +432,7 @@ class TestMemoryOrchestratorObservabilityContract:
     @pytest.fixture
     def orchestrator(self, mock_pg_pool, mock_mongo_client, mock_redis_client):
         """Build a MemoryOrchestrator with fully mocked dependencies."""
-        from trimcp.orchestrators.memory import MemoryOrchestrator
+        from nce.orchestrators.memory import MemoryOrchestrator
 
         return MemoryOrchestrator(
             pg_pool=mock_pg_pool,
@@ -443,7 +443,7 @@ class TestMemoryOrchestratorObservabilityContract:
     @pytest.fixture
     def store_payload(self):
         """A minimal StoreMemoryRequest for testing."""
-        from trimcp.models import AssertionType, MemoryType, StoreMemoryRequest
+        from nce.models import AssertionType, MemoryType, StoreMemoryRequest
 
         return StoreMemoryRequest(
             namespace_id=str(uuid4()),
@@ -461,10 +461,10 @@ class TestMemoryOrchestratorObservabilityContract:
     ) -> None:
         """When store_memory is called, SagaMetrics must record the work
         duration (not sub-microsecond)."""
-        monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
+        monkeypatch.setattr(cfg, "NCE_OBSERVABILITY_ENABLED", True)
         observed_durations: list[float] = []
 
-        from trimcp.observability import SAGA_DURATION
+        from nce.observability import SAGA_DURATION
 
         original_labels = SAGA_DURATION.labels
 
@@ -481,7 +481,7 @@ class TestMemoryOrchestratorObservabilityContract:
         monkeypatch.setattr(SAGA_DURATION, "labels", _capture_labels)
 
         # Also need to patch the PII pipeline since it calls external deps
-        from trimcp.models import PIIProcessResult
+        from nce.models import PIIProcessResult
 
         monkeypatch.setattr(
             orchestrator,
@@ -503,7 +503,7 @@ class TestMemoryOrchestratorObservabilityContract:
         )
 
         # Patch embedding to avoid ML model
-        from trimcp import embeddings as emb_mod
+        from nce import embeddings as emb_mod
 
         monkeypatch.setattr(
             emb_mod,
@@ -559,12 +559,12 @@ class TestMemoryOrchestratorObservabilityContract:
                 return _SpanSpy()
 
         monkeypatch.setattr(
-            "trimcp.orchestrators.memory.get_tracer",
+            "nce.orchestrators.memory.get_tracer",
             lambda: _TracerSpy(),
         )
 
         # Patch PII pipeline
-        from trimcp.models import PIIProcessResult
+        from nce.models import PIIProcessResult
 
         monkeypatch.setattr(
             orchestrator,
@@ -585,7 +585,7 @@ class TestMemoryOrchestratorObservabilityContract:
             ),
         )
 
-        from trimcp import embeddings as emb_mod
+        from nce import embeddings as emb_mod
 
         monkeypatch.setattr(
             emb_mod,
@@ -604,10 +604,10 @@ class TestMemoryOrchestratorObservabilityContract:
     @pytest.mark.asyncio
     async def test_store_media_saga_metrics_records_work(self, orchestrator, monkeypatch) -> None:
         """store_media must also properly wrap work in SagaMetrics."""
-        monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
+        monkeypatch.setattr(cfg, "NCE_OBSERVABILITY_ENABLED", True)
         observed_durations: list[float] = []
 
-        from trimcp.observability import SAGA_DURATION
+        from nce.observability import SAGA_DURATION
 
         original_labels = SAGA_DURATION.labels
 
@@ -627,7 +627,7 @@ class TestMemoryOrchestratorObservabilityContract:
         import os
         import tempfile
 
-        from trimcp.models import MediaPayload
+        from nce.models import MediaPayload
 
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
             f.write(b"test media content")
@@ -692,14 +692,14 @@ class TestMemoryOrchestratorObservabilityContract:
                 return _SpanSpy()
 
         monkeypatch.setattr(
-            "trimcp.orchestrators.memory.get_tracer",
+            "nce.orchestrators.memory.get_tracer",
             lambda: _TracerSpy(),
         )
 
         import os
         import tempfile
 
-        from trimcp.models import MediaPayload
+        from nce.models import MediaPayload
 
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
             f.write(b"test")

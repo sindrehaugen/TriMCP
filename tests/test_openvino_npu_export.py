@@ -1,5 +1,5 @@
 """
-Tests for trimcp/openvino_npu_export.py — BATCH 1.
+Tests for nce/openvino_npu_export.py — BATCH 1.
 
 OpenVINO / optimum / transformers imports are mocked; no live hub or NPU required.
 """
@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from trimcp.openvino_npu_export import export_jina_to_openvino_npu
+from nce.openvino_npu_export import export_jina_to_openvino_npu
 
 _REVISION = "abc123def4567890abcdef1234567890abcdef12"
 
@@ -56,16 +56,16 @@ def _install_mock_hub():
 # --------------------------------------------------------------------------- #
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", "")
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", "")
 def test_export_raises_when_revision_unset():
-    """Unset TRIMCP_OPENVINO_MODEL_REVISION → RuntimeError before tokenizer load."""
+    """Unset NCE_OPENVINO_MODEL_REVISION → RuntimeError before tokenizer load."""
     patcher, mock_ov_cls, mock_model, _mock_tok_cls, _mock_tok = _install_mock_hub()
     with patcher:
         with TemporaryDirectory() as tmp:
             out = Path(tmp) / "export-out"
             with pytest.raises(
                 RuntimeError,
-                match="TRIMCP_OPENVINO_MODEL_REVISION must be set",
+                match="NCE_OPENVINO_MODEL_REVISION must be set",
             ):
                 export_jina_to_openvino_npu(out, local_files_only=True)
             assert not out.exists()
@@ -75,7 +75,7 @@ def test_export_raises_when_revision_unset():
     mock_model.save_pretrained.assert_called_once()
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 def test_export_succeeds_when_revision_set():
     """Export completes when revision is pinned and hub classes are mocked."""
     patcher, mock_ov_cls, mock_model, mock_tok_cls, mock_tok = _install_mock_hub()
@@ -92,18 +92,18 @@ def test_export_succeeds_when_revision_set():
 
             assert result == out.resolve()
             assert result.is_dir()
-            assert (result / "trimcp_openvino_export_manifest.json").is_file()
+            assert (result / "nce_openvino_export_manifest.json").is_file()
 
             mock_ov_cls.from_pretrained.assert_called_once()
             mock_model.reshape.assert_called_once_with(batch_size=1, sequence_length=512)
             mock_model.save_pretrained.assert_called_once()
-            assert mock_model.save_pretrained.call_args[0][0].name.startswith("trimcp_ov_export_")
+            assert mock_model.save_pretrained.call_args[0][0].name.startswith("nce_ov_export_")
 
             mock_tok_cls.from_pretrained.assert_called_once()
             mock_tok.save_pretrained.assert_called_once()
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 def test_revision_forwarded_to_from_pretrained():
     """revision kwarg reaches both OV model and AutoTokenizer from_pretrained."""
     patcher, mock_ov_cls, _mock_model, mock_tok_cls, _mock_tok = _install_mock_hub()
@@ -137,27 +137,27 @@ def test_revision_forwarded_to_from_pretrained():
 # --------------------------------------------------------------------------- #
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 @pytest.mark.parametrize("batch_size", [0, 33])
 def test_batch_size_out_of_range_raises(batch_size):
     with pytest.raises(ValueError, match="batch_size must be between"):
         export_jina_to_openvino_npu("/tmp/out", batch_size=batch_size)
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 @pytest.mark.parametrize("sequence_length", [0, 9000])
 def test_sequence_length_out_of_range_raises(sequence_length):
     with pytest.raises(ValueError, match="sequence_length must be between"):
         export_jina_to_openvino_npu("/tmp/out", sequence_length=sequence_length)
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 def test_empty_model_id_raises():
     with pytest.raises(ValueError, match="model_id_or_path must not be empty"):
         export_jina_to_openvino_npu("/tmp/out", model_id_or_path="   ")
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 def test_non_empty_output_dir_raises():
     with TemporaryDirectory() as tmp:
         out = Path(tmp) / "occupied"
@@ -167,7 +167,7 @@ def test_non_empty_output_dir_raises():
             export_jina_to_openvino_npu(out)
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 def test_empty_output_dir_passes_validation():
     patcher, *_ = _install_mock_hub()
     with patcher:
@@ -182,7 +182,7 @@ def test_empty_output_dir_passes_validation():
 # --------------------------------------------------------------------------- #
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 def test_model_save_failure_leaves_no_output_dir():
     patcher, _mock_ov_cls, mock_model, _mock_tok_cls, _mock_tok = _install_mock_hub()
     mock_model.save_pretrained.side_effect = OSError("disk full")
@@ -193,10 +193,10 @@ def test_model_save_failure_leaves_no_output_dir():
             with pytest.raises(OSError, match="disk full"):
                 export_jina_to_openvino_npu(out, local_files_only=True)
             assert not out.exists()
-            assert not any(p.name.startswith("trimcp_ov_export_") for p in Path(tmp).iterdir())
+            assert not any(p.name.startswith("nce_ov_export_") for p in Path(tmp).iterdir())
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 def test_tokenizer_oserror_continues_export():
     patcher, _mock_ov_cls, mock_model, mock_tok_cls, mock_tok = _install_mock_hub()
     mock_tok.save_pretrained.side_effect = OSError("read-only fs")
@@ -207,11 +207,11 @@ def test_tokenizer_oserror_continues_export():
             result = export_jina_to_openvino_npu(out, local_files_only=True)
 
             assert result == out.resolve()
-            assert (result / "trimcp_openvino_export_manifest.json").is_file()
+            assert (result / "nce_openvino_export_manifest.json").is_file()
             mock_model.save_pretrained.assert_called_once()
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 def test_tokenizer_unexpected_exception_cleans_tmp():
     patcher, _mock_ov_cls, mock_model, mock_tok_cls, mock_tok = _install_mock_hub()
     mock_tok.save_pretrained.side_effect = ValueError("unexpected")
@@ -224,7 +224,7 @@ def test_tokenizer_unexpected_exception_cleans_tmp():
             assert not out.exists()
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 def test_successful_export_writes_expected_artifacts():
     patcher, _mock_ov_cls, mock_model, mock_tok_cls, mock_tok = _install_mock_hub()
 
@@ -234,7 +234,7 @@ def test_successful_export_writes_expected_artifacts():
             result = export_jina_to_openvino_npu(out, local_files_only=True)
 
             assert result.is_dir()
-            assert (result / "trimcp_openvino_export_manifest.json").is_file()
+            assert (result / "nce_openvino_export_manifest.json").is_file()
             mock_model.save_pretrained.assert_called_once()
             mock_tok_cls.from_pretrained.assert_called_once()
             mock_tok.save_pretrained.assert_called_once()
@@ -245,19 +245,19 @@ def test_successful_export_writes_expected_artifacts():
 # --------------------------------------------------------------------------- #
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 def test_manifest_is_valid_json():
     patcher, *_ = _install_mock_hub()
     with patcher:
         with TemporaryDirectory() as tmp:
             out = Path(tmp) / "json-manifest"
             export_jina_to_openvino_npu(out, local_files_only=True)
-            raw = (out / "trimcp_openvino_export_manifest.json").read_text(encoding="utf-8")
+            raw = (out / "nce_openvino_export_manifest.json").read_text(encoding="utf-8")
             data = json.loads(raw)
             assert data["model_source"] == "jinaai/jina-embeddings-v2-base-code"
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 def test_manifest_dependency_versions_structure():
     patcher, *_ = _install_mock_hub()
     with patcher:
@@ -265,21 +265,21 @@ def test_manifest_dependency_versions_structure():
             out = Path(tmp) / "deps-manifest"
             export_jina_to_openvino_npu(out, sequence_length=256, local_files_only=True)
             data = json.loads(
-                (out / "trimcp_openvino_export_manifest.json").read_text(encoding="utf-8")
+                (out / "nce_openvino_export_manifest.json").read_text(encoding="utf-8")
             )
             deps = data["dependency_versions"]
             assert set(deps) == {"transformers", "openvino", "optimum"}
             assert all(isinstance(v, str) for v in deps.values())
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", "")
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", "")
 def test_manifest_model_revision_none_when_env_unset():
-    import trimcp.openvino_npu_export as ov_export
+    import nce.openvino_npu_export as ov_export
 
     assert (ov_export.OPENVINO_MODEL_REVISION or None) is None
 
 
-@patch("trimcp.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
+@patch("nce.openvino_npu_export.OPENVINO_MODEL_REVISION", _REVISION)
 def test_manifest_contains_truncation_note():
     patcher, *_ = _install_mock_hub()
     with patcher:
@@ -287,7 +287,7 @@ def test_manifest_contains_truncation_note():
             out = Path(tmp) / "note-manifest"
             export_jina_to_openvino_npu(out, sequence_length=128, local_files_only=True)
             data = json.loads(
-                (out / "trimcp_openvino_export_manifest.json").read_text(encoding="utf-8")
+                (out / "nce_openvino_export_manifest.json").read_text(encoding="utf-8")
             )
             assert data["model_revision"] == _REVISION
             assert "sequence_length=128" in data["note"]

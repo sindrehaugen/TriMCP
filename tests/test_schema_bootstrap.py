@@ -8,7 +8,7 @@ import pytest
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_schema_applies_cleanly_on_fresh_database(pg_admin_conn):
-    schema_sql = Path("trimcp/schema.sql").read_text(encoding="utf-8")
+    schema_sql = Path("nce/schema.sql").read_text(encoding="utf-8")
 
     await pg_admin_conn.execute(schema_sql)
     await pg_admin_conn.execute(schema_sql)  # second apply must not error

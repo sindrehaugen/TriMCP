@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock
 import asyncpg
 import pytest
 
-from trimcp.event_log import _WORM_TABLES, verify_worm_enforcement
+from nce.event_log import _WORM_TABLES, verify_worm_enforcement
 
 # ---------------------------------------------------------------------------
 # Helpers

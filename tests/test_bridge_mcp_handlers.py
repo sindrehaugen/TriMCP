@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from trimcp import bridge_mcp_handlers
+from nce import bridge_mcp_handlers
 
 
 @pytest.mark.asyncio
@@ -21,7 +21,7 @@ async def test_exchange_oauth_uses_resilient_token_post(monkeypatch: pytest.Monk
             "expires_in": 3600,
         }
     )
-    with patch("trimcp.bridge_mcp_handlers.oauth_token_post_form", mock_post) as patched:
+    with patch("nce.bridge_mcp_handlers.oauth_token_post_form", mock_post) as patched:
         tok = await bridge_mcp_handlers._exchange_oauth_code("sharepoint", "code")
     assert tok["access_token"] == "at"
     patched.assert_awaited_once()

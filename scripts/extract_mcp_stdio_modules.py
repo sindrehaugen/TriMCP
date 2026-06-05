@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-off helper to split server.py MCP sections into trimcp/mcp_stdio_*.py modules."""
+"""One-off helper to split server.py MCP sections into nce/mcp_stdio_*.py modules."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from __future__ import annotations
 from mcp.types import Tool
 
 '''
-    (ROOT / "trimcp" / "mcp_stdio_tools.py").write_text(
+    (ROOT / "nce" / "mcp_stdio_tools.py").write_text(
         tools_hdr + _slice(122, 1264),
         encoding="utf-8",
     )
@@ -37,10 +37,10 @@ from typing import Any
 
 from mcp.types import TextContent
 
-from trimcp.mcp_errors import merge_client_error_data
+from nce.mcp_errors import merge_client_error_data
 
 '''
-    (ROOT / "trimcp" / "mcp_stdio_rpc.py").write_text(
+    (ROOT / "nce" / "mcp_stdio_rpc.py").write_text(
         rpc_hdr + _slice(61, 115) + _slice(1274, 1359),
         encoding="utf-8",
     )
@@ -54,8 +54,8 @@ from typing import Any
 
 from mcp.types import TextContent
 
-from trimcp import (
-    TriStackEngine,
+from nce import (
+    NCEEngine,
     a2a_mcp_handlers,
     admin_mcp_handlers,
     bridge_mcp_handlers,
@@ -67,15 +67,15 @@ from trimcp import (
     replay_mcp_handlers,
     snapshot_mcp_handlers,
 )
-from trimcp.auth import RateLimitError, ScopeError
-from trimcp.config import cfg
-from trimcp.mcp_errors import (
+from nce.auth import RateLimitError, ScopeError
+from nce.config import cfg
+from nce.mcp_errors import (
     McpError,
     UnknownToolError,
     client_visible_detail,
     internal_error_data,
 )
-from trimcp.mcp_stdio_rpc import (
+from nce.mcp_stdio_rpc import (
     MCP_QUOTA_EXCEEDED_PREFIX,
     _check_admin,
     _consume_quota_for_mcp_tool,
@@ -84,22 +84,22 @@ from trimcp.mcp_stdio_rpc import (
     _try_cached_mcp_tool_response,
 )
 
-log = logging.getLogger("tri-stack-mcp")
+log = logging.getLogger("nce-mcp")
 
 
 async def execute_call_tool(
-    engine: TriStackEngine | None,
+    engine: NCEEngine | None,
     name: str,
     arguments: dict[str, Any],
 ) -> list[TextContent]:
 '''
     body = _slice(1364, 1815)
     indented = "".join(("    " + ln) if ln.strip() else ln for ln in body.splitlines(keepends=True))
-    (ROOT / "trimcp" / "mcp_stdio_dispatch.py").write_text(
+    (ROOT / "nce" / "mcp_stdio_dispatch.py").write_text(
         disp_hdr + indented,
         encoding="utf-8",
     )
-    print("Wrote trimcp/mcp_stdio_tools.py, mcp_stdio_rpc.py, mcp_stdio_dispatch.py")
+    print("Wrote nce/mcp_stdio_tools.py, mcp_stdio_rpc.py, mcp_stdio_dispatch.py")
 
 
 if __name__ == "__main__":

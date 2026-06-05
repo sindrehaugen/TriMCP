@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/trimcp/tri-stack/auth"
+	"github.com/nce/tri-stack/auth"
 )
 
 func runCloud(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot string, env []string) error {
@@ -16,9 +16,9 @@ func runCloud(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot str
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrCloudOAuthNotConfigured):
-			n.Error("TriMCP", "Cloud sign-in is not configured. Re-run the TriMCP installer for Cloud mode.")
+			n.Error("NCE", "Cloud sign-in is not configured. Re-run the NCE installer for Cloud mode.")
 		default:
-			n.Error("TriMCP", "Could not refresh your cloud session. Check the network or complete sign-in, then try again.")
+			n.Error("NCE", "Could not refresh your cloud session. Check the network or complete sign-in, then try again.")
 		}
 		if log != nil {
 			log.Warn("msal_refresh_failed", "err", err)
@@ -28,12 +28,12 @@ func runCloud(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot str
 
 	dsn := LookupEnv(env, "PG_DSN")
 	if dsn == "" {
-		n.Error("TriMCP", "Database connection string (PG_DSN) is missing from configuration.")
+		n.Error("NCE", "Database connection string (PG_DSN) is missing from configuration.")
 		return fmt.Errorf("PG_DSN missing")
 	}
 	host, port, err := PostgresAddrFromDSN(dsn)
 	if err != nil {
-		n.Error("TriMCP", "Could not read the managed database address from PG_DSN.")
+		n.Error("NCE", "Could not read the managed database address from PG_DSN.")
 		if log != nil {
 			log.Warn("pg_dsn_parse_failed", "err", err)
 		}
@@ -43,7 +43,7 @@ func runCloud(ctx context.Context, n UserNotifier, log *slog.Logger, appRoot str
 	tlsCtx, tcancel := context.WithTimeout(ctx, pgTLSTimeout)
 	defer tcancel()
 	if err := CheckPostgresTLS(tlsCtx, host, port); err != nil {
-		n.Error("TriMCP", "Cannot reach the secure database endpoint. Check VPN or firewall settings.")
+		n.Error("NCE", "Cannot reach the secure database endpoint. Check VPN or firewall settings.")
 		if log != nil {
 			log.Warn("cloud_tls_failed", "host", host, "port", port, "err", err)
 		}

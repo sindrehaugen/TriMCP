@@ -5,8 +5,8 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from trimcp.net_safety import BridgeURLValidationError
-from trimcp.notifications import (
+from nce.net_safety import BridgeURLValidationError
+from nce.notifications import (
     _MAX_MESSAGE_LEN,
     _MAX_SEND_RETRIES,
     _MAX_TITLE_LEN,
@@ -32,7 +32,7 @@ async def test_slack_dispatch(dispatcher):
     """Verify Slack webhook payloads are correctly formatted."""
     mock_post = AsyncMock()
     dispatcher._http_client.post = mock_post
-    with patch("trimcp.net_safety.validate_extractor_url", return_value=dispatcher.slack_webhook):
+    with patch("nce.net_safety.validate_extractor_url", return_value=dispatcher.slack_webhook):
         await dispatcher._send_slack("Test Alert", "System is down")
     mock_post.assert_called_once()
     args, kwargs = mock_post.call_args
@@ -45,7 +45,7 @@ async def test_teams_dispatch(dispatcher):
     """Verify Teams webhook payloads are correctly formatted."""
     mock_post = AsyncMock()
     dispatcher._http_client.post = mock_post
-    with patch("trimcp.net_safety.validate_extractor_url", return_value=dispatcher.teams_webhook):
+    with patch("nce.net_safety.validate_extractor_url", return_value=dispatcher.teams_webhook):
         await dispatcher._send_teams("Test Alert", "System is down")
     mock_post.assert_called_once()
     args, kwargs = mock_post.call_args
@@ -56,25 +56,25 @@ async def test_teams_dispatch(dispatcher):
 @pytest.mark.asyncio
 async def test_email_dispatch(dispatcher, monkeypatch):
     """Verify SMTP emails are constructed and sent correctly."""
-    monkeypatch.setenv("TRIMCP_SMTP_FROM", "trimcp-alerts@example.com")
-    monkeypatch.setenv("TRIMCP_SMTP_TO", "admin@example.com")
+    monkeypatch.setenv("NCE_SMTP_FROM", "nce-alerts@example.com")
+    monkeypatch.setenv("NCE_SMTP_TO", "admin@example.com")
     fake = MagicMock()
     fake.send = AsyncMock()
     with patch.dict(sys.modules, {"aiosmtplib": fake}):
-        with patch("trimcp.net_safety.validate_extractor_url"):
+        with patch("nce.net_safety.validate_extractor_url"):
             await dispatcher._send_email("Test Alert", "System is down")
     fake.send.assert_called_once()
     msg = fake.send.call_args[0][0]
     assert msg["Subject"] == "Test Alert"
     assert msg["To"] == "admin@example.com"
-    assert msg["From"] == "trimcp-alerts@example.com"
+    assert msg["From"] == "nce-alerts@example.com"
     assert fake.send.call_args[1]["hostname"] == "smtp.example.com"
 
 
 @pytest.mark.asyncio
 async def test_snmp_dispatch(dispatcher):
     """Verify SNMP dispatch logs debug and does not raise."""
-    with patch("trimcp.notifications.log") as mock_log:
+    with patch("nce.notifications.log") as mock_log:
         await dispatcher._send_snmp("Test Alert", "System is down")
     mock_log.debug.assert_called_once_with(
         "SNMP notification not implemented; alert '%s' not delivered via SNMP.",
@@ -114,7 +114,7 @@ async def test_dispatch_alert_truncates_title(dispatcher):
     long_title = "T" * (_MAX_TITLE_LEN + 50)
     long_message = "short message"
     with patch.object(dispatcher._queue, "put_nowait") as mock_put:
-        with patch("trimcp.notifications.log") as mock_log:
+        with patch("nce.notifications.log") as mock_log:
             await dispatcher.dispatch_alert(long_title, long_message)
     mock_put.assert_called_once_with((long_title[:_MAX_TITLE_LEN], long_message))
     mock_log.warning.assert_called_once_with("Dispatching Alert: %s", long_title[:_MAX_TITLE_LEN])
@@ -125,7 +125,7 @@ async def test_dispatch_alert_truncates_message(dispatcher):
     title = "Alert"
     long_message = "M" * (_MAX_MESSAGE_LEN + 100)
     with patch.object(dispatcher._queue, "put_nowait") as mock_put:
-        with patch("trimcp.notifications.log"):
+        with patch("nce.notifications.log"):
             await dispatcher.dispatch_alert(title, long_message)
     mock_put.assert_called_once_with((title, long_message[:_MAX_MESSAGE_LEN]))
 
@@ -134,7 +134,7 @@ async def test_dispatch_alert_truncates_message(dispatcher):
 async def test_dispatch_alert_log_excludes_message_content(dispatcher):
     secret_message = "password=super-secret-token"
     with patch.object(dispatcher._queue, "put_nowait"):
-        with patch("trimcp.notifications.log") as mock_log:
+        with patch("nce.notifications.log") as mock_log:
             await dispatcher.dispatch_alert("Alert Title", secret_message)
     mock_log.warning.assert_called_once_with("Dispatching Alert: %s", "Alert Title")
     for call in mock_log.warning.call_args_list:
@@ -144,7 +144,7 @@ async def test_dispatch_alert_log_excludes_message_content(dispatcher):
 @pytest.mark.asyncio
 async def test_send_slack_raises_on_internal_ip_webhook(dispatcher):
     with patch(
-        "trimcp.net_safety.validate_extractor_url",
+        "nce.net_safety.validate_extractor_url",
         side_effect=BridgeURLValidationError("blocked"),
     ):
         with pytest.raises(BridgeURLValidationError):
@@ -154,13 +154,13 @@ async def test_send_slack_raises_on_internal_ip_webhook(dispatcher):
 @pytest.mark.asyncio
 async def test_send_email_raises_on_internal_ip_smtp_host(dispatcher, monkeypatch):
     dispatcher.smtp_host = "127.0.0.1"
-    monkeypatch.setenv("TRIMCP_SMTP_FROM", "alerts@example.com")
-    monkeypatch.setenv("TRIMCP_SMTP_TO", "admin@example.com")
+    monkeypatch.setenv("NCE_SMTP_FROM", "alerts@example.com")
+    monkeypatch.setenv("NCE_SMTP_TO", "admin@example.com")
     fake = MagicMock()
     fake.send = AsyncMock()
     with patch.dict(sys.modules, {"aiosmtplib": fake}):
         with patch(
-            "trimcp.net_safety.validate_extractor_url",
+            "nce.net_safety.validate_extractor_url",
             side_effect=BridgeURLValidationError("blocked smtp"),
         ):
             with pytest.raises(BridgeURLValidationError):
@@ -177,7 +177,7 @@ async def test_send_email_raises_on_internal_ip_smtp_host(dispatcher, monkeypatc
 async def test_send_slack_reuses_shared_http_client(dispatcher):
     mock_post = AsyncMock()
     dispatcher._http_client.post = mock_post
-    with patch("trimcp.net_safety.validate_extractor_url", return_value=dispatcher.slack_webhook):
+    with patch("nce.net_safety.validate_extractor_url", return_value=dispatcher.slack_webhook):
         await dispatcher._send_slack("A1", "msg1")
         await dispatcher._send_slack("A2", "msg2")
     assert mock_post.call_count == 2
@@ -198,14 +198,14 @@ async def test_stop_worker_closes_http_client():
 
 @pytest.mark.asyncio
 async def test_send_email_passes_smtp_credentials(dispatcher, monkeypatch):
-    monkeypatch.setenv("TRIMCP_SMTP_FROM", "alerts@example.com")
-    monkeypatch.setenv("TRIMCP_SMTP_TO", "admin@example.com")
-    monkeypatch.setenv("TRIMCP_SMTP_USER", "smtp-user")
-    monkeypatch.setenv("TRIMCP_SMTP_PASS", "smtp-secret")
+    monkeypatch.setenv("NCE_SMTP_FROM", "alerts@example.com")
+    monkeypatch.setenv("NCE_SMTP_TO", "admin@example.com")
+    monkeypatch.setenv("NCE_SMTP_USER", "smtp-user")
+    monkeypatch.setenv("NCE_SMTP_PASS", "smtp-secret")
     fake = MagicMock()
     fake.send = AsyncMock()
     with patch.dict(sys.modules, {"aiosmtplib": fake}):
-        with patch("trimcp.net_safety.validate_extractor_url"):
+        with patch("nce.net_safety.validate_extractor_url"):
             await dispatcher._send_email("Alert", "body")
     assert fake.send.call_args[1]["username"] == "smtp-user"
     assert fake.send.call_args[1]["password"] == "smtp-secret"
@@ -213,14 +213,14 @@ async def test_send_email_passes_smtp_credentials(dispatcher, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_send_email_no_auth_when_credentials_unset(dispatcher, monkeypatch):
-    monkeypatch.setenv("TRIMCP_SMTP_FROM", "alerts@example.com")
-    monkeypatch.setenv("TRIMCP_SMTP_TO", "admin@example.com")
-    monkeypatch.delenv("TRIMCP_SMTP_USER", raising=False)
-    monkeypatch.delenv("TRIMCP_SMTP_PASS", raising=False)
+    monkeypatch.setenv("NCE_SMTP_FROM", "alerts@example.com")
+    monkeypatch.setenv("NCE_SMTP_TO", "admin@example.com")
+    monkeypatch.delenv("NCE_SMTP_USER", raising=False)
+    monkeypatch.delenv("NCE_SMTP_PASS", raising=False)
     fake = MagicMock()
     fake.send = AsyncMock()
     with patch.dict(sys.modules, {"aiosmtplib": fake}):
-        with patch("trimcp.net_safety.validate_extractor_url"):
+        with patch("nce.net_safety.validate_extractor_url"):
             await dispatcher._send_email("Alert", "body")
     assert fake.send.call_args[1]["username"] is None
     assert fake.send.call_args[1]["password"] is None
@@ -261,9 +261,9 @@ async def test_stop_worker_drains_remaining_queue_items():
 async def test_send_slack_timeout_logged_as_warning(dispatcher):
     mock_post = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
     dispatcher._http_client.post = mock_post
-    with patch("trimcp.net_safety.validate_extractor_url", return_value=dispatcher.slack_webhook):
-        with patch("trimcp.notifications.log") as mock_log:
-            with patch("trimcp.notifications.asyncio.sleep", new_callable=AsyncMock):
+    with patch("nce.net_safety.validate_extractor_url", return_value=dispatcher.slack_webhook):
+        with patch("nce.notifications.log") as mock_log:
+            with patch("nce.notifications.asyncio.sleep", new_callable=AsyncMock):
                 await dispatcher._send_slack("Alert", "msg")
     assert mock_log.warning.call_count == _MAX_SEND_RETRIES
     mock_log.error.assert_called_once_with(
@@ -281,9 +281,9 @@ async def test_send_teams_http_status_error_logs_status_code(dispatcher):
 
     mock_post = AsyncMock(side_effect=raise_503)
     dispatcher._http_client.post = mock_post
-    with patch("trimcp.net_safety.validate_extractor_url", return_value=dispatcher.teams_webhook):
-        with patch("trimcp.notifications.log") as mock_log:
-            with patch("trimcp.notifications.asyncio.sleep", new_callable=AsyncMock):
+    with patch("nce.net_safety.validate_extractor_url", return_value=dispatcher.teams_webhook):
+        with patch("nce.notifications.log") as mock_log:
+            with patch("nce.notifications.asyncio.sleep", new_callable=AsyncMock):
                 await dispatcher._send_teams("Alert", "msg")
     assert mock_post.await_count == _MAX_SEND_RETRIES
     mock_log.error.assert_called_once_with(
@@ -300,8 +300,8 @@ async def test_send_teams_http_status_error_logs_status_code(dispatcher):
 async def test_post_with_retry_timeout_exhausts_attempts():
     client = AsyncMock()
     client.post = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
-    with patch("trimcp.notifications.log") as mock_log:
-        with patch("trimcp.notifications.asyncio.sleep", new_callable=AsyncMock):
+    with patch("nce.notifications.log") as mock_log:
+        with patch("nce.notifications.asyncio.sleep", new_callable=AsyncMock):
             await _post_with_retry(client, "https://example.com/hook", {"x": 1}, channel="slack")
     assert client.post.await_count == _MAX_SEND_RETRIES
     mock_log.error.assert_called_once_with(
@@ -319,8 +319,8 @@ async def test_post_with_retry_4xx_does_not_retry():
         raise httpx.HTTPStatusError("bad request", request=request, response=response)
 
     client.post = AsyncMock(side_effect=raise_400)
-    with patch("trimcp.notifications.log") as mock_log:
-        with patch("trimcp.notifications.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+    with patch("nce.notifications.log") as mock_log:
+        with patch("nce.notifications.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             await _post_with_retry(client, "https://example.com/hook", {"x": 1}, channel="teams")
     assert client.post.await_count == 1
     mock_sleep.assert_not_awaited()
@@ -341,8 +341,8 @@ async def test_post_with_retry_5xx_retries_to_limit():
         raise httpx.HTTPStatusError("bad gateway", request=request, response=response)
 
     client.post = AsyncMock(side_effect=raise_502)
-    with patch("trimcp.notifications.log") as mock_log:
-        with patch("trimcp.notifications.asyncio.sleep", new_callable=AsyncMock):
+    with patch("nce.notifications.log") as mock_log:
+        with patch("nce.notifications.asyncio.sleep", new_callable=AsyncMock):
             await _post_with_retry(client, "https://example.com/hook", {"x": 1}, channel="slack")
     assert client.post.await_count == _MAX_SEND_RETRIES
     mock_log.error.assert_called_once_with(
@@ -358,8 +358,8 @@ async def test_post_with_retry_succeeds_on_second_attempt():
     client.post = AsyncMock(
         side_effect=[httpx.TimeoutException("timed out"), ok_response],
     )
-    with patch("trimcp.notifications.log") as mock_log:
-        with patch("trimcp.notifications.asyncio.sleep", new_callable=AsyncMock):
+    with patch("nce.notifications.log") as mock_log:
+        with patch("nce.notifications.asyncio.sleep", new_callable=AsyncMock):
             await _post_with_retry(client, "https://example.com/hook", {"x": 1}, channel="slack")
     assert client.post.await_count == 2
     mock_log.error.assert_not_called()

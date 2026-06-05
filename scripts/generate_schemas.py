@@ -11,19 +11,19 @@ import json
 import sys
 from pathlib import Path
 
-# Ensure repo root is on sys.path so trimcp is importable.
+# Ensure repo root is on sys.path so nce is importable.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import os
 
-os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-schema-key-32chars-long-xxxx")
+os.environ.setdefault("NCE_MASTER_KEY", "dev-schema-key-32chars-long-xxxx")
 
 
 def build_schema() -> dict:
-    """Return the combined JSON Schema for all public TriMCP API models."""
+    """Return the combined JSON Schema for all public NCE API models."""
     from pydantic.json_schema import models_json_schema
 
-    from trimcp.models import (
+    from nce.models import (
         ForgetMemoryRequest,
         GetRecentContextRequest,
         GraphSearchRequest,
@@ -69,13 +69,13 @@ def build_schema() -> dict:
 
     _, schema = models_json_schema(
         [(m, "validation") for m in _PUBLIC_MODELS],
-        title="TriMCP API Schema",
+        title="NCE API Schema",
     )
     return schema
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate TriMCP JSON Schema")
+    parser = argparse.ArgumentParser(description="Generate NCE JSON Schema")
     parser.add_argument(
         "--out",
         default="docs/schemas.json",

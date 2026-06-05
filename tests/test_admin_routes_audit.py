@@ -10,11 +10,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from starlette.requests import Request
 
-os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-test-key-32chars-long!!")
+os.environ.setdefault("NCE_MASTER_KEY", "dev-test-key-32chars-long!!")
 
 
 def test_offset_from_page_limit_rejects_deep_scan() -> None:
-    from trimcp.admin_routes import ADMIN_MAX_ROWS_SKIP, offset_from_page_limit
+    from nce.admin_routes import ADMIN_MAX_ROWS_SKIP, offset_from_page_limit
 
     max_page = (ADMIN_MAX_ROWS_SKIP // 50) + 1
     with pytest.raises(ValueError):
@@ -22,7 +22,7 @@ def test_offset_from_page_limit_rejects_deep_scan() -> None:
 
 
 def test_sanitize_filters() -> None:
-    from trimcp.admin_routes import (
+    from nce.admin_routes import (
         sanitize_event_type_filter,
         sanitize_resource_type_filter,
         sanitize_slug_prefix_filter,
@@ -40,7 +40,7 @@ def test_sanitize_filters() -> None:
 @pytest.mark.asyncio
 async def test_api_admin_dlq_bad_status_and_task_name() -> None:
     mock_engine = MagicMock()
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_dlq_list
 
         r = Request(
@@ -75,13 +75,13 @@ async def test_api_admin_dlq_page_mode_calls_count() -> None:
 
     # list/count use pool directly, not conn
     with (
-        patch("trimcp.admin_state.engine", mock_engine),
+        patch("nce.admin_state.engine", mock_engine),
         patch(
-            "trimcp.dead_letter_queue.count_dead_letters",
+            "nce.dead_letter_queue.count_dead_letters",
             new=AsyncMock(return_value=42),
         ) as mock_count,
         patch(
-            "trimcp.dead_letter_queue.list_dead_letters",
+            "nce.dead_letter_queue.list_dead_letters",
             new=AsyncMock(return_value=[]),
         ),
     ):
@@ -128,7 +128,7 @@ async def test_api_admin_quotas_resource_type_and_pagination() -> None:
         }
     ]
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_quotas
 
         qs = f"namespace_id={ns_id}&resource_type=tool_calls&page=1&limit=20".encode()
@@ -153,7 +153,7 @@ async def test_api_admin_quotas_resource_type_and_pagination() -> None:
 @pytest.mark.asyncio
 async def test_api_admin_quotas_bad_resource_type() -> None:
     mock_engine = MagicMock()
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_quotas
 
         r = Request(
@@ -176,9 +176,9 @@ async def test_api_admin_signing_status() -> None:
 
     sample = {"active_key_id": None, "keys_by_status": {}}
     with (
-        patch("trimcp.admin_state.engine", mock_engine),
+        patch("nce.admin_state.engine", mock_engine),
         patch(
-            "trimcp.admin_handlers.fleet.admin_signing_keys_status",
+            "nce.admin_handlers.fleet.admin_signing_keys_status",
             new=AsyncMock(return_value=sample),
         ),
     ):
@@ -193,7 +193,7 @@ async def test_api_admin_signing_status() -> None:
 @pytest.mark.asyncio
 async def test_api_admin_events_bad_event_seq() -> None:
     mock_engine = MagicMock()
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_events
 
         r = Request(
@@ -227,7 +227,7 @@ async def test_api_admin_pii_redactions_list_ok() -> None:
             "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
         }
     ]
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_pii_redactions_list
 
         r = Request(
@@ -266,7 +266,7 @@ async def test_api_admin_security_event_seq_gaps() -> None:
         {"after_seq": 2, "before_seq": 4},
     ]
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_security_event_seq_gaps
 
         r = Request(
@@ -298,7 +298,7 @@ async def test_api_admin_security_verify_memory_sample() -> None:
         return_value={"valid": True, "reason": "ok", "key_id": "sk-1"}
     )
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_security_verify_memory_sample
 
         r = Request(
@@ -336,7 +336,7 @@ async def test_api_admin_security_test_rls_isolation() -> None:
     ns_a = uuid.uuid4()
     ns_b = uuid.uuid4()
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_security_test_rls_isolation
 
         r = Request(

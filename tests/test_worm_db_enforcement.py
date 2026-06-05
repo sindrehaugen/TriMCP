@@ -1,5 +1,5 @@
 """
-Postgres integration tests for WORM enforcement under the actual `trimcp_app` role.
+Postgres integration tests for WORM enforcement under the actual `nce_app` role.
 """
 
 from __future__ import annotations
@@ -10,19 +10,19 @@ from urllib.parse import urlparse, urlunparse
 import asyncpg
 import pytest
 
-from trimcp.config import cfg
-from trimcp.event_log import _WORM_TABLES
+from nce.config import cfg
+from nce.event_log import _WORM_TABLES
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_trimcp_app_worm_privilege_enforcement():
+async def test_nce_app_worm_privilege_enforcement():
     """
-    Assert that the actual trimcp_app role is restricted and cannot UPDATE or DELETE WORM tables.
+    Assert that the actual nce_app role is restricted and cannot UPDATE or DELETE WORM tables.
     """
     # 1. Obtain primary integration PG DSN
     primary_dsn = (
-        os.getenv("TRIMCP_INTEGRATION_PG_DSN")
+        os.getenv("NCE_INTEGRATION_PG_DSN")
         or os.getenv("PG_DSN")
         or os.getenv("DATABASE_URL")
         or ""
@@ -31,23 +31,23 @@ async def test_trimcp_app_worm_privilege_enforcement():
     if not primary_dsn:
         pytest.skip("Integration database DSN not configured — skipping WORM privilege tests.")
 
-    # 2. Reconstruct DSN for trimcp_app
+    # 2. Reconstruct DSN for nce_app
     try:
         parsed = urlparse(primary_dsn)
         netloc = parsed.hostname or ""
         if parsed.port:
             netloc = f"{netloc}:{parsed.port}"
-        app_pass = cfg.TRIMCP_APP_PASSWORD or "trimcp_app_secret"
-        netloc = f"trimcp_app:{app_pass}@{netloc}"
+        app_pass = cfg.NCE_APP_PASSWORD or "nce_app_secret"
+        netloc = f"nce_app:{app_pass}@{netloc}"
         app_dsn = urlunparse(parsed._replace(netloc=netloc))
     except Exception as exc:
         pytest.skip(f"Failed to parse integration DSN: {exc}")
 
-    # 3. Connect as trimcp_app and verify it blocks UPDATE/DELETE
+    # 3. Connect as nce_app and verify it blocks UPDATE/DELETE
     try:
         conn = await asyncpg.connect(app_dsn, timeout=10.0)
     except Exception as exc:
-        pytest.skip(f"Could not connect as trimcp_app (role might not be initialized): {exc}")
+        pytest.skip(f"Could not connect as nce_app (role might not be initialized): {exc}")
 
     try:
         for table in _WORM_TABLES:

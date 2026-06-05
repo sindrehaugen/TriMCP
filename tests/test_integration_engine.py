@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from trimcp import MemoryPayload, TriStackEngine
+from nce import MemoryPayload, NCEEngine
 
 # Tests require live DB containers (MongoDB, Redis, PostgreSQL).
 # Skip gracefully when containers are not available.
@@ -44,7 +44,7 @@ _ALL_CONTAINERS = _MONGO_OK and _PG_OK and _REDIS_OK
 
 
 class TestEnsureUuid:
-    """Regression suite for TriStackEngine._ensure_uuid (Phase 2 Issue #1).
+    """Regression suite for NCEEngine._ensure_uuid (Phase 2 Issue #1).
 
     Verifies that string UUIDs are correctly parsed to UUID objects, UUID
     objects are returned as-is, and None inputs return None.  The critical
@@ -53,7 +53,7 @@ class TestEnsureUuid:
     """
 
     def setup_method(self):
-        self.engine = TriStackEngine()
+        self.engine = NCEEngine()
 
     def test_none_returns_none(self):
         """None input must return None, not UUID('None')."""
@@ -104,7 +104,7 @@ class TestSagaMetricsOnFailure:
 
     def test_on_saga_failure_empty_kwargs_does_not_raise(self):
         """Calling on_saga_failure with no kwargs must never raise KeyError."""
-        from trimcp.observability import SagaMetrics
+        from nce.observability import SagaMetrics
 
         exc = RuntimeError("saga exploded")
         # Must not raise — this was the bug
@@ -112,10 +112,10 @@ class TestSagaMetricsOnFailure:
 
     def test_on_saga_failure_missing_step_name_uses_default(self, monkeypatch):
         """When step_name is absent the metric stage defaults to 'unknown'."""
-        from trimcp.config import cfg
-        from trimcp.observability import SAGA_FAILURES, SagaMetrics
+        from nce.config import cfg
+        from nce.observability import SAGA_FAILURES, SagaMetrics
 
-        monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
+        monkeypatch.setattr(cfg, "NCE_OBSERVABILITY_ENABLED", True)
 
         def _fake_inc():
             # We need to capture the labels tuple; monkeypatch the .inc() method
@@ -142,10 +142,10 @@ class TestSagaMetricsOnFailure:
 
     def test_on_saga_failure_with_step_name(self, monkeypatch):
         """When step_name is provided it is forwarded as the metric stage."""
-        from trimcp.config import cfg
-        from trimcp.observability import SAGA_FAILURES, SagaMetrics
+        from nce.config import cfg
+        from nce.observability import SAGA_FAILURES, SagaMetrics
 
-        monkeypatch.setattr(cfg, "TRIMCP_OBSERVABILITY_ENABLED", True)
+        monkeypatch.setattr(cfg, "NCE_OBSERVABILITY_ENABLED", True)
 
         stages: list[str] = []
         original_labels = SAGA_FAILURES.labels
@@ -161,7 +161,7 @@ class TestSagaMetricsOnFailure:
 
     def test_saga_metrics_context_fires_on_failure_callback(self):
         """SagaMetrics.__exit__ invokes the on_failure callback on exception."""
-        from trimcp.observability import SagaMetrics
+        from nce.observability import SagaMetrics
 
         fired: list[BaseException] = []
 
@@ -177,7 +177,7 @@ class TestSagaMetricsOnFailure:
 
     def test_saga_metrics_context_does_not_fire_on_success(self):
         """on_failure must NOT be called when the block completes normally."""
-        from trimcp.observability import SagaMetrics
+        from nce.observability import SagaMetrics
 
         fired: list[BaseException] = []
 
@@ -202,7 +202,7 @@ _skip_no_containers = pytest.mark.skipif(
 
 @pytest.fixture
 async def engine():
-    eng = TriStackEngine()
+    eng = NCEEngine()
     await eng.connect()
     yield eng
     await eng.disconnect()
@@ -217,7 +217,7 @@ async def test_store_and_recall(engine):
         user_id=test_id,
         session_id=test_id,
         content_type="chat",
-        summary="TriMCP uses Redis as working memory for sub-millisecond recall.",
+        summary="NCE uses Redis as working memory for sub-millisecond recall.",
         heavy_payload="Full conversation transcript placeholder for test T1.",
     )
     mongo_id = await engine.store_memory(payload)

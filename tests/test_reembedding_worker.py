@@ -1,5 +1,5 @@
 """
-Tests for Phase 2.1 Re-embedding Worker (trimcp/reembedding_worker.py).
+Tests for Phase 2.1 Re-embedding Worker (nce/reembedding_worker.py).
 
 All async functions are driven via asyncio.run() to sidestep pytest-asyncio.
 Embed calls are stubbed so tests run without a GPU / SentenceTransformer.
@@ -19,8 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from trimcp import reembedding_worker as rw
-from trimcp.reembedding_worker import (
+from nce import reembedding_worker as rw
+from nce.reembedding_worker import (
     ReembeddingWorker,
     _fallback_text,
     _fetch_kg_nodes_batch,

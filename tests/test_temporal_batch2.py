@@ -1,5 +1,5 @@
 """
-BATCH 2 — trimcp.temporal as_of_query parameter indexing and lookback error messages.
+BATCH 2 — nce.temporal as_of_query parameter indexing and lookback error messages.
 """
 
 from __future__ import annotations
@@ -8,8 +8,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trimcp.config import cfg
-from trimcp.temporal import _enforce_lookback_boundary, as_of_query, parse_as_of
+from nce.config import cfg
+from nce.temporal import _enforce_lookback_boundary, as_of_query, parse_as_of
 
 TZ_UTC = timezone.utc
 
@@ -20,7 +20,7 @@ def _iso_z(dt: datetime) -> str:
 
 @pytest.fixture
 def _disable_temporal_lookback(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cfg, "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS", 0)
+    monkeypatch.setattr(cfg, "NCE_MAX_TEMPORAL_LOOKBACK_DAYS", 0)
 
 
 def test_as_of_query_default_start_index_uses_dollar_one(
@@ -66,7 +66,7 @@ def test_as_of_query_none_ignores_start_index(
 def test_lookback_error_message_does_not_expose_config_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cfg, "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS", 30)
+    monkeypatch.setattr(cfg, "NCE_MAX_TEMPORAL_LOOKBACK_DAYS", 30)
     now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=TZ_UTC)
     too_old = now - timedelta(days=31)
 
@@ -74,14 +74,14 @@ def test_lookback_error_message_does_not_expose_config_key(
         parse_as_of(_iso_z(too_old), _now=now)
 
     msg = str(exc_info.value)
-    assert "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS" not in msg
+    assert "NCE_MAX_TEMPORAL_LOOKBACK_DAYS" not in msg
     assert "outside the allowed lookback window" in msg
 
 
 def test_lookback_error_message_includes_earliest_allowed_cutoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cfg, "TRIMCP_MAX_TEMPORAL_LOOKBACK_DAYS", 30)
+    monkeypatch.setattr(cfg, "NCE_MAX_TEMPORAL_LOOKBACK_DAYS", 30)
     now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=TZ_UTC)
     cutoff = now - timedelta(days=30)
     too_old = cutoff - timedelta(seconds=1)

@@ -1,5 +1,5 @@
 """
-Unit tests for TriStackEngine helper methods.
+Unit tests for NCEEngine helper methods.
 
 These tests are fully isolated — no live DB, no network, no async fixtures.
 They reproduce and guard against the P0 scoping bug where `_ensure_uuid`
@@ -21,13 +21,13 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from trimcp.orchestrator import TriStackEngine
+from nce.orchestrator import NCEEngine
 
 
 @pytest.fixture
-def engine() -> TriStackEngine:
+def engine() -> NCEEngine:
     """Return an unconnected engine (no DB required)."""
-    return TriStackEngine()
+    return NCEEngine()
 
 
 # ---------------------------------------------------------------------------
@@ -36,18 +36,18 @@ def engine() -> TriStackEngine:
 
 
 class TestEnsureUuid:
-    def test_none_returns_none(self, engine: TriStackEngine) -> None:
+    def test_none_returns_none(self, engine: NCEEngine) -> None:
         """_ensure_uuid(None) must return None."""
         assert engine._ensure_uuid(None) is None
 
-    def test_uuid_object_passes_through(self, engine: TriStackEngine) -> None:
+    def test_uuid_object_passes_through(self, engine: NCEEngine) -> None:
         """_ensure_uuid(UUID) must return the same UUID object."""
         uid = uuid4()
         result = engine._ensure_uuid(uid)
         assert result == uid
         assert isinstance(result, UUID)
 
-    def test_string_uuid_converts_to_uuid(self, engine: TriStackEngine) -> None:
+    def test_string_uuid_converts_to_uuid(self, engine: NCEEngine) -> None:
         """_ensure_uuid(str) must parse and return a UUID — not None.
         This is the P0 regression guard: before the fix this branch fell
         through and returned None implicitly.
@@ -60,7 +60,7 @@ class TestEnsureUuid:
         )
         assert result == uid
 
-    def test_string_uuid_is_not_none_literal(self, engine: TriStackEngine) -> None:
+    def test_string_uuid_is_not_none_literal(self, engine: NCEEngine) -> None:
         """The RLS regression guard: the result must never be the Python
         object None when a string is supplied, because scoped_session passes
         the result to set_namespace_context — None would become the string
@@ -75,7 +75,7 @@ class TestEnsureUuid:
             "breaking tenant isolation silently."
         )
 
-    def test_invalid_string_raises_value_error(self, engine: TriStackEngine) -> None:
+    def test_invalid_string_raises_value_error(self, engine: NCEEngine) -> None:
         """_ensure_uuid with a non-UUID string must raise ValueError,
         not silently swallow the error or return None.
         """
@@ -89,7 +89,7 @@ class TestEnsureUuid:
 
 
 class TestWarnConnectNotCalled:
-    def test_returns_none(self, engine: TriStackEngine) -> None:
+    def test_returns_none(self, engine: NCEEngine) -> None:
         """_warn_connect_not_called must return None (no stray return value).
         Before the fix, it contained `return UUID(str(val))` where `val`
         was not in scope — this raised NameError on every lazy-init path.
@@ -98,17 +98,17 @@ class TestWarnConnectNotCalled:
         assert result is None
 
     def test_emits_warning_log(
-        self, engine: TriStackEngine, caplog: pytest.LogCaptureFixture
+        self, engine: NCEEngine, caplog: pytest.LogCaptureFixture
     ) -> None:
         """_warn_connect_not_called must emit a WARNING-level log message."""
-        with caplog.at_level(logging.WARNING, logger="tri-stack-orchestrator"):
+        with caplog.at_level(logging.WARNING, logger="nce-orchestrator"):
             engine._warn_connect_not_called("test_method")
         assert any(
             "test_method" in record.message and record.levelno == logging.WARNING
             for record in caplog.records
         ), f"No warning log found for 'test_method'. Records: {caplog.records}"
 
-    def test_no_name_error_raised(self, engine: TriStackEngine) -> None:
+    def test_no_name_error_raised(self, engine: NCEEngine) -> None:
         """The stray `return UUID(str(val))` caused NameError before the fix.
         This test guards against regression.
         """

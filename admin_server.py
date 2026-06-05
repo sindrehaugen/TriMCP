@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 
-from trimcp import admin_state
-from trimcp.admin_app import app
-from trimcp.admin_http_support import admin_error_response
-from trimcp.admin_http_support import update_dotenv  # noqa: F401 — re-export for tests
+from nce import admin_state
+from nce.admin_app import app
+from nce.admin_http_support import admin_error_response
+from nce.admin_http_support import update_dotenv  # noqa: F401 — re-export for tests
 
 logging.basicConfig(level=logging.INFO)
 
@@ -13,19 +13,19 @@ logging.basicConfig(level=logging.INFO)
 engine = admin_state.engine
 
 
-from trimcp.admin_http_support import admin_error_response as _admin_error_response
+from nce.admin_http_support import admin_error_response as _admin_error_response
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    from trimcp.config import assert_admin_override_not_in_production
+    from nce.config import assert_admin_override_not_in_production
 
     assert_admin_override_not_in_production()
     uvicorn.run(app, host="0.0.0.0", port=8003)
 
 # Re-export handlers for existing tests
-from trimcp.admin_http_handlers import (
+from nce.admin_http_handlers import (
     api_admin_salience_map,
     api_admin_llm_payload,
     api_admin_fleet_overview,

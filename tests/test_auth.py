@@ -1,7 +1,7 @@
 """
 tests/test_auth.py
 
-Unit tests for trimcp/auth.py — HMAC authentication, Phase 0.1 helpers.
+Unit tests for nce/auth.py — HMAC authentication, Phase 0.1 helpers.
 
 Coverage:
   - verify_hmac (correct, wrong key, tampered body, empty key)
@@ -37,7 +37,7 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from trimcp.auth import (
+from nce.auth import (
     MCP_ADMIN_TOOL_NAMES,
     HMACAuthContext,
     HMACAuthMiddleware,
@@ -87,7 +87,7 @@ def _valid_headers(
     ts = ts if ts is not None else int(time.time())
     sig = _make_signature(key, method, path, ts, body)
     return {
-        "X-TriMCP-Timestamp": str(ts),
+        "X-NCE-Timestamp": str(ts),
         "Authorization": f"HMAC-SHA256 {sig}",
     }
 
@@ -218,23 +218,23 @@ class TestNamespaceContext:
 class TestResolveNamespace:
     def test_valid_uuid_returns_uuid_object(self) -> None:
         uid = uuid4()
-        headers = {"x-trimcp-namespace-id": str(uid)}
+        headers = {"x-nce-namespace-id": str(uid)}
         assert resolve_namespace(headers) == uid
 
     def test_missing_header_returns_none(self) -> None:
         assert resolve_namespace({}) is None
 
     def test_blank_header_returns_none(self) -> None:
-        assert resolve_namespace({"x-trimcp-namespace-id": "  "}) is None
+        assert resolve_namespace({"x-nce-namespace-id": "  "}) is None
 
     def test_malformed_uuid_raises(self) -> None:
         with pytest.raises(ValueError, match="Invalid namespace UUID"):
-            resolve_namespace({"x-trimcp-namespace-id": "not-a-uuid"})
+            resolve_namespace({"x-nce-namespace-id": "not-a-uuid"})
 
     def test_case_insensitive_header_lookup(self) -> None:
         uid = uuid4()
         # Simulate Starlette's lower-cased header dict
-        headers = {"x-trimcp-namespace-id": str(uid)}
+        headers = {"x-nce-namespace-id": str(uid)}
         assert resolve_namespace(headers) == uid
 
 
@@ -265,7 +265,7 @@ class TestSetNamespaceContext:
         uid = uuid4()
         await set_namespace_context(conn, uid)
         conn.execute.assert_awaited_once_with(
-            "SELECT set_config('trimcp.namespace_id', $1, true)",
+            "SELECT set_config('nce.namespace_id', $1, true)",
             str(uid),
         )
 
@@ -307,7 +307,7 @@ class TestHMACAuthMiddleware:
         ts = int(time.time())
         sig = _make_signature(_KEY, "POST", "/api/gc/trigger", ts, body)
         headers = {
-            "X-TriMCP-Timestamp": str(ts),
+            "X-NCE-Timestamp": str(ts),
             "Authorization": f"HMAC-SHA256 {sig}",
             "Content-Type": "application/json",
         }
@@ -337,7 +337,7 @@ class TestHMACAuthMiddleware:
     def test_missing_authorization_header_returns_401(self) -> None:
         app = _build_test_app(_KEY)
         with TestClient(app, raise_server_exceptions=False) as client:
-            r = client.get("/api/health", headers={"X-TriMCP-Timestamp": str(int(time.time()))})
+            r = client.get("/api/health", headers={"X-NCE-Timestamp": str(int(time.time()))})
         assert r.status_code == 401
         assert r.json()["error"]["data"]["reason"] == "missing_auth_headers"
 
@@ -349,7 +349,7 @@ class TestHMACAuthMiddleware:
             r = client.get(
                 "/api/health",
                 headers={
-                    "X-TriMCP-Timestamp": str(ts),
+                    "X-NCE-Timestamp": str(ts),
                     "Authorization": f"Bearer {sig}",  # wrong scheme
                 },
             )
@@ -364,7 +364,7 @@ class TestHMACAuthMiddleware:
             r = client.get(
                 "/api/health",
                 headers={
-                    "X-TriMCP-Timestamp": str(old_ts),
+                    "X-NCE-Timestamp": str(old_ts),
                     "Authorization": f"HMAC-SHA256 {sig}",
                 },
             )
@@ -381,7 +381,7 @@ class TestHMACAuthMiddleware:
             r = client.get(
                 "/api/health",
                 headers={
-                    "X-TriMCP-Timestamp": str(future_ts),
+                    "X-NCE-Timestamp": str(future_ts),
                     "Authorization": f"HMAC-SHA256 {sig}",
                 },
             )
@@ -395,7 +395,7 @@ class TestHMACAuthMiddleware:
             r = client.get(
                 "/api/health",
                 headers={
-                    "X-TriMCP-Timestamp": str(ts),
+                    "X-NCE-Timestamp": str(ts),
                     "Authorization": "HMAC-SHA256 deadbeefdeadbeefdeadbeef",
                 },
             )
@@ -409,7 +409,7 @@ class TestHMACAuthMiddleware:
             r = client.get(
                 "/api/health",
                 headers={
-                    "X-TriMCP-Timestamp": str(ts),
+                    "X-NCE-Timestamp": str(ts),
                     "Authorization": "HMAC-SHA256 not-hex!",
                 },
             )
@@ -465,7 +465,7 @@ class TestNonceStoreUnit:
         assert asyncio.run(ns.check_and_store("abc123def456")) is True
 
         mock_redis.set.assert_awaited_once_with(
-            "trimcp:nonce:abc123def456", "1", nx=True, px=600_000
+            "nce:nonce:abc123def456", "1", nx=True, px=600_000
         )
 
     def test_replayed_nonce_rejected(self) -> None:
@@ -526,7 +526,7 @@ class TestNonceStoreUnit:
 
     def test_default_ttl_is_double_drift_window(self) -> None:
         """Default TTL should be 2× the timestamp drift."""
-        from trimcp.auth import _NONCE_TTL_SECONDS, _TIMESTAMP_DRIFT_SECONDS
+        from nce.auth import _NONCE_TTL_SECONDS, _TIMESTAMP_DRIFT_SECONDS
 
         assert _NONCE_TTL_SECONDS == _TIMESTAMP_DRIFT_SECONDS * 2
         assert _NONCE_TTL_SECONDS == 600  # 2 × 300
@@ -622,7 +622,7 @@ class TestHMACAuthMiddlewareWithNonceStore:
         ts = int(time.time())
         sig = _make_signature(_KEY, "GET", "/api/health", ts)
         headers = {
-            "X-TriMCP-Timestamp": str(ts),
+            "X-NCE-Timestamp": str(ts),
             "Authorization": f"HMAC-SHA256 {sig}",
         }
 
@@ -662,7 +662,7 @@ class TestHMACAuthMiddlewareWithNonceStore:
         ts = int(time.time())
         sig = _make_signature(_KEY, "GET", "/api/health", ts)
         headers = {
-            "X-TriMCP-Timestamp": str(ts),
+            "X-NCE-Timestamp": str(ts),
             "Authorization": f"HMAC-SHA256 {sig}",
         }
 
@@ -683,7 +683,7 @@ class TestHMACAuthMiddlewareWithNonceStore:
         old_ts = int(time.time()) - 600  # 10 min ago
         sig = _make_signature(_KEY, "GET", "/api/health", old_ts)
         headers = {
-            "X-TriMCP-Timestamp": str(old_ts),
+            "X-NCE-Timestamp": str(old_ts),
             "Authorization": f"HMAC-SHA256 {sig}",
         }
         with TestClient(app, raise_server_exceptions=False) as client:
@@ -706,7 +706,7 @@ class TestHMACAuthMiddlewareWithNonceStore:
         app = _build_test_app_with_nonce(_KEY, nonce_store)
         ts = int(time.time())
         headers = {
-            "X-TriMCP-Timestamp": str(ts),
+            "X-NCE-Timestamp": str(ts),
             "Authorization": "HMAC-SHA256 deadbeefdeadbeefdeadbeef",
         }
         with TestClient(app, raise_server_exceptions=False) as client:
@@ -771,7 +771,7 @@ class TestAssumeNamespace:
         """The audit event uses pool.acquire() — a different connection from the caller's."""
         ns_id = uuid4()
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
+        with patch("nce.event_log.append_event", new_callable=AsyncMock) as mock_append:
             await assume_namespace(
                 conn=caller_conn,
                 namespace_id=ns_id,
@@ -800,12 +800,12 @@ class TestAssumeNamespace:
 
         with (
             patch(
-                "trimcp.event_log.append_event",
+                "nce.event_log.append_event",
                 new_callable=AsyncMock,
                 side_effect=_tracked_append,
             ),
             patch(
-                "trimcp.auth.set_namespace_context",
+                "nce.auth.set_namespace_context",
                 new_callable=AsyncMock,
                 side_effect=_tracked_set_ctx,
             ),
@@ -830,7 +830,7 @@ class TestAssumeNamespace:
         ns_id = uuid4()
 
         with patch(
-            "trimcp.event_log.append_event",
+            "nce.event_log.append_event",
             new_callable=AsyncMock,
             side_effect=RuntimeError("PG connection lost"),
         ):
@@ -852,7 +852,7 @@ class TestAssumeNamespace:
         """set_namespace_context sets the session variable on the CALLER's connection."""
         ns_id = uuid4()
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock):
+        with patch("nce.event_log.append_event", new_callable=AsyncMock):
             await assume_namespace(
                 conn=caller_conn,
                 namespace_id=ns_id,
@@ -862,7 +862,7 @@ class TestAssumeNamespace:
 
         # SET LOCAL was executed on the caller's connection
         caller_conn.execute.assert_awaited_once_with(
-            "SELECT set_config('trimcp.namespace_id', $1, true)",
+            "SELECT set_config('nce.namespace_id', $1, true)",
             str(ns_id),
         )
 
@@ -873,7 +873,7 @@ class TestAssumeNamespace:
         """The audit event records who impersonated whom and why."""
         ns_id = uuid4()
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
+        with patch("nce.event_log.append_event", new_callable=AsyncMock) as mock_append:
             await assume_namespace(
                 conn=caller_conn,
                 namespace_id=ns_id,
@@ -899,7 +899,7 @@ class TestAssumeNamespace:
         ns_id = uuid4()
         long_reason = "x" * 500
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock) as mock_append:
+        with patch("nce.event_log.append_event", new_callable=AsyncMock) as mock_append:
             await assume_namespace(
                 conn=caller_conn,
                 namespace_id=ns_id,
@@ -919,7 +919,7 @@ class TestAssumeNamespace:
         """The audit connection opens and commits its OWN transaction."""
         ns_id = uuid4()
 
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock):
+        with patch("nce.event_log.append_event", new_callable=AsyncMock):
             await assume_namespace(
                 conn=caller_conn,
                 namespace_id=ns_id,
@@ -945,7 +945,7 @@ class TestAssumeNamespace:
         uid = uuid4()
         await set_namespace_context(conn, uid)
         conn.execute.assert_awaited_once_with(
-            "SELECT set_config('trimcp.namespace_id', $1, true)",
+            "SELECT set_config('nce.namespace_id', $1, true)",
             str(uid),
         )
 
@@ -1024,7 +1024,7 @@ class TestAuditedSession:
 
         # Mock append_event at the event_log level so _write_audit_event
         # still executes pool.acquire() for the audit connection.
-        with patch("trimcp.event_log.append_event", new_callable=AsyncMock):
+        with patch("nce.event_log.append_event", new_callable=AsyncMock):
             async with audited_session(
                 mock_pool,
                 ns_id,
@@ -1055,12 +1055,12 @@ class TestAuditedSession:
 
         with (
             patch(
-                "trimcp.auth._write_audit_event",
+                "nce.auth._write_audit_event",
                 new_callable=AsyncMock,
                 side_effect=_tracked_write,
             ),
             patch(
-                "trimcp.auth.set_namespace_context",
+                "nce.auth.set_namespace_context",
                 new_callable=AsyncMock,
                 side_effect=_tracked_set_ctx,
             ),
@@ -1088,7 +1088,7 @@ class TestAuditedSession:
         ns_id = uuid4()
 
         with patch(
-            "trimcp.auth._write_audit_event",
+            "nce.auth._write_audit_event",
             new_callable=AsyncMock,
             side_effect=RuntimeError("PG connection lost"),
         ):
@@ -1116,7 +1116,7 @@ class TestAuditedSession:
             audit_committed[0] = True
 
         with patch(
-            "trimcp.auth._write_audit_event",
+            "nce.auth._write_audit_event",
             new_callable=AsyncMock,
             side_effect=_tracked_write,
         ):
@@ -1145,7 +1145,7 @@ class TestAuditedSession:
             audit_committed[0] = True
 
         with patch(
-            "trimcp.auth._write_audit_event",
+            "nce.auth._write_audit_event",
             new_callable=AsyncMock,
             side_effect=_tracked_write,
         ):
@@ -1182,8 +1182,8 @@ class TestAuditedSession:
         simple_pool.acquire = MagicMock(return_value=acquire_result)
 
         with (
-            patch("trimcp.auth._write_audit_event", new_callable=AsyncMock),
-            patch("trimcp.auth.set_namespace_context", new_callable=AsyncMock) as mock_set,
+            patch("nce.auth._write_audit_event", new_callable=AsyncMock),
+            patch("nce.auth.set_namespace_context", new_callable=AsyncMock) as mock_set,
         ):
             async with audited_session(
                 simple_pool,
@@ -1205,7 +1205,7 @@ class TestAuditedSession:
         and reason."""
         ns_id = uuid4()
 
-        with patch("trimcp.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
+        with patch("nce.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
             async with audited_session(
                 mock_pool,
                 ns_id,
@@ -1230,7 +1230,7 @@ class TestAuditedSession:
         ns_id = uuid4()
         long_reason = "y" * 500
 
-        with patch("trimcp.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
+        with patch("nce.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
             async with audited_session(
                 mock_pool,
                 ns_id,
@@ -1250,7 +1250,7 @@ class TestAuditedSession:
         params under the 'reason' key."""
         ns_id = uuid4()
 
-        with patch("trimcp.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
+        with patch("nce.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
             async with audited_session(
                 mock_pool,
                 ns_id,
@@ -1271,7 +1271,7 @@ class TestAuditedSession:
         write (reason is merged in if provided)."""
         ns_id = uuid4()
 
-        with patch("trimcp.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
+        with patch("nce.auth._write_audit_event", new_callable=AsyncMock) as mock_write:
             async with audited_session(
                 mock_pool,
                 ns_id,
@@ -1312,52 +1312,52 @@ class TestValidateScope:
     """_validate_scope() function — admin scope enforcement."""
 
     def test_admin_override_bypasses_check(self, monkeypatch) -> None:
-        monkeypatch.setenv("TRIMCP_ADMIN_OVERRIDE", "true")
+        monkeypatch.setenv("NCE_ADMIN_OVERRIDE", "true")
         # Should not raise even without API key
         _validate_scope("admin", {})
 
     def test_missing_server_key_raises(self, monkeypatch) -> None:
-        monkeypatch.delenv("TRIMCP_ADMIN_OVERRIDE", raising=False)
-        monkeypatch.delenv("TRIMCP_ADMIN_API_KEY", raising=False)
+        monkeypatch.delenv("NCE_ADMIN_OVERRIDE", raising=False)
+        monkeypatch.delenv("NCE_ADMIN_API_KEY", raising=False)
         with pytest.raises(ScopeError, match="misconfigured"):
             _validate_scope("admin", {})
 
     def test_missing_server_key_fails_closed_without_cfg_fallback(self, monkeypatch) -> None:
         """Regression: delenv must not fall back to import-time cfg snapshot."""
-        monkeypatch.delenv("TRIMCP_ADMIN_OVERRIDE", raising=False)
-        monkeypatch.delenv("TRIMCP_ADMIN_API_KEY", raising=False)
-        from trimcp.config import cfg
+        monkeypatch.delenv("NCE_ADMIN_OVERRIDE", raising=False)
+        monkeypatch.delenv("NCE_ADMIN_API_KEY", raising=False)
+        from nce.config import cfg
 
-        monkeypatch.setattr(cfg, "TRIMCP_ADMIN_API_KEY", "stale-import-time-key")
+        monkeypatch.setattr(cfg, "NCE_ADMIN_API_KEY", "stale-import-time-key")
         with pytest.raises(ScopeError, match="misconfigured"):
             _validate_scope("admin", {"admin_api_key": "stale-import-time-key"})
 
     def test_missing_client_key_raises(self, monkeypatch) -> None:
-        monkeypatch.delenv("TRIMCP_ADMIN_OVERRIDE", raising=False)
-        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "secret-key")
+        monkeypatch.delenv("NCE_ADMIN_OVERRIDE", raising=False)
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "secret-key")
         with pytest.raises(ScopeError, match="missing admin_api_key"):
             _validate_scope("admin", {})
 
     def test_empty_client_key_raises(self, monkeypatch) -> None:
-        monkeypatch.delenv("TRIMCP_ADMIN_OVERRIDE", raising=False)
-        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "secret-key")
+        monkeypatch.delenv("NCE_ADMIN_OVERRIDE", raising=False)
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "secret-key")
         with pytest.raises(ScopeError, match="missing admin_api_key"):
             _validate_scope("admin", {"admin_api_key": "  "})
 
     def test_wrong_client_key_raises(self, monkeypatch) -> None:
-        monkeypatch.delenv("TRIMCP_ADMIN_OVERRIDE", raising=False)
-        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "secret-key")
+        monkeypatch.delenv("NCE_ADMIN_OVERRIDE", raising=False)
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "secret-key")
         with pytest.raises(ScopeError, match="invalid admin_api_key"):
             _validate_scope("admin", {"admin_api_key": "wrong-key"})
 
     def test_correct_key_passes(self, monkeypatch) -> None:
-        monkeypatch.delenv("TRIMCP_ADMIN_OVERRIDE", raising=False)
-        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "secret-key")
+        monkeypatch.delenv("NCE_ADMIN_OVERRIDE", raising=False)
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "secret-key")
         # Should not raise
         _validate_scope("admin", {"admin_api_key": "secret-key"})
 
     def test_tenant_scope_requires_key_when_server_key_set(self, monkeypatch) -> None:
-        monkeypatch.setenv("TRIMCP_MCP_API_KEY", "tenant-secret")
+        monkeypatch.setenv("NCE_MCP_API_KEY", "tenant-secret")
         with pytest.raises(ScopeError, match="missing mcp_api_key"):
             _validate_scope("tenant", {})
         with pytest.raises(ScopeError, match="invalid mcp_api_key"):
@@ -1365,7 +1365,7 @@ class TestValidateScope:
         _validate_scope("tenant", {"mcp_api_key": "tenant-secret"})
 
     def test_tenant_scope_passes_without_server_key_in_dev(self, monkeypatch) -> None:
-        monkeypatch.delenv("TRIMCP_MCP_API_KEY", raising=False)
+        monkeypatch.delenv("NCE_MCP_API_KEY", raising=False)
         _validate_scope("tenant", {})
 
     def test_unknown_scope_raises(self) -> None:
@@ -1377,13 +1377,13 @@ class TestEnforceMcpToolAuth:
     """stdio MCP dispatch gate — admin vs tenant tools."""
 
     def test_tenant_tool_requires_mcp_key(self, monkeypatch) -> None:
-        monkeypatch.setenv("TRIMCP_MCP_API_KEY", "mcp-secret")
+        monkeypatch.setenv("NCE_MCP_API_KEY", "mcp-secret")
         with pytest.raises(ScopeError, match="missing mcp_api_key"):
             enforce_mcp_tool_auth("semantic_search", {})
         enforce_mcp_tool_auth("semantic_search", {"mcp_api_key": "mcp-secret"})
 
     def test_admin_tool_requires_admin_key(self, monkeypatch) -> None:
-        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "admin-secret")
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "admin-secret")
         with pytest.raises(ScopeError, match="missing admin_api_key"):
             enforce_mcp_tool_auth("manage_namespace", {})
         enforce_mcp_tool_auth("manage_namespace", {"admin_api_key": "admin-secret"})
@@ -1394,15 +1394,15 @@ class TestEnforceMcpToolAuth:
 
     def test_tenant_namespace_injected_when_bound(self, monkeypatch) -> None:
         ns = "11111111-2222-4333-8444-555555555555"
-        monkeypatch.setenv("TRIMCP_MCP_API_KEY", "mcp-secret")
-        monkeypatch.setenv("TRIMCP_MCP_NAMESPACE_ID", ns)
+        monkeypatch.setenv("NCE_MCP_API_KEY", "mcp-secret")
+        monkeypatch.setenv("NCE_MCP_NAMESPACE_ID", ns)
         args: dict = {"mcp_api_key": "mcp-secret"}
         enforce_mcp_tool_auth("semantic_search", args)
         assert args["namespace_id"] == ns
 
     def test_tenant_namespace_mismatch_rejected(self, monkeypatch) -> None:
-        monkeypatch.setenv("TRIMCP_MCP_API_KEY", "mcp-secret")
-        monkeypatch.setenv("TRIMCP_MCP_NAMESPACE_ID", "11111111-2222-4333-8444-555555555555")
+        monkeypatch.setenv("NCE_MCP_API_KEY", "mcp-secret")
+        monkeypatch.setenv("NCE_MCP_NAMESPACE_ID", "11111111-2222-4333-8444-555555555555")
         with pytest.raises(ScopeError, match="namespace_id does not match"):
             enforce_mcp_tool_auth(
                 "semantic_search",
@@ -1413,8 +1413,8 @@ class TestEnforceMcpToolAuth:
             )
 
     def test_admin_tool_skips_namespace_binding(self, monkeypatch) -> None:
-        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "admin-secret")
-        monkeypatch.setenv("TRIMCP_MCP_NAMESPACE_ID", "11111111-2222-4333-8444-555555555555")
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "admin-secret")
+        monkeypatch.setenv("NCE_MCP_NAMESPACE_ID", "11111111-2222-4333-8444-555555555555")
         args = {"admin_api_key": "admin-secret"}
         enforce_mcp_tool_auth("manage_namespace", args)
         assert "namespace_id" not in args
@@ -1425,7 +1425,7 @@ class TestRequireScopeDecorator:
 
     @pytest.mark.asyncio
     async def test_admin_scope_passes_with_valid_key(self, monkeypatch) -> None:
-        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "key123")
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "key123")
 
         @require_scope("admin")
         async def handler(engine, arguments, **kwargs):
@@ -1436,7 +1436,7 @@ class TestRequireScopeDecorator:
 
     @pytest.mark.asyncio
     async def test_admin_scope_fails_without_key(self, monkeypatch) -> None:
-        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "key123")
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "key123")
 
         @require_scope("admin")
         async def handler(engine, arguments):
@@ -1447,7 +1447,7 @@ class TestRequireScopeDecorator:
 
     @pytest.mark.asyncio
     async def test_strips_auth_keys_from_arguments(self, monkeypatch) -> None:
-        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "key123")
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "key123")
 
         @require_scope("admin")
         async def handler(engine, arguments):
@@ -1463,7 +1463,7 @@ class TestRequireScopeDecorator:
 
     @pytest.mark.asyncio
     async def test_forwards_admin_identity_as_kwarg(self, monkeypatch) -> None:
-        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "key123")
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "key123")
 
         @require_scope("admin")
         async def handler(engine, arguments, admin_identity=None):
@@ -1477,7 +1477,7 @@ class TestRequireScopeDecorator:
 
     @pytest.mark.asyncio
     async def test_admin_identity_not_in_cleaned_args(self, monkeypatch) -> None:
-        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "key123")
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "key123")
 
         @require_scope("admin")
         async def handler(engine, arguments, admin_identity=None):
@@ -1493,7 +1493,7 @@ class TestRequireScopeDecorator:
 
     @pytest.mark.asyncio
     async def test_handler_without_admin_identity_param_works(self, monkeypatch) -> None:
-        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "key123")
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "key123")
 
         @require_scope("admin")
         async def handler(engine, arguments):
@@ -1507,7 +1507,7 @@ class TestRequireScopeDecorator:
 
     @pytest.mark.asyncio
     async def test_positional_more_than_two_args(self, monkeypatch) -> None:
-        monkeypatch.setenv("TRIMCP_ADMIN_API_KEY", "key123")
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "key123")
 
         @require_scope("admin")
         async def handler(engine, arguments, extra):
@@ -1531,15 +1531,15 @@ class TestRequireScopeDecorator:
 
 
 class TestHashAdminPassword:
-    """Tests for :func:`trimcp.auth.hash_admin_password`."""
+    """Tests for :func:`nce.auth.hash_admin_password`."""
 
     def test_default_iterations_600k(self) -> None:
-        from trimcp.auth import _PBKDF2_ITERATIONS
+        from nce.auth import _PBKDF2_ITERATIONS
 
         assert _PBKDF2_ITERATIONS >= 600_000
 
     def test_produces_pbkdf2_prefixed_string(self) -> None:
-        from trimcp.auth import hash_admin_password
+        from nce.auth import hash_admin_password
 
         h = hash_admin_password("my-secret")
         assert h.startswith("$pbkdf2$")
@@ -1550,14 +1550,14 @@ class TestHashAdminPassword:
         assert len(parts[4]) == 64  # 32 bytes hex = 64 chars
 
     def test_different_passwords_produce_different_hashes(self) -> None:
-        from trimcp.auth import hash_admin_password
+        from nce.auth import hash_admin_password
 
         h1 = hash_admin_password("alpha")
         h2 = hash_admin_password("beta")
         assert h1 != h2
 
     def test_same_password_different_salts(self) -> None:
-        from trimcp.auth import hash_admin_password
+        from nce.auth import hash_admin_password
 
         h1 = hash_admin_password("same")
         h2 = hash_admin_password("same")
@@ -1565,20 +1565,20 @@ class TestHashAdminPassword:
         assert h1 != h2
 
     def test_custom_iterations(self) -> None:
-        from trimcp.auth import hash_admin_password
+        from nce.auth import hash_admin_password
 
         h = hash_admin_password("test", iterations=200_000)
         parts = h.split("$")
         assert int(parts[2]) == 200_000
 
     def test_rejects_too_few_iterations(self) -> None:
-        from trimcp.auth import hash_admin_password
+        from nce.auth import hash_admin_password
 
         with pytest.raises(ValueError, match="at least 100,000"):
             hash_admin_password("test", iterations=50_000)
 
     def test_output_length(self) -> None:
-        from trimcp.auth import hash_admin_password
+        from nce.auth import hash_admin_password
 
         h = hash_admin_password("length-test")
         # $pbkdf2$<iters>$<salt_hex>$<hash_hex>
@@ -1586,10 +1586,10 @@ class TestHashAdminPassword:
 
 
 class TestVerifyAdminPassword:
-    """Tests for :func:`trimcp.auth.verify_admin_password`."""
+    """Tests for :func:`nce.auth.verify_admin_password`."""
 
     def test_correct_password_verifies(self) -> None:
-        from trimcp.auth import hash_admin_password, verify_admin_password
+        from nce.auth import hash_admin_password, verify_admin_password
 
         h = hash_admin_password("correct")
         valid, upgraded = verify_admin_password("correct", h)
@@ -1597,7 +1597,7 @@ class TestVerifyAdminPassword:
         assert upgraded is None  # already at 600K
 
     def test_wrong_password_rejected(self) -> None:
-        from trimcp.auth import hash_admin_password, verify_admin_password
+        from nce.auth import hash_admin_password, verify_admin_password
 
         h = hash_admin_password("real")
         valid, upgraded = verify_admin_password("wrong", h)
@@ -1605,7 +1605,7 @@ class TestVerifyAdminPassword:
         assert upgraded is None
 
     def test_auto_upgrade_from_lower_iterations(self) -> None:
-        from trimcp.auth import hash_admin_password, verify_admin_password
+        from nce.auth import hash_admin_password, verify_admin_password
 
         # Hash with old 210K iterations
         old_hash = hash_admin_password("mypass", iterations=210_000)
@@ -1618,7 +1618,7 @@ class TestVerifyAdminPassword:
         assert valid2 is True
 
     def test_no_auto_upgrade_when_disabled(self) -> None:
-        from trimcp.auth import hash_admin_password, verify_admin_password
+        from nce.auth import hash_admin_password, verify_admin_password
 
         old_hash = hash_admin_password("mypass", iterations=210_000)
         valid, upgraded = verify_admin_password("mypass", old_hash, auto_upgrade=False)
@@ -1626,7 +1626,7 @@ class TestVerifyAdminPassword:
         assert upgraded is None  # upgrade suppressed
 
     def test_plaintext_backward_compat(self) -> None:
-        from trimcp.auth import verify_admin_password
+        from nce.auth import verify_admin_password
 
         # Plaintext password comparison (DEPRECATED but must still work)
         valid, upgraded = verify_admin_password("plaintext", "plaintext")
@@ -1636,14 +1636,14 @@ class TestVerifyAdminPassword:
         assert upgraded.startswith("$pbkdf2$")
 
     def test_plaintext_wrong_password(self) -> None:
-        from trimcp.auth import verify_admin_password
+        from nce.auth import verify_admin_password
 
         valid, _ = verify_admin_password("wrong", "plaintext")
         assert valid is False
 
     def test_plaintext_rejected_in_production(self, monkeypatch) -> None:
-        from trimcp.auth import verify_admin_password
-        from trimcp.config import cfg
+        from nce.auth import verify_admin_password
+        from nce.config import cfg
 
         monkeypatch.setattr(cfg, "IS_PROD", True)
         valid, upgraded = verify_admin_password("plaintext", "plaintext")
@@ -1651,7 +1651,7 @@ class TestVerifyAdminPassword:
         assert upgraded is None
 
     def test_plaintext_auto_upgrades(self) -> None:
-        from trimcp.auth import verify_admin_password
+        from nce.auth import verify_admin_password
 
         valid, upgraded = verify_admin_password("secret123", "secret123", auto_upgrade=True)
         assert valid is True
@@ -1659,27 +1659,27 @@ class TestVerifyAdminPassword:
         assert upgraded.startswith("$pbkdf2$")
 
     def test_empty_stored_hash(self) -> None:
-        from trimcp.auth import verify_admin_password
+        from nce.auth import verify_admin_password
 
         valid, upgraded = verify_admin_password("anything", "")
         assert valid is False
         assert upgraded is None
 
     def test_invalid_hash_format(self) -> None:
-        from trimcp.auth import verify_admin_password
+        from nce.auth import verify_admin_password
 
         valid, upgraded = verify_admin_password("p", "$pbkdf2$bad")
         assert valid is False
         assert upgraded is None
 
     def test_invalid_iterations_in_hash(self) -> None:
-        from trimcp.auth import verify_admin_password
+        from nce.auth import verify_admin_password
 
         valid, _ = verify_admin_password("p", "$pbkdf2$abc$aa$bb")
         assert valid is False
 
     def test_too_few_iterations_in_hash(self) -> None:
-        from trimcp.auth import verify_admin_password
+        from nce.auth import verify_admin_password
 
         valid, _ = verify_admin_password(
             "p",
@@ -1688,7 +1688,7 @@ class TestVerifyAdminPassword:
         assert valid is False
 
     def test_invalid_salt_hex(self) -> None:
-        from trimcp.auth import verify_admin_password
+        from nce.auth import verify_admin_password
 
         valid, _ = verify_admin_password(
             "p",
@@ -1697,7 +1697,7 @@ class TestVerifyAdminPassword:
         assert valid is False
 
     def test_invalid_hash_hex(self) -> None:
-        from trimcp.auth import verify_admin_password
+        from nce.auth import verify_admin_password
 
         valid, _ = verify_admin_password(
             "p", "$pbkdf2$600000$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa$nothex"

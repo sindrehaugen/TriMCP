@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from starlette.requests import Request
 
-os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-test-key-32chars-long!!")
+os.environ.setdefault("NCE_MASTER_KEY", "dev-test-key-32chars-long!!")
 
 
 @pytest.mark.asyncio
@@ -45,7 +45,7 @@ async def test_api_admin_namespaces_list():
         },
     ]
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_namespaces_list
 
         request = Request(
@@ -88,7 +88,7 @@ async def test_api_admin_namespaces_get():
         "metadata": '{"consolidation": {"enabled": false}}',
     }
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_namespaces_get
 
         request = Request(
@@ -118,7 +118,7 @@ async def test_api_admin_namespaces_get_not_found():
 
     ns_id = uuid.uuid4()
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_namespaces_get
 
         request = Request(
@@ -155,7 +155,7 @@ async def test_api_admin_namespaces_update_metadata():
     async def receive():
         return {"type": "http.request", "body": json.dumps(payload).encode()}
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_namespaces_update_metadata
 
         request = Request(
@@ -201,7 +201,7 @@ async def test_api_admin_namespaces_update_metadata_invalid_pydantic():
     async def receive():
         return {"type": "http.request", "body": json.dumps(payload).encode()}
 
-    with patch("trimcp.admin_state.engine", mock_engine):
+    with patch("nce.admin_state.engine", mock_engine):
         from admin_server import api_admin_namespaces_update_metadata
 
         request = Request(

@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-os.environ.setdefault("TRIMCP_MASTER_KEY", "dev-test-key-32chars-long!!")
+os.environ.setdefault("NCE_MASTER_KEY", "dev-test-key-32chars-long!!")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 

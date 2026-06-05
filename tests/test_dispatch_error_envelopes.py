@@ -30,11 +30,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import trimcp.mcp_stdio_dispatch as dispatch_mod
-from trimcp.auth import RateLimitError, ScopeError
-from trimcp.mcp_errors import McpError, MCP_METHOD_NOT_FOUND
-from trimcp.mcp_stdio_dispatch import execute_call_tool
-from trimcp.mcp_stdio_rpc import MCP_QUOTA_EXCEEDED_PREFIX
+import nce.mcp_stdio_dispatch as dispatch_mod
+from nce.auth import RateLimitError, ScopeError
+from nce.mcp_errors import McpError, MCP_METHOD_NOT_FOUND
+from nce.mcp_stdio_dispatch import execute_call_tool
+from nce.mcp_stdio_rpc import MCP_QUOTA_EXCEEDED_PREFIX
 
 
 # ---------------------------------------------------------------------------
@@ -77,12 +77,12 @@ def _patch_infra(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _noop_instrument(_name: str):
         yield
 
-    monkeypatch.setattr("trimcp.observability.instrument_tool_call", _noop_instrument)
+    monkeypatch.setattr("nce.observability.instrument_tool_call", _noop_instrument)
 
     # 2. null_reservation — lazy import, patch on the quotas module
     _mock_res = AsyncMock()
     _mock_res.rollback = AsyncMock()
-    monkeypatch.setattr("trimcp.quotas.null_reservation", lambda: _mock_res)
+    monkeypatch.setattr("nce.quotas.null_reservation", lambda: _mock_res)
 
     # 3. _try_cached_mcp_tool_response — imported into dispatch namespace
     monkeypatch.setattr(
@@ -177,7 +177,7 @@ async def test_mcp_error_from_handler_propagates_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = _make_engine()
-    from trimcp import memory_mcp_handlers
+    from nce import memory_mcp_handlers
 
     monkeypatch.setattr(
         memory_mcp_handlers,
@@ -199,7 +199,7 @@ async def test_scope_error_from_handler_returns_scope_forbidden(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = _make_engine()
-    from trimcp import memory_mcp_handlers
+    from nce import memory_mcp_handlers
 
     monkeypatch.setattr(
         memory_mcp_handlers,
@@ -221,7 +221,7 @@ async def test_rate_limit_error_from_handler_returns_rate_limited(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = _make_engine()
-    from trimcp import memory_mcp_handlers
+    from nce import memory_mcp_handlers
 
     monkeypatch.setattr(
         memory_mcp_handlers,
@@ -314,7 +314,7 @@ async def test_cache_hit_returns_cached_payload_without_calling_handler(
     )
 
     handler_called = False
-    from trimcp import memory_mcp_handlers
+    from nce import memory_mcp_handlers
 
     async def _handler(*_a: object, **_k: object) -> str:
         nonlocal handler_called
@@ -341,7 +341,7 @@ async def test_mutation_tool_bumps_cache_generation(
     bump_spy = AsyncMock(return_value=2)
     monkeypatch.setattr(dispatch_mod, "bump_cache_generation", bump_spy)
 
-    from trimcp import memory_mcp_handlers
+    from nce import memory_mcp_handlers
 
     monkeypatch.setattr(
         memory_mcp_handlers,
@@ -365,7 +365,7 @@ async def test_mutation_tool_bumps_cache_generation(
 async def test_quota_exceeded_error_returns_quota_exceeded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from trimcp.quotas import QuotaExceededError
+    from nce.quotas import QuotaExceededError
 
     engine = _make_engine()
     monkeypatch.setattr(

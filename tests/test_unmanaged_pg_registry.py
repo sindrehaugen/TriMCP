@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from trimcp.db_utils import UNMANAGED_PG_AUDITED_SITES, unmanaged_pg_connection
+from nce.db_utils import UNMANAGED_PG_AUDITED_SITES, unmanaged_pg_connection
 
 
 def _collect_unmanaged_pg_sites(repo_root: Path) -> set[str]:

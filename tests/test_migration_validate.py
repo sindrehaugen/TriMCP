@@ -25,7 +25,7 @@ from uuid import uuid4
 
 import pytest
 
-from trimcp.orchestrators.migration import MigrationOrchestrator
+from nce.orchestrators.migration import MigrationOrchestrator
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 

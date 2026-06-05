@@ -1,5 +1,5 @@
 """
-TriMCP RQ Worker Launcher
+NCE RQ Worker Launcher
 Starts an RQ worker to handle background indexing tasks.
 
 Priority lanes (§5.4): the worker dequeues ``high_priority`` before
@@ -13,8 +13,8 @@ import logging
 from redis import from_url
 from rq import Queue, Worker
 
-from trimcp.config import cfg
-from trimcp.extractors.dispatch import BATCH_QUEUE, HIGH_PRIORITY_QUEUE
+from nce.config import cfg
+from nce.extractors.dispatch import BATCH_QUEUE, HIGH_PRIORITY_QUEUE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [Worker] %(levelname)s %(message)s")
 

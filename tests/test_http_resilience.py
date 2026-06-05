@@ -1,4 +1,4 @@
-"""Tests for trimcp.http_resilience — tenacity-backed outbound HTTP retries."""
+"""Tests for nce.http_resilience — tenacity-backed outbound HTTP retries."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-import trimcp.http_resilience as hr
+import nce.http_resilience as hr
 
 
 async def _run_operation_without_retry(op, **_kw):
@@ -217,7 +217,7 @@ class TestOauthTokenPostForm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("trimcp.http_resilience.httpx.AsyncClient", return_value=mock_client):
+        with patch("nce.http_resilience.httpx.AsyncClient", return_value=mock_client):
             out = await hr.oauth_token_post_form(
                 "https://auth.example/token",
                 {"grant_type": "client_credentials"},
@@ -233,7 +233,7 @@ class TestOauthTokenPostForm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("trimcp.http_resilience.httpx.AsyncClient", return_value=mock_client):
+        with patch("nce.http_resilience.httpx.AsyncClient", return_value=mock_client):
             await hr.oauth_token_post_form(
                 "https://auth.example/token",
                 {"grant_type": "client_credentials"},
@@ -250,7 +250,7 @@ class TestOauthTokenPostForm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("trimcp.http_resilience.httpx.AsyncClient", return_value=mock_client):
+        with patch("nce.http_resilience.httpx.AsyncClient", return_value=mock_client):
             await hr.oauth_token_post_form(
                 "https://auth.example/token",
                 {"grant_type": "client_credentials"},
@@ -268,7 +268,7 @@ class TestOauthTokenPostForm:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("trimcp.http_resilience.httpx.AsyncClient", return_value=mock_client):
+        with patch("nce.http_resilience.httpx.AsyncClient", return_value=mock_client):
             with pytest.raises(hr.ExternalAPIClientError):
                 await hr.oauth_token_post_form(
                     "https://auth.example/token",
@@ -294,7 +294,7 @@ class TestOauthTokenPostForm:
 
         mock_client.post = post
 
-        with patch("trimcp.http_resilience.httpx.AsyncClient", return_value=mock_client):
+        with patch("nce.http_resilience.httpx.AsyncClient", return_value=mock_client):
             out = await hr.oauth_token_post_form(
                 "https://auth.example/token",
                 {"grant_type": "client_credentials"},
@@ -330,9 +330,9 @@ class TestSecretRedaction:
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch("trimcp.http_resilience.httpx.AsyncClient", return_value=mock_client),
+            patch("nce.http_resilience.httpx.AsyncClient", return_value=mock_client),
             patch(
-                "trimcp.http_resilience.redact_secrets_in_text",
+                "nce.http_resilience.redact_secrets_in_text",
                 return_value="REDACTED",
             ),
             patch.object(
@@ -360,7 +360,7 @@ class TestPostJsonWithRetry:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("trimcp.http_resilience.httpx.AsyncClient", return_value=mock_client):
+        with patch("nce.http_resilience.httpx.AsyncClient", return_value=mock_client):
             out = await hr.post_json_with_retry(
                 "https://api.example/subscriptions",
                 {"changeType": "updated"},
@@ -376,7 +376,7 @@ class TestPostJsonWithRetry:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("trimcp.http_resilience.httpx.AsyncClient", return_value=mock_client):
+        with patch("nce.http_resilience.httpx.AsyncClient", return_value=mock_client):
             await hr.post_json_with_retry(
                 "https://api.example/subscriptions",
                 {"changeType": "updated"},

@@ -1,1 +1,1 @@
-"""TriMCP integration test suite."""
+"""NCE integration test suite."""

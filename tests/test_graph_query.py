@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from bson import ObjectId
 
-from trimcp.graph_query import GraphEdge, GraphNode, GraphRAGTraverser
+from nce.graph_query import GraphEdge, GraphNode, GraphRAGTraverser
 
 
 @pytest.fixture
@@ -250,7 +250,7 @@ async def test_time_travel_anchor_detects_tampered_event(
     monkeypatch,
 ):
     """A tampered event_log row must cause DataIntegrityError in _find_anchor."""
-    from trimcp.event_log import DataIntegrityError
+    from nce.event_log import DataIntegrityError
 
     _, conn = mock_pg_pool
 
@@ -296,7 +296,7 @@ async def test_time_travel_anchor_detects_tampered_event(
             f"Event signature mismatch for event_id={record['id']}. Tampering detected."
         )
 
-    monkeypatch.setattr("trimcp.event_log.verify_event_signature", mock_verify)
+    monkeypatch.setattr("nce.event_log.verify_event_signature", mock_verify)
 
     with pytest.raises(DataIntegrityError, match="Tampering detected"):
         await traverser._find_anchor(
@@ -314,7 +314,7 @@ async def test_time_travel_bfs_detects_tampered_event(
     monkeypatch,
 ):
     """A tampered event_log row must cause DataIntegrityError in _bfs."""
-    from trimcp.event_log import DataIntegrityError
+    from nce.event_log import DataIntegrityError
 
     _, conn = mock_pg_pool
 
@@ -360,7 +360,7 @@ async def test_time_travel_bfs_detects_tampered_event(
     async def mock_verify(conn_arg, record):
         raise DataIntegrityError("Tampering detected in BFS.")
 
-    monkeypatch.setattr("trimcp.event_log.verify_event_signature", mock_verify)
+    monkeypatch.setattr("nce.event_log.verify_event_signature", mock_verify)
 
     with pytest.raises(DataIntegrityError, match="Tampering detected"):
         await traverser._bfs(
@@ -418,7 +418,7 @@ async def test_time_travel_passes_with_valid_signatures(
     async def mock_verify_pass(conn_arg, record):
         return  # success — no exception
 
-    monkeypatch.setattr("trimcp.event_log.verify_event_signature", mock_verify_pass)
+    monkeypatch.setattr("nce.event_log.verify_event_signature", mock_verify_pass)
 
     # Must not raise
     anchors = await traverser._find_anchor(

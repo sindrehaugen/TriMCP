@@ -1,4 +1,4 @@
-"""Unit tests for trimcp.orchestrators.graph.GraphOrchestrator hardening."""
+"""Unit tests for nce.orchestrators.graph.GraphOrchestrator hardening."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from trimcp.orchestrators.graph import GraphOrchestrator
+from nce.orchestrators.graph import GraphOrchestrator
 
 NS = "00000000-0000-4000-8000-000000000001"
 
@@ -82,13 +82,13 @@ async def test_search_codebase_returns_stable_ordering(graph_orch: GraphOrchestr
     mock_conn = AsyncMock()
     mock_conn.fetch = AsyncMock(side_effect=_fetch)
 
-    with patch("trimcp.orchestrators.graph.scoped_pg_session", _fake_scoped(mock_conn)):
+    with patch("nce.orchestrators.graph.scoped_pg_session", _fake_scoped(mock_conn)):
         with patch(
-            "trimcp.orchestrators.graph.fetch_code_files_raw_by_ref",
+            "nce.orchestrators.graph.fetch_code_files_raw_by_ref",
             new_callable=AsyncMock,
             return_value={},
         ):
-            with patch("trimcp.orchestrators.graph.normalize_payload_ref", side_effect=lambda x: x):
+            with patch("nce.orchestrators.graph.normalize_payload_ref", side_effect=lambda x: x):
                 r1 = await graph_orch.search_codebase("find handler", namespace_id=NS, top_k=5)
                 r2 = await graph_orch.search_codebase("find handler", namespace_id=NS, top_k=5)
 
@@ -109,13 +109,13 @@ async def test_no_duplicate_results(graph_orch: GraphOrchestrator) -> None:
         ]
     )
 
-    with patch("trimcp.orchestrators.graph.scoped_pg_session", _fake_scoped(mock_conn)):
+    with patch("nce.orchestrators.graph.scoped_pg_session", _fake_scoped(mock_conn)):
         with patch(
-            "trimcp.orchestrators.graph.fetch_code_files_raw_by_ref",
+            "nce.orchestrators.graph.fetch_code_files_raw_by_ref",
             new_callable=AsyncMock,
             return_value={},
         ):
-            with patch("trimcp.orchestrators.graph.normalize_payload_ref", side_effect=lambda x: x):
+            with patch("nce.orchestrators.graph.normalize_payload_ref", side_effect=lambda x: x):
                 results = await graph_orch.search_codebase("query", namespace_id=NS, top_k=5)
 
     memory_ids = [r["memory_id"] for r in results]
@@ -181,7 +181,7 @@ async def test_embedding_timeout_raises_runtime_error(graph_orch: GraphOrchestra
     async def short_wait_for(coro, *, timeout=None):
         return await real_wait_for(coro, timeout=0.001)
 
-    with patch("trimcp.orchestrators.graph.asyncio.wait_for", side_effect=short_wait_for):
+    with patch("nce.orchestrators.graph.asyncio.wait_for", side_effect=short_wait_for):
         with pytest.raises(RuntimeError, match="timed out"):
             await graph_orch.search_codebase("slow embed", namespace_id=NS)
 
@@ -218,14 +218,14 @@ async def test_json_decode_error_logged_not_raised(
         ]
     )
 
-    with patch("trimcp.orchestrators.graph.scoped_pg_session", _fake_scoped(mock_conn)):
+    with patch("nce.orchestrators.graph.scoped_pg_session", _fake_scoped(mock_conn)):
         with patch(
-            "trimcp.orchestrators.graph.fetch_code_files_raw_by_ref",
+            "nce.orchestrators.graph.fetch_code_files_raw_by_ref",
             new_callable=AsyncMock,
             return_value={},
         ):
-            with patch("trimcp.orchestrators.graph.normalize_payload_ref", side_effect=lambda x: x):
-                with caplog.at_level("WARNING", logger="tri-stack-orchestrator.graph"):
+            with patch("nce.orchestrators.graph.normalize_payload_ref", side_effect=lambda x: x):
+                with caplog.at_level("WARNING", logger="nce-orchestrator.graph"):
                     results = await graph_orch.search_codebase("q", namespace_id=NS, top_k=5)
 
     assert len(results) == 1
@@ -244,13 +244,13 @@ async def test_mongo_failure_returns_empty_excerpt(graph_orch: GraphOrchestrator
         ]
     )
 
-    with patch("trimcp.orchestrators.graph.scoped_pg_session", _fake_scoped(mock_conn)):
+    with patch("nce.orchestrators.graph.scoped_pg_session", _fake_scoped(mock_conn)):
         with patch(
-            "trimcp.orchestrators.graph.fetch_code_files_raw_by_ref",
+            "nce.orchestrators.graph.fetch_code_files_raw_by_ref",
             new_callable=AsyncMock,
             side_effect=RuntimeError("mongo down"),
         ):
-            with patch("trimcp.orchestrators.graph.normalize_payload_ref", side_effect=lambda x: x):
+            with patch("nce.orchestrators.graph.normalize_payload_ref", side_effect=lambda x: x):
                 results = await graph_orch.search_codebase("q", namespace_id=NS, top_k=5)
 
     assert len(results) == 1
@@ -282,13 +282,13 @@ async def test_candidate_k_is_bounded(graph_orch: GraphOrchestrator) -> None:
 
     mock_conn.fetch = AsyncMock(side_effect=_capture_fetch)
 
-    with patch("trimcp.orchestrators.graph.scoped_pg_session", _fake_scoped(mock_conn)):
+    with patch("nce.orchestrators.graph.scoped_pg_session", _fake_scoped(mock_conn)):
         with patch(
-            "trimcp.orchestrators.graph.fetch_code_files_raw_by_ref",
+            "nce.orchestrators.graph.fetch_code_files_raw_by_ref",
             new_callable=AsyncMock,
             return_value={},
         ):
-            with patch("trimcp.orchestrators.graph.normalize_payload_ref", side_effect=lambda x: x):
+            with patch("nce.orchestrators.graph.normalize_payload_ref", side_effect=lambda x: x):
                 await graph_orch.search_codebase("bounded", namespace_id=NS, top_k=100)
 
     assert captured, "expected fused SQL fetch"
@@ -311,15 +311,15 @@ async def test_sql_includes_namespace_filter(graph_orch: GraphOrchestrator) -> N
     mock_conn = AsyncMock()
     mock_conn.fetch = AsyncMock(side_effect=_capture_fetch)
 
-    with patch("trimcp.orchestrators.graph.scoped_pg_session", _fake_scoped(mock_conn)):
+    with patch("nce.orchestrators.graph.scoped_pg_session", _fake_scoped(mock_conn)):
         with patch(
-            "trimcp.orchestrators.graph.fetch_code_files_raw_by_ref",
+            "nce.orchestrators.graph.fetch_code_files_raw_by_ref",
             new_callable=AsyncMock,
             return_value={},
         ):
-            with patch("trimcp.orchestrators.graph.normalize_payload_ref", side_effect=lambda x: x):
+            with patch("nce.orchestrators.graph.normalize_payload_ref", side_effect=lambda x: x):
                 await graph_orch.search_codebase("ns filter", namespace_id=NS, top_k=3)
 
     assert sql_calls
-    assert "namespace_id = current_setting('trimcp.namespace_id')::uuid" in sql_calls[0]
+    assert "namespace_id = current_setting('nce.namespace_id')::uuid" in sql_calls[0]
     assert "ORDER BY score DESC, id ASC" in sql_calls[0]

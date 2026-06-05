@@ -18,7 +18,7 @@ func runMCPServer(ctx context.Context, n UserNotifier, appRoot string, env []str
 	}
 	serverPy := filepath.Join(appRoot, "server.py")
 	if _, err := os.Stat(serverPy); err != nil {
-		n.Error("TriMCP", "TriMCP server script (server.py) is missing. Reinstall or repair the application.")
+		n.Error("NCE", "NCE server script (server.py) is missing. Reinstall or repair the application.")
 		return fmt.Errorf("server.py: %w", err)
 	}
 	py := pythonExe()
@@ -39,7 +39,7 @@ func runMCPServer(ctx context.Context, n UserNotifier, appRoot string, env []str
 		if log != nil {
 			log.Warn("server_exit", "err", err)
 		}
-		n.Error("TriMCP", "The TriMCP server stopped unexpectedly. See the log file for details.")
+		n.Error("NCE", "The NCE server stopped unexpectedly. See the log file for details.")
 		return err
 	}
 	return nil

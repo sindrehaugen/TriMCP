@@ -13,7 +13,7 @@ import os
 
 import pytest
 
-from trimcp.signing import (
+from nce.signing import (
     MasterKey,
     MasterKeyMissingError,
     decrypt_signing_key,
@@ -131,8 +131,8 @@ def test_del_does_not_raise():
 
 
 def test_from_env_with_valid_key(monkeypatch):
-    """from_env() must load TRIMCP_MASTER_KEY and return a MasterKey."""
-    monkeypatch.setenv("TRIMCP_MASTER_KEY", "x" * 32)
+    """from_env() must load NCE_MASTER_KEY and return a MasterKey."""
+    monkeypatch.setenv("NCE_MASTER_KEY", "x" * 32)
     mk = MasterKey.from_env()
     assert isinstance(mk, MasterKey)
     assert len(mk.key_bytes) == 32
@@ -141,15 +141,15 @@ def test_from_env_with_valid_key(monkeypatch):
 
 def test_from_env_with_missing_key(monkeypatch):
     """from_env() must raise MasterKeyMissingError when env var is absent."""
-    monkeypatch.delenv("TRIMCP_MASTER_KEY", raising=False)
-    with pytest.raises(MasterKeyMissingError, match="TRIMCP_MASTER_KEY"):
+    monkeypatch.delenv("NCE_MASTER_KEY", raising=False)
+    with pytest.raises(MasterKeyMissingError, match="NCE_MASTER_KEY"):
         MasterKey.from_env()
 
 
 def test_from_env_with_empty_key(monkeypatch):
     """from_env() must raise MasterKeyMissingError when env var is empty."""
-    monkeypatch.setenv("TRIMCP_MASTER_KEY", "   ")
-    with pytest.raises(MasterKeyMissingError, match="TRIMCP_MASTER_KEY"):
+    monkeypatch.setenv("NCE_MASTER_KEY", "   ")
+    with pytest.raises(MasterKeyMissingError, match="NCE_MASTER_KEY"):
         MasterKey.from_env()
 
 
@@ -171,7 +171,7 @@ def test_init_rejects_short_key():
 
 def test_require_master_key_returns_masterkey(monkeypatch):
     """require_master_key() must return a usable MasterKey."""
-    monkeypatch.setenv("TRIMCP_MASTER_KEY", "y" * 32)
+    monkeypatch.setenv("NCE_MASTER_KEY", "y" * 32)
     mk = require_master_key()
     assert isinstance(mk, MasterKey)
     aes = mk.derive_aes_key()
@@ -258,7 +258,7 @@ def test_key_bytes_memoryview_invalidated():
 
 def test_mutable_key_buffer_creation_and_raw():
     """MutableKeyBuffer must wrap a bytearray and expose a memoryview."""
-    from trimcp.signing import MutableKeyBuffer
+    from nce.signing import MutableKeyBuffer
 
     buf = MutableKeyBuffer(b"\x01" * 32)
     raw = buf.raw
@@ -269,7 +269,7 @@ def test_mutable_key_buffer_creation_and_raw():
 
 def test_mutable_key_buffer_zero_overwrites():
     """zero() must set all bytes to 0."""
-    from trimcp.signing import MutableKeyBuffer
+    from nce.signing import MutableKeyBuffer
 
     buf = MutableKeyBuffer(b"\xff" * 32)
     buf.zero()
@@ -280,7 +280,7 @@ def test_mutable_key_buffer_zero_overwrites():
 
 def test_mutable_key_buffer_zero_is_idempotent():
     """Calling zero() multiple times must not raise."""
-    from trimcp.signing import MutableKeyBuffer
+    from nce.signing import MutableKeyBuffer
 
     buf = MutableKeyBuffer(b"\xab" * 32)
     buf.zero()
@@ -292,7 +292,7 @@ def test_mutable_key_buffer_zero_is_idempotent():
 
 def test_mutable_key_buffer_bytes_after_zero_raises():
     """bytes() on a zeroed buffer must raise ValueError."""
-    from trimcp.signing import MutableKeyBuffer
+    from nce.signing import MutableKeyBuffer
 
     buf = MutableKeyBuffer(b"\xcd" * 32)
     buf.zero()
@@ -302,7 +302,7 @@ def test_mutable_key_buffer_bytes_after_zero_raises():
 
 def test_mutable_key_buffer_bytes_before_zero():
     """bytes() on a live buffer must return a copy of the key."""
-    from trimcp.signing import MutableKeyBuffer
+    from nce.signing import MutableKeyBuffer
 
     buf = MutableKeyBuffer(b"\xef" * 32)
     result = bytes(buf)
@@ -314,7 +314,7 @@ def test_mutable_key_buffer_bytes_before_zero():
 
 def test_mutable_key_buffer_del_zeroes():
     """__del__ must call zero() when the object is garbage collected."""
-    from trimcp.signing import MutableKeyBuffer
+    from nce.signing import MutableKeyBuffer
 
     buf = MutableKeyBuffer(b"\x42" * 32)
     buf_ref = buf._buf  # keep reference to bytearray for post-GC inspection
@@ -325,7 +325,7 @@ def test_mutable_key_buffer_del_zeroes():
 
 def test_mutable_key_buffer_del_does_not_raise():
     """__del__ must never propagate exceptions."""
-    from trimcp.signing import MutableKeyBuffer
+    from nce.signing import MutableKeyBuffer
 
     buf = MutableKeyBuffer(b"\x99" * 32)
     buf._buf = None  # corrupt state
@@ -344,7 +344,7 @@ def test_mutable_key_buffer_del_does_not_raise():
 def test_from_env_ctypes_loads_correct_key(monkeypatch):
     """from_env() via ctypes must load the exact key string."""
     test_key = "a" * 32
-    monkeypatch.setenv("TRIMCP_MASTER_KEY", test_key)
+    monkeypatch.setenv("NCE_MASTER_KEY", test_key)
     mk = MasterKey.from_env()
     assert bytes(mk.key_bytes) == test_key.encode("utf-8")
     mk.zero()
@@ -354,7 +354,7 @@ def test_from_env_ctypes_with_unicode(monkeypatch):
     """from_env() must handle non-ASCII UTF-8 characters correctly."""
     # A key with accented characters to test UTF-8 encoding path
     test_key = "Å" * 16  # 32 bytes in UTF-8 (2 bytes per char)
-    monkeypatch.setenv("TRIMCP_MASTER_KEY", test_key)
+    monkeypatch.setenv("NCE_MASTER_KEY", test_key)
     mk = MasterKey.from_env()
     assert len(mk.key_bytes) == 32
     assert bytes(mk.key_bytes) == test_key.encode("utf-8")
@@ -363,14 +363,14 @@ def test_from_env_ctypes_with_unicode(monkeypatch):
 
 def test_from_env_rejects_short_key(monkeypatch):
     """from_env() must reject keys shorter than 32 bytes."""
-    monkeypatch.setenv("TRIMCP_MASTER_KEY", "short")
+    monkeypatch.setenv("NCE_MASTER_KEY", "short")
     with pytest.raises(MasterKeyMissingError, match="at least 32 bytes"):
         MasterKey.from_env()
 
 
 def test_from_env_strips_whitespace(monkeypatch):
     """from_env() must strip leading/trailing whitespace from env var."""
-    monkeypatch.setenv("TRIMCP_MASTER_KEY", "  " + "x" * 32 + "  ")
+    monkeypatch.setenv("NCE_MASTER_KEY", "  " + "x" * 32 + "  ")
     mk = MasterKey.from_env()
     assert bytes(mk.key_bytes) == b"x" * 32
     mk.zero()
@@ -385,7 +385,7 @@ def test_cached_key_zero_on_replacement():
     """Replacing _key_cache must zero the old MutableKeyBuffer."""
     import time as _time
 
-    from trimcp.signing import MutableKeyBuffer, _CachedKey, _key_cache
+    from nce.signing import MutableKeyBuffer, _CachedKey, _key_cache
 
     # Save original cache
     original = _key_cache
@@ -398,7 +398,7 @@ def test_cached_key_zero_on_replacement():
             expires_at=_time.monotonic() + 300,
         )
         # Directly assign for test purposes
-        import trimcp.signing as signing_mod
+        import nce.signing as signing_mod
 
         signing_mod._key_cache = _key_cache_ref
 

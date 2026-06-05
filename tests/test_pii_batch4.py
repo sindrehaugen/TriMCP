@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from trimcp.models import NamespacePIIConfig, PIIEntity, PIIPolicy
-from trimcp.pii import _luhn_valid, _merge_overlapping_entities, _scan_sync, process
+from nce.models import NamespacePIIConfig, PIIEntity, PIIPolicy
+from nce.pii import _luhn_valid, _merge_overlapping_entities, _scan_sync, process
 
 
 def test_luhn_valid_accepts_known_card():
@@ -93,7 +93,7 @@ async def test_process_three_entity_redaction_matches_naive_slicing():
         policy=PIIPolicy.redact,
     )
 
-    with patch("trimcp.pii.scan", new_callable=AsyncMock, return_value=entities):
+    with patch("nce.pii.scan", new_callable=AsyncMock, return_value=entities):
         out = await process(text, cfg)
 
     expected = _naive_redact(text, entities)
@@ -119,7 +119,7 @@ async def test_process_many_entities_redacts_correctly():
         e.token = "<EMAIL>"
     cfg = NamespacePIIConfig(entity_types=["EMAIL"], policy=PIIPolicy.redact)
 
-    with patch("trimcp.pii.scan", new_callable=AsyncMock, return_value=entities):
+    with patch("nce.pii.scan", new_callable=AsyncMock, return_value=entities):
         out = await process(text, cfg)
 
     assert out.sanitized_text == _naive_redact(text, entities)

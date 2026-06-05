@@ -1,4 +1,4 @@
-# TriMCP v1.0 — Local Development docker-compose override template.
+# NCE v1.0 — Local Development docker-compose override template.
 #
 # Copy this file to 'docker-compose.override.yml' in the project root to enable
 # developer-friendly customizations for local development (CPU defaults, hot reloading,
@@ -38,34 +38,34 @@ services:
       - "127.0.0.1:9003:9001" # MinIO Web Console UI
 
   # 3. Mount Local Codebase for Hot-Reloading
-  # Mounts your local 'trimcp' package directly inside the running containers.
+  # Mounts your local 'nce' package directly inside the running containers.
   # This lets you edit Python files on your host machine and see the changes reflected
   # in Uvicorn/RQ workers instantly without having to run 'docker compose build'.
   admin:
     volumes:
-      - ./trimcp:/app/trimcp
+      - ./nce:/app/nce
       - ./admin_server.py:/app/admin_server.py
     environment:
-      - TRIMCP_ENV=dev
+      - NCE_ENV=dev
       - LOG_LEVEL=DEBUG
 
   a2a:
     volumes:
-      - ./trimcp:/app/trimcp
+      - ./nce:/app/nce
     environment:
-      - TRIMCP_ENV=dev
+      - NCE_ENV=dev
       - LOG_LEVEL=DEBUG
 
   webhook-receiver:
     volumes:
-      - ./trimcp:/app/trimcp
+      - ./nce:/app/nce
     environment:
-      - TRIMCP_ENV=dev
+      - NCE_ENV=dev
       - LOG_LEVEL=DEBUG
 
   cron:
     volumes:
-      - ./trimcp:/app/trimcp
+      - ./nce:/app/nce
     environment:
-      - TRIMCP_ENV=dev
+      - NCE_ENV=dev
       - LOG_LEVEL=DEBUG

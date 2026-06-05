@@ -1,5 +1,5 @@
 """
-Tests for ``trimcp.net_safety`` URL guards — length limits, credential rejection,
+Tests for ``nce.net_safety`` URL guards — length limits, credential rejection,
 parsed prefix matching, DNS fail-closed behaviour, and log-safe host truncation.
 
 DNS is mocked via ``monkeypatch`` (same pattern as ``tests/test_ssrf_guard.py``).
@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-import trimcp.net_safety as net_safety
-from trimcp.net_safety import (
+import nce.net_safety as net_safety
+from nce.net_safety import (
     ALLOWED_WEBHOOK_URL_PREFIXES,
     BridgeURLValidationError,
     assert_url_allowed_prefix,
@@ -33,14 +33,14 @@ MAX_URL_LEN = 4096
 def _require_max_url_len() -> int:
     value = getattr(net_safety, "_MAX_URL_LEN", None)
     if value is None:
-        pytest.fail("_MAX_URL_LEN is not defined in trimcp.net_safety")
+        pytest.fail("_MAX_URL_LEN is not defined in nce.net_safety")
     return value
 
 
 def _require_url_matches_prefix():
     fn = getattr(net_safety, "_url_matches_prefix", None)
     if fn is None:
-        pytest.fail("_url_matches_prefix is not defined in trimcp.net_safety")
+        pytest.fail("_url_matches_prefix is not defined in nce.net_safety")
     return fn
 
 
@@ -134,7 +134,7 @@ class TestUrlLengthLimits:
 
     @pytest.fixture(autouse=True)
     def _public_dns(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
 
     def test_validate_bridge_webhook_base_url_accepts_4096_chars(self):
         base = _url_exact_length("https://hooks.example.com/callback", MAX_URL_LEN)
@@ -166,7 +166,7 @@ class TestUrlLengthLimits:
         kwargs: dict,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
 
         if validator is validate_bridge_webhook_base_url:
             url = _url_exact_length("https://hooks.example.com/callback", MAX_URL_LEN + 1)
@@ -204,7 +204,7 @@ class TestUrlLengthLimits:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.setattr(
-            "trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141")
+            "nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141")
         )
         url = _url_exact_length(
             "https://graph.microsoft.com/v1.0/sites/abc/drives/def/root",
@@ -227,7 +227,7 @@ class TestCredentialRejection:
 
     @pytest.fixture(autouse=True)
     def _public_dns(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
 
     @pytest.mark.parametrize(
         "url",
@@ -295,7 +295,7 @@ class TestCredentialRejection:
 
     def test_https_evil_com_passes_credential_check_only(self, monkeypatch: pytest.MonkeyPatch):
         """``https://evil.com`` must not trip the userinfo guard (may fail prefix/SSRF)."""
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         with pytest.raises(BridgeURLValidationError, match="must start with|prefix"):
             validate_webhook_payload_url("https://evil.com/resource")
         assert validate_bridge_webhook_base_url("https://evil.com/callback") == (
@@ -313,7 +313,7 @@ class TestParsedPrefixMatching:
     @pytest.fixture(autouse=True)
     def _graph_public_ip(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
-            "trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141")
+            "nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141")
         )
 
     def test_assert_url_allowed_prefix_exact_match(self):
@@ -342,7 +342,7 @@ class TestParsedPrefixMatching:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.setattr(
-            "trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141")
+            "nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141")
         )
         url = "https://graph.microsoft.com/v1.0/me/messages"
         assert validate_webhook_payload_url(url) == url
@@ -350,7 +350,7 @@ class TestParsedPrefixMatching:
     def test_validate_webhook_payload_url_rejects_subdomain_bypass(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         url = "https://graph.microsoft.com.evil.com/v1.0/me/messages"
         with pytest.raises(BridgeURLValidationError, match="prefix|start with"):
             validate_webhook_payload_url(url)
@@ -358,7 +358,7 @@ class TestParsedPrefixMatching:
     def test_validate_webhook_payload_url_rejects_credential_bypass(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         url = "https://graph.microsoft.com@evil.com/v1.0/me/messages"
         with pytest.raises(BridgeURLValidationError, match="prefix|start with|credential"):
             validate_webhook_payload_url(url)
@@ -371,7 +371,7 @@ class TestParsedPrefixMatching:
 
 class TestAssertUrlAllowedPrefixDnsFailClosed:
     def test_dns_gaierror_raises_bridge_validation_error(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _fail_dns)
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _fail_dns)
         with pytest.raises(BridgeURLValidationError, match="resolve|DNS|gaierror|host"):
             assert_url_allowed_prefix(
                 "https://graph.microsoft.com/v1.0/me/messages",
@@ -388,9 +388,9 @@ class TestAssertUrlAllowedPrefixDnsFailClosed:
         def _fail_dns_unexpected(*_args: Any, **_kwargs: Any) -> list:
             raise OSError("unexpected resolver failure")
 
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _fail_dns_unexpected)
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _fail_dns_unexpected)
 
-        with caplog.at_level(logging.WARNING, logger="trimcp.net_safety"):
+        with caplog.at_level(logging.WARNING, logger="nce.net_safety"):
             with pytest.raises(BridgeURLValidationError, match="DNS resolution failed"):
                 assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
 
@@ -428,7 +428,7 @@ def _longest_hostname_substring_in_log(message: str) -> str | None:
 class TestValidateWebhookPayloadUrlNetSafety:
     def test_accepts_valid_https_graph_url(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
-            "trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141")
+            "nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141")
         )
         url = "https://graph.microsoft.com/v1.0/sites/abc/drives/def/root"
         assert validate_webhook_payload_url(url) == url
@@ -438,7 +438,7 @@ class TestValidateWebhookPayloadUrlNetSafety:
             validate_webhook_payload_url("http://graph.microsoft.com/v1.0/me")
 
     def test_rejects_loopback_resolution(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("127.0.0.1"))
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("127.0.0.1"))
         with pytest.raises(BridgeURLValidationError, match="non-public"):
             validate_webhook_payload_url("https://graph.microsoft.com/v1.0/me")
 
@@ -461,9 +461,9 @@ class TestValidateWebhookPayloadUrlNetSafety:
         def _weird_dns(_host: str, *_a: Any, **_kw: Any) -> list:
             raise OSError("mock resolution failure")
 
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _weird_dns)
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _weird_dns)
 
-        with caplog.at_level(logging.WARNING, logger="trimcp.net_safety"):
+        with caplog.at_level(logging.WARNING, logger="nce.net_safety"):
             try:
                 validate_webhook_payload_url(url)
             except BridgeURLValidationError:
@@ -487,27 +487,27 @@ class TestValidateWebhookPayloadUrlNetSafety:
 
 class TestValidateExtractorUrlNetSafety:
     def test_dns_failure_raises(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _fail_dns)
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _fail_dns)
         with pytest.raises(BridgeURLValidationError, match="resolve|cannot resolve|DNS"):
             validate_extractor_url("https://does-not-exist.invalid/api")
 
     def test_rejects_private_192_168(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
-            "trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("192.168.1.1")
+            "nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("192.168.1.1")
         )
         with pytest.raises(BridgeURLValidationError, match="non-public"):
             validate_extractor_url("https://internal.corp/api")
 
     def test_rejects_link_local_metadata_ip(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
-            "trimcp.net_safety.socket.getaddrinfo",
+            "nce.net_safety.socket.getaddrinfo",
             _mock_getaddrinfo("169.254.169.254"),
         )
         with pytest.raises(BridgeURLValidationError, match="non-public"):
             validate_extractor_url("https://metadata.example/latest/meta-data")
 
     def test_accepts_public_https_host(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("52.32.1.10"))
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("52.32.1.10"))
         url = "https://api.lucid.co/v1/documents"
         assert validate_extractor_url(url) == url
 
@@ -519,12 +519,12 @@ class TestValidateExtractorUrlNetSafety:
 
 class TestValidateBridgeWebhookBaseUrlNetSafety:
     def test_accepts_https_public_base(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
-        base = "https://hooks.example.com/trimcp/webhooks"
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        base = "https://hooks.example.com/nce/webhooks"
         assert validate_bridge_webhook_base_url(base) == base
 
     def test_rejects_http_for_non_loopback(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr("trimcp.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
+        monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         with pytest.raises(BridgeURLValidationError, match="https"):
             validate_bridge_webhook_base_url("http://hooks.example.com/callback")
 
