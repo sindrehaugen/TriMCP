@@ -13,7 +13,18 @@ Longer-horizon roadmap items (universal installers, 300+ language packs, broad f
 - **Quotas & auth**: Namespace-scoped consumption and HMAC-aware admin API patterns with deep v1.0 health monitoring.
 - **Cognitive workers**: **`python -m nce.cron`** — APScheduler jobs for **document-bridge renewal** and **`ReembeddingWorker`** sweeps; **`ConsolidationWorker`** (`nce/consolidation.py`) for sleep-style abstraction (integrate with your scheduler); MCP startup runs **orphan GC** (`run_gc_loop`).
 - **MCP tools**: Memory, media, code indexing (RQ async), bridges, salience, contradictions, embedding migration, **replay** (`replay_observe` / `replay_fork` / `replay_status`), and more — see `TOOLS` in `server.py`.
-- **Quad-DB + Saga**: Mongo payload → Postgres vectors/KG, with rollback on failure; see diagram below.
+- **Quad-DB + Saga**: Mongo payload → Postgres vectors/KG, with rollback on failure.
+
+## Phase 3 Capabilities (NetBox & Cognitive Extensions)
+
+- **NetBox Integrations**:
+  - **Reconciliation & Staging**: Automatic discovery reconciliation of live topologies against NetBox inventories. Stages change proposals via the NetBox Branching API, ensuring absolute production safety.
+  - **GraphQL Infrastructure Topology**: Undirected physical infrastructure parsing with polymorphic cable terminations and parallel edge max-weight unification.
+  - **Circuit Causal Escalation**: Evaluation of circuit outage causal impact using do-calculus, auto-triggering structured provider escalations.
+- **Neuromorphic Spreading Activation**: Symmetrical/bidirectional edge weight updates (`adapt_synaptic_weights`) and membrane potential clamping (`max_charge = 10.0`) preventing mathematical overflows.
+- **Longitudinal Stress Tracking**: Bio-metric operator stress forecasting implementing exponential smoothing, frustration trending, and burnout standby weight redistribution.
+- **Active Learning Queue**: Micro-confirmation enqueuing system for low-confidence memories ($R < 0.65$), featuring gamified XP milestones and streak multipliers.
+- **NetBox Cognitive Dashboard Plugin**: Standalone PyPI-compatible package deploying a glassmorphic dashboard panel inside NetBox detail pages with live incident lists, SVG trends, and a timeline scrubber bounded by Postgres tenant RLS.
 
 ## v1.0 architecture (MCP, temporal, A2A, workers)
 
@@ -188,27 +199,67 @@ NCE/
 │   ├── __init__.py
 │   ├── orchestrator.py      # Core Saga engine + Quad-Stack connections
 │   ├── config.py            # Configuration loading
+│   ├── active_learning.py   # Active learning queue & operator gamification
 │   ├── embeddings.py        # Jina embeddings (thread executor + stub fallback)
 │   ├── ast_parser.py        # Tree-sitter AST parser + line-splitter fallback
 │   ├── graph_extractor.py   # Entity + relation extraction (spaCy / regex)
-│   ├── graph_query.py       # GraphRAG BFS traverser
+│   ├── graph_query.py       # GraphRAG BFS traverser & SpikingActivationEngine
 │   ├── temporal.py          # as_of parsing (time-travel queries)
 │   ├── a2a.py               # Agent-to-agent grants + token verify
 │   ├── a2a_server.py        # A2A JSON-RPC / Starlette app
 │   ├── cron.py              # Bridge renewal + re-embedding scheduler
 │   ├── reembedding_worker.py # Batch re-embed sweep
-│   ├── consolidation.py    # Sleep / cluster consolidation (LLM)
+│   ├── consolidation.py     # Sleep / cluster consolidation (LLM)
 │   ├── garbage_collector.py # Orphan GC (paginated, retry-enabled)
 │   ├── notifications.py     # Webhook / alert notification dispatcher
-│   └── tasks.py             # RQ async tasks and indexing logic
+│   ├── tasks.py             # RQ async tasks and indexing logic
+│   ├── analytics/
+│   │   └── stress.py        # Biometric stress tracking & VAD exhaustion models
+│   ├── causal/
+│   │   ├── chrono.py        # Counterfactual timeline branching
+│   │   ├── correlation.py   # Pearl's causal do-calculus evaluations
+│   │   └── synthesis.py     # MTBF Synthesis & predictive failure generator
+│   └── vertical_modules/
+│       └── netbox/
+│           ├── circuits.py  # NetBox circuits fetcher & provider escalator
+│           ├── contacts.py  # NetBox contacts to NCE operator profiles sync
+│           ├── discovery.py # Reconciler & Branching API write-back stage
+│           ├── graphql_activation.py # GraphQL multihop topology extraction
+│           └── mtbf.py      # Device forecasting and Weibull age decay
+├── src/
+│   └── nce-netbox-plugin/   # PyPI-compatible NetBox Dashboard Plugin package
+│       ├── pyproject.toml   # Packager configuration metadata
+│       ├── MANIFEST.in      # Assets recursive inclusion manifest
+│       └── nce_netbox_plugin/
+│           ├── __init__.py  # Configures dashboard layout extensions
+│           ├── template_content.py # DRY panel rendering hook base classes
+│           ├── api/
+│           │   ├── __init__.py
+│           │   ├── simulators.py   # Fallback simulated telemetry generator
+│           │   ├── urls.py         # REST URL endpoints
+│           │   └── views.py        # Scoped RLS stats with temporal playback
+│           ├── static/
+│           │   └── nce_netbox_plugin/css/nce_netbox_plugin.css
+│           └── templates/
+│               └── nce_netbox_plugin/cognitive_panel.html
 ├── tests/
 │   ├── __init__.py
 │   ├── test_integration_engine.py  # End-to-end integration tests
 │   ├── test_mcp_cache.py           # API Caching logic testing
 │   ├── test_notifications.py       # Notification dispatcher tests
-│   └── test_smoke_stdio.py         # Smoke testing for Stdio MCP
+│   ├── test_smoke_stdio.py         # Smoke testing for Stdio MCP
+│   ├── fixtures/
+│   │   └── mock_db.py              # Shared mock connection/transaction/pool fixture
+│   └── unit/
+│       ├── test_atms.py            # Truth Maintenance System tests
+│       ├── test_causal.py          # Causal do-calculus & graph extraction tests
+│       ├── test_chrono.py          # Chrono time travel & branching tests
+│       ├── test_neuromorphic.py    # Potential clamping & bidirectional updates tests
+│       ├── test_stress.py          # Operator stress & burnout standby tests
+│       └── test_synthesis.py       # Predictive synthesis & MTBF tests
 └── docs/                    # Architectural diagrams and documentation
 ```
+
 
 ## 🔌 MCP Tool Reference
 
