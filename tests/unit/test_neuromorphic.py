@@ -28,11 +28,14 @@ from nce.graph_query import (
 
 
 class MockTransaction:
+    def __init__(self, conn: MockConnection) -> None:
+        self.conn = conn
+
     async def __aenter__(self) -> None:
-        pass
+        self.conn.transaction_enters += 1
 
     async def __aexit__(self, exc_type: type | None, exc_val: Exception | None, exc_tb: Any) -> None:
-        pass
+        self.conn.transaction_exits += 1
 
 
 class MockConnection:
@@ -40,9 +43,11 @@ class MockConnection:
         self.fetch_results = fetch_results or {}
         self.execute_calls: list[tuple[str, tuple]] = []
         self.fetch_calls: list[tuple[str, tuple]] = []
+        self.transaction_enters = 0
+        self.transaction_exits = 0
 
     def transaction(self) -> MockTransaction:
-        return MockTransaction()
+        return MockTransaction(self)
 
     async def fetch(self, query: str, *args: Any) -> list[dict]:
         self.fetch_calls.append((query, args))
@@ -79,6 +84,7 @@ class TestSpikingActivationEngine:
         assert engine.decay == 0.8
         assert engine.alpha == 0.5
         assert len(engine.potentials) == 0
+        assert len(engine.max_potentials) == 0
         assert len(engine.fired_nodes) == 0
 
     def test_single_step_firing_and_reset(self) -> None:
@@ -97,6 +103,9 @@ class TestSpikingActivationEngine:
         # Plus transfer from node_A: alpha * V_u * w = 1.0 * 0.6 * 0.5 = 0.3
         # Total node_B = 0.32 + 0.3 = 0.62
         assert pytest.approx(engine.potentials["node_B"]) == 0.62
+        # max_potentials should track peak potential: node_A remains 0.6 (initial), node_B becomes 0.62 (new peak)
+        assert engine.max_potentials["node_A"] == 0.6
+        assert pytest.approx(engine.max_potentials["node_B"]) == 0.62
 
     def test_decay_without_firing(self) -> None:
         engine = SpikingActivationEngine(theta=1.0, decay=0.9, alpha=1.0)
@@ -107,6 +116,22 @@ class TestSpikingActivationEngine:
 
         assert fired == set()
         assert engine.potentials["node_A"] == pytest.approx(0.45)
+        # max_potentials keeps the initial peak of 0.5
+        assert engine.max_potentials["node_A"] == 0.5
+
+    def test_historical_max_potentials_peak(self) -> None:
+        engine = SpikingActivationEngine(theta=0.5, decay=0.5, alpha=1.0)
+        engine.set_potentials({"node_A": 0.4})
+        
+        # In step 1, node_A does not fire, decays to 0.2
+        engine.step({})
+        assert engine.potentials["node_A"] == 0.2
+        assert engine.max_potentials["node_A"] == 0.4  # Retains historical peak
+        
+        # In step 2, decays further to 0.1
+        engine.step({})
+        assert engine.potentials["node_A"] == 0.1
+        assert engine.max_potentials["node_A"] == 0.4  # Still retains historical peak
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +264,28 @@ class TestAdaptSynapticWeights:
                 decision_outcome="success",
                 reinforced_edges=[("device_A", "device_B")],
             )
+
+    async def test_adapt_synaptic_weights_savepoint_isolation(self) -> None:
+        ns = uuid.uuid4()
+        fetch_results = {
+            "select id, confidence from kg_edges": [{"id": uuid.uuid4(), "confidence": 0.5}],
+            "select id, confidence_score from topology_graph": [{"id": uuid.uuid4(), "confidence_score": 0.6}],
+        }
+        conn = MockConnection(fetch_results)
+
+        count = await adapt_synaptic_weights(
+            conn=conn,
+            namespace_id=ns,
+            decision_outcome="success",
+            reinforced_edges=[("device_A", "device_B"), ("device_C", "device_D")],
+            learning_rate=0.1,
+        )
+
+        assert count == 4
+        # Verify savepoints were created (transaction entered once per edge loop iteration)
+        assert conn.transaction_enters == 2
+        assert conn.transaction_exits == 2
+
 
 
 # ---------------------------------------------------------------------------
@@ -478,3 +525,65 @@ class TestNeuromorphicSearch:
         node_labels = {n.label for n in subgraph.nodes}
         assert "switch_01" in node_labels
         assert "router_02" in node_labels
+
+    async def test_neuromorphic_search_decayed_node_retention(self) -> None:
+        ns = uuid.uuid4()
+        conn = MockConnection()
+        pool = MockPool(conn)
+        mongo = MagicMock()
+
+        async def embed_fn(q):
+            return [0.1, 0.2]
+
+        traverser = GraphRAGTraverser(
+            pg_pool=pool,
+            mongo_client=mongo,
+            embedding_fn=embed_fn,
+        )
+
+        traverser._find_anchor = AsyncMock(return_value=[
+            GraphNode(label="switch_01", entity_type="device", payload_ref=None, distance=0.1)
+        ])
+        
+        # switch_01 connected to router_02. With high decay (e.g. 0.2) and max_depth = 5,
+        # router_02 potential will decay to:
+        # Step 1: switch_01 fires (potential 1.0). router_02 potential = alpha (1.0) * 1.0 * 0.4 = 0.4.
+        # Step 2: router_02 decays to 0.4 * 0.2 = 0.08.
+        # Step 3: router_02 decays to 0.08 * 0.2 = 0.016.
+        # Step 4: router_02 decays to 0.016 * 0.2 = 0.0032.
+        # Step 5: router_02 decays to 0.0032 * 0.2 = 0.00064.
+        # Threshold is theta = 0.5. sub_threshold = 0.05.
+        # At final tick, router_02 potential (0.00064) is way below sub_threshold (0.05).
+        # But its peak potential was 0.4 (which is >= 0.05).
+        # It must be retained because of max_potentials tracking.
+        traverser._bfs = AsyncMock(return_value=(
+            {"switch_01", "router_02"},
+            [
+                GraphEdge(subject="switch_01", predicate="connected_to", obj="router_02", confidence=0.4, payload_ref=None),
+            ]
+        ))
+
+        conn.fetch_results = {
+            "select label, entity_type, payload_ref from kg_nodes": [
+                {"label": "switch_01", "entity_type": "device", "payload_ref": None},
+                {"label": "router_02", "entity_type": "device", "payload_ref": None},
+            ]
+        }
+
+        traverser._hydrate_sources = AsyncMock(return_value=[])
+
+        # Run neuromorphic search with max_depth=5 and decay=0.2
+        subgraph = await traverser.neuromorphic_search(
+            query="switch status",
+            namespace_id=str(ns),
+            max_depth=5,
+            theta=0.5,
+            decay=0.2,
+            alpha=1.0,
+        )
+
+        node_labels = {n.label for n in subgraph.nodes}
+        assert "switch_01" in node_labels
+        # router_02 must be retained despite decay
+        assert "router_02" in node_labels
+

@@ -128,11 +128,13 @@ class SpikingActivationEngine:
         self.decay = decay
         self.alpha = alpha
         self.potentials: dict[str, float] = {}
+        self.max_potentials: dict[str, float] = {}  # Track maximum potential reached by any node
         self.fired_nodes: set[str] = set()
 
     def set_potentials(self, initial_potentials: dict[str, float]) -> None:
         """Set the initial membrane potentials for nodes."""
         self.potentials = {k: float(v) for k, v in initial_potentials.items()}
+        self.max_potentials = {k: float(v) for k, v in initial_potentials.items()}
 
     def step(self, graph_edges: dict[str, list[tuple[str, float]]]) -> set[str]:
         """
@@ -171,6 +173,10 @@ class SpikingActivationEngine:
         # Apply transfers to potentials
         for node, delta in transfers.items():
             self.potentials[node] = self.potentials.get(node, 0.0) + delta
+
+        # Update historical maximum potentials
+        for node, pot in self.potentials.items():
+            self.max_potentials[node] = max(self.max_potentials.get(node, 0.0), pot)
 
         return fired
 
@@ -211,123 +217,121 @@ async def adapt_synaptic_weights(
             log.warning("Invalid edge format in adapt_synaptic_weights: %s", edge)
             continue
 
-        # 1. Update kg_edges
         try:
-            if has_pred:
-                # Find exact row with row lock (NOWAIT)
-                rows = await conn.fetch(
-                    """
-                    SELECT id, confidence 
-                    FROM kg_edges 
-                    WHERE namespace_id = $1::uuid 
-                      AND subject_label = $2 
-                      AND predicate = $3 
-                      AND object_label = $4 
-                    FOR UPDATE NOWAIT
-                    """,
-                    ns_uuid,
-                    src,
-                    pred_or_type,
-                    tgt,
-                )
-            else:
-                # Find matching rows without predicate
-                rows = await conn.fetch(
-                    """
-                    SELECT id, confidence 
-                    FROM kg_edges 
-                    WHERE namespace_id = $1::uuid 
-                      AND (
-                          (subject_label = $2 AND object_label = $3)
-                          OR (subject_label = $3 AND object_label = $2)
-                      )
-                    FOR UPDATE NOWAIT
-                    """,
-                    ns_uuid,
-                    src,
-                    tgt,
-                )
-
-            for r in rows:
-                w = r["confidence"]
-                if decision_outcome == "success":
-                    w_new = w + learning_rate * (1.0 - w)
+            async with conn.transaction():
+                # 1. Update kg_edges
+                if has_pred:
+                    # Find exact row with row lock (NOWAIT)
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, confidence 
+                        FROM kg_edges 
+                        WHERE namespace_id = $1::uuid 
+                          AND subject_label = $2 
+                          AND predicate = $3 
+                          AND object_label = $4 
+                        FOR UPDATE NOWAIT
+                        """,
+                        ns_uuid,
+                        src,
+                        pred_or_type,
+                        tgt,
+                    )
                 else:
-                    w_new = w - learning_rate * w
-                w_new = max(0.0, min(1.0, w_new))
+                    # Find matching rows without predicate
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, confidence 
+                        FROM kg_edges 
+                        WHERE namespace_id = $1::uuid 
+                          AND (
+                              (subject_label = $2 AND object_label = $3)
+                              OR (subject_label = $3 AND object_label = $2)
+                          )
+                        FOR UPDATE NOWAIT
+                        """,
+                        ns_uuid,
+                        src,
+                        tgt,
+                    )
 
-                await conn.execute(
-                    """
-                    UPDATE kg_edges
-                    SET confidence = $1, updated_at = NOW()
-                    WHERE id = $2 AND namespace_id = $3::uuid
-                    """,
-                    w_new,
-                    r["id"],
-                    ns_uuid,
-                )
-                updated_count += 1
-        except asyncpg.LockNotAvailableError:
-            log.warning("Lock not available for kg_edges update on edge %s", edge)
+                for r in rows:
+                    w = r["confidence"]
+                    if decision_outcome == "success":
+                        w_new = w + learning_rate * (1.0 - w)
+                    else:
+                        w_new = w - learning_rate * w
+                    w_new = max(0.0, min(1.0, w_new))
 
-        # 2. Update topology_graph
-        try:
-            if has_pred:
-                rows_topo = await conn.fetch(
-                    """
-                    SELECT id, confidence_score 
-                    FROM topology_graph 
-                    WHERE namespace_id = $1::uuid 
-                      AND source_node_id = $2 
-                      AND edge_type = $3 
-                      AND target_node_id = $4 
-                      AND valid_to IS NULL
-                    FOR UPDATE NOWAIT
-                    """,
-                    ns_uuid,
-                    src,
-                    pred_or_type,
-                    tgt,
-                )
-            else:
-                rows_topo = await conn.fetch(
-                    """
-                    SELECT id, confidence_score 
-                    FROM topology_graph 
-                    WHERE namespace_id = $1::uuid 
-                      AND (
-                          (source_node_id = $2 AND target_node_id = $3)
-                          OR (source_node_id = $3 AND target_node_id = $2)
-                      )
-                      AND valid_to IS NULL
-                    FOR UPDATE NOWAIT
-                    """,
-                    ns_uuid,
-                    src,
-                    tgt,
-                )
+                    await conn.execute(
+                        """
+                        UPDATE kg_edges
+                        SET confidence = $1, updated_at = NOW()
+                        WHERE id = $2 AND namespace_id = $3::uuid
+                        """,
+                        w_new,
+                        r["id"],
+                        ns_uuid,
+                    )
+                    updated_count += 1
 
-            for r in rows_topo:
-                w = r["confidence_score"]
-                if decision_outcome == "success":
-                    w_new = w + learning_rate * (1.0 - w)
+                # 2. Update topology_graph
+                if has_pred:
+                    rows_topo = await conn.fetch(
+                        """
+                        SELECT id, confidence_score 
+                        FROM topology_graph 
+                        WHERE namespace_id = $1::uuid 
+                          AND source_node_id = $2 
+                          AND edge_type = $3 
+                          AND target_node_id = $4 
+                          AND valid_to IS NULL
+                        FOR UPDATE NOWAIT
+                        """,
+                        ns_uuid,
+                        src,
+                        pred_or_type,
+                        tgt,
+                    )
                 else:
-                    w_new = w - learning_rate * w
-                w_new = max(0.0, min(1.0, w_new))
+                    rows_topo = await conn.fetch(
+                        """
+                        SELECT id, confidence_score 
+                        FROM topology_graph 
+                        WHERE namespace_id = $1::uuid 
+                          AND (
+                              (source_node_id = $2 AND target_node_id = $3)
+                              OR (source_node_id = $3 AND target_node_id = $2)
+                          )
+                          AND valid_to IS NULL
+                        FOR UPDATE NOWAIT
+                        """,
+                        ns_uuid,
+                        src,
+                        tgt,
+                    )
 
-                await conn.execute(
-                    """
-                    UPDATE topology_graph
-                    SET confidence_score = $1, updated_at = NOW()
-                    WHERE id = $2 AND namespace_id = $3::uuid
-                    """,
-                    w_new,
-                    r["id"],
-                    ns_uuid,
-                )
-                updated_count += 1
+                for r in rows_topo:
+                    w = r["confidence_score"]
+                    if decision_outcome == "success":
+                        w_new = w + learning_rate * (1.0 - w)
+                    else:
+                        w_new = w - learning_rate * w
+                    w_new = max(0.0, min(1.0, w_new))
+
+                    await conn.execute(
+                        """
+                        UPDATE topology_graph
+                        SET confidence_score = $1, updated_at = NOW()
+                        WHERE id = $2 AND namespace_id = $3::uuid
+                        """,
+                        w_new,
+                        r["id"],
+                        ns_uuid,
+                    )
+                    updated_count += 1
         except asyncpg.LockNotAvailableError:
-            log.warning("Lock not available for topology_graph update on edge %s", edge)
+            log.warning("Lock not available for transaction updates on edge %s", edge)
 
     return updated_count
 
@@ -1170,7 +1174,7 @@ class GraphRAGTraverser:
                     active_labels = set(engine.fired_nodes) | {anchor.label}
                     # Also include any nodes that reached at least 10% of firing threshold
                     sub_threshold = actual_theta * 0.1
-                    for node_label, pot in engine.potentials.items():
+                    for node_label, pot in engine.max_potentials.items():
                         if pot >= sub_threshold:
                             active_labels.add(node_label)
 
