@@ -262,10 +262,37 @@ class CausalGraph:
             CausalGraph populated from the current topology_graph rows.
             This is a READ-ONLY snapshot — no telemetry tables are modified.
         """
-        # TD-CAUSAL-2 fix: no f-string interpolation — use parameterised boolean.
-        # PostgreSQL evaluates: ($2 IS FALSE OR tg.valid_to IS NULL)
-        # When active_only=True  → only rows with valid_to IS NULL
-        # When active_only=False → all rows (condition is always true)
+        # Check if a chrono-branch is active
+        from nce.causal.chrono import get_active_branch
+        branch = get_active_branch()
+
+        if branch and branch.get("target_time"):
+            target_time = branch["target_time"]
+            rows = await conn.fetch(
+                """
+                SELECT
+                    tg.source_node_id,
+                    tg.source_node_type,
+                    tg.target_node_id,
+                    tg.target_node_type,
+                    tg.edge_type,
+                    tg.confidence_score,
+                    tg.decay_coefficient,
+                    tg.last_verified
+                FROM topology_graph tg
+                WHERE tg.namespace_id = $1
+                  AND tg.valid_from <= $2::timestamptz
+                  AND (tg.valid_to IS NULL OR tg.valid_to > $2::timestamptz)
+                ORDER BY tg.source_node_id, tg.target_node_id
+                """,
+                namespace_id,
+                target_time,
+            )
+            base_graph = cls.from_rows(rows, namespace_id)
+            from nce.causal.chrono import apply_hypothetical_states
+            return apply_hypothetical_states(base_graph, branch.get("hypothetical_states", {}))
+
+        # Default query for current active graph
         rows = await conn.fetch(
             """
             SELECT
