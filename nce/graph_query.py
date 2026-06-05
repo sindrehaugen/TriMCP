@@ -37,6 +37,8 @@ import asyncpg
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from nce.config import cfg
+
 log = logging.getLogger("nce-graphrag")
 
 MAX_NODES = 50  # hard cap — prevents runaway BFS on dense graphs
@@ -1127,22 +1129,28 @@ class GraphRAGTraverser:
                     )
 
                     # Build the local adjacency list for spreading activation
-                    adj: dict[str, list[tuple[str, float]]] = {}
+                    # Max-weight unify parallel edges to reduce traversal complexity
+                    edge_map: dict[tuple[str, str], float] = {}
                     for e in candidate_edges:
-                        # Spreading activation can traverse bidirectionally in the graph representation
-                        adj.setdefault(e.subject, []).append((e.obj, e.confidence))
-                        adj.setdefault(e.obj, []).append((e.subject, e.confidence))
+                        pair = (e.subject, e.obj)
+                        edge_map[pair] = max(edge_map.get(pair, 0.0), e.confidence)
 
-                    # Scale threshold and initial potential if system telemetry severity > 8
+                    adj: dict[str, list[tuple[str, float]]] = {}
+                    for (src, tgt), conf in edge_map.items():
+                        adj.setdefault(src, []).append((tgt, conf))
+                        adj.setdefault(tgt, []).append((src, conf))
+
+                    # Scale threshold and initial potential if system telemetry severity exceeds configured threshold
                     actual_theta = theta
                     initial_charge = 1.0
-                    if telemetry_severity is not None and telemetry_severity > 8:
-                        actual_theta = 0.25
-                        initial_charge = 2.0
+                    spike_thresh = cfg.NCE_TELEMETRY_SPIKE_THRESHOLD
+                    if telemetry_severity is not None and telemetry_severity > spike_thresh:
+                        actual_theta = cfg.NCE_TELEMETRY_SPIKE_THETA
+                        initial_charge = cfg.NCE_TELEMETRY_SPIKE_CHARGE
                         log.info(
-                            "Telemetry severity spike detected (%.1f > 8). Lowering threshold to %.2f "
+                            "Telemetry severity spike detected (%.1f > %.1f). Lowering threshold to %.2f "
                             "and raising initial charge to %.2f for wider pre-fetching.",
-                            telemetry_severity, actual_theta, initial_charge
+                            telemetry_severity, spike_thresh, actual_theta, initial_charge
                         )
 
                     # Initialize Spiking Neural Engine

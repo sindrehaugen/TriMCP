@@ -372,3 +372,109 @@ class TestNeuromorphicSearch:
         assert "switch_01" in node_labels
         assert "router_02" in node_labels
         assert "host_03" in node_labels
+
+    async def test_neuromorphic_search_edge_unification(self) -> None:
+        ns = uuid.uuid4()
+        conn = MockConnection()
+        pool = MockPool(conn)
+        mongo = MagicMock()
+
+        async def embed_fn(q):
+            return [0.1, 0.2]
+
+        traverser = GraphRAGTraverser(
+            pg_pool=pool,
+            mongo_client=mongo,
+            embedding_fn=embed_fn,
+        )
+
+        traverser._find_anchor = AsyncMock(return_value=[
+            GraphNode(label="switch_01", entity_type="device", payload_ref=None, distance=0.1)
+        ])
+        
+        # Parallel edges with different weights: should unify to max weight (0.8)
+        traverser._bfs = AsyncMock(return_value=(
+            {"switch_01", "router_02"},
+            [
+                GraphEdge(subject="switch_01", predicate="connected_to", obj="router_02", confidence=0.4, payload_ref=None),
+                GraphEdge(subject="switch_01", predicate="hosts", obj="router_02", confidence=0.8, payload_ref=None),
+            ]
+        ))
+
+        conn.fetch_results = {
+            "select label, entity_type, payload_ref from kg_nodes": [
+                {"label": "switch_01", "entity_type": "device", "payload_ref": None},
+                {"label": "router_02", "entity_type": "device", "payload_ref": None},
+            ]
+        }
+
+        traverser._hydrate_sources = AsyncMock(return_value=[])
+
+        # Run neuromorphic search
+        subgraph = await traverser.neuromorphic_search(
+            query="switch status",
+            namespace_id=str(ns),
+            max_depth=1,
+            theta=0.5,
+            decay=0.85,
+            alpha=1.0,
+        )
+
+        node_labels = {n.label for n in subgraph.nodes}
+        assert "switch_01" in node_labels
+        assert "router_02" in node_labels
+
+    async def test_neuromorphic_search_custom_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from nce.config import cfg
+        monkeypatch.setattr(cfg, "NCE_TELEMETRY_SPIKE_THRESHOLD", 5.0)
+        monkeypatch.setattr(cfg, "NCE_TELEMETRY_SPIKE_THETA", 0.1)
+        monkeypatch.setattr(cfg, "NCE_TELEMETRY_SPIKE_CHARGE", 3.0)
+
+        ns = uuid.uuid4()
+        conn = MockConnection()
+        pool = MockPool(conn)
+        mongo = MagicMock()
+
+        async def embed_fn(q):
+            return [0.1, 0.2]
+
+        traverser = GraphRAGTraverser(
+            pg_pool=pool,
+            mongo_client=mongo,
+            embedding_fn=embed_fn,
+        )
+
+        traverser._find_anchor = AsyncMock(return_value=[
+            GraphNode(label="switch_01", entity_type="device", payload_ref=None, distance=0.1)
+        ])
+        
+        traverser._bfs = AsyncMock(return_value=(
+            {"switch_01", "router_02"},
+            [
+                GraphEdge(subject="switch_01", predicate="connected_to", obj="router_02", confidence=0.2, payload_ref=None),
+            ]
+        ))
+
+        conn.fetch_results = {
+            "select label, entity_type, payload_ref from kg_nodes": [
+                {"label": "switch_01", "entity_type": "device", "payload_ref": None},
+                {"label": "router_02", "entity_type": "device", "payload_ref": None},
+            ]
+        }
+
+        traverser._hydrate_sources = AsyncMock(return_value=[])
+
+        # Run neuromorphic search with telemetry_severity = 6.0 (> threshold 5.0)
+        subgraph = await traverser.neuromorphic_search(
+            query="switch status",
+            namespace_id=str(ns),
+            max_depth=1,
+            theta=0.5,
+            decay=0.85,
+            alpha=1.0,
+            telemetry_severity=6.0,
+        )
+
+        node_labels = {n.label for n in subgraph.nodes}
+        assert "switch_01" in node_labels
+        assert "router_02" in node_labels

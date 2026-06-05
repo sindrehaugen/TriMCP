@@ -607,6 +607,11 @@ class _Config:
     # counter from 1.  Default 86 400 s = 24 h.
     TASK_DLQ_REDIS_TTL: int = int(os.getenv("TASK_DLQ_REDIS_TTL", "86400"))
 
+    # --- Spreading Activation Telemetry Defaults (BATCH-P3-003) ---
+    NCE_TELEMETRY_SPIKE_THRESHOLD: float = _float_env("NCE_TELEMETRY_SPIKE_THRESHOLD", 8.0, minimum=0.0)
+    NCE_TELEMETRY_SPIKE_THETA: float = _float_env("NCE_TELEMETRY_SPIKE_THETA", 0.25, minimum=0.0)
+    NCE_TELEMETRY_SPIKE_CHARGE: float = _float_env("NCE_TELEMETRY_SPIKE_CHARGE", 2.0, minimum=0.0)
+
     @classmethod
     def validate_minio_credentials(cls) -> None:
         """Validate that MinIO credentials are set via environment.
