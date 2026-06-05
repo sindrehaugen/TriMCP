@@ -110,6 +110,226 @@ class Subgraph:
         return out
 
 
+class SpikingActivationEngine:
+    """
+    Neuromorphic spreading activation engine modeling membrane potential,
+    decay, and threshold-based firing.
+    """
+
+    def __init__(
+        self,
+        theta: float = 0.5,
+        decay: float = 0.85,
+        alpha: float = 1.0,
+    ) -> None:
+        self.theta = theta
+        self.decay = decay
+        self.alpha = alpha
+        self.potentials: dict[str, float] = {}
+        self.fired_nodes: set[str] = set()
+
+    def set_potentials(self, initial_potentials: dict[str, float]) -> None:
+        """Set the initial membrane potentials for nodes."""
+        self.potentials = {k: float(v) for k, v in initial_potentials.items()}
+
+    def step(self, graph_edges: dict[str, list[tuple[str, float]]]) -> set[str]:
+        """
+        Executes one tick/step of spiking activation propagation.
+        
+        graph_edges: adjacency list mapping source_label -> list of (target_label, edge_weight)
+        Returns the set of labels that fired in this step.
+        """
+        fired = set()
+        # Find firing nodes in this step
+        for node, v in list(self.potentials.items()):
+            if v >= self.theta:
+                fired.add(node)
+                self.fired_nodes.add(node)
+
+        # Calculate charge transfers
+        transfers: dict[str, float] = {}
+        for u in fired:
+            V_u = self.potentials[u]
+            # Reset potential of firing node to 0
+            self.potentials[u] = 0.0
+
+            # Distribute potential to neighbors
+            neighbors = graph_edges.get(u, [])
+            if not neighbors:
+                continue
+
+            for v, w in neighbors:
+                delta = self.alpha * V_u * w
+                transfers[v] = transfers.get(v, 0.0) + delta
+
+        # Decay potentials of all existing nodes
+        for node in list(self.potentials.keys()):
+            self.potentials[node] = self.potentials[node] * self.decay
+
+        # Apply transfers to potentials
+        for node, delta in transfers.items():
+            self.potentials[node] = self.potentials.get(node, 0.0) + delta
+
+        return fired
+
+
+async def adapt_synaptic_weights(
+    conn: asyncpg.Connection,
+    namespace_id: UUID | str,
+    decision_outcome: str,
+    reinforced_edges: list[tuple[str, str] | tuple[str, str, str]],
+    learning_rate: float = 0.1,
+) -> int:
+    """
+    Dynamically adapt synaptic weights (LTP/LTD) for the given reinforced edges
+    in both `kg_edges` and `topology_graph` under row-level locking parameters.
+    
+    On 'success': w = w + learning_rate * (1.0 - w)
+    On 'failure': w = w - learning_rate * w
+    
+    All confidence values are clipped between 0.0 and 1.0.
+    """
+    ns_uuid = UUID(str(namespace_id))
+    from nce.auth import set_namespace_context
+    await set_namespace_context(conn, ns_uuid)
+
+    updated_count = 0
+
+    for edge in reinforced_edges:
+        if len(edge) == 3:
+            src, pred_or_type, tgt = edge
+            has_pred = True
+        elif len(edge) == 2:
+            src, tgt = edge
+            pred_or_type = None
+            has_pred = False
+        else:
+            log.warning("Invalid edge format in adapt_synaptic_weights: %s", edge)
+            continue
+
+        # 1. Update kg_edges
+        try:
+            if has_pred:
+                # Find exact row with row lock (NOWAIT)
+                rows = await conn.fetch(
+                    """
+                    SELECT id, confidence 
+                    FROM kg_edges 
+                    WHERE namespace_id = $1::uuid 
+                      AND subject_label = $2 
+                      AND predicate = $3 
+                      AND object_label = $4 
+                    FOR UPDATE NOWAIT
+                    """,
+                    ns_uuid,
+                    src,
+                    pred_or_type,
+                    tgt,
+                )
+            else:
+                # Find matching rows without predicate
+                rows = await conn.fetch(
+                    """
+                    SELECT id, confidence 
+                    FROM kg_edges 
+                    WHERE namespace_id = $1::uuid 
+                      AND (
+                          (subject_label = $2 AND object_label = $3)
+                          OR (subject_label = $3 AND object_label = $2)
+                      )
+                    FOR UPDATE NOWAIT
+                    """,
+                    ns_uuid,
+                    src,
+                    tgt,
+                )
+
+            for r in rows:
+                w = r["confidence"]
+                if decision_outcome == "success":
+                    w_new = w + learning_rate * (1.0 - w)
+                else:
+                    w_new = w - learning_rate * w
+                w_new = max(0.0, min(1.0, w_new))
+
+                await conn.execute(
+                    """
+                    UPDATE kg_edges
+                    SET confidence = $1, updated_at = NOW()
+                    WHERE id = $2 AND namespace_id = $3::uuid
+                    """,
+                    w_new,
+                    r["id"],
+                    ns_uuid,
+                )
+                updated_count += 1
+        except asyncpg.LockNotAvailableError:
+            log.warning("Lock not available for kg_edges update on edge %s", edge)
+        except Exception as e:
+            log.error("Failed to update kg_edges: %s", e)
+
+        # 2. Update topology_graph
+        try:
+            if has_pred:
+                rows_topo = await conn.fetch(
+                    """
+                    SELECT id, confidence_score 
+                    FROM topology_graph 
+                    WHERE namespace_id = $1::uuid 
+                      AND source_node_id = $2 
+                      AND edge_type = $3 
+                      AND target_node_id = $4 
+                    FOR UPDATE NOWAIT
+                    """,
+                    ns_uuid,
+                    src,
+                    pred_or_type,
+                    tgt,
+                )
+            else:
+                rows_topo = await conn.fetch(
+                    """
+                    SELECT id, confidence_score 
+                    FROM topology_graph 
+                    WHERE namespace_id = $1::uuid 
+                      AND (
+                          (source_node_id = $2 AND target_node_id = $3)
+                          OR (source_node_id = $3 AND target_node_id = $2)
+                      )
+                    FOR UPDATE NOWAIT
+                    """,
+                    ns_uuid,
+                    src,
+                    tgt,
+                )
+
+            for r in rows_topo:
+                w = r["confidence_score"]
+                if decision_outcome == "success":
+                    w_new = w + learning_rate * (1.0 - w)
+                else:
+                    w_new = w - learning_rate * w
+                w_new = max(0.0, min(1.0, w_new))
+
+                await conn.execute(
+                    """
+                    UPDATE topology_graph
+                    SET confidence_score = $1, updated_at = NOW()
+                    WHERE id = $2 AND namespace_id = $3::uuid
+                    """,
+                    w_new,
+                    r["id"],
+                    ns_uuid,
+                )
+                updated_count += 1
+        except asyncpg.LockNotAvailableError:
+            log.warning("Lock not available for topology_graph update on edge %s", edge)
+        except Exception as e:
+            log.error("Failed to update topology_graph: %s", e)
+
+    return updated_count
+
+
 class GraphRAGTraverser:
     def __init__(
         self,
@@ -786,6 +1006,240 @@ class GraphRAGTraverser:
             seen_edges: set[tuple] = set()
             unique_edges = []
             for e in edges:
+                key = (e.subject, e.predicate, e.obj)
+                if key not in seen_edges:
+                    seen_edges.add(key)
+                    unique_edges.append(e)
+
+            edge_total = len(unique_edges)
+            off = edge_offset
+            if edge_limit is None:
+                page_edges = unique_edges[off:]
+            else:
+                page_edges = unique_edges[off : off + edge_limit]
+            has_more = edge_total > off + len(page_edges)
+
+            labels_for_page = {anchor.label}
+            for e in page_edges:
+                labels_for_page.add(e.subject)
+                labels_for_page.add(e.obj)
+            nodes_for_page = [n for n in nodes if n.label in labels_for_page]
+
+            all_refs = {n.payload_ref for n in nodes_for_page if n.payload_ref}
+            all_refs |= {e.payload_ref for e in page_edges if e.payload_ref}
+            restrict = user_id if private else None
+            sources = await self._hydrate_sources(all_refs, restrict_user_id=restrict)
+
+            return Subgraph(
+                anchor=anchor.label,
+                nodes=nodes_for_page,
+                edges=page_edges,
+                sources=sources,
+                edge_total=edge_total,
+                edge_offset=off,
+                edge_limit=edge_limit,
+                has_more_edges=has_more,
+                max_edges_per_node=per_node,
+            )
+
+    async def neuromorphic_search(
+        self,
+        query: str,
+        namespace_id: str | None = None,
+        max_depth: int = 2,
+        anchor_top_k: int = 1,
+        *,
+        private: bool = False,
+        user_id: str | None = None,
+        as_of=None,
+        _allow_global_sweep: bool = False,
+        max_edges_per_node: int | None = None,
+        edge_limit: int | None = None,
+        edge_offset: int = 0,
+        telemetry_severity: float | None = None,
+        theta: float = 0.5,
+        decay: float = 0.85,
+        alpha: float = 1.0,
+        ticks: int | None = None,
+    ) -> Subgraph:
+        """
+        Neuromorphic spreading activation traversal pipeline.
+        
+        Uses a spiking neural model to search and traverse the knowledge graph
+        instead of legacy BFS.
+        
+        Dynamically adjusts thresholds and initial potentials when system
+        telemetry severity spikes above 8.
+        """
+        if namespace_id is None and not _allow_global_sweep:
+            raise ValueError(
+                "neuromorphic_search: namespace_id is required for tenant-scoped graph searches. "
+                "Pass _allow_global_sweep=True only for admin/diagnostic cross-tenant operations."
+            )
+        if as_of is not None:
+            if not isinstance(as_of, datetime):
+                raise ValueError("as_of must be a datetime object")
+            if as_of.tzinfo is None:
+                raise ValueError(
+                    "as_of must be timezone-aware (UTC). Use datetime.now(timezone.utc)."
+                )
+        per_node = max_edges_per_node if max_edges_per_node is not None else MAX_EDGES_PER_NODE
+        if per_node < 1:
+            raise ValueError("max_edges_per_node must be >= 1")
+        if edge_offset < 0:
+            raise ValueError("edge_offset must be >= 0")
+        if edge_limit is not None and edge_limit < 1:
+            raise ValueError("edge_limit must be >= 1 when provided")
+
+        async with self._search_semaphore:
+            async with self.pg_pool.acquire(timeout=10.0) as conn:
+                async with conn.transaction():
+                    if namespace_id:
+                        from nce.auth import set_namespace_context
+                        await set_namespace_context(conn, UUID(str(namespace_id)))
+
+                    # Find anchor node(s)
+                    anchors = await self._find_anchor(
+                        query,
+                        namespace_id=namespace_id,
+                        top_k=anchor_top_k,
+                        as_of=as_of,
+                        _allow_global_sweep=_allow_global_sweep,
+                        conn=conn,
+                    )
+                    if not anchors:
+                        log.info("No anchor node found in knowledge graph.")
+                        return Subgraph(anchor="<none>")
+
+                    anchor = anchors[0]
+                    log.info("Neuromorphic search anchor: '%s' (distance=%.4f)", anchor.label, anchor.distance)
+
+                    # Fetch all candidate neighbors & edges within max_depth hops using the recursive CTE BFS
+                    # to minimize DB round-trips.
+                    visited_candidate_labels, candidate_edges = await self._bfs(
+                        anchor.label,
+                        max_depth=max_depth,
+                        namespace_id=namespace_id,
+                        as_of=as_of,
+                        _allow_global_sweep=_allow_global_sweep,
+                        max_edges_per_node=per_node,
+                        conn=conn,
+                    )
+
+                    # Build the local adjacency list for spreading activation
+                    adj: dict[str, list[tuple[str, float]]] = {}
+                    for e in candidate_edges:
+                        # Spreading activation can traverse bidirectionally in the graph representation
+                        adj.setdefault(e.subject, []).append((e.obj, e.confidence))
+                        adj.setdefault(e.obj, []).append((e.subject, e.confidence))
+
+                    # Scale threshold and initial potential if system telemetry severity > 8
+                    actual_theta = theta
+                    initial_charge = 1.0
+                    if telemetry_severity is not None and telemetry_severity > 8:
+                        actual_theta = 0.25
+                        initial_charge = 2.0
+                        log.info(
+                            "Telemetry severity spike detected (%.1f > 8). Lowering threshold to %.2f "
+                            "and raising initial charge to %.2f for wider pre-fetching.",
+                            telemetry_severity, actual_theta, initial_charge
+                        )
+
+                    # Initialize Spiking Neural Engine
+                    engine = SpikingActivationEngine(
+                        theta=actual_theta,
+                        decay=decay,
+                        alpha=alpha,
+                    )
+                    engine.set_potentials({anchor.label: initial_charge})
+
+                    # Run propagation simulation for specified ticks or max_depth
+                    simulation_ticks = ticks if ticks is not None else max_depth
+                    for _ in range(simulation_ticks):
+                        engine.step(adj)
+
+                    # Select active nodes: fired nodes, anchor node, and sub-threshold activated nodes
+                    active_labels = set(engine.fired_nodes) | {anchor.label}
+                    # Also include any nodes that reached at least 10% of firing threshold
+                    sub_threshold = actual_theta * 0.1
+                    for node_label, pot in engine.potentials.items():
+                        if pot >= sub_threshold:
+                            active_labels.add(node_label)
+
+                    # Restrict candidate edges to active nodes
+                    active_edges = [
+                        e for e in candidate_edges
+                        if e.subject in active_labels and e.obj in active_labels
+                    ]
+
+                    # Fetch full node metadata from DB for all active labels
+                    if as_of and namespace_id:
+                        rows = await conn.fetch(
+                            """
+                            WITH ns AS (
+                                SELECT id, parent_id, (metadata->'fork_config'->>'forked_from_as_of')::timestamptz AS forked_as_of
+                                FROM namespaces WHERE id = $2::uuid
+                            ),
+                            memory_events AS (
+                                SELECT DISTINCT ON ((params->>'memory_id')::uuid)
+                                    (params->>'memory_id')::uuid AS memory_id,
+                                    event_type,
+                                    params->'entities' AS entities,
+                                    id AS event_id
+                                FROM event_log
+                                CROSS JOIN ns
+                                WHERE (
+                                    (namespace_id = ns.id AND occurred_at <= $3)
+                                    OR 
+                                    (namespace_id = ns.parent_id AND occurred_at <= LEAST($3, ns.forked_as_of))
+                                )
+                                  AND event_type IN ('store_memory', 'forget_memory')
+                                ORDER BY (params->>'memory_id')::uuid, occurred_at DESC, event_seq DESC
+                            ),
+                            active_memories AS (
+                                SELECT memory_id, entities, event_id
+                                FROM memory_events 
+                                WHERE event_type = 'store_memory'
+                            ),
+                            historical_nodes AS (
+                                SELECT DISTINCT ON (label)
+                                    jsonb_array_elements(entities)->>'label' AS label,
+                                    jsonb_array_elements(entities)->>'entity_type' AS entity_type,
+                                    memory_id,
+                                    event_id
+                                FROM active_memories
+                            )
+                            SELECT n.label, n.entity_type, m.payload_ref, n.event_id
+                            FROM historical_nodes n
+                            JOIN memories m ON n.memory_id = m.id
+                            WHERE n.label = ANY($1::text[])
+                            """,
+                            list(active_labels),
+                            namespace_id,
+                            as_of,
+                        )
+                        event_ids = [str(r["event_id"]) for r in rows if r.get("event_id")]
+                        await self._verify_time_travel_event_signatures(conn, event_ids)
+                    else:
+                        rows = await conn.fetch(
+                            "SELECT label, entity_type, payload_ref FROM kg_nodes WHERE label = ANY($1::text[])",
+                            list(active_labels),
+                        )
+
+                    nodes = [
+                        GraphNode(
+                            label=r["label"],
+                            entity_type=r["entity_type"],
+                            payload_ref=r["payload_ref"],
+                            distance=anchor.distance if r["label"] == anchor.label else 0.0,
+                        )
+                        for r in rows
+                    ]
+
+            # Deduplicate edges
+            seen_edges: set[tuple] = set()
+            unique_edges = []
+            for e in active_edges:
                 key = (e.subject, e.predicate, e.obj)
                 if key not in seen_edges:
                     seen_edges.add(key)

@@ -1,0 +1,328 @@
+"""
+tests/unit/test_neuromorphic.py
+===============================
+Unit tests for the neuromorphic spreading activation engine, telemetry triggers,
+and synaptic weight adaptation.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import uuid
+from datetime import datetime, timezone
+from contextlib import asynccontextmanager
+from typing import Any, AsyncGenerator
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+import asyncpg
+
+from nce.graph_query import (
+    SpikingActivationEngine,
+    adapt_synaptic_weights,
+    GraphRAGTraverser,
+    Subgraph,
+    GraphNode,
+    GraphEdge,
+)
+
+
+class MockTransaction:
+    async def __aenter__(self) -> None:
+        pass
+
+    async def __aexit__(self, exc_type: type | None, exc_val: Exception | None, exc_tb: Any) -> None:
+        pass
+
+
+class MockConnection:
+    def __init__(self, fetch_results: dict | None = None) -> None:
+        self.fetch_results = fetch_results or {}
+        self.execute_calls: list[tuple[str, tuple]] = []
+        self.fetch_calls: list[tuple[str, tuple]] = []
+
+    def transaction(self) -> MockTransaction:
+        return MockTransaction()
+
+    async def fetch(self, query: str, *args: Any) -> list[dict]:
+        self.fetch_calls.append((query, args))
+        q_compact = "".join(query.split()).lower()
+        for key, value in self.fetch_results.items():
+            if "".join(key.split()).lower() in q_compact:
+                if isinstance(value, Exception):
+                    raise value
+                return value
+        return []
+
+    async def execute(self, query: str, *args: Any) -> str:
+        self.execute_calls.append((query, args))
+        return "UPDATE 1"
+
+
+class MockPool:
+    def __init__(self, conn: MockConnection) -> None:
+        self._conn = conn
+
+    @asynccontextmanager
+    async def acquire(self, timeout: float | None = None) -> AsyncGenerator[MockConnection, None]:
+        yield self._conn
+
+
+# ---------------------------------------------------------------------------
+# 1. SpikingActivationEngine Unit Tests
+# ---------------------------------------------------------------------------
+
+class TestSpikingActivationEngine:
+    def test_initialization(self) -> None:
+        engine = SpikingActivationEngine(theta=0.6, decay=0.8, alpha=0.5)
+        assert engine.theta == 0.6
+        assert engine.decay == 0.8
+        assert engine.alpha == 0.5
+        assert len(engine.potentials) == 0
+        assert len(engine.fired_nodes) == 0
+
+    def test_single_step_firing_and_reset(self) -> None:
+        engine = SpikingActivationEngine(theta=0.5, decay=0.8, alpha=1.0)
+        engine.set_potentials({"node_A": 0.6, "node_B": 0.4})
+
+        # Adjacency list: node_A -> node_B (weight 0.5)
+        adj = {"node_A": [("node_B", 0.5)]}
+        fired = engine.step(adj)
+
+        assert fired == {"node_A"}
+        assert "node_A" in engine.fired_nodes
+        # node_A fired, so its potential reset to 0.0, decayed (still 0.0)
+        assert engine.potentials["node_A"] == 0.0
+        # node_B had 0.4, decayed to 0.4 * 0.8 = 0.32
+        # Plus transfer from node_A: alpha * V_u * w = 1.0 * 0.6 * 0.5 = 0.3
+        # Total node_B = 0.32 + 0.3 = 0.62
+        assert pytest.approx(engine.potentials["node_B"]) == 0.62
+
+    def test_decay_without_firing(self) -> None:
+        engine = SpikingActivationEngine(theta=1.0, decay=0.9, alpha=1.0)
+        engine.set_potentials({"node_A": 0.5})
+
+        adj: dict[str, list[tuple[str, float]]] = {}
+        fired = engine.step(adj)
+
+        assert fired == set()
+        assert engine.potentials["node_A"] == pytest.approx(0.45)
+
+
+# ---------------------------------------------------------------------------
+# 2. adapt_synaptic_weights Unit Tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+class TestAdaptSynapticWeights:
+    async def test_potentiation_on_success_3tuple(self) -> None:
+        ns = uuid.uuid4()
+        # Mock fetch returning confidence = 0.5 for kg_edges and confidence_score = 0.6 for topology_graph
+        fetch_results = {
+            "select id, confidence from kg_edges": [{"id": uuid.uuid4(), "confidence": 0.5}],
+            "select id, confidence_score from topology_graph": [{"id": uuid.uuid4(), "confidence_score": 0.6}],
+        }
+        conn = MockConnection(fetch_results)
+
+        count = await adapt_synaptic_weights(
+            conn=conn,
+            namespace_id=ns,
+            decision_outcome="success",
+            reinforced_edges=[("device_A", "connected_to", "device_B")],
+            learning_rate=0.2,
+        )
+
+        assert count == 2  # updated 1 kg_edge and 1 topology_graph edge
+        # Check update queries were run with correct potentiated values:
+        # kg_edges: 0.5 + 0.2 * (1.0 - 0.5) = 0.6
+        # topology_graph: 0.6 + 0.2 * (1.0 - 0.6) = 0.68
+        updates = [c for c in conn.execute_calls if "update" in c[0].lower()]
+        assert len(updates) == 2
+        
+        kg_update = next(c for c in updates if "kg_edges" in c[0].lower())
+        assert kg_update[1][0] == pytest.approx(0.6)
+
+        topo_update = next(c for c in updates if "topology_graph" in c[0].lower())
+        assert topo_update[1][0] == pytest.approx(0.68)
+
+    async def test_depression_on_failure_2tuple(self) -> None:
+        ns = uuid.uuid4()
+        # Mock fetch returning confidence = 0.5 for kg_edges and confidence_score = 0.6 for topology_graph
+        fetch_results = {
+            "select id, confidence from kg_edges": [{"id": uuid.uuid4(), "confidence": 0.5}],
+            "select id, confidence_score from topology_graph": [{"id": uuid.uuid4(), "confidence_score": 0.6}],
+        }
+        conn = MockConnection(fetch_results)
+
+        count = await adapt_synaptic_weights(
+            conn=conn,
+            namespace_id=ns,
+            decision_outcome="failure",
+            reinforced_edges=[("device_A", "device_B")],
+            learning_rate=0.1,
+        )
+
+        assert count == 2
+        # Check update queries were run with correct depressed values:
+        # kg_edges: 0.5 - 0.1 * 0.5 = 0.45
+        # topology_graph: 0.6 - 0.1 * 0.6 = 0.54
+        updates = [c for c in conn.execute_calls if "update" in c[0].lower()]
+        assert len(updates) == 2
+        
+        kg_update = next(c for c in updates if "kg_edges" in c[0].lower())
+        assert kg_update[1][0] == pytest.approx(0.45)
+
+        topo_update = next(c for c in updates if "topology_graph" in c[0].lower())
+        assert topo_update[1][0] == pytest.approx(0.54)
+
+    async def test_lock_not_available_handling(self) -> None:
+        ns = uuid.uuid4()
+        # conn.fetch raises LockNotAvailableError
+        fetch_results = {
+            "select id, confidence from kg_edges": asyncpg.LockNotAvailableError("Lock wait timeout"),
+            "select id, confidence_score from topology_graph": asyncpg.LockNotAvailableError("Lock wait timeout"),
+        }
+        conn = MockConnection(fetch_results)
+
+        # Should not raise exception
+        count = await adapt_synaptic_weights(
+            conn=conn,
+            namespace_id=ns,
+            decision_outcome="success",
+            reinforced_edges=[("device_A", "device_B")],
+            learning_rate=0.1,
+        )
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# 3. GraphRAGTraverser.neuromorphic_search Unit Tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+class TestNeuromorphicSearch:
+    async def test_neuromorphic_search_standard(self) -> None:
+        ns = uuid.uuid4()
+        conn = MockConnection()
+        pool = MockPool(conn)
+        mongo = MagicMock()
+
+        # Mock embedding function returning simple vector
+        async def embed_fn(q):
+            return [0.1, 0.2]
+
+        traverser = GraphRAGTraverser(
+            pg_pool=pool,
+            mongo_client=mongo,
+            embedding_fn=embed_fn,
+        )
+
+        # Mock find_anchor and _bfs methods on the traverser
+        traverser._find_anchor = AsyncMock(return_value=[
+            GraphNode(label="switch_01", entity_type="device", payload_ref=None, distance=0.1)
+        ])
+        
+        # bfs returns visited_labels, edges
+        traverser._bfs = AsyncMock(return_value=(
+            {"switch_01", "router_02"},
+            [
+                GraphEdge(subject="switch_01", predicate="connected_to", obj="router_02", confidence=0.8, payload_ref=None)
+            ]
+        ))
+
+        # Mock connection fetch for node metadata query in neuromorphic_search
+        conn.fetch_results = {
+            "select label, entity_type, payload_ref from kg_nodes": [
+                {"label": "switch_01", "entity_type": "device", "payload_ref": None},
+                {"label": "router_02", "entity_type": "device", "payload_ref": None},
+            ]
+        }
+
+        # Mock _hydrate_sources
+        traverser._hydrate_sources = AsyncMock(return_value=[])
+
+        # Run neuromorphic search
+        subgraph = await traverser.neuromorphic_search(
+            query="switch status",
+            namespace_id=str(ns),
+            max_depth=2,
+            theta=0.5,
+            decay=0.85,
+            alpha=1.0,
+            telemetry_severity=5.0, # telemetry normal
+        )
+
+        assert isinstance(subgraph, Subgraph)
+        assert subgraph.anchor == "switch_01"
+        # Node switch_01 fires (potential 1.0 >= theta 0.5), transfers to router_02:
+        # router_02 potential becomes: alpha * 1.0 * 0.8 = 0.8.
+        # router_02 will fire or have sub-threshold activation in step 2.
+        # Both nodes should be active.
+        node_labels = {n.label for n in subgraph.nodes}
+        assert "switch_01" in node_labels
+        assert "router_02" in node_labels
+        assert len(subgraph.edges) == 1
+        assert subgraph.edges[0].subject == "switch_01"
+        assert subgraph.edges[0].obj == "router_02"
+
+    async def test_neuromorphic_search_telemetry_severity_spike(self) -> None:
+        ns = uuid.uuid4()
+        conn = MockConnection()
+        pool = MockPool(conn)
+        mongo = MagicMock()
+
+        async def embed_fn(q):
+            return [0.1, 0.2]
+
+        traverser = GraphRAGTraverser(
+            pg_pool=pool,
+            mongo_client=mongo,
+            embedding_fn=embed_fn,
+        )
+
+        traverser._find_anchor = AsyncMock(return_value=[
+            GraphNode(label="switch_01", entity_type="device", payload_ref=None, distance=0.1)
+        ])
+        
+        traverser._bfs = AsyncMock(return_value=(
+            {"switch_01", "router_02", "host_03"},
+            [
+                GraphEdge(subject="switch_01", predicate="connected_to", obj="router_02", confidence=0.4, payload_ref=None),
+                GraphEdge(subject="router_02", predicate="connected_to", obj="host_03", confidence=0.3, payload_ref=None)
+            ]
+        ))
+
+        conn.fetch_results = {
+            "select label, entity_type, payload_ref from kg_nodes": [
+                {"label": "switch_01", "entity_type": "device", "payload_ref": None},
+                {"label": "router_02", "entity_type": "device", "payload_ref": None},
+                {"label": "host_03", "entity_type": "device", "payload_ref": None},
+            ]
+        }
+
+        traverser._hydrate_sources = AsyncMock(return_value=[])
+
+        # Run neuromorphic search with telemetry severity > 8 (severity = 9.0)
+        # This will lower theta to 0.25 and raise initial charge to 2.0.
+        subgraph = await traverser.neuromorphic_search(
+            query="switch status",
+            namespace_id=str(ns),
+            max_depth=2,
+            theta=0.5, # standard theta 0.5 is overridden by 0.25
+            decay=0.85,
+            alpha=1.0,
+            telemetry_severity=9.0, # telemetry spike!
+        )
+
+        # Under severity spike:
+        # Step 1: switch_01 potential starts at 2.0. Fires (2.0 >= 0.25).
+        # Transfers to router_02: 1.0 * 2.0 * 0.4 = 0.8.
+        # Step 2: router_02 potential is 0.8. Fires (0.8 >= 0.25).
+        # Transfers to host_03: 1.0 * 0.8 * 0.3 = 0.24.
+        # Since theta was lowered to 0.25, and sub-threshold is 0.025:
+        # host_03 potential (0.24) is >= 0.025, so host_03 is active!
+        # Thus switch_01, router_02, and host_03 should all be in the active nodes!
+        node_labels = {n.label for n in subgraph.nodes}
+        assert "switch_01" in node_labels
+        assert "router_02" in node_labels
+        assert "host_03" in node_labels
