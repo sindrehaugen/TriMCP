@@ -30,6 +30,13 @@ class BridgeProvider(ABC):
     """
 
     def __init__(self) -> None:
+        """Enforce mTLS configuration at bridge construction time.
+
+        Subclasses that override __init__() MUST call super().__init__() to
+        ensure the mTLS security check runs before any connection attempt.
+        Failure to call super().__init__() will silently bypass the mTLS
+        assertion — this is a critical security contract.
+        """
         assert_bridge_mtls_configured(service=self.__class__.__name__)
 
     @property

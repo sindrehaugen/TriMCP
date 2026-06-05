@@ -58,6 +58,6 @@ END $$;
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nce_gc') THEN
-        GRANT SELECT, UPDATE, DELETE ON v3_cognitive_ledger TO nce_gc;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON v3_cognitive_ledger TO nce_gc;
     END IF;
 END $$;

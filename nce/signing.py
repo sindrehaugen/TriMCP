@@ -138,11 +138,9 @@ _KEY_ALGORITHM: str = "ML-DSA-44"  # FIPS 204 parameter set (128-bit classical s
 
 try:
     from cryptography.hazmat.primitives.asymmetric.mldsa import (
-        MLDSAPrivateKey,
-        MLDSAPublicKey,
-        generate_private_key as _mldsa_generate,
+        MLDSA44PrivateKey as _MLDSA44PrivateKey,
+        MLDSA44PublicKey as _MLDSA44PublicKey,
     )
-    from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA44 as _MLDSA44_PARAMS
 
     _HAS_MLDSA = True
 except ImportError:
@@ -152,8 +150,9 @@ except ImportError:
 def generate_mldsa_keypair() -> tuple[bytes, bytes]:
     """Generate an ML-DSA-44 (FIPS 204) key pair.
 
-    Returns ``(private_key_bytes, public_key_bytes)`` in raw bytes form.
-    Store the private key encrypted at rest via ``encrypt_signing_key``.
+    Returns ``(seed_bytes[32], public_key_bytes[1312])`` in raw bytes form.
+    The seed (private key material) should be stored encrypted at rest via
+    ``encrypt_signing_key``.
 
     Raises ``RuntimeError`` if the installed ``cryptography`` library is older
     than version 44 and does not support ML-DSA.
@@ -163,31 +162,33 @@ def generate_mldsa_keypair() -> tuple[bytes, bytes]:
             "ML-DSA-44 requires cryptography>=44.0.0. "
             "Run: pip install --upgrade cryptography"
         )
-    private_key = _mldsa_generate(_MLDSA44_PARAMS())
-    priv_bytes = private_key.private_bytes_raw()
-    pub_bytes = private_key.public_key().public_bytes_raw()
-    return priv_bytes, pub_bytes
+    private_key = _MLDSA44PrivateKey.generate()
+    seed_bytes = private_key.private_bytes_raw()
+    public_key_bytes = private_key.public_key().public_bytes_raw()
+    return seed_bytes, public_key_bytes
 
 
-def mldsa_sign(message: bytes, private_key_bytes: bytes) -> bytes:
-    """Sign *message* with an ML-DSA-44 private key (raw bytes).
+def mldsa_sign(message: bytes, seed_bytes: bytes) -> bytes:
+    """Sign *message* with an ML-DSA-44 private key (seed bytes).
 
+    The seed_bytes parameter is the 32-byte value from private_bytes_raw().
     Returns the raw deterministic signature bytes.
     """
     if not _HAS_MLDSA:
         raise RuntimeError("ML-DSA-44 requires cryptography>=44.0.0")
-    from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSAPrivateKey as _PK
-
-    private_key: MLDSAPrivateKey = _MLDSA44_PARAMS().private_key_from_bytes(private_key_bytes)
+    private_key = _MLDSA44PrivateKey.from_seed_bytes(seed_bytes)
     return private_key.sign(message)
 
 
 def mldsa_verify(message: bytes, signature: bytes, public_key_bytes: bytes) -> bool:
-    """Verify an ML-DSA-44 signature.  Returns ``True`` on success, ``False`` on failure."""
+    """Verify an ML-DSA-44 signature.
+
+    Returns ``True`` on success, ``False`` on verification failure.
+    """
     if not _HAS_MLDSA:
         raise RuntimeError("ML-DSA-44 requires cryptography>=44.0.0")
     try:
-        public_key: MLDSAPublicKey = _MLDSA44_PARAMS().public_key_from_bytes(public_key_bytes)
+        public_key = _MLDSA44PublicKey.from_public_bytes(public_key_bytes)
         public_key.verify(signature, message)
         return True
     except Exception:

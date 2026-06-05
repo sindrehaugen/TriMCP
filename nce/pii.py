@@ -69,7 +69,9 @@ _RE_FODSELSNUMMER = re.compile(r"\b(\d{11})\b")
 _RE_ORG_NUMBER = re.compile(r"\b([89]\d{8})\b")
 
 # Norwegian mobile: 8 digits starting with 4 or 9, optionally prefixed by +47 / 0047.
-_RE_NO_MOBILE = re.compile(r"\b(?:\+47|0047)?[ -]?([49]\d{7})\b")
+# Use negative lookbehind/lookahead for digit boundaries instead of \b to handle
+# compact forms like +4798765432 (no space between prefix and number).
+_RE_NO_MOBILE = re.compile(r"(?<!\d)(?:\+47|0047)?[ -]?([49]\d{7})(?!\d)")
 
 # EU generic national ID: catch-all for non-NO locales (passthrough hook).
 # Currently a no-op placeholder; extend per country as needed.
