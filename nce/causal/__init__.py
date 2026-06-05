@@ -18,6 +18,10 @@ from nce.causal.correlation import (
     InterventionResult,
     evaluate_intervention,
 )
+from nce.causal.synthesis import (
+    PREDICTIVE_NODE_SCHEMA,
+    PredictiveSynthesisEngine,
+)
 
 __all__ = [
     "CausalEdge",
@@ -28,6 +32,8 @@ __all__ = [
     "ImpactScore",
     "InterventionResult",
     "evaluate_intervention",
+    "PredictiveSynthesisEngine",
+    "PREDICTIVE_NODE_SCHEMA",
     "_FORWARD_FAILURE_TYPES",
     "_REVERSE_FAILURE_TYPES",
 ]

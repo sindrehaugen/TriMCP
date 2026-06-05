@@ -118,7 +118,9 @@ async def _partition_maintenance_tick(pool: asyncpg.Pool) -> None:
         return
     try:
         async with unmanaged_pg_connection(pool, site="cron.partition_maintenance") as conn:
-            await conn.execute("SELECT nce_ensure_event_log_monthly_partitions(3)")
+            await conn.execute(
+                f"SELECT nce_ensure_event_log_monthly_partitions({cfg.NCE_PARTITION_LOOKAHEAD_MONTHS})"
+            )
             # Update Prometheus gauge with how many future partitions exist
             row = await conn.fetchrow(
                 """

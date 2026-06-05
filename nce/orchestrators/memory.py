@@ -521,6 +521,63 @@ class MemoryOrchestrator:
         tracer = get_tracer()
         with tracer.start_as_current_span("orchestrator.store_memory") as span:
             span.set_attribute("nce.namespace_id", str(payload.namespace_id))
+
+            # Active Learning Loop (BATCH-P3-005)
+            bypass = False
+            if payload.metadata:
+                if payload.metadata.get("bypass_quarantine"):
+                    bypass = True
+
+            R = None
+            if payload.metadata:
+                for k in ("confidence", "salience", "R"):
+                    if k in payload.metadata:
+                        try:
+                            R = float(payload.metadata[k])
+                            break
+                        except (ValueError, TypeError):
+                            pass
+
+            if R is None:
+                R = 1.0  # default
+                if payload.derived_from:
+                    try:
+                        async with scoped_pg_session(self.pg_pool, payload.namespace_id) as conn:
+                            parent_row = await conn.fetchrow(
+                                "SELECT salience_score, updated_at FROM memory_salience WHERE memory_id = $1::uuid ORDER BY agent_id = 'system' DESC, agent_id = $2 DESC, updated_at DESC LIMIT 1",
+                                payload.derived_from[0],
+                                payload.agent_id,
+                            )
+                            if parent_row:
+                                half_life_days = 30.0
+                                ns_row = await conn.fetchrow("SELECT metadata FROM namespaces WHERE id = $1::uuid", payload.namespace_id)
+                                if ns_row and ns_row["metadata"]:
+                                    import json
+                                    ns_meta = json.loads(ns_row["metadata"]) if isinstance(ns_row["metadata"], str) else ns_row["metadata"]
+                                    half_life_days = float(ns_meta.get("cognitive", {}).get("half_life_days", 30.0))
+
+                                from nce.salience import compute_decayed_score
+                                R = compute_decayed_score(
+                                    s_last=float(parent_row["salience_score"]),
+                                    updated_at=parent_row["updated_at"],
+                                    half_life_days=half_life_days,
+                                    memory_id=str(payload.derived_from[0]),
+                                )
+                    except Exception as exc:
+                        log.warning("[ACTIVE-LEARNING] Failed to compute parent memory decay: %s", exc)
+
+            if not bypass and R < 0.65:
+                async with scoped_pg_session(self.pg_pool, payload.namespace_id) as conn:
+                    from nce.active_learning import ActiveLearningManager
+                    al_mgr = ActiveLearningManager(self.pg_pool)
+                    queue_item_id = await al_mgr.quarantine_memory(conn, payload, R)
+                    return {
+                        "quarantined": True,
+                        "queue_item_id": str(queue_item_id),
+                        "R": R,
+                    }
+
+            # Bypass or R >= 0.65 -> proceed with write saga (Slow I/O outside PG transaction)
             with SagaMetrics("store_memory"):
                 db = self.mongo_client.memory_archive
                 collection = db.episodes
@@ -529,55 +586,55 @@ class MemoryOrchestrator:
 
                 memory_id = None
                 pg_committed = False
+                saga_id = None
                 saga_id = await self._saga_log_start("store_memory", payload)
 
                 try:
-                    # Single PG session for config read + atomic commit
+                    # --- Phase 0.3: PII Redaction + Graph Extraction ---
+                    (
+                        pii_result,
+                        sanitized_summary,
+                        sanitized_heavy,
+                        entities,
+                        triplets,
+                    ) = await self._apply_pii_pipeline(payload)
+
+                    # STEP 1: Episodic Commit (MongoDB)
+                    user_id = payload.metadata.get("user_id") if payload.metadata else None
+                    session_id = (
+                        payload.metadata.get("session_id") if payload.metadata else None
+                    )
+
+                    inserted_result = await collection.insert_one(
+                        {
+                            "user_id": user_id,
+                            "session_id": session_id,
+                            "namespace_id": str(payload.namespace_id),
+                            "type": payload.memory_type.value,
+                            "raw_data": sanitized_heavy,
+                            "metadata": payload.metadata,
+                            "pii_redacted": pii_result.redacted,
+                            "pii_entities_found": pii_result.entities_found,
+                            "ingested_at": datetime.now(timezone.utc),
+                        }
+                    )
+                    inserted_mongo_id = str(inserted_result.inserted_id)
+                    log.debug("[Mongo] Inserted episode. id=%s", inserted_mongo_id)
+
+                    # Pre-compute all embeddings OUTSIDE the PG transaction
+                    all_texts = [sanitized_summary] + [e.label for e in entities]
+                    all_vectors = await _embeddings.embed_batch(all_texts)
+                    vector = all_vectors[0]
+                    node_vecs = all_vectors[1:]
+
+                    # STEP 2 + 2b: Atomic Semantic + Graph Commit (single PG transaction)
                     async with scoped_pg_session(self.pg_pool, payload.namespace_id) as conn:
-                        # --- Phase 0.3: PII Redaction + Graph Extraction ---
-                        (
-                            pii_result,
-                            sanitized_summary,
-                            sanitized_heavy,
-                            entities,
-                            triplets,
-                        ) = await self._apply_pii_pipeline(payload, conn=conn)
-
-                        # STEP 1: Episodic Commit (MongoDB)
-                        user_id = payload.metadata.get("user_id") if payload.metadata else None
-                        session_id = (
-                            payload.metadata.get("session_id") if payload.metadata else None
-                        )
-
-                        inserted_result = await collection.insert_one(
-                            {
-                                "user_id": user_id,
-                                "session_id": session_id,
-                                "namespace_id": str(payload.namespace_id),
-                                "type": payload.memory_type.value,
-                                "raw_data": sanitized_heavy,
-                                "metadata": payload.metadata,
-                                "pii_redacted": pii_result.redacted,
-                                "pii_entities_found": pii_result.entities_found,
-                                "ingested_at": datetime.now(timezone.utc),
-                            }
-                        )
-                        inserted_mongo_id = str(inserted_result.inserted_id)
-                        log.debug("[Mongo] Inserted episode. id=%s", inserted_mongo_id)
-
-                        # Pre-compute all embeddings OUTSIDE the PG transaction
-                        all_texts = [sanitized_summary] + [e.label for e in entities]
-                        all_vectors = await _embeddings.embed_batch(all_texts)
-                        vector = all_vectors[0]
-                        node_vecs = all_vectors[1:]
-
                         # Fetch active and migrating models
                         models = await conn.fetch(
                             "SELECT id FROM embedding_models WHERE status IN ('active', 'migrating')"
                         )
                         target_model_ids = [m["id"] for m in models]
 
-                        # STEP 2 + 2b: Atomic Semantic + Graph Commit (single PG transaction)
                         async with conn.transaction():
                             memory_id = await self._embed_and_insert_vectors(
                                 conn,
@@ -689,6 +746,7 @@ class MemoryOrchestrator:
                     log.warning("[SAGA] COMPLETED transition failed.", exc_info=True)
 
                 return {
+                    "quarantined": False,
                     "payload_ref": inserted_mongo_id,
                     "contradiction": contradiction_result,
                 }

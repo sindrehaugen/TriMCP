@@ -123,10 +123,12 @@ class SpikingActivationEngine:
         theta: float = 0.5,
         decay: float = 0.85,
         alpha: float = 1.0,
+        max_charge: float | None = 10.0,
     ) -> None:
         self.theta = theta
         self.decay = decay
         self.alpha = alpha
+        self.max_charge = max_charge
         self.potentials: dict[str, float] = {}
         self.max_potentials: dict[str, float] = {}  # Track maximum potential reached by any node
         self.fired_nodes: set[str] = set()
@@ -170,13 +172,17 @@ class SpikingActivationEngine:
         for node in list(self.potentials.keys()):
             self.potentials[node] = self.potentials[node] * self.decay
 
-        # Apply transfers to potentials
+        # Apply transfers to potentials with optional clamping
         for node, delta in transfers.items():
-            self.potentials[node] = self.potentials.get(node, 0.0) + delta
+            val = self.potentials.get(node, 0.0) + delta
+            if self.max_charge is not None:
+                val = min(self.max_charge, val)
+            self.potentials[node] = val
 
         # Update historical maximum potentials
         for node, pot in self.potentials.items():
             self.max_potentials[node] = max(self.max_potentials.get(node, 0.0), pot)
+
 
         return fired
 
@@ -221,20 +227,22 @@ async def adapt_synaptic_weights(
             async with conn.transaction():
                 # 1. Update kg_edges
                 if has_pred:
-                    # Find exact row with row lock (NOWAIT)
+                    # Find matching rows in either direction (bidirectional/symmetrical support)
                     rows = await conn.fetch(
                         """
                         SELECT id, confidence 
                         FROM kg_edges 
                         WHERE namespace_id = $1::uuid 
-                          AND subject_label = $2 
-                          AND predicate = $3 
-                          AND object_label = $4 
+                          AND predicate = $2
+                          AND (
+                              (subject_label = $3 AND object_label = $4)
+                              OR (subject_label = $4 AND object_label = $3)
+                          )
                         FOR UPDATE NOWAIT
                         """,
                         ns_uuid,
-                        src,
                         pred_or_type,
+                        src,
                         tgt,
                     )
                 else:
@@ -282,15 +290,17 @@ async def adapt_synaptic_weights(
                         SELECT id, confidence_score 
                         FROM topology_graph 
                         WHERE namespace_id = $1::uuid 
-                          AND source_node_id = $2 
-                          AND edge_type = $3 
-                          AND target_node_id = $4 
+                          AND edge_type = $2
+                          AND (
+                              (source_node_id = $3 AND target_node_id = $4)
+                              OR (source_node_id = $4 AND target_node_id = $3)
+                          )
                           AND valid_to IS NULL
                         FOR UPDATE NOWAIT
                         """,
                         ns_uuid,
-                        src,
                         pred_or_type,
+                        src,
                         tgt,
                     )
                 else:
@@ -310,6 +320,7 @@ async def adapt_synaptic_weights(
                         src,
                         tgt,
                     )
+
 
                 for r in rows_topo:
                     w = r["confidence_score"]

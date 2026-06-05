@@ -221,6 +221,7 @@ class _Config:
     # --- PostgreSQL connection pool ---
     PG_MIN_POOL: int = int(os.getenv("PG_MIN_POOL", "1"))
     PG_MAX_POOL: int = int(os.getenv("PG_MAX_POOL", "10"))
+    NCE_PARTITION_LOOKAHEAD_MONTHS: int = _int_env("NCE_PARTITION_LOOKAHEAD_MONTHS", 3, minimum=1)
 
     # --- Garbage collector ---
     GC_INTERVAL_SECONDS: int = int(os.getenv("GC_INTERVAL_SECONDS", "3600"))
@@ -611,6 +612,13 @@ class _Config:
     NCE_TELEMETRY_SPIKE_THRESHOLD: float = _float_env("NCE_TELEMETRY_SPIKE_THRESHOLD", 8.0, minimum=0.0)
     NCE_TELEMETRY_SPIKE_THETA: float = _float_env("NCE_TELEMETRY_SPIKE_THETA", 0.25, minimum=0.0)
     NCE_TELEMETRY_SPIKE_CHARGE: float = _float_env("NCE_TELEMETRY_SPIKE_CHARGE", 2.0, minimum=0.0)
+
+    # --- Active Learning Gamification (BATCH-P3-005) ---
+    NCE_ACTIVE_LEARNING_CONFIRM_XP: int = _int_env("NCE_ACTIVE_LEARNING_CONFIRM_XP", 10, minimum=0)
+    NCE_ACTIVE_LEARNING_REJECT_XP: int = _int_env("NCE_ACTIVE_LEARNING_REJECT_XP", 5, minimum=0)
+
+    # --- NetBox Discovery Defaults (BATCH-P3-NB-005) ---
+    NCE_NETBOX_DEFAULT_INTERFACE_TYPE: str = os.getenv("NCE_NETBOX_DEFAULT_INTERFACE_TYPE", "1000base-t").strip()
 
     @classmethod
     def validate_minio_credentials(cls) -> None:

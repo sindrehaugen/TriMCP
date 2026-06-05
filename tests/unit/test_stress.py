@@ -18,19 +18,7 @@ from nce.analytics.stress import StressTracker
 from nce.signing import require_master_key, SigningKeyDecryptionError, MasterKey
 
 
-class MockConnection:
-    def __init__(self, fetch_results: list[dict] | None = None) -> None:
-        self.fetch_results = fetch_results or []
-        self.fetch_calls: list[tuple[str, tuple]] = []
-        self.execute_calls: list[tuple[str, tuple]] = []
-
-    async def fetch(self, query: str, *args: Any) -> list[dict]:
-        self.fetch_calls.append((query, args))
-        return self.fetch_results
-
-    async def execute(self, query: str, *args: Any) -> str:
-        self.execute_calls.append((query, args))
-        return "SELECT 1"
+from tests.fixtures.mock_db import MockConnection
 
 
 @pytest.mark.anyio

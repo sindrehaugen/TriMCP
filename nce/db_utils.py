@@ -24,6 +24,7 @@ POOL_ACQUIRE_TIMEOUT: Final[float] = 10.0
 UNMANAGED_PG_AUDITED_SITES: Final[frozenset[str]] = frozenset(
     {
         "cron.consolidation.namespaces_scan",
+        "cron.decay_prune",
         "cron.partition_maintenance",
         "cron.saga_recovery.list_stuck",
         "cron.saga_recovery.mark_failed",

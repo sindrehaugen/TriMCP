@@ -7,11 +7,15 @@ from nce.orchestrator import NCEEngine
 
 
 @pytest.mark.asyncio
-async def test_semantic_search_temporal_parameters_prevent_sql_injection():
+async def test_semantic_search_temporal_parameters_prevent_sql_injection(monkeypatch):
+    # Mock embedding calls to avoid loading the real model and potential network calls
+    async def mock_embed(text: str) -> list[float]:
+        from nce.embeddings import VECTOR_DIM
+        return [0.0] * VECTOR_DIM
+
+    monkeypatch.setattr("nce.embeddings.embed", mock_embed)
+
     # Setup mock engine
-    # Note: engine._generate_embedding was removed in R4 (Phase 3 refactoring).
-    # Embedding calls go through nce.embeddings.embed which has a deterministic
-    # fallback, so no patch is needed for this SQL-structure-only test.
     engine = NCEEngine()
 
     mock_pool = MagicMock()

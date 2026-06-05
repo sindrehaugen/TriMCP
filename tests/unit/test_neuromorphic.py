@@ -25,52 +25,7 @@ from nce.graph_query import (
     GraphNode,
     GraphEdge,
 )
-
-
-class MockTransaction:
-    def __init__(self, conn: MockConnection) -> None:
-        self.conn = conn
-
-    async def __aenter__(self) -> None:
-        self.conn.transaction_enters += 1
-
-    async def __aexit__(self, exc_type: type | None, exc_val: Exception | None, exc_tb: Any) -> None:
-        self.conn.transaction_exits += 1
-
-
-class MockConnection:
-    def __init__(self, fetch_results: dict | None = None) -> None:
-        self.fetch_results = fetch_results or {}
-        self.execute_calls: list[tuple[str, tuple]] = []
-        self.fetch_calls: list[tuple[str, tuple]] = []
-        self.transaction_enters = 0
-        self.transaction_exits = 0
-
-    def transaction(self) -> MockTransaction:
-        return MockTransaction(self)
-
-    async def fetch(self, query: str, *args: Any) -> list[dict]:
-        self.fetch_calls.append((query, args))
-        q_compact = "".join(query.split()).lower()
-        for key, value in self.fetch_results.items():
-            if "".join(key.split()).lower() in q_compact:
-                if isinstance(value, Exception):
-                    raise value
-                return value
-        return []
-
-    async def execute(self, query: str, *args: Any) -> str:
-        self.execute_calls.append((query, args))
-        return "UPDATE 1"
-
-
-class MockPool:
-    def __init__(self, conn: MockConnection) -> None:
-        self._conn = conn
-
-    @asynccontextmanager
-    async def acquire(self, timeout: float | None = None) -> AsyncGenerator[MockConnection, None]:
-        yield self._conn
+from tests.fixtures.mock_db import MockConnection, MockTransaction, MockPool
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +87,22 @@ class TestSpikingActivationEngine:
         engine.step({})
         assert engine.potentials["node_A"] == 0.1
         assert engine.max_potentials["node_A"] == 0.4  # Still retains historical peak
+
+    def test_potential_clamping_in_spiking_activation_engine(self) -> None:
+        # Create engine with max_charge = 2.0
+        engine = SpikingActivationEngine(theta=0.5, decay=1.0, alpha=1.0, max_charge=2.0)
+        engine.set_potentials({"node_A": 1.0, "node_B": 0.4})
+
+        # node_A has potential 1.0 (>= theta 0.5), so it fires.
+        # It transfers to node_B: alpha * V_u * w = 1.0 * 1.0 * 2.0 = 2.0.
+        # node_B potential after transfer: initial (0.4 * decay = 0.4) + transfer (2.0) = 2.4.
+        # But max_charge is 2.0, so it should be clamped to 2.0.
+        adj = {"node_A": [("node_B", 2.0)]}
+        fired = engine.step(adj)
+
+        assert fired == {"node_A"}
+        assert engine.potentials["node_B"] == 2.0
+        assert engine.max_potentials["node_B"] == 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +257,61 @@ class TestAdaptSynapticWeights:
         assert conn.transaction_enters == 2
         assert conn.transaction_exits == 2
 
+    async def test_bidirectional_weight_adaptation_with_pred(self) -> None:
+        ns = uuid.uuid4()
+        fetch_results = {
+            "select id, confidence from kg_edges": [{"id": uuid.uuid4(), "confidence": 0.5}],
+            "select id, confidence_score from topology_graph": [{"id": uuid.uuid4(), "confidence_score": 0.6}],
+        }
+        conn = MockConnection(fetch_results)
+
+        # 3-tuple edge (with predicate)
+        count = await adapt_synaptic_weights(
+            conn=conn,
+            namespace_id=ns,
+            decision_outcome="success",
+            reinforced_edges=[("device_A", "connected_to", "device_B")],
+            learning_rate=0.2,
+        )
+
+        assert count == 2
+        # Verify that the fetch call for kg_edges used bidirectional / symmetrical matches
+        kg_fetch = next(c for c in conn.fetch_calls if "kg_edges" in c[0].lower())
+        q_kg_compact = "".join(kg_fetch[0].split()).lower()
+        assert "(subject_label=$3andobject_label=$4)or(subject_label=$4andobject_label=$3)" in q_kg_compact
+
+        # Verify that the fetch call for topology_graph used bidirectional / symmetrical matches
+        topo_fetch = next(c for c in conn.fetch_calls if "topology_graph" in c[0].lower())
+        q_topo_compact = "".join(topo_fetch[0].split()).lower()
+        assert "(source_node_id=$3andtarget_node_id=$4)or(source_node_id=$4andtarget_node_id=$3)" in q_topo_compact
+
+    async def test_bidirectional_weight_adaptation_without_pred(self) -> None:
+        ns = uuid.uuid4()
+        fetch_results = {
+            "select id, confidence from kg_edges": [{"id": uuid.uuid4(), "confidence": 0.5}],
+            "select id, confidence_score from topology_graph": [{"id": uuid.uuid4(), "confidence_score": 0.6}],
+        }
+        conn = MockConnection(fetch_results)
+
+        # 2-tuple edge (without predicate)
+        count = await adapt_synaptic_weights(
+            conn=conn,
+            namespace_id=ns,
+            decision_outcome="success",
+            reinforced_edges=[("device_A", "device_B")],
+            learning_rate=0.2,
+        )
+
+        assert count == 2
+        # Verify that the fetch call for kg_edges used bidirectional / symmetrical matches without predicate
+        kg_fetch = next(c for c in conn.fetch_calls if "kg_edges" in c[0].lower())
+        q_kg_compact = "".join(kg_fetch[0].split()).lower()
+        assert "(subject_label=$2andobject_label=$3)or(subject_label=$3andobject_label=$2)" in q_kg_compact
+
+        # Verify that the fetch call for topology_graph used bidirectional / symmetrical matches without predicate
+        topo_fetch = next(c for c in conn.fetch_calls if "topology_graph" in c[0].lower())
+        q_topo_compact = "".join(topo_fetch[0].split()).lower()
+        assert "(source_node_id=$2andtarget_node_id=$3)or(source_node_id=$3andtarget_node_id=$2)" in q_topo_compact
 
 
 # ---------------------------------------------------------------------------

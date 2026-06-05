@@ -968,6 +968,23 @@ BEGIN
     END IF;
 END $$;
 
+-- --- Phase 3: Active Learning Queue ---
+CREATE TABLE IF NOT EXISTS active_learning_queue (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    namespace_id     UUID NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+    agent_id         TEXT NOT NULL DEFAULT 'default',
+    payload          JSONB NOT NULL,
+    confidence_score REAL NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'pending'
+                     CHECK (status IN ('pending', 'confirmed', 'rejected')),
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resolved_at      TIMESTAMPTZ,
+    resolved_by      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_active_learning_queue_ns_status
+    ON active_learning_queue (namespace_id, status);
+
 -- --- Phase 4: Saga Execution Log ---
 -- Durable saga state for crash-recovery.  If a worker dies between PG commit
 -- and rollback completion, the recovery cron re-drives compensation from the
@@ -1052,7 +1069,8 @@ DECLARE
         'bridge_subscriptions',
         'dead_letter_queue',
         'embedding_migrations',
-        'memory_embeddings'
+        'memory_embeddings',
+        'active_learning_queue'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables

@@ -45,7 +45,9 @@ async def admin_lifespan(app):
         from nce.observability import EVENT_LOG_PARTITION_MONTHS_AHEAD
 
         async with admin_state.engine.pg_pool.acquire(timeout=10.0) as conn:
-            await conn.execute("SELECT nce_ensure_event_log_monthly_partitions(3)")
+            await conn.execute(
+                f"SELECT nce_ensure_event_log_monthly_partitions({cfg.NCE_PARTITION_LOOKAHEAD_MONTHS})"
+            )
             row = await conn.fetchrow(
                 """
                 SELECT count(*) AS cnt
