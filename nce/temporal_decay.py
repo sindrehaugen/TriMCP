@@ -226,13 +226,17 @@ def score_batch(
     rows: list[dict],
     *,
     class_key: str = "memory_type",
-    timestamp_key: str = "updated_at",
+    timestamp_key: str = "valid_from",  # TD-DECAY-2: memories has no updated_at; valid_from is the Ebbinghaus clock origin
     _now: datetime | None = None,
 ) -> list[dict]:
     """Score a list of memory dicts, appending 'retention' and 'prune_eligible' keys.
 
     Designed for use with asyncpg ``conn.fetch()`` results (after dict conversion).
     Each row dict must contain at least *class_key* and *timestamp_key*.
+
+    ``timestamp_key`` defaults to ``"valid_from"`` — the memories table column that
+    is reset when a memory is reinforced (the correct Ebbinghaus clock origin).
+    Pass ``timestamp_key="created_at"`` for immutable-creation-date-based decay.
 
     Example::
 
@@ -308,14 +312,27 @@ async def _decay_prune_tick(pool: object) -> None:  # pool: asyncpg.Pool
         async with unmanaged_pg_connection(pool, site="cron.decay_prune") as conn:  # type: ignore[arg-type]
             for mc_value, age_threshold in prune_ages.items():
                 try:
+                    # TD-DECAY-1 fix: PostgreSQL does not support UPDATE...LIMIT
+                    # (that is MySQL-only syntax). Use a CTE to select candidates
+                    # with LIMIT first, then JOIN in the UPDATE.
+                    # TD-DECAY-2 fix: memories has no 'updated_at' column.
+                    # Use 'valid_from' — the timestamp that resets when a memory
+                    # is reinforced, which is the correct Ebbinghaus clock origin.
                     result = await conn.execute(
                         """
-                        UPDATE memories
+                        WITH candidates AS (
+                            SELECT id, created_at
+                            FROM   memories
+                            WHERE  memory_type = $1
+                              AND  valid_to IS NULL
+                              AND  extract(epoch from now() - valid_from) / 86400.0 > $2
+                            LIMIT  $3
+                        )
+                        UPDATE memories m
                         SET    valid_to = now()
-                        WHERE  memory_type = $1
-                          AND  valid_to IS NULL
-                          AND  extract(epoch from now() - updated_at) / 86400.0 > $2
-                        LIMIT  $3
+                        FROM   candidates c
+                        WHERE  m.id = c.id
+                          AND  m.created_at = c.created_at
                         """,
                         mc_value,
                         age_threshold,
@@ -341,8 +358,9 @@ async def _decay_prune_tick(pool: object) -> None:  # pool: asyncpg.Pool
     except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
         log.exception("decay_prune tick failed: %s", exc)
     finally:
-        from nce.cron_lock import release_cron_lock as _release
-        await _release(lock)
+        # TD-DECAY-3 fix: release_cron_lock already imported at top of function
+        # (line 289); the duplicate import in the finally block is removed.
+        await release_cron_lock(lock)
         if total_pruned > 0:
             log.info("decay_prune tick complete: total soft-deleted=%d", total_pruned)
         else:
@@ -391,7 +409,7 @@ def build_retention_summary(
     memories: list[dict],
     *,
     class_key: str = "memory_type",
-    timestamp_key: str = "updated_at",
+    timestamp_key: str = "valid_from",  # TD-DECAY-2: memories has no updated_at; valid_from is the Ebbinghaus clock origin
     id_key: str = "id",
     _now: datetime | None = None,
 ) -> list[dict]:

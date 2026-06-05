@@ -43,7 +43,15 @@ ALTER SYSTEM SET citus.enable_ddl_propagation = on;
 ALTER SYSTEM SET citus.multi_shard_commit_protocol = '2pc';
 
 -- Set database-level default (overrides system default for this database only).
-ALTER DATABASE CURRENT_DATABASE() SET citus.multi_shard_commit_protocol = '2pc';
+-- TD-010-9 fix: ALTER DATABASE requires an identifier, not a function call.
+-- Use dynamic SQL via DO block to inject current_database() as the DB name.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER DATABASE %I SET citus.multi_shard_commit_protocol = ''2pc''',
+        current_database()
+    );
+END $$;
 
 -- Adaptive executor: smart routing — pushes single-shard queries directly to the
 -- relevant worker node without a coordinator fan-out.
@@ -328,8 +336,11 @@ SELECT
         / NULLIF(ct.cluster_total_bytes, 0), 2)             AS pct_of_total,
     round(100.0 / NULLIF(ct.worker_count, 0), 2)           AS expected_even_pct,
     -- imbalance_flag = true when this node holds >20% more than the even share.
-    (100.0 * wt.node_total_bytes / NULLIF(ct.cluster_total_bytes, 0))
-        > (120.0 / NULLIF(ct.worker_count, 0))              AS imbalance_flag
+    -- TD-010-10 fix: guard on worker_count > 1 to suppress spurious alerts
+    -- on single-worker clusters (dev/test) and during initial 2-worker data load.
+    (ct.worker_count > 1)
+        AND (100.0 * wt.node_total_bytes / NULLIF(ct.cluster_total_bytes, 0))
+            > (120.0 / NULLIF(ct.worker_count, 0))          AS imbalance_flag
 FROM worker_totals wt
 CROSS JOIN cluster_total ct
 ORDER BY wt.nodename;

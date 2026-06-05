@@ -250,10 +250,11 @@ class TestDaysUntilPrune:
 
 class TestScoreBatch:
     def _make_row(self, memory_type: str, age_days: float) -> dict:
+        # TD-DECAY-2 fix: use valid_from (memories table column), not updated_at
         return {
             "id": "test-id",
             "memory_type": memory_type,
-            "updated_at": _ago(age_days),
+            "valid_from": _ago(age_days),
         }
 
     def test_adds_retention_key(self):
@@ -267,8 +268,14 @@ class TestScoreBatch:
         scored = score_batch(rows, _now=NOW)
         assert scored[0]["prune_eligible"] is True
 
+    def test_default_timestamp_key_is_valid_from(self):
+        """Verify the default timestamp_key matches the actual memories schema column."""
+        import inspect
+        sig = inspect.signature(score_batch)
+        assert sig.parameters["timestamp_key"].default == "valid_from"
+
     def test_none_timestamp_defaults_to_fully_retained(self):
-        rows = [{"id": "x", "memory_type": "incident", "updated_at": None}]
+        rows = [{"id": "x", "memory_type": "incident", "valid_from": None}]
         scored = score_batch(rows, _now=NOW)
         assert scored[0]["retention"] == pytest.approx(1.0)
         assert scored[0]["prune_eligible"] is False
@@ -299,10 +306,11 @@ class TestScoreBatch:
 
 class TestBuildRetentionSummary:
     def _make_mem(self, memory_type: str, age_days: float, uid: str = "abc") -> dict:
+        # TD-DECAY-2 fix: use valid_from (memories table column), not updated_at
         return {
             "id": uid,
             "memory_type": memory_type,
-            "updated_at": _ago(age_days),
+            "valid_from": _ago(age_days),
         }
 
     def test_summary_contains_required_keys(self):
@@ -315,6 +323,12 @@ class TestBuildRetentionSummary:
         assert "stability" in row
         assert "prune_eligible" in row
         assert "days_until_prune" in row
+
+    def test_default_timestamp_key_is_valid_from(self):
+        """Verify the default timestamp_key matches the actual memories schema column."""
+        import inspect
+        sig = inspect.signature(build_retention_summary)
+        assert sig.parameters["timestamp_key"].default == "valid_from"
 
     def test_retention_value_correct(self):
         mems = [self._make_mem("incident", 7.0)]
@@ -329,8 +343,9 @@ class TestBuildRetentionSummary:
     def test_empty_returns_empty(self):
         assert build_retention_summary([], _now=NOW) == []
 
-    def test_none_updated_at_returns_full_retention(self):
-        mems = [{"id": "x", "memory_type": "incident", "updated_at": None}]
+    def test_none_valid_from_returns_full_retention(self):
+        # TD-DECAY-2: key is valid_from, not updated_at
+        mems = [{"id": "x", "memory_type": "incident", "valid_from": None}]
         summary = build_retention_summary(mems, _now=NOW)
         assert summary[0]["retention"] == pytest.approx(1.0)
 
@@ -442,3 +457,93 @@ class TestMathProperties:
             assert r_at_prune == pytest.approx(RETENTION_PRUNE_THRESHOLD, rel=1e-4), (
                 f"{mc}: R at prune age {dtp:.2f}d = {r_at_prune:.6f}, expected ~{RETENTION_PRUNE_THRESHOLD}"
             )
+
+
+# ---------------------------------------------------------------------------
+# 10. SQL correctness tests (TD-DECAY-4)
+# Validate the prune query SQL structure without requiring a live database.
+# These tests parse the SQL string extracted from the source and verify:
+#   - No UPDATE...LIMIT (MySQL dialect, invalid in PostgreSQL)
+#   - Uses valid_from, not updated_at (schema contract)
+#   - CTE pattern is present (correct PostgreSQL batch-UPDATE approach)
+#   - No duplicate cron_lock import in finally block
+# ---------------------------------------------------------------------------
+
+class TestPruneSQLCorrectness:
+    """TD-DECAY-4: SQL string validation for _decay_prune_tick.
+
+    These tests extract the SQL from the source code and validate its
+    structure statically, catching dialect mistakes before deployment.
+    They complement the unit tests for the math layer, which cannot
+    catch DB-layer bugs without a live PostgreSQL instance.
+    """
+
+    @pytest.fixture(scope="class")
+    def prune_sql(self) -> str:
+        """Extract the UPDATE SQL string from the _decay_prune_tick function source.
+
+        The SQL lives inside conn.execute(\"\"\"...\"\"\"). We locate the opening
+        triple-quote that follows 'conn.execute(' and read until the matching
+        closing triple-quote.
+        """
+        import inspect
+        import nce.temporal_decay as td
+        source = inspect.getsource(td._decay_prune_tick)
+        # Anchor on the conn.execute call that contains the WITH-CTE UPDATE.
+        anchor = source.index("conn.execute(")
+        open_quote = source.index('"""', anchor)
+        close_quote = source.index('"""', open_quote + 3)
+        return source[open_quote: close_quote + 3]
+
+    def test_uses_cte_pattern_not_direct_update(self, prune_sql):
+        """Batch UPDATE must use CTE (WITH candidates AS (...)) — not bare UPDATE...LIMIT."""
+        assert "WITH candidates AS" in prune_sql
+
+    def test_no_update_limit_mysql_syntax(self, prune_sql):
+        """PostgreSQL does not support UPDATE...LIMIT. Verify it is absent."""
+        import re
+        # Match UPDATE...LIMIT at the same indentation level (not inside a CTE SELECT)
+        # The pattern is: UPDATE <table> ... LIMIT without a preceding WITH/SELECT
+        direct_update_limit = re.search(
+            r"^\s*UPDATE\s+memories\s.*?LIMIT",
+            prune_sql,
+            re.DOTALL | re.MULTILINE,
+        )
+        assert direct_update_limit is None, (
+            "Found UPDATE...LIMIT (MySQL syntax). Use a CTE with LIMIT in the SELECT."
+        )
+
+    def test_uses_valid_from_not_updated_at(self, prune_sql):
+        """Prune query must use valid_from (real memories column), not updated_at."""
+        assert "valid_from" in prune_sql
+        assert "updated_at" not in prune_sql
+
+    def test_update_joins_on_composite_pk(self, prune_sql):
+        """UPDATE must join on both id and created_at (composite PK after TD-010-1)."""
+        assert "m.id = c.id" in prune_sql
+        assert "m.created_at = c.created_at" in prune_sql
+
+    def test_prune_tick_no_duplicate_release_import(self):
+        """TD-DECAY-3: verify finally block does not re-import release_cron_lock."""
+        import inspect
+        import nce.temporal_decay as td
+        source = inspect.getsource(td._decay_prune_tick)
+        # The finally block should use release_cron_lock directly (imported at top)
+        # and NOT contain a second 'from nce.cron_lock import' statement.
+        finally_block = source[source.index("finally:"):]
+        assert "from nce.cron_lock import" not in finally_block, (
+            "Duplicate import of release_cron_lock found in finally block (TD-DECAY-3)."
+        )
+
+    def test_prune_tick_filters_valid_to_is_null(self, prune_sql):
+        """Prune query must only target currently-active memories (valid_to IS NULL)."""
+        assert "valid_to IS NULL" in prune_sql
+
+    def test_prune_tick_parametrised_not_fstring(self, prune_sql):
+        """SQL must use $1/$2/$3 parameters, not f-string interpolation (SQL injection guard)."""
+        import re
+        # Should contain parameter placeholders
+        assert re.search(r"\$[123]", prune_sql), "Missing parameterised placeholders"
+        # Must NOT contain f-string style {variable} interpolation in SQL
+        assert "{mc_value}" not in prune_sql
+        assert "{age_threshold}" not in prune_sql
