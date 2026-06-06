@@ -33,25 +33,29 @@ async def _try_cached_mcp_tool_response(
     if tool_name not in CACHEABLE_TOOLS:
         return None, None
 
-    gen_raw = await eng.redis_client.get("mcp_cache_generation")
-    gen_val = int(gen_raw.decode()) if gen_raw else 0
-    ns_id = arguments.get("namespace_id")
-    cache_key = build_cache_key(
-        tool_name=tool_name,
-        arguments=arguments,
-        generation=gen_val,
-        namespace_id=ns_id,
-    )
-    cached_raw = await eng.redis_client.get(cache_key)
-    if not cached_raw:
-        return None, cache_key
+    try:
+        gen_raw = await eng.redis_client.get("mcp_cache_generation")
+        gen_val = int(gen_raw.decode()) if gen_raw else 0
+        ns_id = arguments.get("namespace_id")
+        cache_key = build_cache_key(
+            tool_name=tool_name,
+            arguments=arguments,
+            generation=gen_val,
+            namespace_id=ns_id,
+        )
+        cached_raw = await eng.redis_client.get(cache_key)
+        if not cached_raw:
+            return None, cache_key
 
-    ns_for_log = str(ns_id)[:8] if ns_id is not None else "global"
-    log.info("API Cache hit for tool %s (ns=%s)", tool_name, ns_for_log)
-    return (
-        [TextContent(type="text", text=cached_raw.decode())],
-        cache_key,
-    )
+        ns_for_log = str(ns_id)[:8] if ns_id is not None else "global"
+        log.info("API Cache hit for tool %s (ns=%s)", tool_name, ns_for_log)
+        return (
+            [TextContent(type="text", text=cached_raw.decode())],
+            cache_key,
+        )
+    except Exception as exc:
+        log.warning("Redis read failure in cache handler (treating as cache miss): %s", exc)
+        return None, None
 
 
 async def _consume_quota_for_mcp_tool(
@@ -60,9 +64,7 @@ async def _consume_quota_for_mcp_tool(
     arguments: dict[str, Any],
     redis_client,
 ) -> Any:
-    return await _quotas.consume_for_tool(
-        pg_pool, tool_name, arguments, redis_client=redis_client
-    )
+    return await _quotas.consume_for_tool(pg_pool, tool_name, arguments, redis_client=redis_client)
 
 
 def _check_admin(arguments: dict[str, Any]) -> None:
@@ -94,6 +96,7 @@ def _check_admin(arguments: dict[str, Any]) -> None:
 #   -32005  Scope forbidden
 #   -32013  Resource quota exceeded
 #   -32029  Rate limit exceeded
+
 
 def _jsonrpc_error_response(
     code: int,

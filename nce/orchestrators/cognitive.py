@@ -14,31 +14,16 @@ import asyncpg
 
 from nce.db_utils import scoped_pg_session
 
+from nce.orchestrators._base import OrchestratorBase
+
 log = logging.getLogger("nce-orchestrator.cognitive")
 
 
-class CognitiveOrchestrator:
+class CognitiveOrchestrator(OrchestratorBase):
     """Domain orchestrator for salience management and contradiction resolution."""
 
     def __init__(self, pg_pool: asyncpg.Pool):
-        self.pg_pool = pg_pool
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _ensure_uuid(self, val: str | UUID | None) -> UUID | None:
-        if val is None:
-            return None
-        if isinstance(val, UUID):
-            return val
-        return UUID(str(val))
-
-    @asynccontextmanager
-    async def scoped_session(self, namespace_id: str | UUID):
-        """Tenant-isolated PostgreSQL session with RLS context."""
-        async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
-            yield conn
+        super().__init__(pg_pool)
 
     # ------------------------------------------------------------------
     # Salience — boost_memory

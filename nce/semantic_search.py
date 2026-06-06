@@ -132,6 +132,7 @@ async def semantic_search(
 
     cognitive_config = NamespaceCognitiveConfig()
     temporal_retention_days = 90
+    active_model_id = None
 
     async with scoped_pg_session(pg_pool, namespace_id) as conn:
         ns_row = await conn.fetchrow(
@@ -144,10 +145,15 @@ async def semantic_search(
             if "temporal_retention_days" in meta:
                 temporal_retention_days = meta["temporal_retention_days"]
 
-        vector = await asyncio.wait_for(embedding_fn(query), timeout=_EMBED_TIMEOUT_SECONDS)
-        if len(vector) != VECTOR_DIM:
-            raise ValueError(f"embedding_fn returned dim {len(vector)}, expected {VECTOR_DIM}")
+        active_model_id = await conn.fetchval(
+            "SELECT id FROM embedding_models WHERE status = 'active' LIMIT 1"
+        )
 
+    vector = await asyncio.wait_for(embedding_fn(query), timeout=_EMBED_TIMEOUT_SECONDS)
+    if len(vector) != VECTOR_DIM:
+        raise ValueError(f"embedding_fn returned dim {len(vector)}, expected {VECTOR_DIM}")
+
+    async with scoped_pg_session(pg_pool, namespace_id) as conn:
         builder = AsyncpgQueryBuilder()
         p_vector = builder.param(json.dumps(vector))
         p_namespace_id = builder.param(UUID(namespace_id))
@@ -158,10 +164,6 @@ async def semantic_search(
         m = Table("memories").as_("m")
         me = Table("memory_embeddings").as_("me")
         s = Table("memory_salience").as_("s")
-
-        active_model_id = await conn.fetchval(
-            "SELECT id FROM embedding_models WHERE status = 'active' LIMIT 1"
-        )
 
         v_cand_query = Query.from_(m)
         if active_model_id:

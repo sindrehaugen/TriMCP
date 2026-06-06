@@ -10,9 +10,10 @@ from nce.bridges import dispatch_bridge_event
 from nce.tasks import process_bridge_event
 
 
-def test_dispatch_bridge_event_unknown_provider() -> None:
+@pytest.mark.asyncio
+async def test_dispatch_bridge_event_unknown_provider() -> None:
     with pytest.raises(ValueError, match="Unknown bridge provider"):
-        dispatch_bridge_event("onedrive", {})
+        await dispatch_bridge_event("onedrive", {})
 
 
 @patch("nce.bridges.dispatch_bridge_event", return_value={"status": "ok"})

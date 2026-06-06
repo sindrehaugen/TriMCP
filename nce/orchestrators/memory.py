@@ -39,12 +39,12 @@ from nce.models import (
 )
 from nce.mongo_bulk import fetch_episodes_raw_by_ref, normalize_payload_ref
 from nce.observability import SagaMetrics, get_tracer
+from nce.orchestrators._base import OrchestratorBase
 
 log = logging.getLogger("nce-orchestrator.memory")
 
 
-
-class MemoryOrchestrator:
+class MemoryOrchestrator(OrchestratorBase):
     """Domain orchestrator for memory storage, search, recall, and integrity."""
 
     def __init__(
@@ -55,18 +55,13 @@ class MemoryOrchestrator:
         minio_client: Minio | None = None,
         pg_read_pool: asyncpg.Pool | None = None,
     ):
-        self.pg_pool = pg_pool
+        super().__init__(pg_pool, mongo_client=mongo_client, redis_client=redis_client)
         self.pg_read_pool = pg_read_pool
-        self.mongo_client = mongo_client
-        self.redis_client = redis_client
         self.minio_client = minio_client
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    async def _generate_embedding(self, text: str) -> list[float]:
-        return await _embeddings.embed(text)
 
     async def _enqueue_outbox(
         self,
@@ -513,6 +508,311 @@ class MemoryOrchestrator:
     # store_memory (Saga Pattern)
     # ------------------------------------------------------------------
 
+    async def _compute_salience_score(self, payload: StoreMemoryRequest) -> float:
+        """Computes the decayed salience score (R) from metadata or derived_from memory."""
+        R = None
+        if payload.metadata:
+            for k in ("confidence", "salience", "R"):
+                if k in payload.metadata:
+                    try:
+                        R = float(payload.metadata[k])
+                        break
+                    except (ValueError, TypeError):
+                        pass
+
+        if R is None:
+            R = 1.0  # default
+            if payload.derived_from:
+                try:
+                    async with scoped_pg_session(self.pg_pool, payload.namespace_id) as conn:
+                        parent_row = await conn.fetchrow(
+                            "SELECT salience_score, updated_at FROM memory_salience WHERE memory_id = $1::uuid ORDER BY agent_id = 'system' DESC, agent_id = $2 DESC, updated_at DESC LIMIT 1",
+                            payload.derived_from[0],
+                            payload.agent_id,
+                        )
+                        if parent_row:
+                            half_life_days = 30.0
+                            ns_row = await conn.fetchrow(
+                                "SELECT metadata FROM namespaces WHERE id = $1::uuid",
+                                payload.namespace_id,
+                            )
+                            if ns_row and ns_row["metadata"]:
+                                ns_meta = (
+                                    json.loads(ns_row["metadata"])
+                                    if isinstance(ns_row["metadata"], str)
+                                    else ns_row["metadata"]
+                                )
+                                half_life_days = float(
+                                    ns_meta.get("cognitive", {}).get("half_life_days", 30.0)
+                                )
+
+                            from nce.salience import compute_decayed_score
+
+                            R = compute_decayed_score(
+                                s_last=float(parent_row["salience_score"]),
+                                updated_at=parent_row["updated_at"],
+                                half_life_days=half_life_days,
+                                memory_id=str(payload.derived_from[0]),
+                            )
+                except Exception as exc:
+                    log.warning("[ACTIVE-LEARNING] Failed to compute parent memory decay: %s", exc)
+        return R
+
+    async def _quarantine_if_needed(
+        self, payload: StoreMemoryRequest, R: float, bypass: bool
+    ) -> dict | None:
+        """Quarantines the memory if R is below threshold and bypass is false."""
+        if not bypass and R < 0.65:
+            async with scoped_pg_session(self.pg_pool, payload.namespace_id) as conn:
+                from nce.active_learning import ActiveLearningManager
+
+                al_mgr = ActiveLearningManager(self.pg_pool)
+                queue_item_id = await al_mgr.quarantine_memory(conn, payload, R)
+                return {
+                    "quarantined": True,
+                    "queue_item_id": str(queue_item_id),
+                    "R": R,
+                }
+        return None
+
+    async def _store_episodic_mongodb(
+        self, payload: StoreMemoryRequest, sanitized_heavy: str, pii_result: Any
+    ) -> tuple[str, Any]:
+        """STEP 1: Episodic Commit (MongoDB)."""
+        db = self.mongo_client.memory_archive
+        collection = db.episodes
+        user_id = payload.metadata.get("user_id") if payload.metadata else None
+        session_id = payload.metadata.get("session_id") if payload.metadata else None
+
+        inserted_result = await collection.insert_one(
+            {
+                "user_id": user_id,
+                "session_id": session_id,
+                "namespace_id": str(payload.namespace_id),
+                "type": payload.memory_type.value,
+                "raw_data": sanitized_heavy,
+                "metadata": payload.metadata,
+                "pii_redacted": pii_result.redacted,
+                "pii_entities_found": pii_result.entities_found,
+                "ingested_at": datetime.now(timezone.utc),
+            }
+        )
+        inserted_mongo_id = str(inserted_result.inserted_id)
+        log.debug("[Mongo] Inserted episode. id=%s", inserted_mongo_id)
+        return inserted_mongo_id, inserted_result
+
+    async def _store_semantic_graph_pg(
+        self,
+        payload: StoreMemoryRequest,
+        sanitized_summary: str,
+        vector: list[float],
+        node_vecs: list[list[float]],
+        pii_result: Any,
+        inserted_mongo_id: str,
+        entities: list,
+        triplets: list,
+        saga_id: str,
+        user_id: str | None,
+        session_id: str | None,
+    ) -> UUID:
+        """STEP 2 + 2b + 2c: Atomic Semantic + Graph Commit (single PG transaction)."""
+        async with scoped_pg_session(self.pg_pool, payload.namespace_id) as conn:
+            # Fetch active and migrating models
+            models = await conn.fetch(
+                "SELECT id FROM embedding_models WHERE status IN ('active', 'migrating')"
+            )
+            target_model_ids = [m["id"] for m in models]
+
+            async with conn.transaction():
+                memory_id = await self._embed_and_insert_vectors(
+                    conn,
+                    payload=payload,
+                    sanitized_summary=sanitized_summary,
+                    vector=vector,
+                    pii_result=pii_result,
+                    inserted_mongo_id=inserted_mongo_id,
+                    target_model_ids=target_model_ids,
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+
+                await self._insert_graph_nodes_and_edges(
+                    conn,
+                    payload=payload,
+                    entities=entities,
+                    node_vecs=node_vecs,
+                    triplets=triplets,
+                    inserted_mongo_id=inserted_mongo_id,
+                    target_model_ids=target_model_ids,
+                    memory_id=memory_id,
+                    saga_id=saga_id,
+                )
+
+                # STEP 2c: Transactional Outbox — atomically publish
+                await self._enqueue_outbox(
+                    conn,
+                    namespace_id=str(payload.namespace_id),
+                    aggregate_type="memory",
+                    aggregate_id=str(memory_id),
+                    event_type="memory.stored",
+                    payload={
+                        "saga_id": str(saga_id),
+                        "memory_id": str(memory_id),
+                        "payload_ref": inserted_mongo_id,
+                        "assertion_type": payload.assertion_type.value,
+                        "memory_type": payload.memory_type.value,
+                        "entities_count": len(entities),
+                        "triplets_count": len(triplets),
+                    },
+                    headers={"source": "store_memory"},
+                )
+        log.debug(
+            "[PG] Atomic commit: vector + %d nodes + %d edges. mongo_ref=%s",
+            len(entities),
+            len(triplets),
+            inserted_mongo_id,
+        )
+        return memory_id
+
+    async def _cache_working_memory_redis(
+        self,
+        namespace_id: UUID,
+        user_id: str | None,
+        session_id: str | None,
+        sanitized_summary: str,
+    ) -> None:
+        """STEP 3: Working Memory (Redis)."""
+        if user_id and session_id:
+            try:
+                redis_key = f"cache:{namespace_id}:{user_id}:{session_id}"
+                await self.redis_client.setex(redis_key, cfg.REDIS_TTL, sanitized_summary)
+                log.debug("[Redis] Summary cached. key=%s", redis_key)
+            except Exception:
+                log.warning("[Redis] Cache write failed; core write remains valid.", exc_info=True)
+
+    async def _detect_contradictions_sync(
+        self,
+        payload: StoreMemoryRequest,
+        memory_id: UUID,
+        sanitized_summary: str,
+        vector: list[float],
+        triplets: list,
+    ) -> Any:
+        """STEP 4: Contradiction Detection."""
+        contradiction_result = None
+        if payload.check_contradictions:
+            from nce.contradictions import detect_contradictions
+
+            try:
+                contradiction_result = await detect_contradictions(
+                    self.pg_pool,
+                    self.mongo_client,
+                    str(payload.namespace_id),
+                    str(memory_id),
+                    sanitized_summary,
+                    payload.assertion_type.value,
+                    vector,
+                    payload.agent_id,
+                    triplets,
+                    detection_path="sync",
+                )
+            except Exception as e:
+                log.error("Contradiction detection failed: %s", e)
+        return contradiction_result
+
+    async def _run_store_memory_saga(self, payload: StoreMemoryRequest) -> dict:
+        """Executes the core transactional write saga across MongoDB, PG, and Redis."""
+        inserted_mongo_id: str | None = None
+        inserted_result = None
+        memory_id: UUID | None = None
+        pg_committed = False
+        saga_id = await self._saga_log_start("store_memory", payload)
+
+        try:
+            # --- Phase 0.3: PII Redaction + Graph Extraction ---
+            (
+                pii_result,
+                sanitized_summary,
+                sanitized_heavy,
+                entities,
+                triplets,
+            ) = await self._apply_pii_pipeline(payload)
+
+            # STEP 1: Episodic Commit (MongoDB)
+            user_id = payload.metadata.get("user_id") if payload.metadata else None
+            session_id = payload.metadata.get("session_id") if payload.metadata else None
+
+            inserted_mongo_id, inserted_result = await self._store_episodic_mongodb(
+                payload, sanitized_heavy, pii_result
+            )
+
+            # Pre-compute all embeddings OUTSIDE the PG transaction
+            all_texts = [sanitized_summary] + [e.label for e in entities]
+            all_vectors = await _embeddings.embed_batch(all_texts)
+            vector = all_vectors[0]
+            node_vecs = all_vectors[1:]
+
+            # STEP 2 + 2b + 2c: Atomic Semantic + Graph Commit (single PG transaction)
+            memory_id = await self._store_semantic_graph_pg(
+                payload=payload,
+                sanitized_summary=sanitized_summary,
+                vector=vector,
+                node_vecs=node_vecs,
+                pii_result=pii_result,
+                inserted_mongo_id=inserted_mongo_id,
+                entities=entities,
+                triplets=triplets,
+                saga_id=saga_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+
+            # Mark committed once exited from PG session block successfully
+            pg_committed = True
+
+        except Exception as e:
+            collection = self.mongo_client.memory_archive.episodes
+            await self._apply_rollback_on_failure(
+                e=e,
+                payload=payload,
+                collection=collection,
+                inserted_mongo_id=inserted_mongo_id,
+                inserted_result=inserted_result,
+                memory_id=memory_id,
+                pg_committed=pg_committed,
+                saga_id=saga_id,
+            )
+            raise
+
+        # --- PG committed; all subsequent failures are advisory ---
+        try:
+            await self._saga_log_transition(
+                saga_id, SagaState.PG_COMMITTED, payload_patch={"memory_id": str(memory_id)}
+            )
+        except Exception:
+            log.warning("[SAGA] PG_COMMITTED transition failed.", exc_info=True)
+
+        # STEP 3: Working Memory (Redis)
+        await self._cache_working_memory_redis(
+            payload.namespace_id, user_id, session_id, sanitized_summary
+        )
+
+        # STEP 4: Contradiction Detection
+        contradiction_result = await self._detect_contradictions_sync(
+            payload, memory_id, sanitized_summary, vector, triplets
+        )
+
+        try:
+            await self._saga_log_transition(saga_id, SagaState.COMPLETED)
+        except Exception:
+            log.warning("[SAGA] COMPLETED transition failed.", exc_info=True)
+
+        return {
+            "quarantined": False,
+            "payload_ref": inserted_mongo_id,
+            "contradiction": contradiction_result,
+        }
+
     async def store_memory(self, payload: StoreMemoryRequest) -> dict:
         """
         Saga Pattern: MongoDB → PostgreSQL → Redis.
@@ -528,228 +828,17 @@ class MemoryOrchestrator:
                 if payload.metadata.get("bypass_quarantine"):
                     bypass = True
 
-            R = None
-            if payload.metadata:
-                for k in ("confidence", "salience", "R"):
-                    if k in payload.metadata:
-                        try:
-                            R = float(payload.metadata[k])
-                            break
-                        except (ValueError, TypeError):
-                            pass
+            R = await self._compute_salience_score(payload)
 
-            if R is None:
-                R = 1.0  # default
-                if payload.derived_from:
-                    try:
-                        async with scoped_pg_session(self.pg_pool, payload.namespace_id) as conn:
-                            parent_row = await conn.fetchrow(
-                                "SELECT salience_score, updated_at FROM memory_salience WHERE memory_id = $1::uuid ORDER BY agent_id = 'system' DESC, agent_id = $2 DESC, updated_at DESC LIMIT 1",
-                                payload.derived_from[0],
-                                payload.agent_id,
-                            )
-                            if parent_row:
-                                half_life_days = 30.0
-                                ns_row = await conn.fetchrow("SELECT metadata FROM namespaces WHERE id = $1::uuid", payload.namespace_id)
-                                if ns_row and ns_row["metadata"]:
-                                    import json
-                                    ns_meta = json.loads(ns_row["metadata"]) if isinstance(ns_row["metadata"], str) else ns_row["metadata"]
-                                    half_life_days = float(ns_meta.get("cognitive", {}).get("half_life_days", 30.0))
-
-                                from nce.salience import compute_decayed_score
-                                R = compute_decayed_score(
-                                    s_last=float(parent_row["salience_score"]),
-                                    updated_at=parent_row["updated_at"],
-                                    half_life_days=half_life_days,
-                                    memory_id=str(payload.derived_from[0]),
-                                )
-                    except Exception as exc:
-                        log.warning("[ACTIVE-LEARNING] Failed to compute parent memory decay: %s", exc)
-
-            if not bypass and R < 0.65:
-                async with scoped_pg_session(self.pg_pool, payload.namespace_id) as conn:
-                    from nce.active_learning import ActiveLearningManager
-                    al_mgr = ActiveLearningManager(self.pg_pool)
-                    queue_item_id = await al_mgr.quarantine_memory(conn, payload, R)
-                    return {
-                        "quarantined": True,
-                        "queue_item_id": str(queue_item_id),
-                        "R": R,
-                    }
+            quarantine_result = await self._quarantine_if_needed(payload, R, bypass)
+            if quarantine_result is not None:
+                return quarantine_result
 
             # Bypass or R >= 0.65 -> proceed with write saga (Slow I/O outside PG transaction)
             with SagaMetrics("store_memory"):
-                db = self.mongo_client.memory_archive
-                collection = db.episodes
-                inserted_mongo_id: str | None = None
-                inserted_result = None
-
-                memory_id = None
-                pg_committed = False
-                saga_id = None
-                saga_id = await self._saga_log_start("store_memory", payload)
-
-                try:
-                    # --- Phase 0.3: PII Redaction + Graph Extraction ---
-                    (
-                        pii_result,
-                        sanitized_summary,
-                        sanitized_heavy,
-                        entities,
-                        triplets,
-                    ) = await self._apply_pii_pipeline(payload)
-
-                    # STEP 1: Episodic Commit (MongoDB)
-                    user_id = payload.metadata.get("user_id") if payload.metadata else None
-                    session_id = (
-                        payload.metadata.get("session_id") if payload.metadata else None
-                    )
-
-                    inserted_result = await collection.insert_one(
-                        {
-                            "user_id": user_id,
-                            "session_id": session_id,
-                            "namespace_id": str(payload.namespace_id),
-                            "type": payload.memory_type.value,
-                            "raw_data": sanitized_heavy,
-                            "metadata": payload.metadata,
-                            "pii_redacted": pii_result.redacted,
-                            "pii_entities_found": pii_result.entities_found,
-                            "ingested_at": datetime.now(timezone.utc),
-                        }
-                    )
-                    inserted_mongo_id = str(inserted_result.inserted_id)
-                    log.debug("[Mongo] Inserted episode. id=%s", inserted_mongo_id)
-
-                    # Pre-compute all embeddings OUTSIDE the PG transaction
-                    all_texts = [sanitized_summary] + [e.label for e in entities]
-                    all_vectors = await _embeddings.embed_batch(all_texts)
-                    vector = all_vectors[0]
-                    node_vecs = all_vectors[1:]
-
-                    # STEP 2 + 2b: Atomic Semantic + Graph Commit (single PG transaction)
-                    async with scoped_pg_session(self.pg_pool, payload.namespace_id) as conn:
-                        # Fetch active and migrating models
-                        models = await conn.fetch(
-                            "SELECT id FROM embedding_models WHERE status IN ('active', 'migrating')"
-                        )
-                        target_model_ids = [m["id"] for m in models]
-
-                        async with conn.transaction():
-                            memory_id = await self._embed_and_insert_vectors(
-                                conn,
-                                payload=payload,
-                                sanitized_summary=sanitized_summary,
-                                vector=vector,
-                                pii_result=pii_result,
-                                inserted_mongo_id=inserted_mongo_id,
-                                target_model_ids=target_model_ids,
-                                user_id=user_id,
-                                session_id=session_id,
-                            )
-
-                            await self._insert_graph_nodes_and_edges(
-                                conn,
-                                payload=payload,
-                                entities=entities,
-                                node_vecs=node_vecs,
-                                triplets=triplets,
-                                inserted_mongo_id=inserted_mongo_id,
-                                target_model_ids=target_model_ids,
-                                memory_id=memory_id,
-                                saga_id=saga_id,
-                            )
-
-                            # STEP 2c: Transactional Outbox — atomically publish
-                            await self._enqueue_outbox(
-                                conn,
-                                namespace_id=str(payload.namespace_id),
-                                aggregate_type="memory",
-                                aggregate_id=str(memory_id),
-                                event_type="memory.stored",
-                                payload={
-                                    "saga_id": str(saga_id),
-                                    "memory_id": str(memory_id),
-                                    "payload_ref": inserted_mongo_id,
-                                    "assertion_type": payload.assertion_type.value,
-                                    "memory_type": payload.memory_type.value,
-                                    "entities_count": len(entities),
-                                    "triplets_count": len(triplets),
-                                },
-                                headers={"source": "store_memory"},
-                            )
-
-                    log.debug(
-                        "[PG] Atomic commit: vector + %d nodes + %d edges. mongo_ref=%s",
-                        len(entities),
-                        len(triplets),
-                        inserted_mongo_id,
-                    )
-
-                except Exception as e:
-                    await self._apply_rollback_on_failure(
-                        e=e,
-                        payload=payload,
-                        collection=collection,
-                        inserted_mongo_id=inserted_mongo_id,
-                        inserted_result=inserted_result,
-                        memory_id=memory_id,
-                        pg_committed=pg_committed,
-                        saga_id=saga_id,
-                    )
-                    raise
-
-                # --- PG committed; all subsequent failures are advisory ---
-                pg_committed = True
-                try:
-                    await self._saga_log_transition(
-                        saga_id, SagaState.PG_COMMITTED, payload_patch={"memory_id": str(memory_id)}
-                    )
-                except Exception:
-                    log.warning("[SAGA] PG_COMMITTED transition failed.", exc_info=True)
-
-                # STEP 3: Working Memory (Redis)
-                if user_id and session_id:
-                    try:
-                        redis_key = f"cache:{payload.namespace_id}:{user_id}:{session_id}"
-                        await self.redis_client.setex(redis_key, cfg.REDIS_TTL, sanitized_summary)
-                        log.debug("[Redis] Summary cached. key=%s", redis_key)
-                    except Exception:
-                        log.warning(
-                            "[Redis] Cache write failed; core write remains valid.", exc_info=True
-                        )
-
-                # STEP 4: Contradiction Detection
-                contradiction_result = None
-                if payload.check_contradictions:
-                    from nce.contradictions import detect_contradictions
-
-                    try:
-                        contradiction_result = await detect_contradictions(
-                            self.pg_pool,
-                            self.mongo_client,
-                            str(payload.namespace_id),
-                            str(memory_id),
-                            sanitized_summary,
-                            payload.assertion_type.value,
-                            vector,
-                            payload.agent_id,
-                            triplets,
-                            detection_path="sync",
-                        )
-                    except Exception as e:
-                        log.error("Contradiction detection failed: %s", e)
-
-                try:
-                    await self._saga_log_transition(saga_id, SagaState.COMPLETED)
-                except Exception:
-                    log.warning("[SAGA] COMPLETED transition failed.", exc_info=True)
-
-                return {
-                    "quarantined": False,
-                    "payload_ref": inserted_mongo_id,
-                    "contradiction": contradiction_result,
-                }
+                res = await self._run_store_memory_saga(payload)
+                log.debug("Saga memory storage execution complete")
+                return res
 
     # ------------------------------------------------------------------
     # store_artifact (formerly store_media)
@@ -848,6 +937,13 @@ class MemoryOrchestrator:
 
     async def store_media(self, payload: MediaPayload) -> str:
         """[DEPRECATED] Alias for store_artifact."""
+        import warnings
+
+        warnings.warn(
+            "store_media is deprecated; use store_artifact instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return await self.store_artifact(payload)
 
     # ------------------------------------------------------------------
@@ -1150,7 +1246,7 @@ class MemoryOrchestrator:
         return await semantic_search(
             pg_pool=self.pg_pool,
             mongo_client=self.mongo_client,
-            embedding_fn=self._generate_embedding,
+            embedding_fn=_embeddings.embed,
             query=query,
             namespace_id=namespace_id,
             agent_id=agent_id,

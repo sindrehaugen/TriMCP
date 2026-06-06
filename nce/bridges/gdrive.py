@@ -27,18 +27,6 @@ class GoogleDriveBridge(BridgeProvider):
     def provider_key(self) -> str:
         return "gdrive"
 
-    def bearer_token(self) -> str:
-        override = getattr(self, "_oauth_token_override", None)
-        if override:
-            return override
-        token = (cfg.GDRIVE_BRIDGE_TOKEN or "").strip()
-        if not token:
-            try:
-                return self.refresh_oauth_token()
-            except BridgeAuthError:
-                raise
-        return token
-
     def _cursor_key(self, channel_id: str) -> str:
         return f"bridge:cursor:gdrive:{channel_id}"
 

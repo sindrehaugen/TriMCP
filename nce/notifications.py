@@ -137,7 +137,7 @@ class NotificationDispatcher:
             return
         from nce.net_safety import validate_extractor_url
 
-        validate_extractor_url(self.slack_webhook, what="slack_webhook")
+        await validate_extractor_url(self.slack_webhook, what="slack_webhook")
         if not self._http_client:
             return
         payload = {"text": f"*{title}*\n{message}"}
@@ -153,7 +153,7 @@ class NotificationDispatcher:
             return
         from nce.net_safety import validate_extractor_url
 
-        validate_extractor_url(self.teams_webhook, what="teams_webhook")
+        await validate_extractor_url(self.teams_webhook, what="teams_webhook")
         if not self._http_client:
             return
         payload = {"title": title, "text": message}
@@ -177,7 +177,7 @@ class NotificationDispatcher:
             return
         from nce.net_safety import validate_extractor_url
 
-        validate_extractor_url(f"smtp://{self.smtp_host}", what="smtp_host")
+        await validate_extractor_url(f"smtp://{self.smtp_host}", what="smtp_host")
         try:
             smtp_config = _build_smtp_config()
             msg = EmailMessage()

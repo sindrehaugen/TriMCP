@@ -34,6 +34,7 @@ Run standalone:
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import signal
@@ -45,8 +46,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from nce.orchestrator import NCEEngine
 from uuid import uuid4
-
-from nce.correlation import correlation_id_var
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -65,13 +64,14 @@ from nce.a2a import (
 )
 from nce.auth import NamespaceContext
 from nce.config import cfg
+from nce.correlation import correlation_id_var
 from nce.jwt_auth import JWTAuthMiddleware
 from nce.models import GraphSearchRequest
 
 log = logging.getLogger("nce.a2a_server")
 
 # JSON-RPC 2.0 error code for mTLS failures (same range as A2A_UNAUTHORIZED)
-A2A_CODE_MTLS = -32013  # mTLS client certificate validation failed
+A2A_CODE_MTLS = -32015  # mTLS client certificate validation failed
 
 
 # ---------------------------------------------------------------------------
@@ -145,9 +145,20 @@ async def _drain_active_requests(timeout: int = _GRACE_PERIOD_S) -> int:
 
 
 # ---------------------------------------------------------------------------
-# In-memory task store  (task_id → task dict)
-# ---------------------------------------------------------------------------
-_tasks: dict[str, dict[str, Any]] = {}
+class BoundedDict(collections.OrderedDict):
+    """Subclass of OrderedDict that limits total keys to prevent memory leaks."""
+
+    def __init__(self, maxlen: int = 10000, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.maxlen = maxlen
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if len(self) > self.maxlen:
+            self.popitem(last=False)
+
+
+_tasks: BoundedDict = BoundedDict(maxlen=10000)
 
 # ---------------------------------------------------------------------------
 # Engine reference (injected via lifespan)
@@ -492,14 +503,16 @@ async def _dispatch_skill(
     params: dict[str, Any],
     caller_ctx: NamespaceContext,
 ) -> Any:
-    """Route an A2A skill ID to the appropriate NCEEngine method."""
-    assert _engine is not None, "engine not initialized"
+    if _engine is None:
+        raise RuntimeError("engine not initialized")
 
     # Check if A2A skill is disabled in Redis
     try:
         if _engine and _engine.redis_client:
             if await _engine.redis_client.hexists("nce:tools:disabled", skill):
-                raise A2AScopeViolationError(f"A2A skill '{skill}' has been disabled by the administrator.")
+                raise A2AScopeViolationError(
+                    f"A2A skill '{skill}' has been disabled by the administrator."
+                )
     except A2AScopeViolationError:
         raise
     except Exception as exc:
@@ -538,18 +551,22 @@ async def _dispatch_skill(
         if not isinstance(memories, list):
             raise ValueError("'memories' must be a list of memory objects")
 
-        refs: list[str] = []
-        for m in memories:
-            req = StoreMemoryRequest(
-                namespace_id=uuid.UUID(ns_id),
-                agent_id=agent_id,
-                content=m.get("content", ""),
-                summary=m.get("summary") or m.get("content", "")[:200],
-                heavy_payload=m.get("content", ""),
-                memory_type=MemoryType.episodic,
-            )
-            result = await _engine.store_memory(req)
-            refs.append(str(result.get("payload_ref", "")))
+        sem = asyncio.Semaphore(4)
+
+        async def store_one(m):
+            async with sem:
+                req = StoreMemoryRequest(
+                    namespace_id=uuid.UUID(ns_id),
+                    agent_id=agent_id,
+                    content=m.get("content", ""),
+                    summary=m.get("summary") or m.get("content", "")[:200],
+                    heavy_payload=m.get("content", ""),
+                    memory_type=MemoryType.episodic,
+                )
+                result = await _engine.store_memory(req)
+                return str(result.get("payload_ref", ""))
+
+        refs = await asyncio.gather(*(store_one(m) for m in memories))
 
         return {"archived": len(refs), "refs": refs}
 
@@ -579,8 +596,10 @@ async def _dispatch_skill(
         user_id = params.get("user_id", "default")
         n = max(1, min(int(params.get("n", 10)), 50))
 
-        context = await _engine.recall_memory(
+        context = await _engine.recall_recent(
             namespace_id=ns_id,
+            agent_id=agent_id,
+            limit=n,
             user_id=user_id,
             session_id=agent_id,
         )
@@ -594,6 +613,7 @@ async def _dispatch_skill(
             grant_id = uuid.UUID(str(grant_id_str).strip())
 
         from nce.a2a import verify_grant_status as a2a_verify_grant_status
+
         async with _engine.pg_pool.acquire(timeout=10.0) as conn:
             return await a2a_verify_grant_status(
                 conn=conn,

@@ -3,7 +3,6 @@ import time
 from uuid import UUID, uuid4
 
 import pytest
-
 from nce import MemoryPayload, NCEEngine
 
 # Tests require live DB containers (MongoDB, Redis, PostgreSQL).
@@ -332,3 +331,71 @@ async def test_rollback(engine):
     assert after_count == before_count, (
         f"MongoDB grew by {after_count - before_count} — orphan NOT cleaned up"
     )
+
+
+@_skip_no_containers
+@pytest.mark.asyncio
+async def test_post_commit_failure_saga_recovery(engine, monkeypatch):
+    """If a crash (BaseException) occurs post-PG commit:
+    1. MongoDB document is preserved.
+    2. Saga is left in 'pg_committed' state.
+    3. Cron recovery tick transitions it to 'completed' after aging.
+    """
+    from unittest.mock import AsyncMock
+
+    from motor.motor_asyncio import AsyncIOMotorClient
+    from nce.cron import _saga_recovery_tick
+
+    test_id = str(uuid4())
+
+    db = AsyncIOMotorClient(os.getenv("MONGO_URI", "mongodb://localhost:27017")).memory_archive
+    before_count = await db.episodes.count_documents({})
+
+    # Mock working memory caching to simulate an unhandled exit (BaseException) post-commit
+    monkeypatch.setattr(
+        engine.memory,
+        "_cache_working_memory_redis",
+        AsyncMock(side_effect=KeyboardInterrupt("Simulated exit")),
+    )
+
+    payload = MemoryPayload(
+        user_id=test_id,
+        session_id=test_id,
+        content_type="chat",
+        summary="Saga post-commit crash test.",
+        heavy_payload="Durable data payload.",
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        await engine.store_memory(payload)
+
+    # 1. MongoDB document is NOT deleted (since PG committed)
+    after_count = await db.episodes.count_documents({})
+    assert after_count == before_count + 1
+
+    # 2. Retrieve saga and verify it is in 'pg_committed' state
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
+        row = await conn.fetchrow(
+            "SELECT id, state FROM saga_execution_log WHERE payload->'metadata'->>'user_id' = $1",
+            test_id,
+        )
+        assert row is not None
+        assert row["state"] == "pg_committed"
+        saga_id = row["id"]
+
+        # Manually age the saga log so the recovery cron processes it
+        await conn.execute(
+            "UPDATE saga_execution_log SET created_at = now() - interval '10 minutes', updated_at = now() - interval '10 minutes' WHERE id = $1",
+            saga_id,
+        )
+
+    # 3. Trigger cron recovery tick
+    await _saga_recovery_tick(engine.pg_pool)
+
+    # 4. Verify saga is now 'completed'
+    async with engine.pg_pool.acquire(timeout=10.0) as conn:
+        row = await conn.fetchrow(
+            "SELECT state FROM saga_execution_log WHERE id = $1",
+            saga_id,
+        )
+        assert row["state"] == "completed"

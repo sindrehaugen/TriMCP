@@ -13,6 +13,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from dotenv import load_dotenv
@@ -284,7 +285,7 @@ class _Config:
     NCE_EMBEDDING_MODEL_REVISION: str = os.getenv("NCE_EMBEDDING_MODEL_REVISION", "")
     # trust_remote_code=True is required for some Jina models; must be explicit in production.
     NCE_EMBEDDING_TRUST_REMOTE_CODE: bool = os.getenv(
-        "NCE_EMBEDDING_TRUST_REMOTE_CODE", "true"
+        "NCE_EMBEDDING_TRUST_REMOTE_CODE", "false"
     ).strip().lower() in {"1", "true", "yes", "on"}
     # Input guard — reject batches that exceed these limits rather than silently truncating.
     NCE_EMBED_MAX_BATCH_TEXTS: int = int(os.getenv("NCE_EMBED_MAX_BATCH_TEXTS", "512"))
@@ -296,6 +297,10 @@ class _Config:
 
     # --- Contradictions / NLI ---
     NLI_MODEL_ID: str = os.getenv("NLI_MODEL_ID", "cross-encoder/nli-deberta-v3-small")
+    NCE_CONTRADICTION_SIMILARITY_THRESHOLD: float = _float_env("NCE_CONTRADICTION_SIMILARITY_THRESHOLD", 0.85, minimum=0.0)
+    NCE_CONTRADICTION_MAX_CANDIDATES: int = _int_env("NCE_CONTRADICTION_MAX_CANDIDATES", 3, minimum=1)
+    NCE_CONTRADICTION_NLI_THRESHOLD: float = _float_env("NCE_CONTRADICTION_NLI_THRESHOLD", 0.8, minimum=0.0)
+    NCE_CONTRADICTION_LLM_MIN_CONFIDENCE: float = _float_env("NCE_CONTRADICTION_LLM_MIN_CONFIDENCE", 0.6, minimum=0.0)
 
     # --- D2 / D7 — Local cognitive bundle (OpenAI-compatible HTTP on port 11435) ---
     # When NCE_COGNITIVE_BASE_URL is set (e.g. http://cognitive:11435), embeddings
@@ -489,6 +494,12 @@ class _Config:
         for s in os.getenv("NCE_ADMIN_MTLS_ALLOWED_FINGERPRINTS", "").split(",")
         if s.strip()
     ]
+
+    # --- General mTLS (CC) ---
+    NCE_MTLS_STRICT: bool = _bool_env("NCE_MTLS_STRICT", True)
+    NCE_MTLS_CERT_PATH: str = os.getenv("NCE_MTLS_CERT_PATH", "").strip()
+    NCE_MTLS_KEY_PATH: str = os.getenv("NCE_MTLS_KEY_PATH", "").strip()
+    NCE_MTLS_CA_PATH: str = os.getenv("NCE_MTLS_CA_PATH", "").strip()
 
     # Per-IP HTTP rate limits on admin_server (/api/* and sensitive POST paths).
     NCE_ADMIN_HTTP_RATE_LIMIT: int = _int_env("NCE_ADMIN_HTTP_RATE_LIMIT", 120, minimum=1)
@@ -872,6 +883,13 @@ def assert_admin_override_not_in_production() -> None:
         )
 
 
-# Keep OrchestratorConfig as an alias so server.py and external code that
-# already imports it by name doesn't break.
-OrchestratorConfig = _Config
+def __getattr__(name: str) -> Any:
+    if name == "OrchestratorConfig":
+        import warnings
+        warnings.warn(
+            "OrchestratorConfig is deprecated; use cfg (the Config instance) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return _Config
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

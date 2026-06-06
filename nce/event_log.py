@@ -272,6 +272,10 @@ EXPECTED_TENANT_RLS_TABLES: dict[str, str] = {
     "memory_embeddings": "namespace_id",
     "graph_schema_registry": "namespace_id",
     "query_templates": "namespace_id",
+    "v3_cognitive_ledger": "namespace_id",
+    "topology_graph": "namespace_id",
+    "audit_log": "namespace_id",
+    "active_learning_queue": "namespace_id",
 }
 
 EXPECTED_SPECIAL_RLS_TABLES: dict[str, tuple[str, ...]] = {
@@ -324,9 +328,9 @@ async def verify_rls_enforcement(conn: asyncpg.Connection, table_name: str) -> N
 
     try:
         count = await conn.fetchval(f"SELECT count(*) FROM {table_name}")
-    except Exception as exc:
+    except asyncpg.exceptions.UndefinedTableError as exc:
         log.warning(
-            "[rls-probe] %s: could not query — %s: %s",
+            "[rls-probe] %s: could not query (table may not exist yet on first run) — %s: %s",
             table_name,
             type(exc).__name__,
             exc,
@@ -352,6 +356,9 @@ async def verify_rls_catalog_consistency(conn: asyncpg.Connection) -> None:
     Raises RuntimeError listing all failures if any mismatch is found.
     Call at startup (after pool creation) and in CI against a fresh database.
     """
+    db_info = await conn.fetchrow("SELECT current_user, current_database(), inet_server_addr(), inet_server_port()")
+    print(f"\n[RLS-DEBUG] User: {db_info[0]} | DB: {db_info[1]} | Addr: {db_info[2]} | Port: {db_info[3]}", flush=True)
+
     import logging as _logging
 
     _cat_log = _logging.getLogger("nce.security_catalog")

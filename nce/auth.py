@@ -378,7 +378,7 @@ MCP_ADMIN_TOOL_NAMES: frozenset[str] = frozenset(
 
 def enforce_mcp_tool_auth(tool_name: str, arguments: dict[str, Any]) -> None:
     """Enforce admin or tenant scope before MCP tool dispatch in ``server.call_tool``."""
-    if tool_name in MCP_ADMIN_TOOL_NAMES or arguments.get("admin_api_key"):
+    if tool_name in MCP_ADMIN_TOOL_NAMES:
         _validate_scope("admin", arguments)
     else:
         _validate_scope("tenant", arguments)

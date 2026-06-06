@@ -71,6 +71,13 @@ async def handle_store_artifact(engine: NCEEngine, arguments: dict[str, Any]) ->
 @mcp_handler
 async def handle_store_media(engine: NCEEngine, arguments: dict[str, Any]) -> str:
     """[DEPRECATED] Alias for store_artifact. Use store_artifact instead."""
+    import warnings
+
+    warnings.warn(
+        "handle_store_media is deprecated; use handle_store_artifact instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     result_json = await handle_store_artifact(engine, arguments)
     data = json.loads(result_json)
     data["deprecated"] = True

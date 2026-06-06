@@ -28,14 +28,14 @@ __all__ = [
 ]
 
 
-def dispatch_bridge_event(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
+async def dispatch_bridge_event(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     """
-    Synchronous fan-in from `nce.tasks.process_bridge_event` (RQ worker).
+    Fan-in from `nce.tasks.process_bridge_event` (RQ worker).
     `provider` is one of: sharepoint, gdrive, dropbox.
     """
     p = provider.strip().lower()
     if p == "sharepoint":
-        return process_sharepoint_event(payload)
+        return await process_sharepoint_event(payload)
     if p in ("gdrive", "google_drive", "drive"):
         return process_gdrive_event(payload)
     if p == "dropbox":

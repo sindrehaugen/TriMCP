@@ -141,7 +141,7 @@ class SpikingActivationEngine:
     def step(self, graph_edges: dict[str, list[tuple[str, float]]]) -> set[str]:
         """
         Executes one tick/step of spiking activation propagation.
-        
+
         graph_edges: adjacency list mapping source_label -> list of (target_label, edge_weight)
         Returns the set of labels that fired in this step.
         """
@@ -164,9 +164,9 @@ class SpikingActivationEngine:
             if not neighbors:
                 continue
 
-            for v, w in neighbors:
-                delta = self.alpha * V_u * w
-                transfers[v] = transfers.get(v, 0.0) + delta
+            for neighbor, weight in neighbors:
+                delta = self.alpha * V_u * weight
+                transfers[neighbor] = transfers.get(neighbor, 0.0) + delta
 
         # Decay potentials of all existing nodes
         for node in list(self.potentials.keys()):
@@ -183,7 +183,6 @@ class SpikingActivationEngine:
         for node, pot in self.potentials.items():
             self.max_potentials[node] = max(self.max_potentials.get(node, 0.0), pot)
 
-
         return fired
 
 
@@ -197,16 +196,17 @@ async def adapt_synaptic_weights(
     """
     Dynamically adapt synaptic weights (LTP/LTD) for the given reinforced edges
     in both `kg_edges` and `topology_graph` under row-level locking parameters.
-    
+
     On 'success': w = w + learning_rate * (1.0 - w)
     On 'failure': w = w - learning_rate * w
-    
+
     All confidence values are clipped between 0.0 and 1.0.
     """
     if not namespace_id:
         raise ValueError("namespace_id is required for tenant-scoped synaptic adaptation.")
     ns_uuid = UUID(str(namespace_id))
     from nce.auth import set_namespace_context
+
     await set_namespace_context(conn, ns_uuid)
 
     updated_count = 0
@@ -320,7 +320,6 @@ async def adapt_synaptic_weights(
                         src,
                         tgt,
                     )
-
 
                 for r in rows_topo:
                     w = r["confidence_score"]
@@ -862,6 +861,206 @@ class GraphRAGTraverser:
 
         return sources
 
+    # --- Shared Traversal Helpers ---
+
+    def _validate_search_params(
+        self,
+        namespace_id: str | None,
+        as_of: datetime | None,
+        max_edges_per_node: int | None,
+        edge_offset: int,
+        edge_limit: int | None,
+        method_name: str,
+        _allow_global_sweep: bool,
+    ) -> int:
+        if namespace_id is None and not _allow_global_sweep:
+            raise ValueError(
+                f"{method_name}: namespace_id is required for tenant-scoped graph searches. "
+                "Pass _allow_global_sweep=True only for admin/diagnostic cross-tenant operations."
+            )
+        if as_of is not None:
+            if not isinstance(as_of, datetime):
+                raise ValueError("as_of must be a datetime object")
+            if as_of.tzinfo is None:
+                raise ValueError(
+                    "as_of must be timezone-aware (UTC). Use datetime.now(timezone.utc)."
+                )
+        per_node = max_edges_per_node if max_edges_per_node is not None else MAX_EDGES_PER_NODE
+        if per_node < 1:
+            raise ValueError("max_edges_per_node must be >= 1")
+        if edge_offset < 0:
+            raise ValueError("edge_offset must be >= 0")
+        if edge_limit is not None and edge_limit < 1:
+            raise ValueError("edge_limit must be >= 1 when provided")
+        return per_node
+
+    async def _execute_graph_traversal(
+        self,
+        conn: asyncpg.Connection,
+        query: str,
+        namespace_id: str | None,
+        anchor_top_k: int,
+        as_of: datetime | None,
+        _allow_global_sweep: bool,
+        max_depth: int,
+        per_node: int,
+        method_name: str,
+    ) -> tuple[GraphNode, set[str], list[GraphEdge]] | None:
+        """Finds the anchor node and executes BFS traversal in a single database context."""
+        anchors = await self._find_anchor(
+            query,
+            namespace_id=namespace_id,
+            top_k=anchor_top_k,
+            as_of=as_of,
+            _allow_global_sweep=_allow_global_sweep,
+            conn=conn,
+        )
+        if not anchors:
+            log.info("No anchor node found in knowledge graph.")
+            return None
+
+        anchor = anchors[0]
+        log.info("[%s] Anchor: '%s' (distance=%.4f)", method_name, anchor.label, anchor.distance)
+
+        visited_labels, edges = await self._bfs(
+            anchor.label,
+            max_depth=max_depth,
+            namespace_id=namespace_id,
+            as_of=as_of,
+            _allow_global_sweep=_allow_global_sweep,
+            max_edges_per_node=per_node,
+            conn=conn,
+        )
+        return anchor, visited_labels, edges
+
+    def _temporal_cte_prefix(self) -> str:
+        """Returns the common recursive CTE query prefix for fetching historical node metadata."""
+        return """
+            WITH ns AS (
+                SELECT id, parent_id, (metadata->'fork_config'->>'forked_from_as_of')::timestamptz AS forked_as_of
+                FROM namespaces WHERE id = $2::uuid
+            ),
+            memory_events AS (
+                SELECT DISTINCT ON ((params->>'memory_id')::uuid)
+                    (params->>'memory_id')::uuid AS memory_id,
+                    event_type,
+                    params->'entities' AS entities,
+                    id AS event_id
+                FROM event_log
+                CROSS JOIN ns
+                WHERE (
+                    (namespace_id = ns.id AND occurred_at <= $3)
+                    OR 
+                    (namespace_id = ns.parent_id AND occurred_at <= LEAST($3, ns.forked_as_of))
+                )
+                  AND event_type IN ('store_memory', 'forget_memory')
+                ORDER BY (params->>'memory_id')::uuid, occurred_at DESC, event_seq DESC
+            ),
+            active_memories AS (
+                SELECT memory_id, entities, event_id
+                FROM memory_events 
+                WHERE event_type = 'store_memory'
+            ),
+            historical_nodes AS (
+                SELECT DISTINCT ON (label)
+                    jsonb_array_elements(entities)->>'label' AS label,
+                    jsonb_array_elements(entities)->>'entity_type' AS entity_type,
+                    memory_id,
+                    event_id
+                FROM active_memories
+            )
+            SELECT n.label, n.entity_type, m.payload_ref, n.event_id
+            FROM historical_nodes n
+            JOIN memories m ON n.memory_id = m.id
+            WHERE n.label = ANY($1::text[])
+        """
+
+    async def _fetch_nodes_metadata(
+        self,
+        conn: asyncpg.Connection,
+        labels: list[str],
+        namespace_id: str | None,
+        as_of: datetime | None,
+        anchor: GraphNode,
+    ) -> list[GraphNode]:
+        """Fetches full node metadata (historical time-travel or current state) from DB."""
+        if as_of and namespace_id:
+            rows = await conn.fetch(
+                self._temporal_cte_prefix(),
+                labels,
+                namespace_id,
+                as_of,
+            )
+            # Verify signatures on event_log rows that contributed to node metadata.
+            event_ids = [str(r["event_id"]) for r in rows if r.get("event_id")]
+            await self._verify_time_travel_event_signatures(conn, event_ids)
+        else:
+            rows = await conn.fetch(
+                "SELECT label, entity_type, payload_ref FROM kg_nodes WHERE label = ANY($1::text[]) AND namespace_id = current_setting('nce.namespace_id')::uuid",
+                labels,
+            )
+        return [
+            GraphNode(
+                label=r["label"],
+                entity_type=r["entity_type"],
+                payload_ref=r["payload_ref"],
+                distance=anchor.distance if r["label"] == anchor.label else 0.0,
+            )
+            for r in rows
+        ]
+
+    async def _build_subgraph(
+        self,
+        anchor: GraphNode,
+        nodes: list[GraphNode],
+        edges: list[GraphEdge],
+        edge_offset: int,
+        edge_limit: int | None,
+        per_node: int,
+        private: bool,
+        user_id: str | None,
+    ) -> Subgraph:
+        """Helper to deduplicate, page, and format BFS/neuromorphic traversal results into a Subgraph."""
+        # Deduplicate edges (BFS can traverse same edge from both directions)
+        seen_edges: set[tuple] = set()
+        unique_edges = []
+        for e in edges:
+            key = (e.subject, e.predicate, e.obj)
+            if key not in seen_edges:
+                seen_edges.add(key)
+                unique_edges.append(e)
+
+        edge_total = len(unique_edges)
+        off = edge_offset
+        if edge_limit is None:
+            page_edges = unique_edges[off:]
+        else:
+            page_edges = unique_edges[off : off + edge_limit]
+        has_more = edge_total > off + len(page_edges)
+
+        labels_for_page = {anchor.label}
+        for e in page_edges:
+            labels_for_page.add(e.subject)
+            labels_for_page.add(e.obj)
+        nodes_for_page = [n for n in nodes if n.label in labels_for_page]
+
+        all_refs = {n.payload_ref for n in nodes_for_page if n.payload_ref}
+        all_refs |= {e.payload_ref for e in page_edges if e.payload_ref}
+        restrict = user_id if private else None
+        sources = await self._hydrate_sources(all_refs, restrict_user_id=restrict)
+
+        return Subgraph(
+            anchor=anchor.label,
+            nodes=nodes_for_page,
+            edges=page_edges,
+            sources=sources,
+            edge_total=edge_total,
+            edge_offset=off,
+            edge_limit=edge_limit,
+            has_more_edges=has_more,
+            max_edges_per_node=per_node,
+        )
+
     # --- Public API ---
 
     async def search(
@@ -882,46 +1081,16 @@ class GraphRAGTraverser:
         """
         Full GraphRAG traversal pipeline.
         Returns a Subgraph with nodes, edges, and hydrated source excerpts.
-
-        Security contract:
-            ``namespace_id=None`` performs a **global** sweep across ALL tenants
-            (anchor + BFS without namespace isolation).  This is ONLY safe for
-            admin/diagnostic operations.  Tenant-facing callers MUST pass a
-            namespace_id OR explicitly opt in with ``_allow_global_sweep=True``.
-
-        Args:
-            private: If True, hydrate only Mongo sources belonging to user_id
-                     (Phase 0; anchor/BFS use namespace-scoped RLS).
-            max_edges_per_node: Upper bound on incident edges fetched per BFS step
-                (SQL ``LIMIT``, ordered by confidence descending). Defaults to
-                :data:`MAX_EDGES_PER_NODE`.
-            edge_limit: If set, slice the deduplicated edge list to at most this many
-                entries after ``edge_offset`` (response pagination).
-            edge_offset: Start index into the deduplicated edge list.
-
-        Raises:
-            ValueError: if ``namespace_id`` is None and ``_allow_global_sweep``
-                        is not True (accidental global-sweep guard).
         """
-        if namespace_id is None and not _allow_global_sweep:
-            raise ValueError(
-                "search: namespace_id is required for tenant-scoped graph searches. "
-                "Pass _allow_global_sweep=True only for admin/diagnostic cross-tenant operations."
-            )
-        if as_of is not None:
-            if not isinstance(as_of, datetime):
-                raise ValueError("as_of must be a datetime object")
-            if as_of.tzinfo is None:
-                raise ValueError(
-                    "as_of must be timezone-aware (UTC). Use datetime.now(timezone.utc)."
-                )
-        per_node = max_edges_per_node if max_edges_per_node is not None else MAX_EDGES_PER_NODE
-        if per_node < 1:
-            raise ValueError("max_edges_per_node must be >= 1")
-        if edge_offset < 0:
-            raise ValueError("edge_offset must be >= 0")
-        if edge_limit is not None and edge_limit < 1:
-            raise ValueError("edge_limit must be >= 1 when provided")
+        per_node = self._validate_search_params(
+            namespace_id=namespace_id,
+            as_of=as_of,
+            max_edges_per_node=max_edges_per_node,
+            edge_offset=edge_offset,
+            edge_limit=edge_limit,
+            method_name="search",
+            _allow_global_sweep=_allow_global_sweep,
+        )
         async with self._search_semaphore:
             async with self.pg_pool.acquire(timeout=10.0) as conn:
                 async with conn.transaction():
@@ -930,133 +1099,39 @@ class GraphRAGTraverser:
 
                         await set_namespace_context(conn, UUID(str(namespace_id)))
 
-                    anchors = await self._find_anchor(
-                        query,
+                    traversal = await self._execute_graph_traversal(
+                        conn=conn,
+                        query=query,
                         namespace_id=namespace_id,
-                        top_k=anchor_top_k,
+                        anchor_top_k=anchor_top_k,
                         as_of=as_of,
                         _allow_global_sweep=_allow_global_sweep,
-                        conn=conn,
+                        max_depth=max_depth,
+                        per_node=per_node,
+                        method_name="search",
                     )
-                    if not anchors:
-                        log.info("No anchor node found in knowledge graph.")
+                    if traversal is None:
                         return Subgraph(anchor="<none>")
 
-                    anchor = anchors[0]
-                    log.info("Anchor: '%s' (distance=%.4f)", anchor.label, anchor.distance)
+                    anchor, visited_labels, edges = traversal
 
-                    visited_labels, edges = await self._bfs(
-                        anchor.label,
-                        max_depth=max_depth,
+                    nodes = await self._fetch_nodes_metadata(
+                        conn=conn,
+                        labels=list(visited_labels),
                         namespace_id=namespace_id,
                         as_of=as_of,
-                        _allow_global_sweep=_allow_global_sweep,
-                        max_edges_per_node=per_node,
-                        conn=conn,
+                        anchor=anchor,
                     )
 
-                    # Fetch full node metadata for all visited labels
-                    if as_of and namespace_id:
-                        rows = await conn.fetch(
-                            """
-                            WITH ns AS (
-                                SELECT id, parent_id, (metadata->'fork_config'->>'forked_from_as_of')::timestamptz AS forked_as_of
-                                FROM namespaces WHERE id = $2::uuid
-                            ),
-                            memory_events AS (
-                                SELECT DISTINCT ON ((params->>'memory_id')::uuid)
-                                    (params->>'memory_id')::uuid AS memory_id,
-                                    event_type,
-                                    params->'entities' AS entities,
-                                    id AS event_id
-                                FROM event_log
-                                CROSS JOIN ns
-                                WHERE (
-                                    (namespace_id = ns.id AND occurred_at <= $3)
-                                    OR 
-                                    (namespace_id = ns.parent_id AND occurred_at <= LEAST($3, ns.forked_as_of))
-                                )
-                                  AND event_type IN ('store_memory', 'forget_memory')
-                                ORDER BY (params->>'memory_id')::uuid, occurred_at DESC, event_seq DESC
-                            ),
-                            active_memories AS (
-                                SELECT memory_id, entities, event_id
-                                FROM memory_events 
-                                WHERE event_type = 'store_memory'
-                            ),
-                            historical_nodes AS (
-                                SELECT DISTINCT ON (label)
-                                    jsonb_array_elements(entities)->>'label' AS label,
-                                    jsonb_array_elements(entities)->>'entity_type' AS entity_type,
-                                    memory_id,
-                                    event_id
-                                FROM active_memories
-                            )
-                            SELECT n.label, n.entity_type, m.payload_ref, n.event_id
-                            FROM historical_nodes n
-                            JOIN memories m ON n.memory_id = m.id
-                            WHERE n.label = ANY($1::text[])
-                            """,
-                            list(visited_labels),
-                            namespace_id,
-                            as_of,
-                        )
-                        # Verify signatures on event_log rows that contributed to node metadata.
-                        event_ids = [str(r["event_id"]) for r in rows if r.get("event_id")]
-                        await self._verify_time_travel_event_signatures(conn, event_ids)
-                    else:
-                        rows = await conn.fetch(
-                            "SELECT label, entity_type, payload_ref FROM kg_nodes WHERE label = ANY($1::text[])",
-                            list(visited_labels),
-                        )
-                    nodes = [
-                        GraphNode(
-                            label=r["label"],
-                            entity_type=r["entity_type"],
-                            payload_ref=r["payload_ref"],
-                            distance=anchor.distance if r["label"] == anchor.label else 0.0,
-                        )
-                        for r in rows
-                    ]
-
-            # Deduplicate edges (BFS can traverse same edge from both directions)
-            seen_edges: set[tuple] = set()
-            unique_edges = []
-            for e in edges:
-                key = (e.subject, e.predicate, e.obj)
-                if key not in seen_edges:
-                    seen_edges.add(key)
-                    unique_edges.append(e)
-
-            edge_total = len(unique_edges)
-            off = edge_offset
-            if edge_limit is None:
-                page_edges = unique_edges[off:]
-            else:
-                page_edges = unique_edges[off : off + edge_limit]
-            has_more = edge_total > off + len(page_edges)
-
-            labels_for_page = {anchor.label}
-            for e in page_edges:
-                labels_for_page.add(e.subject)
-                labels_for_page.add(e.obj)
-            nodes_for_page = [n for n in nodes if n.label in labels_for_page]
-
-            all_refs = {n.payload_ref for n in nodes_for_page if n.payload_ref}
-            all_refs |= {e.payload_ref for e in page_edges if e.payload_ref}
-            restrict = user_id if private else None
-            sources = await self._hydrate_sources(all_refs, restrict_user_id=restrict)
-
-            return Subgraph(
-                anchor=anchor.label,
-                nodes=nodes_for_page,
-                edges=page_edges,
-                sources=sources,
-                edge_total=edge_total,
-                edge_offset=off,
+            return await self._build_subgraph(
+                anchor=anchor,
+                nodes=nodes,
+                edges=edges,
+                edge_offset=edge_offset,
                 edge_limit=edge_limit,
-                has_more_edges=has_more,
-                max_edges_per_node=per_node,
+                per_node=per_node,
+                private=private,
+                user_id=user_id,
             )
 
     async def neuromorphic_search(
@@ -1081,70 +1156,46 @@ class GraphRAGTraverser:
     ) -> Subgraph:
         """
         Neuromorphic spreading activation traversal pipeline.
-        
+
         Uses a spiking neural model to search and traverse the knowledge graph
         instead of legacy BFS.
-        
-        Dynamically adjusts thresholds and initial potentials when system
-        telemetry severity spikes above 8.
         """
-        if namespace_id is None and not _allow_global_sweep:
-            raise ValueError(
-                "neuromorphic_search: namespace_id is required for tenant-scoped graph searches. "
-                "Pass _allow_global_sweep=True only for admin/diagnostic cross-tenant operations."
-            )
-        if as_of is not None:
-            if not isinstance(as_of, datetime):
-                raise ValueError("as_of must be a datetime object")
-            if as_of.tzinfo is None:
-                raise ValueError(
-                    "as_of must be timezone-aware (UTC). Use datetime.now(timezone.utc)."
-                )
-        per_node = max_edges_per_node if max_edges_per_node is not None else MAX_EDGES_PER_NODE
-        if per_node < 1:
-            raise ValueError("max_edges_per_node must be >= 1")
-        if edge_offset < 0:
-            raise ValueError("edge_offset must be >= 0")
-        if edge_limit is not None and edge_limit < 1:
-            raise ValueError("edge_limit must be >= 1 when provided")
+        per_node = self._validate_search_params(
+            namespace_id=namespace_id,
+            as_of=as_of,
+            max_edges_per_node=max_edges_per_node,
+            edge_offset=edge_offset,
+            edge_limit=edge_limit,
+            method_name="neuromorphic_search",
+            _allow_global_sweep=_allow_global_sweep,
+        )
 
         async with self._search_semaphore:
             async with self.pg_pool.acquire(timeout=10.0) as conn:
                 async with conn.transaction():
                     if namespace_id:
                         from nce.auth import set_namespace_context
+
                         await set_namespace_context(conn, UUID(str(namespace_id)))
 
-                    # Find anchor node(s)
-                    anchors = await self._find_anchor(
-                        query,
+                    traversal = await self._execute_graph_traversal(
+                        conn=conn,
+                        query=query,
                         namespace_id=namespace_id,
-                        top_k=anchor_top_k,
+                        anchor_top_k=anchor_top_k,
                         as_of=as_of,
                         _allow_global_sweep=_allow_global_sweep,
-                        conn=conn,
+                        max_depth=max_depth,
+                        per_node=per_node,
+                        method_name="neuromorphic_search",
                     )
-                    if not anchors:
-                        log.info("No anchor node found in knowledge graph.")
+                    if traversal is None:
                         return Subgraph(anchor="<none>")
 
-                    anchor = anchors[0]
-                    log.info("Neuromorphic search anchor: '%s' (distance=%.4f)", anchor.label, anchor.distance)
+                    anchor, visited_candidate_labels, candidate_edges = traversal
 
-                    # Fetch all candidate neighbors & edges within max_depth hops using the recursive CTE BFS
-                    # to minimize DB round-trips.
-                    visited_candidate_labels, candidate_edges = await self._bfs(
-                        anchor.label,
-                        max_depth=max_depth,
-                        namespace_id=namespace_id,
-                        as_of=as_of,
-                        _allow_global_sweep=_allow_global_sweep,
-                        max_edges_per_node=per_node,
-                        conn=conn,
-                    )
-
-                    # Build the local adjacency list for spreading activation
-                    # Max-weight unify parallel edges to reduce traversal complexity
+                    # Build local adjacency list for spreading activation
+                    # Max-weight unify parallel edges
                     edge_map: dict[tuple[str, str], float] = {}
                     for e in candidate_edges:
                         pair = (e.subject, e.obj)
@@ -1155,7 +1206,7 @@ class GraphRAGTraverser:
                         adj.setdefault(src, []).append((tgt, conf))
                         adj.setdefault(tgt, []).append((src, conf))
 
-                    # Scale threshold and initial potential if system telemetry severity exceeds configured threshold
+                    # Scale threshold and initial potential if system telemetry severity exceeds threshold
                     actual_theta = theta
                     initial_charge = 1.0
                     spike_thresh = cfg.NCE_TELEMETRY_SPIKE_THRESHOLD
@@ -1165,7 +1216,10 @@ class GraphRAGTraverser:
                         log.info(
                             "Telemetry severity spike detected (%.1f > %.1f). Lowering threshold to %.2f "
                             "and raising initial charge to %.2f for wider pre-fetching.",
-                            telemetry_severity, spike_thresh, actual_theta, initial_charge
+                            telemetry_severity,
+                            spike_thresh,
+                            actual_theta,
+                            initial_charge,
                         )
 
                     # Initialize Spiking Neural Engine
@@ -1191,112 +1245,28 @@ class GraphRAGTraverser:
 
                     # Restrict candidate edges to active nodes
                     active_edges = [
-                        e for e in candidate_edges
+                        e
+                        for e in candidate_edges
                         if e.subject in active_labels and e.obj in active_labels
                     ]
 
-                    # Fetch full node metadata from DB for all active labels
-                    if as_of and namespace_id:
-                        rows = await conn.fetch(
-                            """
-                            WITH ns AS (
-                                SELECT id, parent_id, (metadata->'fork_config'->>'forked_from_as_of')::timestamptz AS forked_as_of
-                                FROM namespaces WHERE id = $2::uuid
-                            ),
-                            memory_events AS (
-                                SELECT DISTINCT ON ((params->>'memory_id')::uuid)
-                                    (params->>'memory_id')::uuid AS memory_id,
-                                    event_type,
-                                    params->'entities' AS entities,
-                                    id AS event_id
-                                FROM event_log
-                                CROSS JOIN ns
-                                WHERE (
-                                    (namespace_id = ns.id AND occurred_at <= $3)
-                                    OR 
-                                    (namespace_id = ns.parent_id AND occurred_at <= LEAST($3, ns.forked_as_of))
-                                )
-                                  AND event_type IN ('store_memory', 'forget_memory')
-                                ORDER BY (params->>'memory_id')::uuid, occurred_at DESC, event_seq DESC
-                            ),
-                            active_memories AS (
-                                SELECT memory_id, entities, event_id
-                                FROM memory_events 
-                                WHERE event_type = 'store_memory'
-                            ),
-                            historical_nodes AS (
-                                SELECT DISTINCT ON (label)
-                                    jsonb_array_elements(entities)->>'label' AS label,
-                                    jsonb_array_elements(entities)->>'entity_type' AS entity_type,
-                                    memory_id,
-                                    event_id
-                                FROM active_memories
-                            )
-                            SELECT n.label, n.entity_type, m.payload_ref, n.event_id
-                            FROM historical_nodes n
-                            JOIN memories m ON n.memory_id = m.id
-                            WHERE n.label = ANY($1::text[])
-                            """,
-                            list(active_labels),
-                            namespace_id,
-                            as_of,
-                        )
-                        event_ids = [str(r["event_id"]) for r in rows if r.get("event_id")]
-                        await self._verify_time_travel_event_signatures(conn, event_ids)
-                    else:
-                        rows = await conn.fetch(
-                            "SELECT label, entity_type, payload_ref FROM kg_nodes WHERE label = ANY($1::text[])",
-                            list(active_labels),
-                        )
+                    nodes = await self._fetch_nodes_metadata(
+                        conn=conn,
+                        labels=list(active_labels),
+                        namespace_id=namespace_id,
+                        as_of=as_of,
+                        anchor=anchor,
+                    )
 
-                    nodes = [
-                        GraphNode(
-                            label=r["label"],
-                            entity_type=r["entity_type"],
-                            payload_ref=r["payload_ref"],
-                            distance=anchor.distance if r["label"] == anchor.label else 0.0,
-                        )
-                        for r in rows
-                    ]
-
-            # Deduplicate edges
-            seen_edges: set[tuple] = set()
-            unique_edges = []
-            for e in active_edges:
-                key = (e.subject, e.predicate, e.obj)
-                if key not in seen_edges:
-                    seen_edges.add(key)
-                    unique_edges.append(e)
-
-            edge_total = len(unique_edges)
-            off = edge_offset
-            if edge_limit is None:
-                page_edges = unique_edges[off:]
-            else:
-                page_edges = unique_edges[off : off + edge_limit]
-            has_more = edge_total > off + len(page_edges)
-
-            labels_for_page = {anchor.label}
-            for e in page_edges:
-                labels_for_page.add(e.subject)
-                labels_for_page.add(e.obj)
-            nodes_for_page = [n for n in nodes if n.label in labels_for_page]
-
-            all_refs = {n.payload_ref for n in nodes_for_page if n.payload_ref}
-            all_refs |= {e.payload_ref for e in page_edges if e.payload_ref}
-            restrict = user_id if private else None
-            sources = await self._hydrate_sources(all_refs, restrict_user_id=restrict)
-
-            return Subgraph(
-                anchor=anchor.label,
-                nodes=nodes_for_page,
-                edges=page_edges,
-                sources=sources,
-                edge_total=edge_total,
-                edge_offset=off,
+            return await self._build_subgraph(
+                anchor=anchor,
+                nodes=nodes,
+                edges=active_edges,
+                edge_offset=edge_offset,
                 edge_limit=edge_limit,
-                has_more_edges=has_more,
-                max_edges_per_node=per_node,
+                per_node=per_node,
+                private=private,
+                user_id=user_id,
             )
 
     async def get_subgraph(self, *args, **kwargs) -> Subgraph:

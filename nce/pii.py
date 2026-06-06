@@ -10,12 +10,11 @@ import base64
 import hashlib
 import hmac
 import logging
-import os
 import re
 from typing import TYPE_CHECKING, cast
 
 from nce.models import NamespacePIIConfig, PIIEntity, PIIPolicy, PIIProcessResult
-from nce.signing import encrypt_signing_key, require_master_key
+from nce.signing import encrypt_signing_key, require_master_key, MasterKeyMissingError
 
 if TYPE_CHECKING:
     pass
@@ -299,13 +298,20 @@ def _pseudonym_hmac_key_material(config: NamespacePIIConfig, *, namespace_id: st
                 f"when set; got {len(key)}."
             )
         return key
-    mk = os.environ.get("NCE_MASTER_KEY", "").strip().encode("utf-8")
-    if len(mk) < 32:
+    try:
+        with require_master_key() as mk:
+            key_view = mk.key_bytes
+            if len(key_view) < 32:
+                raise ValueError(
+                    "Pseudonymisation requires NCE_MASTER_KEY (≥32 UTF-8 bytes) or "
+                    f"a namespace pseudonym_hmac_key (≥{_MIN_PSEUDONYM_SECRET_BYTES} bytes)."
+                )
+            return hmac.new(bytes(key_view), namespace_id.encode("utf-8"), hashlib.sha256).digest()
+    except MasterKeyMissingError:
         raise ValueError(
             "Pseudonymisation requires NCE_MASTER_KEY (≥32 UTF-8 bytes) or "
             f"a namespace pseudonym_hmac_key (≥{_MIN_PSEUDONYM_SECRET_BYTES} bytes)."
         )
-    return hmac.new(mk, namespace_id.encode("utf-8"), hashlib.sha256).digest()
 
 
 def _pseudonym_token_suffix(entity_type: str, value: str, hmac_key: bytes) -> str:
@@ -329,7 +335,8 @@ async def process(text: str, config: NamespacePIIConfig) -> PIIProcessResult:
     """
     Processes the text according to the namespace PII policy.
     """
-    entities = await scan(text, config)
+    locale = getattr(config, "locale", "en")
+    entities = await scan(text, config, locale=locale)
 
     if not entities:
         return PIIProcessResult(

@@ -9,15 +9,29 @@
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_app') THEN
-        EXECUTE 'ALTER ROLE trimcp_app RENAME TO nce_app';
-        RAISE NOTICE 'Renamed role trimcp_app → nce_app';
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nce_app') THEN
+            EXECUTE 'REASSIGN OWNED BY trimcp_app TO nce_app';
+            EXECUTE 'DROP OWNED BY trimcp_app';
+            EXECUTE 'DROP ROLE trimcp_app';
+            RAISE NOTICE 'Dropped trimcp_app because nce_app already exists';
+        ELSE
+            EXECUTE 'ALTER ROLE trimcp_app RENAME TO nce_app';
+            RAISE NOTICE 'Renamed role trimcp_app → nce_app';
+        END IF;
     ELSE
         RAISE NOTICE 'Role trimcp_app not found — skipping (already renamed or fresh install)';
     END IF;
 
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'trimcp_gc') THEN
-        EXECUTE 'ALTER ROLE trimcp_gc RENAME TO nce_gc';
-        RAISE NOTICE 'Renamed role trimcp_gc → nce_gc';
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nce_gc') THEN
+            EXECUTE 'REASSIGN OWNED BY trimcp_gc TO nce_gc';
+            EXECUTE 'DROP OWNED BY trimcp_gc';
+            EXECUTE 'DROP ROLE trimcp_gc';
+            RAISE NOTICE 'Dropped trimcp_gc because nce_gc already exists';
+        ELSE
+            EXECUTE 'ALTER ROLE trimcp_gc RENAME TO nce_gc';
+            RAISE NOTICE 'Renamed role trimcp_gc → nce_gc';
+        END IF;
     ELSE
         RAISE NOTICE 'Role trimcp_gc not found — skipping (already renamed or fresh install)';
     END IF;
@@ -39,3 +53,4 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
     NULL; -- Password update is best-effort; don't block the migration.
 END $$;
+

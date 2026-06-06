@@ -26,18 +26,6 @@ class DropboxBridge(BridgeProvider):
     def provider_key(self) -> str:
         return "dropbox"
 
-    def bearer_token(self) -> str:
-        override = getattr(self, "_oauth_token_override", None)
-        if override:
-            return override
-        token = (cfg.DROPBOX_BRIDGE_TOKEN or "").strip()
-        if not token:
-            try:
-                return self.refresh_oauth_token()
-            except BridgeAuthError:
-                raise
-        return token
-
     def _cursor_key(self, account_id: str) -> str:
         return f"bridge:cursor:dropbox:{account_id}"
 

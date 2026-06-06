@@ -30,13 +30,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from starlette.applications import Starlette
-from starlette.middleware import Middleware
-from starlette.requests import Request
-from starlette.responses import PlainTextResponse
-from starlette.routing import Route
-from starlette.testclient import TestClient
-
 from nce.auth import (
     MCP_ADMIN_TOOL_NAMES,
     HMACAuthContext,
@@ -55,6 +48,12 @@ from nce.auth import (
     validate_agent_id,
     verify_hmac,
 )
+from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
+from starlette.testclient import TestClient
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -464,9 +463,7 @@ class TestNonceStoreUnit:
         ns._redis = mock_redis
         assert asyncio.run(ns.check_and_store("abc123def456")) is True
 
-        mock_redis.set.assert_awaited_once_with(
-            "nce:nonce:abc123def456", "1", nx=True, px=600_000
-        )
+        mock_redis.set.assert_awaited_once_with("nce:nonce:abc123def456", "1", nx=True, px=600_000)
 
     def test_replayed_nonce_rejected(self) -> None:
         """SETNX returns None (key already exists) → replay detected."""
@@ -1703,3 +1700,37 @@ class TestVerifyAdminPassword:
             "p", "$pbkdf2$600000$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa$nothex"
         )
         assert valid is False
+
+
+class TestAdversarialAuth:
+    """Adversarial auth tests trying to pass admin_api_key in tenant tool requests."""
+
+    def test_tenant_tools_reject_arbitrary_admin_api_key(self, monkeypatch) -> None:
+        from nce.auth import ScopeError, enforce_mcp_tool_auth
+
+        # Set up keys on server
+        monkeypatch.setenv("NCE_ADMIN_API_KEY", "admin-secret-key")
+        monkeypatch.setenv("NCE_MCP_API_KEY", "tenant-secret-key")
+
+        # 1. Missing mcp_api_key but admin_api_key is provided
+        with pytest.raises(ScopeError, match="missing mcp_api_key") as exc_info:
+            enforce_mcp_tool_auth("semantic_search", {"admin_api_key": "admin-secret-key"})
+        assert exc_info.value.required_scope == "tenant"
+
+        # 2. Invalid mcp_api_key and admin_api_key is provided
+        with pytest.raises(ScopeError, match="invalid mcp_api_key") as exc_info:
+            enforce_mcp_tool_auth(
+                "semantic_search",
+                {"admin_api_key": "admin-secret-key", "mcp_api_key": "bad-tenant-key"},
+            )
+        assert exc_info.value.required_scope == "tenant"
+
+        # 3. Valid mcp_api_key along with admin_api_key succeeds tenant check, but admin_api_key has no effect
+        enforce_mcp_tool_auth(
+            "semantic_search",
+            {
+                "admin_api_key": "admin-secret-key",
+                "mcp_api_key": "tenant-secret-key",
+                "namespace_id": "00000000-0000-0000-0000-000000000000",
+            },
+        )

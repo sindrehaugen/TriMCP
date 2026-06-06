@@ -18,7 +18,6 @@ except ImportError:
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from nce import reembedding_worker as rw
 from nce.reembedding_worker import (
     ReembeddingWorker,
@@ -414,3 +413,54 @@ def test_worker_processes_kg_nodes_when_enabled():
     assert result["status"] == "completed"
     assert result["kg_nodes_done"] == 1
     mock_emb.embed_batch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reembedding_workers_redis_lock_contention():
+    """If two workers run _embed concurrently:
+    1. One worker successfully acquires the lock.
+    2. The other worker fails to acquire the lock, logs a warning, and still proceeds safely.
+    """
+    import nce.reembedding_worker as rw
+    from nce.reembedding_worker import ReembeddingWorker
+
+    worker1 = ReembeddingWorker()
+    worker2 = ReembeddingWorker()
+
+    # Mock redis client and acquire/release lock helpers
+    fake_client = MagicMock()
+    worker1._redis_client = fake_client
+    worker2._redis_client = fake_client
+
+    lock_acquisitions = []
+
+    async def mock_acquire(client, key, ttl):
+        # Allow first call to succeed, second to fail (return None)
+        if not lock_acquisitions:
+            token = "token-1"
+            lock_acquisitions.append(token)
+            return token
+        return None
+
+    async def mock_release(client, key, token):
+        pass
+
+    fake_pool = MagicMock()
+
+    with (
+        patch("nce.reembedding_worker.cfg.REDIS_URL", "redis://localhost"),
+        patch("nce.reembedding_worker._acquire_redis_lock", side_effect=mock_acquire),
+        patch("nce.reembedding_worker._release_redis_lock", side_effect=mock_release),
+        patch.object(
+            rw._embeddings, "embed_batch", new_callable=AsyncMock, return_value=[_FAKE_VEC]
+        ) as mock_embed,
+    ):
+        # Trigger both concurrently
+        res1, res2 = await asyncio.gather(
+            worker1._embed(fake_pool, ["text1"]), worker2._embed(fake_pool, ["text2"])
+        )
+
+        assert res1 == [_FAKE_VEC]
+        assert res2 == [_FAKE_VEC]
+        # Verify both embedded the text
+        assert mock_embed.call_count == 2

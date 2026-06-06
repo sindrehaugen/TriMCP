@@ -207,6 +207,10 @@ class NamespacePIIConfig(BaseModel):
         default="",
         description="Namespace identifier; scopes master-key pseudonym derivation per tenant.",
     )
+    locale: str = Field(
+        default="en",
+        description="Localization locale for PII scanning (e.g. 'no' for Norwegian)",
+    )
 
     @field_validator("pseudonym_hmac_key")
     @classmethod

@@ -1,9 +1,4 @@
-"""
-Outbound URL guards for bridges — mitigates SSRF from misconfiguration or poisoned cursors.
-"""
-
-from __future__ import annotations
-
+import asyncio
 import ipaddress
 import logging
 import socket
@@ -49,10 +44,13 @@ def _parse_ip_from_getaddrinfo(
     return ipaddress.ip_address(s)
 
 
-def _resolve_ips(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+async def _resolve_ips(hostname: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     out: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     try:
-        infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+        loop = asyncio.get_running_loop()
+        infos = await loop.run_in_executor(
+            None, socket.getaddrinfo, hostname, None, 0, socket.SOCK_STREAM
+        )
     except socket.gaierror as e:
         raise BridgeURLValidationError(f"cannot resolve host {hostname!r}: {e}") from e
     for item in infos:
@@ -102,7 +100,7 @@ def _url_matches_prefix(url: str, prefix: str) -> bool:
     )
 
 
-def validate_bridge_webhook_base_url(raw: str) -> str:
+async def validate_bridge_webhook_base_url(raw: str) -> str:
     """
     Validate ``BRIDGE_WEBHOOK_BASE_URL`` for Microsoft/Google webhook registration.
 
@@ -129,7 +127,7 @@ def validate_bridge_webhook_base_url(raw: str) -> str:
     if not host:
         raise BridgeURLValidationError("BRIDGE_WEBHOOK_BASE_URL is missing a hostname")
 
-    ips = _resolve_ips(host)
+    ips = await _resolve_ips(host)
     if _all_loopback(ips):
         if parsed.scheme != "http" and parsed.scheme != "https":
             pass  # unreachable
@@ -149,7 +147,7 @@ def validate_bridge_webhook_base_url(raw: str) -> str:
     return base
 
 
-def assert_url_allowed_prefix(url: str, allowed_prefixes: tuple[str, ...], *, what: str) -> None:
+async def assert_url_allowed_prefix(url: str, allowed_prefixes: tuple[str, ...], *, what: str) -> None:
     """
     Ensure ``url`` is under one of ``allowed_prefixes`` (parsed scheme/host/port/path match).
     Used for delta / pagination links stored in Redis.
@@ -169,7 +167,7 @@ def assert_url_allowed_prefix(url: str, allowed_prefixes: tuple[str, ...], *, wh
     host = (parsed.hostname or "").lower()
     if host:
         try:
-            ips = _resolve_ips(host)
+            ips = await _resolve_ips(host)
             if _any_non_public(ips) and not _all_loopback(ips):
                 raise BridgeURLValidationError(
                     f"{what}: host {host!r} resolves to a non-public address"
@@ -198,7 +196,7 @@ def assert_url_allowed_prefix(url: str, allowed_prefixes: tuple[str, ...], *, wh
 # ---------------------------------------------------------------------------
 
 
-def validate_extractor_url(url: str, *, what: str = "extractor") -> str:
+async def validate_extractor_url(url: str, *, what: str = "extractor") -> str:
     """
     Validate a URL before an extractor makes an outbound HTTP request.
 
@@ -227,7 +225,7 @@ def validate_extractor_url(url: str, *, what: str = "extractor") -> str:
         raise BridgeURLValidationError(f"{what}: URL missing hostname: {raw!r}")
 
     try:
-        ips = _resolve_ips(host)
+        ips = await _resolve_ips(host)
     except BridgeURLValidationError:
         raise
     except Exception as e:
@@ -269,7 +267,7 @@ ALLOWED_WEBHOOK_URL_PREFIXES = (
 )
 
 
-def validate_webhook_payload_url(
+async def validate_webhook_payload_url(
     url: str,
     *,
     field_name: str = "resource",
@@ -318,7 +316,7 @@ def validate_webhook_payload_url(
     if not host:
         raise BridgeURLValidationError(f"webhook {field_name}: URL missing hostname: {raw!r}")
     try:
-        ips = _resolve_ips(host)
+        ips = await _resolve_ips(host)
         # Webhook payload URLs come from external sources — always reject
         # loopback, private, link-local, reserved, and multicast IPs.
         if _any_non_public(ips):

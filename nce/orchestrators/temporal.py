@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, TypeVar
 from uuid import UUID
@@ -18,8 +17,14 @@ import asyncpg
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from nce.background_task_manager import create_tracked_task
-from nce.db_utils import scoped_pg_session
 from nce.mongo_bulk import fetch_episode_previews_by_ref, normalize_payload_ref
+
+from nce.orchestrators._base import OrchestratorBase
+from nce.orchestrators._utils import (
+    _build_lineage_modified,
+    _lineage_source_id,
+    _metadata_as_dict,
+)
 
 log = logging.getLogger("nce-orchestrator.temporal")
 
@@ -27,70 +32,6 @@ MAX_DIFF_ITEMS: int = 1000
 _MAX_COMPARE_QUERY_LEN: int = 2048
 
 _TDiffItem = TypeVar("_TDiffItem")
-
-
-def _metadata_as_dict(raw: Any) -> dict[str, Any]:
-    if raw is None:
-        return {}
-    if isinstance(raw, dict):
-        return dict(raw)
-    if isinstance(raw, str):
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            log.warning(
-                "Invalid memories.metadata JSON (prefix=%r)",
-                raw[:80],
-            )
-            return {}
-    return dict(raw)
-
-
-def _lineage_source_id(row: Any) -> str | None:
-    meta = _metadata_as_dict(
-        row.get("metadata") if hasattr(row, "get") else getattr(row, "metadata", None)
-    )
-    sid = meta.get("source_memory_id")
-    if sid:
-        return str(sid)
-    df = row.get("derived_from") if hasattr(row, "get") else getattr(row, "derived_from", None)
-    if df is None:
-        return None
-    if isinstance(df, str):
-        try:
-            df = json.loads(df)
-        except json.JSONDecodeError:
-            mem_id = row.get("memory_id") if hasattr(row, "get") else None
-            log.warning(
-                "Invalid derived_from JSON on memory %s (prefix=%r)",
-                mem_id,
-                df[:80],
-            )
-            return None
-    if isinstance(df, (list, tuple)) and len(df) > 0:
-        return str(df[0])
-    return None
-
-
-def _build_lineage_modified(old_row: Any, new_row: Any) -> dict[str, Any]:
-    keys = ("assertion_type", "memory_type", "pii_redacted", "salience")
-    transitions: dict[str, dict[str, Any]] = {}
-    for k in keys:
-        o = old_row.get(k) if hasattr(old_row, "get") else old_row[k]
-        n_val = new_row.get(k) if hasattr(new_row, "get") else new_row[k]
-        if k == "salience":
-            o = float(o) if o is not None else None
-            n_val = float(n_val) if n_val is not None else None
-        if o != n_val:
-            transitions[k] = {"from": o, "to": n_val}
-    return {
-        "kind": "lineage_linked",
-        "source_memory_id": str(old_row.get("memory_id", "")),
-        "old_memory_id": str(old_row.get("memory_id", "")),
-        "new_memory_id": str(new_row.get("memory_id", "")),
-        "transitions": transitions,
-        "metadata_delta": {},
-    }
 
 
 def _validate_compare_window(as_of_a: datetime, as_of_b: datetime) -> None:
@@ -124,7 +65,7 @@ def _cap_diff_list(kind: str, items: list[_TDiffItem]) -> list[_TDiffItem]:
     return items[:MAX_DIFF_ITEMS]
 
 
-class TemporalOrchestrator:
+class TemporalOrchestrator(OrchestratorBase):
     """Domain orchestrator for consolidation, snapshots, and state diffing."""
 
     def __init__(
@@ -133,30 +74,12 @@ class TemporalOrchestrator:
         mongo_client: AsyncIOMotorClient,
         semantic_search_fn: Callable[..., Awaitable[list[dict[str, Any]]]],
     ):
-        self.pg_pool = pg_pool
-        self.mongo_client = mongo_client
+        super().__init__(pg_pool, mongo_client=mongo_client)
         self._semantic_search_fn = semantic_search_fn
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    def _ensure_uuid(self, val: str | UUID | None) -> UUID | None:
-        if val is None:
-            return None
-        if isinstance(val, UUID):
-            return val
-        return UUID(str(val))
-
-    @asynccontextmanager
-    async def scoped_session(self, namespace_id: str | UUID):
-        """Tenant-isolated PostgreSQL session (RLS + transaction-scoped SET LOCAL)."""
-        async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
-            yield conn
-
-    @property
-    def _mongo_db(self):
-        return self.mongo_client.memory_archive
 
     async def _fetch_memories_valid_at(
         self,
@@ -323,14 +246,20 @@ class TemporalOrchestrator:
 
     async def compare_states(self, payload) -> Any:
         """[Phase 2.2] Diff two temporal views."""
-        from nce.models import SemanticSearchResult, StateDiffResult
-
         ns_uuid = self._ensure_uuid(payload.namespace_id)
         if ns_uuid is None:
             raise ValueError("namespace_id is required")
 
         _validate_compare_window(payload.as_of_a, payload.as_of_b)
         query = _normalize_compare_query(payload.query)
+
+        if query is not None:
+            return await self._semantic_compare(payload, ns_uuid, query)
+        else:
+            return await self._full_namespace_compare(payload, ns_uuid)
+
+    async def _semantic_compare(self, payload, ns_uuid: UUID, query: str) -> Any:
+        from nce.models import SemanticSearchResult, StateDiffResult
 
         agent_id = "default"
 
@@ -359,90 +288,119 @@ class TemporalOrchestrator:
                 metadata=meta if meta else None,
             )
 
-        if query is not None:
-            res_a = await self._semantic_search_fn(
-                query,
-                str(payload.namespace_id),
-                agent_id,
-                limit=payload.top_k,
-                offset=0,
-                as_of=payload.as_of_a,
+        res_a = await self._semantic_search_fn(
+            query,
+            str(payload.namespace_id),
+            agent_id,
+            limit=payload.top_k,
+            offset=0,
+            as_of=payload.as_of_a,
+        )
+        res_b = await self._semantic_search_fn(
+            query,
+            str(payload.namespace_id),
+            agent_id,
+            limit=payload.top_k,
+            offset=0,
+            as_of=payload.as_of_b,
+        )
+
+        def _mid(r: dict[str, Any]) -> str:
+            return str(r["memory_id"])
+
+        ids_a = {_mid(r) for r in res_a}
+        ids_b = {_mid(r) for r in res_b}
+        all_uuid = [UUID(x) for x in sorted(ids_a | ids_b)]
+
+        score_a = {_mid(r): float(r.get("score", 1.0)) for r in res_a}
+        score_b = {_mid(r): float(r.get("score", 1.0)) for r in res_b}
+        hit_a = {_mid(r): r for r in res_a}
+        hit_b = {_mid(r): r for r in res_b}
+
+        async with self.scoped_session(payload.namespace_id) as conn:
+            map_a = await self._fetch_memories_valid_at(
+                conn, ns_uuid, all_uuid, payload.as_of_a
             )
-            res_b = await self._semantic_search_fn(
-                query,
-                str(payload.namespace_id),
-                agent_id,
-                limit=payload.top_k,
-                offset=0,
-                as_of=payload.as_of_b,
-            )
-
-            def _mid(r: dict[str, Any]) -> str:
-                return str(r["memory_id"])
-
-            ids_a = {_mid(r) for r in res_a}
-            ids_b = {_mid(r) for r in res_b}
-            all_uuid = [UUID(x) for x in sorted(ids_a | ids_b)]
-
-            score_a = {_mid(r): float(r.get("score", 1.0)) for r in res_a}
-            score_b = {_mid(r): float(r.get("score", 1.0)) for r in res_b}
-            hit_a = {_mid(r): r for r in res_a}
-            hit_b = {_mid(r): r for r in res_b}
-
-            async with self.scoped_session(payload.namespace_id) as conn:
-                map_a = await self._fetch_memories_valid_at(
-                    conn, ns_uuid, all_uuid, payload.as_of_a
-                )
-                map_b = await self._fetch_memories_valid_at(
-                    conn, ns_uuid, all_uuid, payload.as_of_b
-                )
-
-            added_ids = ids_b - ids_a
-            removed_ids = ids_a - ids_b
-
-            modified: list[dict[str, Any]] = []
-            consumed_a: set[str] = set()
-            consumed_b: set[str] = set()
-
-            for yid in sorted(added_ids):
-                row_b = map_b.get(yid)
-                if row_b is None:
-                    continue
-                src = _lineage_source_id(row_b)
-                if src and src in removed_ids and src in map_a:
-                    row_a = map_a[src]
-                    modified.append(_build_lineage_modified(row_a, row_b))
-                    consumed_b.add(yid)
-                    consumed_a.add(src)
-
-            added = sorted(
-                [
-                    _row_to_sem(map_b[i], score=score_b.get(i, 1.0), hit=hit_b.get(i))
-                    for i in sorted(added_ids)
-                    if i not in consumed_b and i in map_b
-                ],
-                key=lambda r: str(r.memory_id),
-            )
-            removed = sorted(
-                [
-                    _row_to_sem(map_a[i], score=score_a.get(i, 1.0), hit=hit_a.get(i))
-                    for i in sorted(removed_ids)
-                    if i not in consumed_a and i in map_a
-                ],
-                key=lambda r: str(r.memory_id),
+            map_b = await self._fetch_memories_valid_at(
+                conn, ns_uuid, all_uuid, payload.as_of_b
             )
 
-            added = _cap_diff_list("added", added)
-            removed = _cap_diff_list("removed", removed)
+        added_ids = ids_b - ids_a
+        removed_ids = ids_a - ids_b
 
-            await self._hydrate_semantic_results(added + removed)
+        modified: list[dict[str, Any]] = []
+        consumed_a: set[str] = set()
+        consumed_b: set[str] = set()
 
-            return StateDiffResult(
-                as_of_a=payload.as_of_a,
-                as_of_b=payload.as_of_b,
-                added=added,
-                removed=removed,
-                modified=modified,
+        for yid in sorted(added_ids):
+            row_b = map_b.get(yid)
+            if row_b is None:
+                continue
+            src = _lineage_source_id(row_b)
+            if src and src in removed_ids and src in map_a:
+                row_a = map_a[src]
+                modified.append(_build_lineage_modified(row_a, row_b))
+                consumed_b.add(yid)
+                consumed_a.add(src)
+
+        added = sorted(
+            [
+                _row_to_sem(map_b[i], score=score_b.get(i, 1.0), hit=hit_b.get(i))
+                for i in sorted(added_ids)
+                if i not in consumed_b and i in map_b
+            ],
+            key=lambda r: str(r.memory_id),
+        )
+        removed = sorted(
+            [
+                _row_to_sem(map_a[i], score=score_a.get(i, 1.0), hit=hit_a.get(i))
+                for i in sorted(removed_ids)
+                if i not in consumed_a and i in map_a
+            ],
+            key=lambda r: str(r.memory_id),
+        )
+
+        added = _cap_diff_list("added", added)
+        removed = _cap_diff_list("removed", removed)
+
+        await self._hydrate_semantic_results(added + removed)
+
+        return StateDiffResult(
+            as_of_a=payload.as_of_a,
+            as_of_b=payload.as_of_b,
+            added=added,
+            removed=removed,
+            modified=modified,
+        )
+
+    async def _full_namespace_compare(self, payload, ns_uuid: UUID) -> Any:
+        from nce.models import SemanticSearchResult, StateDiffResult
+
+        def _preview_from_hit(hit: dict[str, Any] | None) -> str | None:
+            if not hit:
+                return None
+            rd = hit.get("raw_data")
+            if isinstance(rd, str):
+                return rd[:200]
+            if rd is not None:
+                return str(rd)[:200]
+            return None
+
+        def _row_to_sem(row: Any, *, score: float, hit: dict[str, Any] | None) -> Any:
+            meta = _metadata_as_dict(row.get("metadata"))
+            pv = _preview_from_hit(hit) if hit else None
+            return SemanticSearchResult(
+                memory_id=row["memory_id"],
+                namespace_id=row["namespace_id"],
+                agent_id=row["agent_id"],
+                score=score,
+                payload_ref=row["payload_ref"],
+                assertion_type=row["assertion_type"],
+                memory_type=row["memory_type"],
+                valid_from=row["valid_from"],
+                pii_redacted=row["pii_redacted"],
+                content_preview=pv,
+                metadata=meta if meta else None,
             )
 
         # Full namespace diff: UNION ALL query

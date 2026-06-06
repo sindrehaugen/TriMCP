@@ -64,7 +64,7 @@ async def miro_extract_board(
         )
     # SSRF guard: validate base_url before any outbound request
     try:
-        validate_extractor_url(base_url)
+        await validate_extractor_url(base_url)
     except BridgeURLValidationError as e:
         return empty_skipped("miro_api", "ssrf_blocked", warnings=[str(e)])
     if not _BOARD_ID_RE.match(board_id):
@@ -199,7 +199,7 @@ async def lucidchart_extract_document(
         )
     # SSRF guard: validate base_url before any outbound request
     try:
-        validate_extractor_url(base_url)
+        await validate_extractor_url(base_url)
     except BridgeURLValidationError as e:
         return empty_skipped("lucid_api", "ssrf_blocked", warnings=[str(e)])
     url = f"{base_url.rstrip('/')}/documents/{document_id}"

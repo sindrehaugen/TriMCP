@@ -1034,7 +1034,7 @@ TOOLS = [
             "properties": {
                 "command": {
                     "type": "string",
-                    "enum": ["create", "list", "grant", "revoke", "update_metadata"],
+                    "enum": ["create", "list", "grant", "revoke", "update_metadata", "delete"],
                 },
                 "namespace_id": {"type": "string"},
                 "create": {

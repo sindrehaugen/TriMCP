@@ -63,7 +63,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import uuid
 from datetime import datetime
 from typing import Any
@@ -101,28 +100,6 @@ def current_model_uuid() -> uuid.UUID:
 # Audit table DDL — created by the worker on first run (idempotent).
 # --------------------------------------------------------------------------- #
 
-_DDL_REEMBEDDING_RUNS = """
-CREATE TABLE IF NOT EXISTS reembedding_runs (
-    id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    model_version     UUID        NOT NULL,
-    model_name        TEXT        NOT NULL,
-    started_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at      TIMESTAMPTZ,
-    status            TEXT        NOT NULL DEFAULT 'running'
-                                  CHECK (status IN ('running','completed','failed')),
-    memories_done     BIGINT      NOT NULL DEFAULT 0,
-    kg_nodes_done     BIGINT      NOT NULL DEFAULT 0,
-    error_message     TEXT,
-    -- Keyset cursor checkpointed after each batch for resumability.
-    cursor_created_at TIMESTAMPTZ,
-    cursor_id         UUID
-);
-"""
-
-
-async def _ensure_schema(conn: asyncpg.Connection) -> None:
-    await conn.execute(_DDL_REEMBEDDING_RUNS)
-
 
 # --------------------------------------------------------------------------- #
 # Pagination helpers — pure SQL, raw asyncpg
@@ -155,7 +132,6 @@ async def _fetch_memories_batch(
                     OR embedding_model_id::text <> $1)
             ORDER  BY created_at ASC, id ASC
             LIMIT  $2
-            FOR UPDATE SKIP LOCKED
             """,
             model_str,
             batch_size,
@@ -172,7 +148,6 @@ async def _fetch_memories_batch(
           AND  (created_at, id) > ($2, $3)
         ORDER  BY created_at ASC, id ASC
         LIMIT  $4
-        FOR UPDATE SKIP LOCKED
         """,
         model_str,
         cursor_created_at,
@@ -196,7 +171,6 @@ async def _fetch_kg_nodes_batch(
             WHERE embedding IS NOT NULL
               AND (embedding_model_id IS NULL OR embedding_model_id::text <> $1)
             ORDER BY id ASC LIMIT $2
-            FOR UPDATE SKIP LOCKED
             """,
             model_str,
             batch_size,
@@ -208,7 +182,6 @@ async def _fetch_kg_nodes_batch(
           AND (embedding_model_id IS NULL OR embedding_model_id::text <> $1)
           AND id > $2
         ORDER BY id ASC LIMIT $3
-        FOR UPDATE SKIP LOCKED
         """,
         model_str,
         cursor_id,
@@ -438,7 +411,6 @@ class ReembeddingWorker:
         model_uuid: uuid.UUID,
     ) -> uuid.UUID:
         async with pool.acquire(timeout=10.0) as conn:
-            await _ensure_schema(conn)
             run_id: uuid.UUID = await conn.fetchval(
                 """
                 INSERT INTO reembedding_runs (model_version, model_name)

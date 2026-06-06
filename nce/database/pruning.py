@@ -62,10 +62,15 @@ _SENSITIVE_TEXT_COLUMNS_BY_TABLE: dict[str, list[str]] = {
     "v3_cognitive_ledger": [],  # No sensitive free-text columns
 }
 
-# Tables that carry a valid_to column for soft-deletion
+# GDPR Compliance vs WORM Audit Trail Policy (GDPR Article 17(3)(b)):
+# Under GDPR Article 17(1), users have a right to erasure. However, Article 17(3)(b)
+# exempts processing necessary for compliance with a legal obligation or task in the
+# public interest. The 'event_log' is a Write-Once-Read-Many (WORM) audit trail
+# required to verify cryptographic signatures, prove ledger history, and ensure
+# security non-repudiation. Thus, 'event_log' is excluded from soft-deletions/pruning
+# to preserve audit trail integrity, while user data in the 'memories' table is pruned.
 _SOFT_DELETE_TABLES: list[str] = [
     "memories",
-    "event_log",
     "v3_cognitive_ledger",
     "topology_graph",    # valid_to added by migration 011_audit_log.sql
 ]
@@ -203,8 +208,7 @@ async def cascade_delete_tenant(
     deletion_timestamp = datetime.now(timezone.utc)
 
     try:
-        conn = await pool.acquire()
-        try:
+        async with pool.acquire() as conn:
             async with conn.transaction():
 
                 # ============================================================
@@ -348,9 +352,6 @@ async def cascade_delete_tenant(
                         namespace_id,
                     )
                     raise _DryRunRollback
-
-        finally:
-            await pool.release(conn)
 
     except _DryRunRollback:
         # Normal dry_run path — not an error, not logged as one.

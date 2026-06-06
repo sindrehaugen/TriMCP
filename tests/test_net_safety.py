@@ -136,9 +136,10 @@ class TestUrlLengthLimits:
     def _public_dns(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
 
-    def test_validate_bridge_webhook_base_url_accepts_4096_chars(self):
+    @pytest.mark.asyncio
+    async def test_validate_bridge_webhook_base_url_accepts_4096_chars(self):
         base = _url_exact_length("https://hooks.example.com/callback", MAX_URL_LEN)
-        assert validate_bridge_webhook_base_url(base) == base.rstrip("/")
+        assert await validate_bridge_webhook_base_url(base) == base.rstrip("/")
 
     @pytest.mark.parametrize(
         "validator,args,kwargs",
@@ -159,7 +160,8 @@ class TestUrlLengthLimits:
             "validate_webhook_payload_url",
         ],
     )
-    def test_all_validators_reject_4097_chars(
+    @pytest.mark.asyncio
+    async def test_all_validators_reject_4097_chars(
         self,
         validator,
         args: tuple,
@@ -185,22 +187,25 @@ class TestUrlLengthLimits:
 
         with pytest.raises(BridgeURLValidationError, match="4096|length|too long|maximum"):
             if validator is assert_url_allowed_prefix:
-                validator(url, *args, **kwargs)
+                await validator(url, *args, **kwargs)
             else:
-                validator(url, *args, **kwargs)
+                await validator(url, *args, **kwargs)
 
-    def test_assert_url_allowed_prefix_accepts_4096_chars(self):
+    @pytest.mark.asyncio
+    async def test_assert_url_allowed_prefix_accepts_4096_chars(self):
         url = _url_exact_length(
             "https://graph.microsoft.com/v1.0/me/messages",
             MAX_URL_LEN,
         )
-        assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
+        await assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
 
-    def test_validate_extractor_url_accepts_4096_chars(self):
+    @pytest.mark.asyncio
+    async def test_validate_extractor_url_accepts_4096_chars(self):
         url = _url_exact_length("https://api.example.com/v1/boards", MAX_URL_LEN)
-        assert validate_extractor_url(url) == url
+        assert await validate_extractor_url(url) == url
 
-    def test_validate_webhook_payload_url_accepts_4096_char_absolute_url(
+    @pytest.mark.asyncio
+    async def test_validate_webhook_payload_url_accepts_4096_char_absolute_url(
         self, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.setattr(
@@ -210,11 +215,12 @@ class TestUrlLengthLimits:
             "https://graph.microsoft.com/v1.0/sites/abc/drives/def/root",
             MAX_URL_LEN,
         )
-        assert validate_webhook_payload_url(url) == url
+        assert await validate_webhook_payload_url(url) == url
 
-    def test_validate_webhook_payload_url_accepts_4096_char_relative_path(self):
+    @pytest.mark.asyncio
+    async def test_validate_webhook_payload_url_accepts_4096_char_relative_path(self):
         url = _url_exact_length("/sites/tenant-id/drives/drive-id/root", MAX_URL_LEN)
-        assert validate_webhook_payload_url(url) == url
+        assert await validate_webhook_payload_url(url) == url
 
 
 # ---------------------------------------------------------------------------
@@ -238,12 +244,13 @@ class TestCredentialRejection:
             "https://user:pass@evil.com",
         ),
     )
-    def test_validate_bridge_webhook_base_url_rejects_credentials(self, url: str):
+    @pytest.mark.asyncio
+    async def test_validate_bridge_webhook_base_url_rejects_credentials(self, url: str):
         with pytest.raises(
             BridgeURLValidationError,
             match="credential|userinfo|username|password",
         ):
-            validate_bridge_webhook_base_url(url)
+            await validate_bridge_webhook_base_url(url)
 
     @pytest.mark.parametrize(
         "url",
@@ -254,12 +261,13 @@ class TestCredentialRejection:
             "https://user:pass@evil.com",
         ),
     )
-    def test_assert_url_allowed_prefix_rejects_credentials(self, url: str):
+    @pytest.mark.asyncio
+    async def test_assert_url_allowed_prefix_rejects_credentials(self, url: str):
         with pytest.raises(
             BridgeURLValidationError,
             match="credential|userinfo|username|password",
         ):
-            assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
+            await assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
 
     @pytest.mark.parametrize(
         "url",
@@ -270,12 +278,13 @@ class TestCredentialRejection:
             "https://user:pass@evil.com",
         ),
     )
-    def test_validate_extractor_url_rejects_credentials(self, url: str):
+    @pytest.mark.asyncio
+    async def test_validate_extractor_url_rejects_credentials(self, url: str):
         with pytest.raises(
             BridgeURLValidationError,
             match="credential|userinfo|username|password",
         ):
-            validate_extractor_url(url)
+            await validate_extractor_url(url)
 
     @pytest.mark.parametrize(
         "url",
@@ -286,22 +295,24 @@ class TestCredentialRejection:
             "https://user:pass@evil.com",
         ),
     )
-    def test_validate_webhook_payload_url_rejects_credentials(self, url: str):
+    @pytest.mark.asyncio
+    async def test_validate_webhook_payload_url_rejects_credentials(self, url: str):
         with pytest.raises(
             BridgeURLValidationError,
             match="credential|userinfo|username|password",
         ):
-            validate_webhook_payload_url(url)
+            await validate_webhook_payload_url(url)
 
-    def test_https_evil_com_passes_credential_check_only(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.asyncio
+    async def test_https_evil_com_passes_credential_check_only(self, monkeypatch: pytest.MonkeyPatch):
         """``https://evil.com`` must not trip the userinfo guard (may fail prefix/SSRF)."""
         monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         with pytest.raises(BridgeURLValidationError, match="must start with|prefix"):
-            validate_webhook_payload_url("https://evil.com/resource")
-        assert validate_bridge_webhook_base_url("https://evil.com/callback") == (
+            await validate_webhook_payload_url("https://evil.com/resource")
+        assert await validate_bridge_webhook_base_url("https://evil.com/callback") == (
             "https://evil.com/callback"
         )
-        assert validate_extractor_url("https://evil.com/api") == "https://evil.com/api"
+        assert await validate_extractor_url("https://evil.com/api") == "https://evil.com/api"
 
 
 # ---------------------------------------------------------------------------
@@ -316,52 +327,60 @@ class TestParsedPrefixMatching:
             "nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141")
         )
 
-    def test_assert_url_allowed_prefix_exact_match(self):
-        assert_url_allowed_prefix(GRAPH_PREFIX, DELTA_PREFIXES, what="delta")
+    @pytest.mark.asyncio
+    async def test_assert_url_allowed_prefix_exact_match(self):
+        await assert_url_allowed_prefix(GRAPH_PREFIX, DELTA_PREFIXES, what="delta")
 
-    def test_assert_url_allowed_prefix_path_descent(self):
+    @pytest.mark.asyncio
+    async def test_assert_url_allowed_prefix_path_descent(self):
         url = "https://graph.microsoft.com/v1.0/me/messages"
-        assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
+        await assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
 
-    def test_assert_url_allowed_prefix_rejects_subdomain_bypass(self):
+    @pytest.mark.asyncio
+    async def test_assert_url_allowed_prefix_rejects_subdomain_bypass(self):
         url = "https://graph.microsoft.com.evil.com/v1.0/me/messages"
         with pytest.raises(BridgeURLValidationError, match="prefix|start with"):
-            assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
+            await assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
 
-    def test_assert_url_allowed_prefix_rejects_credential_bypass(self):
+    @pytest.mark.asyncio
+    async def test_assert_url_allowed_prefix_rejects_credential_bypass(self):
         url = "https://graph.microsoft.com@evil.com/v1.0/me/messages"
         with pytest.raises(BridgeURLValidationError, match="prefix|start with|credential"):
-            assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
+            await assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
 
-    def test_assert_url_allowed_prefix_rejects_http_scheme(self):
+    @pytest.mark.asyncio
+    async def test_assert_url_allowed_prefix_rejects_http_scheme(self):
         url = "http://graph.microsoft.com/v1.0/me/messages"
         with pytest.raises(BridgeURLValidationError, match="https"):
-            assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
+            await assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
 
-    def test_validate_webhook_payload_url_accepts_graph_path_descent(
+    @pytest.mark.asyncio
+    async def test_validate_webhook_payload_url_accepts_graph_path_descent(
         self, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.setattr(
             "nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141")
         )
         url = "https://graph.microsoft.com/v1.0/me/messages"
-        assert validate_webhook_payload_url(url) == url
+        assert await validate_webhook_payload_url(url) == url
 
-    def test_validate_webhook_payload_url_rejects_subdomain_bypass(
+    @pytest.mark.asyncio
+    async def test_validate_webhook_payload_url_rejects_subdomain_bypass(
         self, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         url = "https://graph.microsoft.com.evil.com/v1.0/me/messages"
         with pytest.raises(BridgeURLValidationError, match="prefix|start with"):
-            validate_webhook_payload_url(url)
+            await validate_webhook_payload_url(url)
 
-    def test_validate_webhook_payload_url_rejects_credential_bypass(
+    @pytest.mark.asyncio
+    async def test_validate_webhook_payload_url_rejects_credential_bypass(
         self, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         url = "https://graph.microsoft.com@evil.com/v1.0/me/messages"
         with pytest.raises(BridgeURLValidationError, match="prefix|start with|credential"):
-            validate_webhook_payload_url(url)
+            await validate_webhook_payload_url(url)
 
 
 # ---------------------------------------------------------------------------
@@ -370,16 +389,18 @@ class TestParsedPrefixMatching:
 
 
 class TestAssertUrlAllowedPrefixDnsFailClosed:
-    def test_dns_gaierror_raises_bridge_validation_error(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.asyncio
+    async def test_dns_gaierror_raises_bridge_validation_error(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _fail_dns)
         with pytest.raises(BridgeURLValidationError, match="resolve|DNS|gaierror|host"):
-            assert_url_allowed_prefix(
+            await assert_url_allowed_prefix(
                 "https://graph.microsoft.com/v1.0/me/messages",
                 DELTA_PREFIXES,
                 what="delta",
             )
 
-    def test_dns_failure_logs_truncated_host_only(
+    @pytest.mark.asyncio
+    async def test_dns_failure_logs_truncated_host_only(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ):
         long_host = "h" * 200
@@ -392,7 +413,7 @@ class TestAssertUrlAllowedPrefixDnsFailClosed:
 
         with caplog.at_level(logging.WARNING, logger="nce.net_safety"):
             with pytest.raises(BridgeURLValidationError, match="DNS resolution failed"):
-                assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
+                await assert_url_allowed_prefix(url, DELTA_PREFIXES, what="delta")
 
         assert caplog.records, "expected a warning log on DNS failure"
         msg = caplog.records[-1].message
@@ -426,31 +447,37 @@ def _longest_hostname_substring_in_log(message: str) -> str | None:
 
 
 class TestValidateWebhookPayloadUrlNetSafety:
-    def test_accepts_valid_https_graph_url(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.asyncio
+    async def test_accepts_valid_https_graph_url(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
             "nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141")
         )
         url = "https://graph.microsoft.com/v1.0/sites/abc/drives/def/root"
-        assert validate_webhook_payload_url(url) == url
+        assert await validate_webhook_payload_url(url) == url
 
-    def test_rejects_http_scheme(self):
+    @pytest.mark.asyncio
+    async def test_rejects_http_scheme(self):
         with pytest.raises(BridgeURLValidationError, match="only https"):
-            validate_webhook_payload_url("http://graph.microsoft.com/v1.0/me")
+            await validate_webhook_payload_url("http://graph.microsoft.com/v1.0/me")
 
-    def test_rejects_loopback_resolution(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.asyncio
+    async def test_rejects_loopback_resolution(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("127.0.0.1"))
         with pytest.raises(BridgeURLValidationError, match="non-public"):
-            validate_webhook_payload_url("https://graph.microsoft.com/v1.0/me")
+            await validate_webhook_payload_url("https://graph.microsoft.com/v1.0/me")
 
-    def test_accepts_relative_sites_path(self):
+    @pytest.mark.asyncio
+    async def test_accepts_relative_sites_path(self):
         path = "/sites/tenant-id/drives/drive-id/root"
-        assert validate_webhook_payload_url(path) == path
+        assert await validate_webhook_payload_url(path) == path
 
-    def test_rejects_relative_admin_path(self):
+    @pytest.mark.asyncio
+    async def test_rejects_relative_admin_path(self):
         with pytest.raises(BridgeURLValidationError, match="does not match|prefix"):
-            validate_webhook_payload_url("/admin/secret/panel")
+            await validate_webhook_payload_url("/admin/secret/panel")
 
-    def test_dns_warning_truncates_long_hostname_in_log(
+    @pytest.mark.asyncio
+    async def test_dns_warning_truncates_long_hostname_in_log(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ):
         """When DNS check logs a warning, hostname in the message is capped at 64 chars."""
@@ -465,7 +492,7 @@ class TestValidateWebhookPayloadUrlNetSafety:
 
         with caplog.at_level(logging.WARNING, logger="nce.net_safety"):
             try:
-                validate_webhook_payload_url(url)
+                await validate_webhook_payload_url(url)
             except BridgeURLValidationError:
                 pass
 
@@ -486,30 +513,34 @@ class TestValidateWebhookPayloadUrlNetSafety:
 
 
 class TestValidateExtractorUrlNetSafety:
-    def test_dns_failure_raises(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.asyncio
+    async def test_dns_failure_raises(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _fail_dns)
         with pytest.raises(BridgeURLValidationError, match="resolve|cannot resolve|DNS"):
-            validate_extractor_url("https://does-not-exist.invalid/api")
+            await validate_extractor_url("https://does-not-exist.invalid/api")
 
-    def test_rejects_private_192_168(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.asyncio
+    async def test_rejects_private_192_168(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
             "nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("192.168.1.1")
         )
         with pytest.raises(BridgeURLValidationError, match="non-public"):
-            validate_extractor_url("https://internal.corp/api")
+            await validate_extractor_url("https://internal.corp/api")
 
-    def test_rejects_link_local_metadata_ip(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.asyncio
+    async def test_rejects_link_local_metadata_ip(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
             "nce.net_safety.socket.getaddrinfo",
             _mock_getaddrinfo("169.254.169.254"),
         )
         with pytest.raises(BridgeURLValidationError, match="non-public"):
-            validate_extractor_url("https://metadata.example/latest/meta-data")
+            await validate_extractor_url("https://metadata.example/latest/meta-data")
 
-    def test_accepts_public_https_host(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.asyncio
+    async def test_accepts_public_https_host(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("52.32.1.10"))
         url = "https://api.lucid.co/v1/documents"
-        assert validate_extractor_url(url) == url
+        assert await validate_extractor_url(url) == url
 
 
 # ---------------------------------------------------------------------------
@@ -518,15 +549,17 @@ class TestValidateExtractorUrlNetSafety:
 
 
 class TestValidateBridgeWebhookBaseUrlNetSafety:
-    def test_accepts_https_public_base(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.asyncio
+    async def test_accepts_https_public_base(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         base = "https://hooks.example.com/nce/webhooks"
-        assert validate_bridge_webhook_base_url(base) == base
+        assert await validate_bridge_webhook_base_url(base) == base
 
-    def test_rejects_http_for_non_loopback(self, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.asyncio
+    async def test_rejects_http_for_non_loopback(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("nce.net_safety.socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         with pytest.raises(BridgeURLValidationError, match="https"):
-            validate_bridge_webhook_base_url("http://hooks.example.com/callback")
+            await validate_bridge_webhook_base_url("http://hooks.example.com/callback")
 
 
 # ---------------------------------------------------------------------------

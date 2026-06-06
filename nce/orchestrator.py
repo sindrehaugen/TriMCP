@@ -7,10 +7,8 @@ Rollback guarantee: any PG failure triggers Mongo cleanup to prevent orphaned do
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-from collections.abc import Mapping
-from contextlib import asynccontextmanager
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -45,6 +43,7 @@ from nce.models import (
     StateDiffResult,
     StoreMemoryRequest,
 )
+from nce.orchestrators._base import OrchestratorBase
 
 # Backward-compat alias — MemoryPayload was renamed to StoreMemoryRequest
 MemoryPayload = StoreMemoryRequest
@@ -65,79 +64,6 @@ _QUEUE_PROBE_ERRORS: tuple[type[BaseException], ...] = (
     asyncio.TimeoutError,
     RuntimeError,
 )
-
-from nce.constants import (
-    ALLOWED_LANGUAGES as _ALLOWED_LANGUAGES,
-    MAX_TOP_K as _MAX_TOP_K,
-    MAX_GRAPH_DEPTH as _MAX_DEPTH,
-)
-
-
-def _metadata_as_dict(raw: Any) -> dict[str, Any]:
-    if raw is None:
-        return {}
-    if isinstance(raw, dict):
-        return dict(raw)
-    if isinstance(raw, str):
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-    return dict(raw)
-
-
-def _shallow_metadata_delta(old: dict[str, Any], new: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Keys added or with changed JSON-serializable values (string compare)."""
-    delta: dict[str, dict[str, Any]] = {}
-    for k, nv in new.items():
-        ov = old.get(k)
-        if ov != nv:
-            delta[k] = {"from": ov, "to": nv}
-    for k, ov in old.items():
-        if k not in new:
-            delta[k] = {"from": ov, "to": None}
-    return delta
-
-
-def _build_lineage_modified(old_row: Any, new_row: Any) -> dict[str, Any]:
-    keys = ("assertion_type", "memory_type", "pii_redacted", "salience")
-    transitions: dict[str, dict[str, Any]] = {}
-    for k in keys:
-        o, n = old_row[k], new_row[k]
-        if k == "salience":
-            o = float(o) if o is not None else None
-            n = float(n) if n is not None else None
-        if o != n:
-            transitions[k] = {"from": o, "to": n}
-    mo = _metadata_as_dict(old_row["metadata"])
-    mn = _metadata_as_dict(new_row["metadata"])
-    return {
-        "kind": "lineage_linked",
-        "source_memory_id": str(old_row["memory_id"]),
-        "old_memory_id": str(old_row["memory_id"]),
-        "new_memory_id": str(new_row["memory_id"]),
-        "transitions": transitions,
-        "metadata_delta": _shallow_metadata_delta(mo, mn),
-    }
-
-
-def _lineage_source_id(row: Mapping[str, Any]) -> str | None:
-    """Primitive linked to a predecessor: replay ``metadata.source_memory_id`` or consolidation ``derived_from[0]``."""
-    meta = _metadata_as_dict(row.get("metadata"))
-    sid = meta.get("source_memory_id")
-    if sid:
-        return str(sid)
-    df = row.get("derived_from")
-    if df is None:
-        return None
-    if isinstance(df, str):
-        try:
-            df = json.loads(df)
-        except json.JSONDecodeError:
-            return None
-    if isinstance(df, (list, tuple)) and len(df) > 0:
-        return str(df[0])
-    return None
 
 
 # --- Pydantic Models (Internal only) ---
@@ -179,8 +105,9 @@ class MongoDocument(BaseModel):
 # --- Engine ---
 
 
-class NCEEngine:
+class NCEEngine(OrchestratorBase):
     def __init__(self):
+        super().__init__(None, None, None)
         self.mongo_client = None
         self.pg_pool = None
         self.pg_read_pool = None
@@ -328,14 +255,6 @@ class NCEEngine:
             raise RuntimeError("MongoDB client is not connected")
         return self.mongo_client.memory_archive
 
-    def _ensure_uuid(self, val: str | UUID | None) -> UUID | None:
-        """Ensure the value is a UUID object (or None if input is None)."""
-        if val is None:
-            return None
-        if isinstance(val, UUID):
-            return val
-        return UUID(str(val))  # parse str → UUID
-
     def _warn_connect_not_called(self, method_name: str) -> None:
         """Warn when a lazy-init delegate is created outside of connect()."""
         log.warning(
@@ -344,91 +263,83 @@ class NCEEngine:
             method_name,
         )
 
-    async def _ensure_namespace(self, method_name: str) -> None:
-        if self.namespace is not None:
+    async def _ensure(self, name: str, factory: Callable[[], Any], method_name: str) -> None:
+        if getattr(self, name) is not None:
             return
         async with self._init_lock:
-            if self.namespace is not None:
+            if getattr(self, name) is not None:
                 return
             self._warn_connect_not_called(method_name)
-            from nce.orchestrators.namespace import NamespaceOrchestrator
+            setattr(self, name, factory())
 
-            self.namespace = NamespaceOrchestrator(
-                self.pg_pool,
-                redis_client=self.redis_client,
-            )
+    async def _ensure_namespace(self, method_name: str) -> None:
+        from nce.orchestrators.namespace import NamespaceOrchestrator
+
+        await self._ensure(
+            "namespace",
+            lambda: NamespaceOrchestrator(self.pg_pool, redis_client=self.redis_client),
+            method_name,
+        )
 
     async def _ensure_memory(self) -> None:
-        if self.memory is not None:
-            return
-        async with self._init_lock:
-            if self.memory is not None:
-                return
-            self._warn_connect_not_called("store_memory / store_artifact")
-            from nce.orchestrators.memory import MemoryOrchestrator
+        from nce.orchestrators.memory import MemoryOrchestrator
 
-            self.memory = MemoryOrchestrator(
+        await self._ensure(
+            "memory",
+            lambda: MemoryOrchestrator(
                 self.pg_pool,
                 self.mongo_client,
                 self.redis_client,
                 self.minio_client,
                 pg_read_pool=self.pg_read_pool,
-            )
+            ),
+            "store_memory / store_artifact",
+        )
 
     async def _ensure_graph(self, method_name: str) -> None:
-        if self.graph is not None:
-            return
-        async with self._init_lock:
-            if self.graph is not None:
-                return
-            self._warn_connect_not_called(method_name)
-            from nce.orchestrators.graph import GraphOrchestrator
+        from nce.orchestrators.graph import GraphOrchestrator
 
-            self.graph = GraphOrchestrator(
+        await self._ensure(
+            "graph",
+            lambda: GraphOrchestrator(
                 self.pg_pool,
                 self.mongo_client,
                 self._graph_traverser,
                 _embeddings.embed,
-            )
+            ),
+            method_name,
+        )
 
     async def _ensure_temporal(self, method_name: str) -> None:
-        if self.temporal is not None:
-            return
-        async with self._init_lock:
-            if self.temporal is not None:
-                return
-            self._warn_connect_not_called(method_name)
-            from nce.orchestrators.temporal import TemporalOrchestrator
+        from nce.orchestrators.temporal import TemporalOrchestrator
 
-            self.temporal = TemporalOrchestrator(
+        await self._ensure(
+            "temporal",
+            lambda: TemporalOrchestrator(
                 self.pg_pool,
                 self.mongo_client,
                 semantic_search_fn=self.semantic_search,
-            )
+            ),
+            method_name,
+        )
 
     async def _ensure_migration(self, method_name: str) -> None:
-        if self.migration is not None:
-            return
-        async with self._init_lock:
-            if self.migration is not None:
-                return
-            self._warn_connect_not_called(method_name)
-            from nce.orchestrators.migration import MigrationOrchestrator
+        from nce.orchestrators.migration import MigrationOrchestrator
 
-            self.migration = MigrationOrchestrator(
-                self.pg_pool, self.redis_client, self.redis_sync_client
-            )
+        await self._ensure(
+            "migration",
+            lambda: MigrationOrchestrator(self.pg_pool, self.redis_client, self.redis_sync_client),
+            method_name,
+        )
 
     async def _ensure_cognitive(self, method_name: str) -> None:
-        if self.cognitive is not None:
-            return
-        async with self._init_lock:
-            if self.cognitive is not None:
-                return
-            self._warn_connect_not_called(method_name)
-            from nce.orchestrators.cognitive import CognitiveOrchestrator
+        from nce.orchestrators.cognitive import CognitiveOrchestrator
 
-            self.cognitive = CognitiveOrchestrator(self.pg_pool)
+        await self._ensure(
+            "cognitive",
+            lambda: CognitiveOrchestrator(self.pg_pool),
+            method_name,
+        )
 
     def _redis_cache_key(
         self, namespace_id: str | UUID | None, user_id: str | None, filepath: str
@@ -454,34 +365,6 @@ class NCEEngine:
                     continue
                 raise
 
-    def _validate_path(self, filepath: str):
-        """Strict OS-agnostic path traversal protection using pathlib.
-
-        Resolves the supplied path and asserts it lies within the
-        current working directory — ``..``, symlinks, and absolute
-        paths that escape CWD are all rejected.
-        """
-        from pathlib import Path
-
-        try:
-            allowed_base = Path.cwd().resolve(strict=True)
-            candidate = Path(filepath).resolve(strict=False)
-
-            # Reject if the resolved path doesn't start with CWD
-            if not candidate.is_relative_to(allowed_base):
-                raise ValueError(f"Path escapes allowed base directory: {filepath!r}")
-
-            # Secondary check: reject raw strings that try to escape
-            # before resolution (catches non-existent targets that
-            # resolve() can't fully normalise).
-            if ".." in Path(filepath).parts:
-                # Re-resolve to confirm the .. didn't escape
-                if not candidate.is_relative_to(allowed_base):
-                    raise ValueError(f"Path traversal attempt (..): {filepath!r}")
-
-        except (ValueError, OSError, RuntimeError) as exc:
-            raise ValueError(f"Unsafe filepath rejected: {filepath!r} - {exc}") from exc
-
     async def _init_pg_schema(self):
         """
         Load DDL from the package-bundled schema.sql and execute it as a single
@@ -502,9 +385,18 @@ class NCEEngine:
         log.debug("[PG] schema.sql applied from %s", schema_path)
 
         if cfg.NCE_APP_PASSWORD:
-            escaped = cfg.NCE_APP_PASSWORD.replace("'", "''")
             async with self.pg_pool.acquire(timeout=10.0) as conn:
-                await conn.execute(f"ALTER ROLE nce_app WITH LOGIN PASSWORD '{escaped}'")
+                async with conn.transaction():
+                    await conn.execute(
+                        "SELECT set_config('nce.temp_password', $1, true)", cfg.NCE_APP_PASSWORD
+                    )
+                    await conn.execute(
+                        "DO $$\n"
+                        "BEGIN\n"
+                        "    EXECUTE format('ALTER ROLE nce_app WITH LOGIN PASSWORD %L', current_setting('nce.temp_password'));\n"
+                        "END\n"
+                        "$$;"
+                    )
             log.debug("[PG] nce_app login password dynamically updated from configuration")
 
     async def _apply_pg_migrations(self) -> None:
@@ -550,7 +442,9 @@ class NCEEngine:
                 log.warning("[worm-probe] Failed to parse PG_DSN for nce_app connection: %s", exc)
 
         if app_dsn:
-            log.debug("[worm-probe] Probing WORM enforcement with actual nce_app role credentials...")
+            log.debug(
+                "[worm-probe] Probing WORM enforcement with actual nce_app role credentials..."
+            )
             try:
                 conn = await asyncpg.connect(app_dsn, timeout=10.0)
                 try:
@@ -560,7 +454,10 @@ class NCEEngine:
                     await conn.close()
                 return
             except Exception as exc:
-                log.warning("[worm-probe] Failed to connect as nce_app: %s. Falling back to default PG pool.", exc)
+                log.warning(
+                    "[worm-probe] Failed to connect as nce_app: %s. Falling back to default PG pool.",
+                    exc,
+                )
 
         async with self.pg_pool.acquire(timeout=10.0) as conn:
             for table in _WORM_TABLES:
@@ -651,17 +548,6 @@ class NCEEngine:
     # NOTE: _generate_embedding was removed (R4) — it was a one-liner alias for
     # _embeddings.embed and offered no added value.  All three call sites now
     # reference _embeddings.embed directly.
-
-    @asynccontextmanager
-    async def scoped_session(self, namespace_id: str | UUID):
-        """
-        Context manager for tenant-isolated PostgreSQL sessions.
-        Delegates to :func:`nce.db_utils.scoped_pg_session`.
-        """
-        from nce.db_utils import scoped_pg_session
-
-        async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
-            yield conn
 
     # --- Phase 0.1: Namespace Management ---
 
@@ -761,6 +647,13 @@ class NCEEngine:
 
     async def store_media(self, payload: MediaPayload) -> str:
         """[DEPRECATED] Use store_artifact instead."""
+        import warnings
+
+        warnings.warn(
+            "store_media is deprecated; use store_artifact instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return await self.store_artifact(payload)
 
     async def force_gc(self) -> dict:

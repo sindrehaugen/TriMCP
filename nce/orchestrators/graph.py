@@ -10,54 +10,44 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import asyncpg
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from nce.constants import ALLOWED_LANGUAGES as _ALLOWED_LANGUAGES, MAX_TOP_K as _MAX_TOP_K, SAFE_ID_RE as _SAFE_ID_RE
-from nce.db_utils import scoped_pg_session
+if TYPE_CHECKING:
+    from nce.graph_query import GraphRAGTraverser
+
+from nce.constants import (
+    ALLOWED_LANGUAGES as _ALLOWED_LANGUAGES,
+)
+from nce.constants import (
+    MAX_TOP_K as _MAX_TOP_K,
+)
+from nce.constants import (
+    SAFE_ID_RE as _SAFE_ID_RE,
+)
+from nce.db_utils import scoped_pg_session  # noqa: F401
 from nce.mongo_bulk import fetch_code_files_raw_by_ref, normalize_payload_ref
+from nce.orchestrators._base import OrchestratorBase
 
 log = logging.getLogger("nce-orchestrator.graph")
 
 
-class GraphOrchestrator:
+class GraphOrchestrator(OrchestratorBase):
     """Domain orchestrator for graph search and codebase semantic search."""
 
     def __init__(
         self,
         pg_pool: asyncpg.Pool,
         mongo_client: AsyncIOMotorClient,
-        graph_traverser,  # GraphRAGTraverser
+        graph_traverser: GraphRAGTraverser,  # GraphRAGTraverser
         embed_fn,  # async callable: (str) -> list[float]
     ):
-        self.pg_pool = pg_pool
-        self.mongo_client = mongo_client
+        super().__init__(pg_pool, mongo_client)
         self._graph_traverser = graph_traverser
         self._embed = embed_fn
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _ensure_uuid(self, raw: str | UUID | None) -> UUID | None:
-        if raw is None:
-            return None
-        if isinstance(raw, UUID):
-            return raw
-        return UUID(str(raw))
-
-    @asynccontextmanager
-    async def scoped_session(self, namespace_id: str | UUID):
-        """Tenant-isolated PostgreSQL session (RLS + transaction-scoped SET LOCAL)."""
-        async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
-            yield conn
-
-    @property
-    def _mongo_db(self):
-        return self.mongo_client.memory_archive
 
     # ------------------------------------------------------------------
     # GraphRAG traversal
@@ -249,7 +239,7 @@ class GraphOrchestrator:
                 end_line = meta.get("end_line", 0)
 
                 ref_key = normalize_payload_ref(row["payload_ref"])
-                raw_code = code_docs.get(ref_key, "")
+                raw_code = code_docs.get(ref_key, "") if ref_key else ""
                 excerpt = str(raw_code)[:600] if raw_code else ""
 
                 results.append(

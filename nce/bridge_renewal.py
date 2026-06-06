@@ -434,7 +434,7 @@ async def renew_gdrive(pool: asyncpg.Pool, row: asyncpg.Record) -> None:
     if not base_raw:
         raise RuntimeError("BRIDGE_WEBHOOK_BASE_URL not set — cannot renew Drive watch")
     try:
-        base = validate_bridge_webhook_base_url(base_raw)
+        base = await validate_bridge_webhook_base_url(base_raw)
     except BridgeURLValidationError as e:
         raise RuntimeError(f"BRIDGE_WEBHOOK_BASE_URL invalid: {e}") from e
 

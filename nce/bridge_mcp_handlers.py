@@ -345,7 +345,7 @@ async def complete_bridge_auth(engine: NCEEngine, arguments: dict[str, Any]) -> 
                 "BRIDGE_WEBHOOK_BASE_URL is required to register sharepoint/gdrive webhooks"
             )
         try:
-            base = validate_bridge_webhook_base_url(base_raw)
+            base = await validate_bridge_webhook_base_url(base_raw)
         except BridgeURLValidationError as e:
             raise ValueError(str(e)) from e
 

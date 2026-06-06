@@ -42,7 +42,6 @@ _CRON_TICK_ERRORS: tuple[type[BaseException], ...] = (
     TypeError,
     KeyError,
     json.JSONDecodeError,
-    RuntimeError,
 )
 
 

@@ -41,10 +41,13 @@ def test_bare_import_does_not_load_orchestrator(monkeypatch) -> None:
 
 def test_all_public_names_accessible() -> None:
     nce = _fresh_nce()
+    import warnings
 
-    for name in nce.__all__:
-        obj = getattr(nce, name)
-        assert obj is not None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        for name in nce.__all__:
+            obj = getattr(nce, name)
+            assert obj is not None
 
 
 def test_all_contains_expected_exports() -> None:

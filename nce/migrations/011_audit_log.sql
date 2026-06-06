@@ -34,6 +34,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_event_type
 
 -- Row-Level Security: each tenant sees only its own audit records.
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_log FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY audit_log_tenant_isolation ON audit_log
     FOR ALL

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 from nce.mtls import assert_bridge_mtls_configured
@@ -44,9 +44,29 @@ class BridgeProvider(ABC):
     def provider_key(self) -> str:
         """One of: sharepoint | gdrive | dropbox."""
 
-    @abstractmethod
     def bearer_token(self) -> str:
         """Return a valid access token (env, cache, or refreshed)."""
+        override = getattr(self, "_oauth_token_override", None)
+        if override:
+            return override
+
+        from nce.config import cfg
+
+        if self.provider_key == "sharepoint":
+            token = (cfg.GRAPH_BRIDGE_TOKEN or "").strip()
+        elif self.provider_key == "gdrive":
+            token = (cfg.GDRIVE_BRIDGE_TOKEN or "").strip()
+        elif self.provider_key == "dropbox":
+            token = (cfg.DROPBOX_BRIDGE_TOKEN or "").strip()
+        else:
+            token = ""
+
+        if not token:
+            try:
+                return self.refresh_oauth_token()
+            except BridgeAuthError:
+                raise
+        return token
 
     def refresh_oauth_token(self) -> str:
         """
@@ -58,7 +78,9 @@ class BridgeProvider(ABC):
         )
 
     @abstractmethod
-    def walk_delta(self, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    def walk_delta(
+        self, context: dict[str, Any]
+    ) -> Iterator[dict[str, Any]] | AsyncIterator[dict[str, Any]]:
         """
         Yield change records from the provider delta API using `context`
         (webhook-derived; shape is provider-specific).

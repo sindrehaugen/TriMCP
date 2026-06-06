@@ -12,17 +12,17 @@ from mcp.types import TextContent
 # (same module objects that ``_h()`` in tool_registry resolves at call time).
 from nce import (
     NCEEngine,
-    a2a_mcp_handlers,
-    admin_mcp_handlers,
-    bridge_mcp_handlers,
-    catalog_mcp_handlers,
-    code_mcp_handlers,
-    contradiction_mcp_handlers,
-    graph_mcp_handlers,
-    memory_mcp_handlers,
-    migration_mcp_handlers,
-    replay_mcp_handlers,
-    snapshot_mcp_handlers,
+    a2a_mcp_handlers,  # noqa: F401
+    admin_mcp_handlers,  # noqa: F401
+    bridge_mcp_handlers,  # noqa: F401
+    catalog_mcp_handlers,  # noqa: F401
+    code_mcp_handlers,  # noqa: F401
+    contradiction_mcp_handlers,  # noqa: F401
+    graph_mcp_handlers,  # noqa: F401
+    memory_mcp_handlers,  # noqa: F401
+    migration_mcp_handlers,  # noqa: F401
+    replay_mcp_handlers,  # noqa: F401
+    snapshot_mcp_handlers,  # noqa: F401
 )
 from nce.auth import RateLimitError, ScopeError, enforce_mcp_tool_auth
 from nce.config import cfg
@@ -142,7 +142,12 @@ async def execute_call_tool(
             except BaseException:
                 # BaseException catches asyncio.CancelledError (Python ≥ 3.8) so
                 # quota is rolled back even when the task is cancelled mid-call.
-                await q_res.rollback()
+                try:
+                    await q_res.rollback()
+                except Exception as roll_exc:
+                    log.warning(
+                        "Quota rollback failed (not masking original exception): %s", roll_exc
+                    )
                 raise
 
         except McpError as e:

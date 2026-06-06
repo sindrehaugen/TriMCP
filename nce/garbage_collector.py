@@ -142,21 +142,24 @@ async def _fetch_pg_refs(pg_pool: asyncpg.Pool, namespaces: list[UUID]) -> set[s
     pg_refs: set[str] = set()
     ZERO_UUID = UUID(int=0)
 
-    async with pg_pool.acquire(timeout=30.0) as conn:
-        for ns_id in namespaces:
-            async with conn.transaction():
-                await set_namespace_context(conn, ns_id)
-                for table in ("memories",):
-                    last_seen_id = ZERO_UUID
-                    while True:
-                        rows = await _fetch_pg_ref_batch(conn, table, last_seen_id, PAGE_SIZE)
-                        if not rows:
-                            break
-                        pg_refs.update(row["payload_ref"] for row in rows)
-                        last_seen_id = rows[-1]["id"]
+    for ns_id in namespaces:
+        try:
+            async with pg_pool.acquire(timeout=30.0) as conn:
+                async with conn.transaction():
+                    await set_namespace_context(conn, ns_id)
+                    for table in ("memories",):
+                        last_seen_id = ZERO_UUID
+                        while True:
+                            rows = await _fetch_pg_ref_batch(conn, table, last_seen_id, PAGE_SIZE)
+                            if not rows:
+                                break
+                            pg_refs.update(row["payload_ref"] for row in rows)
+                            last_seen_id = rows[-1]["id"]
 
-                        if len(rows) < PAGE_SIZE:
-                            break  # last page
+                            if len(rows) < PAGE_SIZE:
+                                break  # last page
+        except Exception as e:
+            log.error("GC: Failed to fetch PG refs for namespace=%s: %s", ns_id, e)
 
     return pg_refs
 

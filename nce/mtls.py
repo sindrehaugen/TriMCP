@@ -7,7 +7,6 @@ both the A2A server and the Admin server without duplication.
 from __future__ import annotations
 
 import logging
-import os
 
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
@@ -35,12 +34,12 @@ def assert_bridge_mtls_configured(*, service: str = "bridge") -> None:
     Call this from ``BridgeProvider.__init__()`` so every bridge fails fast at
     construction time rather than at runtime when a connection is attempted.
     """
-    strict = os.environ.get("NCE_MTLS_STRICT", "true").strip().lower() in {
-        "1", "true", "yes", "on"
-    }
-    cert = os.environ.get("NCE_MTLS_CERT_PATH", "").strip()
-    key = os.environ.get("NCE_MTLS_KEY_PATH", "").strip()
-    ca = os.environ.get("NCE_MTLS_CA_PATH", "").strip()
+    from nce.config import cfg
+
+    strict = cfg.NCE_MTLS_STRICT
+    cert = cfg.NCE_MTLS_CERT_PATH
+    key = cfg.NCE_MTLS_KEY_PATH
+    ca = cfg.NCE_MTLS_CA_PATH
 
     missing = [name for name, val in (
         ("NCE_MTLS_CERT_PATH", cert),
@@ -62,7 +61,7 @@ def assert_bridge_mtls_configured(*, service: str = "bridge") -> None:
     log.warning("mTLS not configured (NCE_MTLS_STRICT=false): %s", msg)
 
 # Default JSON-RPC error code for mTLS failures
-DEFAULT_MTLS_ERROR_CODE = -32010
+DEFAULT_MTLS_ERROR_CODE = -32015
 
 _MAX_HEADER_VALUE_BYTES: int = 16_384  # 16 KB — generous for base64-encoded DER certs
 

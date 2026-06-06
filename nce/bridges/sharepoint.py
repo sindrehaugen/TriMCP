@@ -5,7 +5,7 @@ SharePoint / OneDrive via Microsoft Graph — delta + subscriptions (§10.3, App
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -35,19 +35,7 @@ class SharePointBridge(BridgeProvider):
     def provider_key(self) -> str:
         return "sharepoint"
 
-    def bearer_token(self) -> str:
-        override = getattr(self, "_oauth_token_override", None)
-        if override:
-            return override
-        token = (cfg.GRAPH_BRIDGE_TOKEN or "").strip()
-        if not token:
-            try:
-                return self.refresh_oauth_token()
-            except BridgeAuthError:
-                raise
-        return token
-
-    def walk_delta(self, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    async def walk_delta(self, context: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         notifications = context.get("notifications") or []
         self._oauth_token_override = None
         env_tok = (cfg.GRAPH_BRIDGE_TOKEN or "").strip()
@@ -82,14 +70,15 @@ class SharePointBridge(BridgeProvider):
                 if key in seen:
                     continue
                 seen.add(key)
-                yield from self._delta_pages(site_id, drive_id)
+                async for item in self._delta_pages(site_id, drive_id):
+                    yield item
         finally:
             self._oauth_token_override = None
 
     def _cursor_key(self, site_id: str, drive_id: str) -> str:
         return f"bridge:cursor:sharepoint:{site_id}:{drive_id}"
 
-    def _delta_pages(self, site_id: str, drive_id: str) -> Iterator[dict[str, Any]]:
+    async def _delta_pages(self, site_id: str, drive_id: str) -> AsyncIterator[dict[str, Any]]:
         r = redis_client()
         ck = self._cursor_key(site_id, drive_id)
         stored = r.get(ck)
@@ -98,19 +87,22 @@ class SharePointBridge(BridgeProvider):
             url: str | None = stored.decode("utf-8")
         else:
             url = f"{GRAPH_ROOT}/sites/{site_id}/drives/{drive_id}/root/delta"
-        with httpx.Client(timeout=60.0, headers=headers, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=60.0, headers=headers, follow_redirects=True
+        ) as client:
             while url:
-                assert_url_allowed_prefix(
+                await assert_url_allowed_prefix(
                     url, GRAPH_DELTA_URL_PREFIXES, what="SharePoint Graph delta URL"
                 )
-                resp = client.get(url)
+                resp = await client.get(url)
                 if resp.status_code == 401:
                     raise BridgeAuthError(
                         "Microsoft Graph returned 401 — refresh or set GRAPH_BRIDGE_TOKEN"
                     )
                 resp.raise_for_status()
                 payload = resp.json()
-                yield from payload.get("value", [])
+                for item in payload.get("value", []):
+                    yield item
                 next_link = payload.get("@odata.nextLink")
                 delta_link = payload.get("@odata.deltaLink")
                 if delta_link:
@@ -132,12 +124,12 @@ class SharePointBridge(BridgeProvider):
             return resp.content
 
 
-def process_sharepoint_event(payload: dict[str, Any]) -> dict[str, Any]:
+async def process_sharepoint_event(payload: dict[str, Any]) -> dict[str, Any]:
     """RQ entrypoint: run delta walk for notifications in payload."""
     bridge = SharePointBridge()
     count = 0
     try:
-        for item in bridge.walk_delta({"notifications": payload.get("notifications", [])}):
+        async for item in bridge.walk_delta({"notifications": payload.get("notifications", [])}):
             count += 1
             if item.get("deleted"):
                 log.info("SharePoint delta: deleted id=%s", item.get("id"))

@@ -91,7 +91,8 @@ class TestInputHardening:
     async def test_a1_index_code_file_rejects_oversized_payload(
         self, orch: MigrationOrchestrator
     ) -> None:
-        payload = _code_payload(raw_code="x" * 1_000_001)
+        from nce.config import cfg
+        payload = _code_payload(raw_code="x" * (cfg.NCE_MAX_CODE_INDEX_BYTES + 1))
 
         with pytest.raises(ValueError, match="Code payload too large"):
             await orch.index_code_file(payload)

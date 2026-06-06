@@ -23,12 +23,12 @@ log = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nce-nli")
 
 # ---------------------------------------------------------------------------
-# Config-driven thresholds (move to cfg when ready)
+# Config-driven thresholds
 # ---------------------------------------------------------------------------
-_CONTRADICTION_SIMILARITY_THRESHOLD: float = 0.85
-_CONTRADICTION_MAX_CANDIDATES: int = 3
-_CONTRADICTION_NLI_THRESHOLD: float = 0.8
-_CONTRADICTION_LLM_MIN_CONFIDENCE: float = 0.6
+_CONTRADICTION_SIMILARITY_THRESHOLD: float = cfg.NCE_CONTRADICTION_SIMILARITY_THRESHOLD
+_CONTRADICTION_MAX_CANDIDATES: int = cfg.NCE_CONTRADICTION_MAX_CANDIDATES
+_CONTRADICTION_NLI_THRESHOLD: float = cfg.NCE_CONTRADICTION_NLI_THRESHOLD
+_CONTRADICTION_LLM_MIN_CONFIDENCE: float = cfg.NCE_CONTRADICTION_LLM_MIN_CONFIDENCE
 _NLI_CONTRADICTION_LABEL_INDEX: int = 2  # DeBERTa NLI: 0=entail, 1=neutral, 2=contradiction
 
 

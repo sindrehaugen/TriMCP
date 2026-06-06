@@ -55,7 +55,6 @@ from minio.error import S3Error
 
 from nce.config import cfg
 from nce.event_log import (
-    AppendResult,
     DataIntegrityError,
     append_event,
     verify_event_signature,
@@ -1096,116 +1095,78 @@ class ObservationalReplay:
 # ---------------------------------------------------------------------------
 
 
+def _validate_handler_coverage() -> None:
+    """Assert all EventTypes have registered handlers.
+
+    Called at construction time so misconfiguration is caught immediately,
+    not mid-run. Uses the public ``get_args(EventType)`` API.
+    """
+    valid_types: frozenset[str] = frozenset(get_args(EventType))
+    missing = valid_types - set(_HANDLER_REGISTRY)
+    if missing:
+        raise ReplayHandlerMissingError(
+            f"No replay handler registered for event type(s): {sorted(missing)}.  "
+            "Add a @_register('<type>') handler in nce/replay.py."
+        )
+
+
+async def _dispatch_and_apply_event(
+    write_conn: asyncpg.Connection,
+    *,
+    src: _EventRow,
+    target_namespace_id: uuid.UUID,
+    llm_payload: dict | None,
+    config_overrides: dict | None,
+    run_id: uuid.UUID,
+    source_namespace_id: uuid.UUID,
+    fork_uri: str | None = None,
+    fork_hash: bytes | None = None,
+) -> tuple[dict, Any]:
+    """Apply one event inside a write transaction: dispatch -> append_event."""
+    handler = _HANDLER_REGISTRY.get(src.event_type)
+    if handler is None:
+        log.warning("No handler for event_type=%s; writing provenance only", src.event_type)
+        result_summary = {"skipped": True, "reason": "no_handler"}
+    else:
+        result_summary = await handler(
+            write_conn,
+            src,
+            target_namespace_id,
+            llm_payload,
+            config_overrides,
+        )
+
+    enriched_params: dict = {
+        **src.params,
+        "replay_run_id": str(run_id),
+        "source_event_id": str(src.event_id),
+        "source_namespace_id": str(source_namespace_id),
+    }
+
+    fork_event = await append_event(
+        conn=write_conn,
+        namespace_id=target_namespace_id,
+        agent_id=src.agent_id,
+        event_type=src.event_type,
+        params=enriched_params,
+        result_summary=result_summary,
+        parent_event_id=src.event_id,
+        llm_payload_uri=fork_uri,
+        llm_payload_hash=fork_hash,
+    )
+
+    return result_summary, fork_event
+
+
 class ForkedReplay:
     """
-    Replay source events into an isolated target namespace, generating fresh
-    HMAC signatures that represent alternate causal provenance.
-
-    For each source event the loop:
-    1. Resolves the LLM payload (deterministic → MinIO cache; re-execute → fresh call).
-    2. Opens a Saga transaction on the target pool.
-    3. Calls the registered handler to apply the event's state change.
-    4. Calls ``append_event(parent_event_id=source_event.event_id)`` inside the
-       same transaction, which computes a new HMAC-SHA256 over the fork's own
-       (namespace_id, event_seq, occurred_at, parent_event_id) fields.
-    5. Commits.
-
-    Yielded items
-    ─────────────
-    * ``{"type": "applied",  "event_seq": N, "event_type": "...", ...}``
-    * ``{"type": "skipped",  "event_seq": N, "event_type": "...", "reason": "..."}``
-    * ``{"type": "progress", "run_id": ..., "events_applied": N}``
-    * ``{"type": "complete", "run_id": ..., "events_applied": N}``
-    * ``{"type": "error",    "run_id": ..., "message": "..."}``  (on failure)
-
-    Idempotency
-    ───────────
-    The loop queries ``replay_runs`` for the highest ``event_seq`` already
-    applied and resumes from the next event.  Re-running after an abort
-    produces no duplicate effects.
+    Spawns a target namespace from a historical ``fork_seq``, re-evaluating
+    agent actions.
     """
-
-    @staticmethod
-    async def _apply_single_event(
-        write_conn,
-        src,
-        target_namespace_id,
-        llm_payload,
-        config_overrides,
-    ) -> dict:
-        """Dispatch a single source event to its registered handler.
-
-        Returns the ``result_summary`` dict from the handler, or a skip marker
-        if no handler is registered.
-        """
-        handler = _HANDLER_REGISTRY.get(src.event_type)
-        if handler is None:
-            log.warning("No handler for event_type=%s; writing provenance only", src.event_type)
-            return {"skipped": True, "reason": "no_handler"}
-        return await handler(write_conn, src, target_namespace_id, llm_payload, config_overrides)
-
-    async def _dispatch_and_apply(
-        self,
-        write_conn,
-        *,
-        src,
-        target_namespace_id,
-        llm_payload,
-        config_overrides,
-        run_id,
-        source_namespace_id,
-        fork_uri=None,
-        fork_hash=None,
-    ) -> tuple[dict, object]:
-        """Apply one event inside a write transaction: dispatch → append_event.
-
-        Returns (result_summary, fork_event).
-        """
-        result_summary = await self._apply_single_event(
-            write_conn, src, target_namespace_id, llm_payload, config_overrides
-        )
-
-        enriched_params: dict = {
-            **src.params,
-            "replay_run_id": str(run_id),
-            "source_event_id": str(src.event_id),
-            "source_namespace_id": str(source_namespace_id),
-        }
-
-        fork_event: AppendResult = await append_event(
-            conn=write_conn,
-            namespace_id=target_namespace_id,
-            agent_id=src.agent_id,
-            event_type=src.event_type,
-            params=enriched_params,
-            result_summary=result_summary,
-            parent_event_id=src.event_id,
-            llm_payload_uri=fork_uri,
-            llm_payload_hash=fork_hash,
-        )
-
-        return result_summary, fork_event
-
-    @staticmethod
-    def _validate_handler_coverage() -> None:
-        """
-        Assert that every allowed EventType has a registered handler.
-
-        Called at construction time so misconfiguration is caught immediately,
-        not mid-run.  Uses the public ``get_args(EventType)`` API instead of
-        duplicating the allowed-value frozenset so we stay on the public surface.
-        """
-        valid_types: frozenset[str] = frozenset(get_args(EventType))
-        missing = valid_types - set(_HANDLER_REGISTRY)
-        if missing:
-            raise ReplayHandlerMissingError(
-                f"No replay handler registered for event type(s): {sorted(missing)}.  "
-                "Add a @_register('<type>') handler in nce/replay.py."
-            )
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self.pool = pool
-        self._validate_handler_coverage()
+        _validate_handler_coverage()
 
     async def execute(
         self,
@@ -1333,7 +1294,7 @@ class ForkedReplay:
                 # -- Apply event in its own Saga transaction on a new conn --
                 async with self.pool.acquire(timeout=10.0) as write_conn:
                     async with write_conn.transaction():
-                        result_summary, fork_event = await self._dispatch_and_apply(
+                        result_summary, fork_event = await _dispatch_and_apply_event(
                             write_conn,
                             src=src,
                             target_namespace_id=target_namespace_id,
@@ -1432,20 +1393,9 @@ class ReconstructiveReplay:
     — each handler is responsible for its own deterministic remapping.
     """
 
-    @staticmethod
-    def _validate_handler_coverage() -> None:
-        """Assert all EventTypes have registered handlers (shared with ForkedReplay)."""
-        valid_types: frozenset[str] = frozenset(get_args(EventType))
-        missing = valid_types - set(_HANDLER_REGISTRY)
-        if missing:
-            raise ReplayHandlerMissingError(
-                f"No replay handler registered for event type(s): {sorted(missing)}.  "
-                "Add a @_register('<type>') handler in nce/replay.py."
-            )
-
     def __init__(self, pool: asyncpg.Pool) -> None:
         self.pool = pool
-        self._validate_handler_coverage()
+        _validate_handler_coverage()
 
     async def execute(
         self,
@@ -1548,36 +1498,14 @@ class ReconstructiveReplay:
                         # Apply event in its own Saga transaction
                         async with self.pool.acquire(timeout=10.0) as write_conn:
                             async with write_conn.transaction():
-                                handler = _HANDLER_REGISTRY.get(src.event_type)
-                                if handler is None:
-                                    result_summary: dict = {
-                                        "skipped": True,
-                                        "reason": "no_handler",
-                                    }
-                                else:
-                                    result_summary = await handler(  # type: ignore[call-arg]
-                                        write_conn,
-                                        src,
-                                        target_namespace_id,
-                                        llm_payload=None,
-                                        config_overrides=None,
-                                    )
-
-                                enriched_params: dict = {
-                                    **src.params,
-                                    "replay_run_id": str(run_id),
-                                    "source_event_id": str(src.event_id),
-                                    "source_namespace_id": str(source_namespace_id),
-                                }
-
-                                await append_event(
-                                    conn=write_conn,
-                                    namespace_id=target_namespace_id,
-                                    agent_id=src.agent_id,
-                                    event_type=src.event_type,
-                                    params=enriched_params,
-                                    result_summary=result_summary,
-                                    parent_event_id=src.event_id,
+                                result_summary, fork_event = await _dispatch_and_apply_event(
+                                    write_conn,
+                                    src=src,
+                                    target_namespace_id=target_namespace_id,
+                                    llm_payload=None,
+                                    config_overrides=None,
+                                    run_id=run_id,
+                                    source_namespace_id=source_namespace_id,
                                 )
 
                         events_applied += 1

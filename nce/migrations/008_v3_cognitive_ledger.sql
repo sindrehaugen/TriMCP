@@ -13,7 +13,7 @@
 CREATE TABLE IF NOT EXISTS v3_cognitive_ledger (
     id               UUID        DEFAULT gen_random_uuid() PRIMARY KEY,
     namespace_id     UUID        NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
-    memory_id        UUID        REFERENCES memories(id) ON DELETE SET NULL,
+    memory_id        UUID,
     empathic_tensor  vector(6)   NOT NULL,
     tlx_scores       JSONB,
     vad_scores       JSONB,
@@ -41,6 +41,7 @@ CREATE INDEX IF NOT EXISTS v3_cognitive_ledger_created_at
 
 -- Row-Level Security: each tenant sees only its own empathic vectors.
 ALTER TABLE v3_cognitive_ledger ENABLE ROW LEVEL SECURITY;
+ALTER TABLE v3_cognitive_ledger FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant_isolation ON v3_cognitive_ledger
     FOR ALL

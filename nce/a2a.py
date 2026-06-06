@@ -23,7 +23,7 @@ try:
     from cryptography import x509 as crypto_x509
 
     _CRYPTOGRAPHY_AVAILABLE = True
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     _CRYPTOGRAPHY_AVAILABLE = False
 
 import asyncpg

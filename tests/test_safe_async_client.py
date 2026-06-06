@@ -8,7 +8,6 @@ from typing import Any
 
 import httpx
 import pytest
-
 from nce._http_utils import SafeAsyncClient, UnsafeURLError, _resolve_safe_ip
 
 
@@ -56,8 +55,19 @@ class TestSafeAsyncClient:
             assert not isinstance(excinfo.value, UnsafeURLError)
 
     @pytest.mark.asyncio
-    async def test_allows_unresolvable_host(self):
+    async def test_allows_unresolvable_host(self, monkeypatch: pytest.MonkeyPatch):
         """Unresolvable hosts pass the guard and fail at connection time."""
+        import socket
+
+        _real_getaddrinfo = socket.getaddrinfo
+
+        def _mock_getaddrinfo(host, port, *args, **kwargs):
+            if host == "this-host-definitely-does-not-exist.invalid":
+                raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+            return _real_getaddrinfo(host, port, *args, **kwargs)
+
+        monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo)
+
         async with SafeAsyncClient() as client:
             with pytest.raises(Exception) as excinfo:
                 await client.get("https://this-host-definitely-does-not-exist.invalid/")

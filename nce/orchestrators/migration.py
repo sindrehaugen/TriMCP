@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 from uuid import UUID
 
 import asyncpg
+
+from nce.orchestrators._base import OrchestratorBase
+from nce.orchestrators._utils import _validate_path
 
 log = logging.getLogger("nce-orchestrator.migration")
 
@@ -21,7 +23,7 @@ VALID_TRANSITIONS: dict[str, list[str]] = {
 }
 
 
-class MigrationOrchestrator:
+class MigrationOrchestrator(OrchestratorBase):
     """Domain orchestrator for embedding migrations and code indexing."""
 
     def __init__(
@@ -30,30 +32,12 @@ class MigrationOrchestrator:
         redis_client,
         redis_sync_client,
     ):
-        self.pg_pool = pg_pool
-        self.redis_client = redis_client
+        super().__init__(pg_pool, redis_client=redis_client)
         self.redis_sync_client = redis_sync_client
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    def _ensure_uuid(self, val: str | UUID | None) -> UUID | None:
-        if val is None:
-            return None
-        if isinstance(val, UUID):
-            return val
-        return UUID(str(val))
-
-    def _validate_path(self, filepath: str) -> None:
-        """Validate filepath is within allowed directory using pathlib."""
-        try:
-            resolved = Path(filepath).resolve()
-        except Exception:
-            raise ValueError(f"Invalid filepath: {filepath}")
-        cwd = Path.cwd().resolve()
-        if not resolved.is_relative_to(cwd):
-            raise ValueError(f"Path traversal detected: {filepath}")
 
     def _redis_cache_key(
         self, namespace_id: str | UUID | None, user_id: str | None, filepath: str
@@ -75,15 +59,17 @@ class MigrationOrchestrator:
           - ``> 0`` → ``high_priority`` (user-facing API extractions)
           - ``0``  → ``batch_processing`` (bulk / webhook indexing)
         """
-        self._validate_path(payload.filepath)
+        _validate_path(payload.filepath)
 
         import hashlib
 
-        MAX_CODE_SIZE = 1_000_000  # 1 MB
+        from nce.config import cfg
 
-        if len(payload.raw_code) > MAX_CODE_SIZE:
+        max_size = cfg.NCE_MAX_CODE_INDEX_BYTES
+
+        if len(payload.raw_code) > max_size:
             raise ValueError(
-                f"Code payload too large: {len(payload.raw_code)} bytes (max {MAX_CODE_SIZE})"
+                f"Code payload too large: {len(payload.raw_code)} bytes (max {max_size})"
             )
 
         file_hash = hashlib.sha256(payload.raw_code.encode()).hexdigest()
@@ -158,10 +144,10 @@ class MigrationOrchestrator:
     # Embedding migration lifecycle
     # ------------------------------------------------------------------
 
-    async def start_migration(self, target_model_id: str) -> dict | None:
+    async def start_migration(self, target_model_id: str) -> dict:
         """Atomically create a new migration only if none is currently running.
 
-        Returns dict with migration_id, or None if a migration is already active.
+        Returns dict with migration_id, or a conflict dict if a migration is already active.
         This is a single SQL statement — no TOCTOU race.
         """
         target_model_id = str(self._ensure_uuid(target_model_id))
@@ -193,7 +179,7 @@ class MigrationOrchestrator:
                 )
 
                 if not mig_id:
-                    return None
+                    return {"status": "conflict", "reason": "already_active"}
 
                 await conn.execute(
                     "UPDATE embedding_models SET status = 'migrating' WHERE id = $1::uuid",
@@ -277,8 +263,12 @@ class MigrationOrchestrator:
                     "SELECT status, target_model_id FROM embedding_migrations WHERE id = $1::uuid",
                     migration_id,
                 )
-                if not row or row["status"] != "validating":
-                    raise ValueError("Migration not ready to commit")
+                if not row:
+                    raise ValueError("Migration not found")
+
+                current_status = row["status"]
+                if "committed" not in VALID_TRANSITIONS.get(current_status, []):
+                    raise ValueError(f"Migration not ready to commit: state is '{current_status}'")
 
                 target_model_id = row["target_model_id"]
 

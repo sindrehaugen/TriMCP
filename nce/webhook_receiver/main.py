@@ -299,7 +299,7 @@ async def graph_webhook(
         resource = notification.get("resource", "")
         if resource:
             try:
-                validate_webhook_payload_url(resource, field_name="resource")
+                await validate_webhook_payload_url(resource, field_name="resource")
             except BridgeURLValidationError as e:
                 raise HTTPException(
                     status_code=400,

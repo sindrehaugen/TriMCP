@@ -139,6 +139,8 @@ _KEY_ALGORITHM: str = "ML-DSA-44"  # FIPS 204 parameter set (128-bit classical s
 try:
     from cryptography.hazmat.primitives.asymmetric.mldsa import (
         MLDSA44PrivateKey as _MLDSA44PrivateKey,
+    )
+    from cryptography.hazmat.primitives.asymmetric.mldsa import (
         MLDSA44PublicKey as _MLDSA44PublicKey,
     )
 
@@ -159,8 +161,7 @@ def generate_mldsa_keypair() -> tuple[bytes, bytes]:
     """
     if not _HAS_MLDSA:
         raise RuntimeError(
-            "ML-DSA-44 requires cryptography>=44.0.0. "
-            "Run: pip install --upgrade cryptography"
+            "ML-DSA-44 requires cryptography>=44.0.0. Run: pip install --upgrade cryptography"
         )
     private_key = _MLDSA44PrivateKey.generate()
     seed_bytes = private_key.private_bytes_raw()
@@ -963,6 +964,30 @@ def verify_fields(
     """
     computed = sign_fields(fields, raw_signing_key)
     return hmac.compare_digest(computed, expected_signature)
+
+
+def sign_audit_log_entry(
+    entry_id: uuid.UUID,
+    event_type: str,
+    namespace_id: uuid.UUID,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    """
+    Sign an audit log entry.
+
+    Serializes using canonical JCS serialization and signs via HMAC-SHA256
+    derived from the environment master key. Returns a hex-encoded string.
+    """
+    payload = {
+        "entry_id": str(entry_id),
+        "event_type": event_type,
+        "namespace_id": str(namespace_id),
+        "metadata": metadata or {},
+    }
+    canonical_bytes = canonical_json(payload)
+    with require_master_key() as master_key:
+        sig = hmac.new(bytes(master_key.key_bytes), canonical_bytes, hashlib.sha256).hexdigest()
+    return sig
 
 
 async def admin_signing_keys_status(conn: asyncpg.Connection) -> dict[str, Any]:

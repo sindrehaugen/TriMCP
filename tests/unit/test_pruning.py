@@ -49,30 +49,29 @@ from nce.database.pruning import (
 
 # Index constants — document the exact call-order contract
 _IDX_SOFT_DELETE_MEMORIES = 0
-_IDX_SOFT_DELETE_EVENT_LOG = 1
-_IDX_SOFT_DELETE_V3_LEDGER = 2
-_IDX_SOFT_DELETE_TOPOLOGY = 3
-_IDX_VECTOR_EMBEDDING = 4
-_IDX_VECTOR_TENSOR = 5
-_IDX_TEXT_VALUE = 6
-_IDX_TEXT_PII = 7
-_IDX_TEXT_MARKDOWN = 8
-_IDX_TEXT_SECRET = 9
-_IDX_TEXT_PAYLOAD = 10
-_IDX_AUDIT_INSERT = 11
-_TOTAL_EXECUTE_CALLS = 12
+_IDX_SOFT_DELETE_V3_LEDGER = 1
+_IDX_SOFT_DELETE_TOPOLOGY = 2
+_IDX_VECTOR_EMBEDDING = 3
+_IDX_VECTOR_TENSOR = 4
+_IDX_TEXT_VALUE = 5
+_IDX_TEXT_PII = 6
+_IDX_TEXT_MARKDOWN = 7
+_IDX_TEXT_SECRET = 8
+_IDX_TEXT_PAYLOAD = 9
+_IDX_AUDIT_INSERT = 10
+_TOTAL_EXECUTE_CALLS = 11
 
 
 def _make_side_effect(
     *,
-    soft_deletes: tuple[int, int, int, int] = (0, 0, 0, 0),
+    soft_deletes: tuple[int, int, int] = (0, 0, 0),
     vectors: tuple[int, int] = (0, 0),
     texts: tuple[int, int, int, int, int] = (0, 0, 0, 0, 0),
 ) -> list[str]:
-    """Build a full 12-element execute side_effect list.
+    """Build a full 11-element execute side_effect list.
 
     Args:
-        soft_deletes: Row counts for (memories, event_log, v3_cognitive_ledger, topology_graph).
+        soft_deletes: Row counts for (memories, v3_cognitive_ledger, topology_graph).
         vectors:      Row counts for (memories.embedding, v3_cognitive_ledger.empathic_tensor).
         texts:        Row counts for (memories.value, memories.raw_pii_content,
                       memories.raw_markdown, event_log.plaintext_secret, event_log.raw_payload).
@@ -114,14 +113,14 @@ def _make_mock_pool_and_connection():
 
     pool = MagicMock()
 
-    async def _acquire():
-        return conn
+    class _MockAcquireContext:
+        async def __aenter__(self):
+            return conn
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
 
-    async def _release(_c):
-        pass
-
-    pool.acquire = _acquire
-    pool.release = _release
+    pool.acquire = MagicMock(return_value=_MockAcquireContext())
+    pool.release = AsyncMock()
     return pool, conn
 
 
@@ -197,9 +196,9 @@ class TestDryRunSentinel:
     async def test_dry_run_captures_in_memory_counts(self, namespace_id):
         """In-memory row counts must be captured even though DB is rolled back."""
         pool, conn = _make_mock_pool_and_connection()
-        conn.execute.side_effect = _make_side_effect(soft_deletes=(5, 3, 2, 1))
+        conn.execute.side_effect = _make_side_effect(soft_deletes=(5, 4, 2))
         result = await cascade_delete_tenant(pool, namespace_id, dry_run=True)
-        assert result.soft_deleted_rows == 11  # 5+3+2+1
+        assert result.soft_deleted_rows == 11  # 5+4+2
 
     @pytest.mark.asyncio
     async def test_wet_run_does_not_raise(self, namespace_id):
@@ -231,18 +230,18 @@ class TestSoftDeletion:
         assert "valid_to IS NULL" in first_call_sql
 
     @pytest.mark.asyncio
-    async def test_soft_delete_all_four_tables(self, namespace_id):
-        """Phase 1 must UPDATE all four soft-delete tables."""
+    async def test_soft_delete_all_three_tables(self, namespace_id):
+        """Phase 1 must UPDATE all three soft-delete tables."""
         pool, conn = _make_mock_pool_and_connection()
-        conn.execute.side_effect = _make_side_effect(soft_deletes=(5, 3, 2, 1))
+        conn.execute.side_effect = _make_side_effect(soft_deletes=(5, 4, 2))
         result = await cascade_delete_tenant(pool, namespace_id)
         assert result.soft_deleted_rows == 11
 
     @pytest.mark.asyncio
     async def test_soft_delete_counts_sum_correctly(self, namespace_id):
-        """soft_deleted_rows in PruneResult is sum of all four UPDATE results."""
+        """soft_deleted_rows in PruneResult is sum of all three UPDATE results."""
         pool, conn = _make_mock_pool_and_connection()
-        conn.execute.side_effect = _make_side_effect(soft_deletes=(10, 0, 0, 0))
+        conn.execute.side_effect = _make_side_effect(soft_deletes=(10, 0, 0))
         result = await cascade_delete_tenant(pool, namespace_id)
         assert result.soft_deleted_rows == 10
 
@@ -400,7 +399,7 @@ class TestAuditLog:
     async def test_audit_log_receives_metadata_with_counts(self, namespace_id):
         """audit_log INSERT args must include a metadata dict with row counts."""
         pool, conn = _make_mock_pool_and_connection()
-        conn.execute.side_effect = _make_side_effect(soft_deletes=(4, 0, 0, 0))
+        conn.execute.side_effect = _make_side_effect(soft_deletes=(4, 0, 0))
         await cascade_delete_tenant(pool, namespace_id)
         audit_call_args = conn.execute.call_args_list[_IDX_AUDIT_INSERT][0]
         # arg[4] is the metadata JSONB dict

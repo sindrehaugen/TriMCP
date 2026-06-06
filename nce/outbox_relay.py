@@ -249,16 +249,38 @@ async def run_outbox_relay_once(
                         ).inc()
                     except Exception:
                         pass
-                    await mark_failed(conn, event["id"], error_message)
-                    prior_attempts = int(event["attempt_count"])
-                    await move_to_dead_letter_if_exhausted(conn, event, error_message)
-                    if prior_attempts + 1 >= MAX_OUTBOX_ATTEMPTS:
+                    if isinstance(exc, OutboxDeliveryError):
+                        await conn.execute(
+                            """
+                            UPDATE outbox_events
+                            SET attempt_count = $1,
+                                error_message = left($2, 2048)
+                            WHERE id = $3
+                            """,
+                            MAX_OUTBOX_ATTEMPTS,
+                            error_message,
+                            event["id"],
+                        )
+                        event_copy = dict(event)
+                        event_copy["attempt_count"] = MAX_OUTBOX_ATTEMPTS - 1
+                        await move_to_dead_letter_if_exhausted(conn, event_copy, error_message)
                         try:
                             from nce.observability import OUTBOX_DLQ_TOTAL
 
                             OUTBOX_DLQ_TOTAL.labels(event_type=str(event["event_type"])).inc()
                         except Exception:
                             pass
+                    else:
+                        await mark_failed(conn, event["id"], error_message)
+                        prior_attempts = int(event["attempt_count"])
+                        await move_to_dead_letter_if_exhausted(conn, event, error_message)
+                        if prior_attempts + 1 >= MAX_OUTBOX_ATTEMPTS:
+                            try:
+                                from nce.observability import OUTBOX_DLQ_TOTAL
+
+                                OUTBOX_DLQ_TOTAL.labels(event_type=str(event["event_type"])).inc()
+                            except Exception:
+                                pass
                     continue
 
                 await mark_published(conn, event["id"])

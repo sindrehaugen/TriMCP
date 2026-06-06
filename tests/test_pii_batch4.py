@@ -6,7 +6,6 @@ import builtins
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from nce.models import NamespacePIIConfig, PIIEntity, PIIPolicy
 from nce.pii import _luhn_valid, _merge_overlapping_entities, _scan_sync, process
 
@@ -125,3 +124,66 @@ async def test_process_many_entities_redacts_correctly():
     assert out.sanitized_text == _naive_redact(text, entities)
     for addr in emails:
         assert addr not in out.sanitized_text
+
+
+@pytest.mark.asyncio
+async def test_norwegian_locale_fodselsnummer_redacted():
+    cfg = NamespacePIIConfig(
+        entity_types=["NO_FODSELSNUMMER"],
+        policy=PIIPolicy.redact,
+        locale="no",
+    )
+    text = "My birth number is 12129012348."
+    # With locale="no", it should be detected and redacted
+    result = await process(text, cfg)
+    assert "12129012348" not in result.sanitized_text
+    assert "<NO_FODSELSNUMMER>" in result.sanitized_text
+
+    # With locale="en" or default, it should NOT be detected
+    cfg_en = NamespacePIIConfig(
+        entity_types=["NO_FODSELSNUMMER"],
+        policy=PIIPolicy.redact,
+        locale="en",
+    )
+    result_en = await process(text, cfg_en)
+    assert "12129012348" in result_en.sanitized_text
+
+
+@pytest.mark.asyncio
+async def test_norwegian_locale_invalid_fodselsnummer_not_redacted():
+    cfg = NamespacePIIConfig(
+        entity_types=["NO_FODSELSNUMMER"],
+        policy=PIIPolicy.redact,
+        locale="no",
+    )
+    text = "My birth number is 12129012347."  # invalid check digits
+    result = await process(text, cfg)
+    assert "12129012347" in result.sanitized_text
+    assert "<NO_FODSELSNUMMER>" not in result.sanitized_text
+
+
+@pytest.mark.asyncio
+async def test_norwegian_locale_org_number_redacted():
+    cfg = NamespacePIIConfig(
+        entity_types=["NO_ORG_NUMBER"],
+        policy=PIIPolicy.redact,
+        locale="no",
+    )
+    text = "Our organization number is 999999999."
+    result = await process(text, cfg)
+    assert "999999999" not in result.sanitized_text
+    assert "<NO_ORG_NUMBER>" in result.sanitized_text
+
+
+@pytest.mark.asyncio
+async def test_norwegian_locale_mobile_number_redacted():
+    cfg = NamespacePIIConfig(
+        entity_types=["NO_PHONE_MOBILE"],
+        policy=PIIPolicy.redact,
+        locale="no",
+    )
+    text = "Call me at +4798765432 or 49123456."
+    result = await process(text, cfg)
+    assert "+4798765432" not in result.sanitized_text
+    assert "49123456" not in result.sanitized_text
+    assert "<NO_PHONE_MOBILE>" in result.sanitized_text

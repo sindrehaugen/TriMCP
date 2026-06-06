@@ -50,6 +50,20 @@ def _get_job_id() -> str:
 
 
 _redis_client: Redis | None = None
+_engine: NCEEngine | None = None
+_engine_lock = asyncio.Lock()
+
+
+async def _get_engine() -> NCEEngine:
+    """Get or connect the thread-safe worker NCEEngine singleton."""
+    global _engine
+    if _engine is None:
+        async with _engine_lock:
+            if _engine is None:
+                engine = NCEEngine()
+                await engine.connect()
+                _engine = engine
+    return _engine
 
 
 def _get_redis() -> Redis:
@@ -158,15 +172,13 @@ def process_code_indexing(
         job_id,
     )
 
-    engine = NCEEngine()
-
     async def _index():
-        await engine.connect()
+        engine = await _get_engine()
         inserted_mongo_id = None
         db = engine.mongo_client.memory_archive
         collection = db.code_files
         try:
-            file_hash = hashlib.md5(raw_code.encode()).hexdigest()
+            file_hash = hashlib.sha256(raw_code.encode()).hexdigest()
 
             # STEP 1: Episodic Commit (MongoDB)
             doc: dict = {
@@ -280,8 +292,6 @@ def process_code_indexing(
                     "_dlq_attempt": attempt_count,
                 }
             raise  # retry — let RQ re-enqueue
-        finally:
-            await engine.disconnect()
 
     result = run_async(_index())
 
@@ -289,6 +299,7 @@ def process_code_indexing(
     # in a SEPARATE event loop to avoid nesting (run_async creates a new loop).
     if isinstance(result, dict) and result.get("status") == "dead_lettered":
         try:
+            pool = _engine.pg_pool if _engine else None
             run_async(
                 _store_dlq_async(
                     task_name="process_code_indexing",
@@ -296,7 +307,7 @@ def process_code_indexing(
                     kwargs=result["_dlq_kwargs"],
                     error_msg=result["_dlq_error_msg"],
                     attempt=result["_dlq_attempt"],
-                    pg_pool=None,  # engine already disconnected; use short-lived pool
+                    pg_pool=pool,
                 )
             )
         except Exception as dlq_exc:
@@ -333,7 +344,7 @@ def process_bridge_event(provider: str, payload: dict) -> dict:
     )
 
     try:
-        result = dispatch_bridge_event(provider, payload)
+        result = run_async(dispatch_bridge_event(provider, payload))
         # Success — clear attempt counter
         _clear_attempt(redis_client, job_id)
         return result

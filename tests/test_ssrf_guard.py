@@ -186,86 +186,87 @@ class TestValidateBaseUrlAsync:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
 class TestValidateWebhookPayloadUrl:
     """``validate_webhook_payload_url()`` — SSRF guard for incoming webhook payloads."""
 
     # --- Relative resource paths — accept known-safe Graph prefixes ---
 
-    def test_accepts_sites_resource_path(self):
+    async def test_accepts_sites_resource_path(self):
         assert (
-            validate_webhook_payload_url("/sites/abc-123/drives/def-456/root")
+            await validate_webhook_payload_url("/sites/abc-123/drives/def-456/root")
             == "/sites/abc-123/drives/def-456/root"
         )
 
-    def test_accepts_users_resource_path(self):
+    async def test_accepts_users_resource_path(self):
         assert (
-            validate_webhook_payload_url("/users/user@tenant/drive/root")
+            await validate_webhook_payload_url("/users/user@tenant/drive/root")
             == "/users/user@tenant/drive/root"
         )
 
-    def test_accepts_drives_resource_path(self):
+    async def test_accepts_drives_resource_path(self):
         assert (
-            validate_webhook_payload_url("/drives/drive-id/root/delta")
+            await validate_webhook_payload_url("/drives/drive-id/root/delta")
             == "/drives/drive-id/root/delta"
         )
 
-    def test_accepts_groups_resource_path(self):
+    async def test_accepts_groups_resource_path(self):
         assert (
-            validate_webhook_payload_url("/groups/group-id/conversations")
+            await validate_webhook_payload_url("/groups/group-id/conversations")
             == "/groups/group-id/conversations"
         )
 
-    def test_accepts_me_resource_path(self):
-        assert validate_webhook_payload_url("/me/drive/root") == "/me/drive/root"
+    async def test_accepts_me_resource_path(self):
+        assert await validate_webhook_payload_url("/me/drive/root") == "/me/drive/root"
 
-    def test_rejects_arbitrary_resource_path(self):
+    async def test_rejects_arbitrary_resource_path(self):
         with pytest.raises(BridgeURLValidationError, match="does not match"):
-            validate_webhook_payload_url("/internal/admin/panel")
+            await validate_webhook_payload_url("/internal/admin/panel")
 
-    def test_rejects_path_traversal_resource(self):
+    async def test_rejects_path_traversal_resource(self):
         with pytest.raises(BridgeURLValidationError, match="does not match"):
-            validate_webhook_payload_url("/../../internal/admin")
+            await validate_webhook_payload_url("/../../internal/admin")
 
     # --- Fully-qualified URLs — enforce HTTPS and SSRF IP checks ---
 
-    def test_accepts_public_graph_url(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_accepts_public_graph_url(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141"))
-        result = validate_webhook_payload_url(
+        result = await validate_webhook_payload_url(
             "https://graph.microsoft.com/v1.0/sites/abc/drives/def/root"
         )
         assert result.startswith("https://graph.microsoft.com/")
 
-    def test_accepts_googleapis_url(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_accepts_googleapis_url(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("142.250.80.4"))
-        result = validate_webhook_payload_url("https://www.googleapis.com/drive/v3/changes")
+        result = await validate_webhook_payload_url("https://www.googleapis.com/drive/v3/changes")
         assert result.startswith("https://www.googleapis.com/")
 
-    def test_rejects_http_scheme(self):
+    async def test_rejects_http_scheme(self):
         with pytest.raises(BridgeURLValidationError, match="only https"):
-            validate_webhook_payload_url("http://evil.internal/admin")
+            await validate_webhook_payload_url("http://evil.internal/admin")
 
-    def test_rejects_private_ip_url(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_rejects_private_ip_url(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("10.0.0.1"))
         with pytest.raises(BridgeURLValidationError, match="non-public"):
-            validate_webhook_payload_url("https://internal.secret/admin")
+            await validate_webhook_payload_url("https://internal.secret/admin")
 
-    def test_rejects_loopback_url(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_rejects_loopback_url(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("127.0.0.1"))
         with pytest.raises(BridgeURLValidationError, match="non-public"):
-            validate_webhook_payload_url("https://localhost:8000/admin")
+            await validate_webhook_payload_url("https://localhost:8000/admin")
 
-    def test_rejects_unknown_url_prefix(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_rejects_unknown_url_prefix(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
         with pytest.raises(BridgeURLValidationError, match="not within allowed prefixes"):
-            validate_webhook_payload_url("https://evil.example.com/hack")
+            await validate_webhook_payload_url("https://evil.example.com/hack")
 
-    def test_rejects_empty_url(self):
+    async def test_rejects_empty_url(self):
         with pytest.raises(BridgeURLValidationError, match="empty URL"):
-            validate_webhook_payload_url("")
+            await validate_webhook_payload_url("")
 
-    def test_rejects_blank_url(self):
+    async def test_rejects_blank_url(self):
         with pytest.raises(BridgeURLValidationError, match="empty URL"):
-            validate_webhook_payload_url("   ")
+            await validate_webhook_payload_url("   ")
 
 
 # ---------------------------------------------------------------------------
@@ -273,39 +274,40 @@ class TestValidateWebhookPayloadUrl:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio
 class TestValidateExtractorUrl:
     """``validate_extractor_url()`` — SSRF guard for diagram API extractors."""
 
     # --- Happy path: public HTTPS URLs ---
 
-    def test_accepts_miro_base_url(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_accepts_miro_base_url(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("13.66.15.141"))
-        result = validate_extractor_url("https://api.miro.com/v2")
+        result = await validate_extractor_url("https://api.miro.com/v2")
         assert result == "https://api.miro.com/v2"
 
-    def test_accepts_lucid_base_url(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_accepts_lucid_base_url(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("52.32.1.10"))
-        result = validate_extractor_url("https://api.lucid.co")
+        result = await validate_extractor_url("https://api.lucid.co")
         assert result == "https://api.lucid.co"
 
-    def test_accepts_generic_public_https_url(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_accepts_generic_public_https_url(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("1.2.3.4"))
-        result = validate_extractor_url("https://public-api.example.com/v1")
+        result = await validate_extractor_url("https://public-api.example.com/v1")
         assert result == "https://public-api.example.com/v1"
 
     # --- Scheme enforcement ---
 
-    def test_rejects_http_scheme(self):
+    async def test_rejects_http_scheme(self):
         with pytest.raises(BridgeURLValidationError, match="only https"):
-            validate_extractor_url("http://api.miro.com/v2")
+            await validate_extractor_url("http://api.miro.com/v2")
 
-    def test_rejects_ftp_scheme(self):
+    async def test_rejects_ftp_scheme(self):
         with pytest.raises(BridgeURLValidationError, match="only https"):
-            validate_extractor_url("ftp://files.internal/export")
+            await validate_extractor_url("ftp://files.internal/export")
 
-    def test_rejects_no_scheme(self):
+    async def test_rejects_no_scheme(self):
         with pytest.raises(BridgeURLValidationError, match="only https"):
-            validate_extractor_url("api.miro.com/v2")
+            await validate_extractor_url("api.miro.com/v2")
 
     # --- Private IPv4 ranges ---
 
@@ -320,14 +322,14 @@ class TestValidateExtractorUrl:
             ("https://192.168.255.255/api", "192.168.x upper"),
         ],
     )
-    def test_rejects_private_ipv4(self, url: str, label: str, monkeypatch: pytest.MonkeyPatch):
+    async def test_rejects_private_ipv4(self, url: str, label: str, monkeypatch: pytest.MonkeyPatch):
         """All RFC 1918 private IPv4 ranges are blocked."""
         from urllib.parse import urlparse
 
         host = urlparse(url).hostname or ""
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo(host))
         with pytest.raises(BridgeURLValidationError, match="non-public"):
-            validate_extractor_url(url)
+            await validate_extractor_url(url)
 
     # --- Loopback ---
 
@@ -339,34 +341,34 @@ class TestValidateExtractorUrl:
             ("https://[::1]:8000/api", "::1"),
         ],
     )
-    def test_rejects_loopback(self, url: str, ip: str, monkeypatch: pytest.MonkeyPatch):
+    async def test_rejects_loopback(self, url: str, ip: str, monkeypatch: pytest.MonkeyPatch):
         """All loopback addresses are blocked."""
         family = socket.AF_INET6 if ":" in ip else socket.AF_INET
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo(ip, family))
         with pytest.raises(BridgeURLValidationError, match="non-public"):
-            validate_extractor_url(url)
+            await validate_extractor_url(url)
 
     # --- Link-local ---
 
-    def test_rejects_link_local(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_rejects_link_local(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("169.254.169.254"))
         with pytest.raises(BridgeURLValidationError, match="non-public"):
-            validate_extractor_url("https://169.254.169.254/latest/meta-data")
+            await validate_extractor_url("https://169.254.169.254/latest/meta-data")
 
     # --- AWS / cloud metadata ---
 
-    def test_rejects_aws_metadata_hostname(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_rejects_aws_metadata_hostname(self, monkeypatch: pytest.MonkeyPatch):
         """Block resolution even if hostname is not a literal IP."""
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("169.254.169.254"))
         with pytest.raises(BridgeURLValidationError, match="non-public"):
-            validate_extractor_url("https://metadata.aws.internal/latest/meta-data")
+            await validate_extractor_url("https://metadata.aws.internal/latest/meta-data")
 
     # --- Private IPv6 ---
 
-    def test_rejects_private_ipv6(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_rejects_private_ipv6(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("fd00::1", socket.AF_INET6))
         with pytest.raises(BridgeURLValidationError, match="non-public"):
-            validate_extractor_url("https://[fd00::1]/api")
+            await validate_extractor_url("https://[fd00::1]/api")
 
     @pytest.mark.parametrize(
         "ip_literal",
@@ -378,23 +380,23 @@ class TestValidateExtractorUrl:
             "100::42",
         ],
     )
-    def test_rejects_explicit_ipv6_ssrf_subnets(
+    async def test_rejects_explicit_ipv6_ssrf_subnets(
         self, ip_literal: str, monkeypatch: pytest.MonkeyPatch
     ):
         """ULA, link-local, site-local, documentation, discard prefixes (CIDR denylist)."""
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo(ip_literal, socket.AF_INET6))
         with pytest.raises(BridgeURLValidationError, match="non-public"):
-            validate_extractor_url(f"https://[{ip_literal}]/api")
+            await validate_extractor_url(f"https://[{ip_literal}]/api")
 
-    def test_rejects_ipv6_zone_id_sockaddr(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_rejects_ipv6_zone_id_sockaddr(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
             "socket.getaddrinfo",
             _mock_getaddrinfo("fe80::1%eth0", socket.AF_INET6),
         )
         with pytest.raises(BridgeURLValidationError, match="non-public"):
-            validate_extractor_url("https://internal.example/api")
+            await validate_extractor_url("https://internal.example/api")
 
-    def test_accepts_public_ipv6_bracket_sockaddr(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_accepts_public_ipv6_bracket_sockaddr(self, monkeypatch: pytest.MonkeyPatch):
         """Bracket-wrapped IPv6 in sockaddr is normalized and can be non-public-checked."""
 
         def mock_getaddrinfo(
@@ -416,39 +418,39 @@ class TestValidateExtractorUrl:
             ]
 
         monkeypatch.setattr("socket.getaddrinfo", mock_getaddrinfo)
-        result = validate_extractor_url("https://one.one.one.one/api")
+        result = await validate_extractor_url("https://one.one.one.one/api")
         assert result.startswith("https://")
 
     # --- Multicast ---
 
-    def test_rejects_multicast(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_rejects_multicast(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("socket.getaddrinfo", _mock_getaddrinfo("224.0.0.1"))
         with pytest.raises(BridgeURLValidationError, match="non-public"):
-            validate_extractor_url("https://224.0.0.1/api")
+            await validate_extractor_url("https://224.0.0.1/api")
 
     # --- Invalid / empty URLs ---
 
-    def test_rejects_empty_url(self):
+    async def test_rejects_empty_url(self):
         with pytest.raises(BridgeURLValidationError, match="empty URL"):
-            validate_extractor_url("")
+            await validate_extractor_url("")
 
-    def test_rejects_blank_url(self):
+    async def test_rejects_blank_url(self):
         with pytest.raises(BridgeURLValidationError, match="empty URL"):
-            validate_extractor_url("   ")
+            await validate_extractor_url("   ")
 
-    def test_rejects_invalid_url(self):
+    async def test_rejects_invalid_url(self):
         with pytest.raises(BridgeURLValidationError, match="only https"):
-            validate_extractor_url("not-a-valid-url")
+            await validate_extractor_url("not-a-valid-url")
 
     # --- Unresolvable hostname ---
 
-    def test_rejects_unresolvable_hostname(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_rejects_unresolvable_hostname(self, monkeypatch: pytest.MonkeyPatch):
         def _fail_dns(*args: Any, **kwargs: Any) -> list:
             raise socket.gaierror("[Mock] Name or service not known")
 
         monkeypatch.setattr("socket.getaddrinfo", _fail_dns)
         with pytest.raises(BridgeURLValidationError, match="cannot resolve"):
-            validate_extractor_url("https://does-not-exist.invalid/api")
+            await validate_extractor_url("https://does-not-exist.invalid/api")
 
 
 # ---------------------------------------------------------------------------
