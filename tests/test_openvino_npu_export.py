@@ -13,8 +13,9 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from nce.openvino_npu_export import export_jina_to_openvino_npu
+
+pytestmark = pytest.mark.heavy
 
 _REVISION = "abc123def4567890abcdef1234567890abcdef12"
 

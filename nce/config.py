@@ -34,9 +34,9 @@ _NCE_PREFIX = "NCE_"
 _legacy_keys = [k for k in os.environ if k.startswith(_LEGACY_PREFIX)]
 if _legacy_keys:
     _mapping = "\n".join(
-        f"  {k}  →  {_NCE_PREFIX}{k[len(_LEGACY_PREFIX):]}" for k in sorted(_legacy_keys)
+        f"  {k}  →  {_NCE_PREFIX}{k[len(_LEGACY_PREFIX) :]}" for k in sorted(_legacy_keys)
     )
-    raise EnvironmentError(
+    raise OSError(
         "Legacy TRIMCP_* environment variables detected. "
         "Rename them to NCE_* before starting the server:\n" + _mapping
     )
@@ -236,33 +236,28 @@ class _Config:
     # Maximum blob size accepted by extract_bytes and store_media.
     # Oversized payloads are rejected before any I/O to prevent RQ worker OOM.
     NCE_MAX_ATTACHMENT_BYTES: int = int(
-        os.getenv("NCE_MAX_ATTACHMENT_BYTES", str(50 * 1024 * 1024))
-    )  # 50 MB default
+        os.getenv("NCE_MAX_ATTACHMENT_BYTES", str(20 * 1024 * 1024))
+    )  # 20 MB default
+
+    NCE_MAX_OCR_PAGES: int = _int_env("NCE_MAX_OCR_PAGES", 10, minimum=1)
 
     # --- MCP Sizing Limits ---
     NCE_MAX_ARGUMENTS_JSON_SIZE: int = _int_env(
         "NCE_MAX_ARGUMENTS_JSON_SIZE", 1_000_000, minimum=1024
     )
-    NCE_MAX_METADATA_KEYS: int = _int_env(
-        "NCE_MAX_METADATA_KEYS", 512, minimum=1
-    )
-    NCE_MAX_METADATA_KEY_LEN: int = _int_env(
-        "NCE_MAX_METADATA_KEY_LEN", 256, minimum=1
-    )
+    NCE_MAX_METADATA_KEYS: int = _int_env("NCE_MAX_METADATA_KEYS", 512, minimum=1)
+    NCE_MAX_METADATA_KEY_LEN: int = _int_env("NCE_MAX_METADATA_KEY_LEN", 256, minimum=1)
     NCE_MAX_METADATA_STRING_VALUE_LEN: int = _int_env(
         "NCE_MAX_METADATA_STRING_VALUE_LEN", 4096, minimum=1
     )
-    NCE_MAX_METADATA_LIST_ITEMS: int = _int_env(
-        "NCE_MAX_METADATA_LIST_ITEMS", 256, minimum=1
-    )
+    NCE_MAX_METADATA_LIST_ITEMS: int = _int_env("NCE_MAX_METADATA_LIST_ITEMS", 256, minimum=1)
+    NCE_MAX_CONCURRENT_TOOLS: int = _int_env("NCE_MAX_CONCURRENT_TOOLS", 16, minimum=1)
 
     # --- Temporal queries ---
     # Maximum lookback window for ``as_of`` temporal queries.  Prevents
     # unbounded historical searches that trigger full-table scans on
     # ``event_log``.  Set to 0 to disable the boundary (not recommended).
-    NCE_MAX_TEMPORAL_LOOKBACK_DAYS: int = int(
-        os.getenv("NCE_MAX_TEMPORAL_LOOKBACK_DAYS", "90")
-    )
+    NCE_MAX_TEMPORAL_LOOKBACK_DAYS: int = int(os.getenv("NCE_MAX_TEMPORAL_LOOKBACK_DAYS", "90"))
 
     # --- Code indexing limits ---
     # Max raw bytes allowed through index_code_file() before the file is skipped.
@@ -270,13 +265,11 @@ class _Config:
         "NCE_MAX_CODE_INDEX_BYTES", 2 * 1024 * 1024, minimum=1024
     )
     # Max AST/line chunks extracted per file — prevents embedding queue flood.
-    NCE_MAX_CODE_CHUNKS_PER_FILE: int = _int_env(
-        "NCE_MAX_CODE_CHUNKS_PER_FILE", 500, minimum=1
-    )
+    NCE_MAX_CODE_CHUNKS_PER_FILE: int = _int_env("NCE_MAX_CODE_CHUNKS_PER_FILE", 500, minimum=1)
 
     # --- Embeddings ---
     EMBEDDING_MAX_WORKERS: int = _int_env("EMBEDDING_MAX_WORKERS", 1, minimum=1)
-    EMBED_BATCH_CHUNK: int = int(os.getenv("EMBED_BATCH_CHUNK", "64"))
+    EMBED_BATCH_CHUNK: int = _int_env("EMBED_BATCH_CHUNK", 64, minimum=1)
     # Model identity — configurable so operators can swap the embedding model without a code change.
     NCE_EMBEDDING_MODEL_ID: str = os.getenv(
         "NCE_EMBEDDING_MODEL_ID", "jinaai/jina-embeddings-v2-base-code"
@@ -288,8 +281,8 @@ class _Config:
         "NCE_EMBEDDING_TRUST_REMOTE_CODE", "false"
     ).strip().lower() in {"1", "true", "yes", "on"}
     # Input guard — reject batches that exceed these limits rather than silently truncating.
-    NCE_EMBED_MAX_BATCH_TEXTS: int = int(os.getenv("NCE_EMBED_MAX_BATCH_TEXTS", "512"))
-    NCE_EMBED_MAX_TEXT_CHARS: int = int(os.getenv("NCE_EMBED_MAX_TEXT_CHARS", "32000"))
+    NCE_EMBED_MAX_BATCH_TEXTS: int = _int_env("NCE_EMBED_MAX_BATCH_TEXTS", 512, minimum=1)
+    NCE_EMBED_MAX_TEXT_CHARS: int = _int_env("NCE_EMBED_MAX_TEXT_CHARS", 32000, minimum=1)
     # Enterprise §8 — hardware backend / OpenVINO NPU (see nce.embeddings, openvino_npu_export).
     NCE_BACKEND: str = (os.getenv("NCE_BACKEND") or "").strip().lower()
     NCE_OPENVINO_MODEL_DIR: str = (os.getenv("NCE_OPENVINO_MODEL_DIR") or "").strip()
@@ -297,20 +290,24 @@ class _Config:
 
     # --- Contradictions / NLI ---
     NLI_MODEL_ID: str = os.getenv("NLI_MODEL_ID", "cross-encoder/nli-deberta-v3-small")
-    NCE_CONTRADICTION_SIMILARITY_THRESHOLD: float = _float_env("NCE_CONTRADICTION_SIMILARITY_THRESHOLD", 0.85, minimum=0.0)
-    NCE_CONTRADICTION_MAX_CANDIDATES: int = _int_env("NCE_CONTRADICTION_MAX_CANDIDATES", 3, minimum=1)
-    NCE_CONTRADICTION_NLI_THRESHOLD: float = _float_env("NCE_CONTRADICTION_NLI_THRESHOLD", 0.8, minimum=0.0)
-    NCE_CONTRADICTION_LLM_MIN_CONFIDENCE: float = _float_env("NCE_CONTRADICTION_LLM_MIN_CONFIDENCE", 0.6, minimum=0.0)
+    NCE_CONTRADICTION_SIMILARITY_THRESHOLD: float = _float_env(
+        "NCE_CONTRADICTION_SIMILARITY_THRESHOLD", 0.85, minimum=0.0
+    )
+    NCE_CONTRADICTION_MAX_CANDIDATES: int = _int_env(
+        "NCE_CONTRADICTION_MAX_CANDIDATES", 3, minimum=1
+    )
+    NCE_CONTRADICTION_NLI_THRESHOLD: float = _float_env(
+        "NCE_CONTRADICTION_NLI_THRESHOLD", 0.8, minimum=0.0
+    )
+    NCE_CONTRADICTION_LLM_MIN_CONFIDENCE: float = _float_env(
+        "NCE_CONTRADICTION_LLM_MIN_CONFIDENCE", 0.6, minimum=0.0
+    )
 
     # --- D2 / D7 — Local cognitive bundle (OpenAI-compatible HTTP on port 11435) ---
     # When NCE_COGNITIVE_BASE_URL is set (e.g. http://cognitive:11435), embeddings
     # route to POST {base}/v1/embeddings unless NCE_BACKEND selects an in-process backend.
-    NCE_COGNITIVE_BASE_URL: str = (
-        (os.getenv("NCE_COGNITIVE_BASE_URL") or "").strip().rstrip("/")
-    )
-    NCE_COGNITIVE_EMBEDDING_MODEL: str = (
-        os.getenv("NCE_COGNITIVE_EMBEDDING_MODEL") or ""
-    ).strip()
+    NCE_COGNITIVE_BASE_URL: str = (os.getenv("NCE_COGNITIVE_BASE_URL") or "").strip().rstrip("/")
+    NCE_COGNITIVE_EMBEDDING_MODEL: str = (os.getenv("NCE_COGNITIVE_EMBEDDING_MODEL") or "").strip()
     # Fallback model used when the primary cognitive backend returns 429 or times out.
     NCE_COGNITIVE_FALLBACK_MODEL: str = os.getenv(
         "NCE_COGNITIVE_FALLBACK_MODEL", "text-embedding-3-small"
@@ -404,9 +401,7 @@ class _Config:
     # NCE_PBKDF2_ITERATIONS_V4 — v4 new-write path (minimum 600K, OWASP 2026).
     #                               auth.py clamps admin password hashing to max(600K, this).
     NCE_PBKDF2_ITERATIONS: int = _int_env("NCE_PBKDF2_ITERATIONS", 100_000, minimum=100_000)
-    NCE_PBKDF2_ITERATIONS_V4: int = _int_env(
-        "NCE_PBKDF2_ITERATIONS_V4", 600_000, minimum=600_000
-    )
+    NCE_PBKDF2_ITERATIONS_V4: int = _int_env("NCE_PBKDF2_ITERATIONS_V4", 600_000, minimum=600_000)
 
     # --- Phase 0.2: JWT Bridge ---
     # NCE_JWT_SECRET     — HS256 shared secret for JWT validation (dev / testing).
@@ -472,18 +467,14 @@ class _Config:
         if s.strip()
     ]
     NCE_A2A_MTLS_STRICT: bool = _bool_env("NCE_A2A_MTLS_STRICT", True)
-    NCE_A2A_MTLS_TRUSTED_PROXY_HOP: int = int(
-        os.getenv("NCE_A2A_MTLS_TRUSTED_PROXY_HOP", "1")
-    )
+    NCE_A2A_MTLS_TRUSTED_PROXY_HOP: int = int(os.getenv("NCE_A2A_MTLS_TRUSTED_PROXY_HOP", "1"))
 
     # --- Admin server mTLS (B6) ---
     # Mirror of the A2A mTLS block but scoped to the admin surface.
     # All vars default to disabled/empty so existing deployments are unaffected.
     NCE_ADMIN_MTLS_ENABLED: bool = _bool_env("NCE_ADMIN_MTLS_ENABLED", False)
     NCE_ADMIN_MTLS_STRICT: bool = _bool_env("NCE_ADMIN_MTLS_STRICT", True)
-    NCE_ADMIN_MTLS_TRUSTED_PROXY_HOP: int = int(
-        os.getenv("NCE_ADMIN_MTLS_TRUSTED_PROXY_HOP", "1")
-    )
+    NCE_ADMIN_MTLS_TRUSTED_PROXY_HOP: int = int(os.getenv("NCE_ADMIN_MTLS_TRUSTED_PROXY_HOP", "1"))
     NCE_ADMIN_MTLS_ALLOWED_SANS: list[str] = [
         s.strip().lower()
         for s in os.getenv("NCE_ADMIN_MTLS_ALLOWED_SANS", "").split(",")
@@ -520,9 +511,7 @@ class _Config:
     # When false, no quota queries run on the tool hot path.
     NCE_QUOTAS_ENABLED: bool = _bool_env("NCE_QUOTAS_ENABLED", True)
     # Rough chars-per-token for pre-flight estimates (embedding / LLM analog).
-    NCE_QUOTA_TOKEN_ESTIMATE_DIVISOR: int = int(
-        os.getenv("NCE_QUOTA_TOKEN_ESTIMATE_DIVISOR", "4")
-    )
+    NCE_QUOTA_TOKEN_ESTIMATE_DIVISOR: int = int(os.getenv("NCE_QUOTA_TOKEN_ESTIMATE_DIVISOR", "4"))
     # Hot-path quota increments via Redis (avoids row-level UPDATE serialization).
     NCE_QUOTA_REDIS_COUNTERS: bool = _bool_env("NCE_QUOTA_REDIS_COUNTERS", True)
     NCE_QUOTA_REDIS_FLUSH_INTERVAL_S: float = float(
@@ -620,7 +609,9 @@ class _Config:
     TASK_DLQ_REDIS_TTL: int = int(os.getenv("TASK_DLQ_REDIS_TTL", "86400"))
 
     # --- Spreading Activation Telemetry Defaults (BATCH-P3-003) ---
-    NCE_TELEMETRY_SPIKE_THRESHOLD: float = _float_env("NCE_TELEMETRY_SPIKE_THRESHOLD", 8.0, minimum=0.0)
+    NCE_TELEMETRY_SPIKE_THRESHOLD: float = _float_env(
+        "NCE_TELEMETRY_SPIKE_THRESHOLD", 8.0, minimum=0.0
+    )
     NCE_TELEMETRY_SPIKE_THETA: float = _float_env("NCE_TELEMETRY_SPIKE_THETA", 0.25, minimum=0.0)
     NCE_TELEMETRY_SPIKE_CHARGE: float = _float_env("NCE_TELEMETRY_SPIKE_CHARGE", 2.0, minimum=0.0)
 
@@ -628,8 +619,62 @@ class _Config:
     NCE_ACTIVE_LEARNING_CONFIRM_XP: int = _int_env("NCE_ACTIVE_LEARNING_CONFIRM_XP", 10, minimum=0)
     NCE_ACTIVE_LEARNING_REJECT_XP: int = _int_env("NCE_ACTIVE_LEARNING_REJECT_XP", 5, minimum=0)
 
+    # --- NetBox connection (shared across all NetBox vertical modules) ---
+    NCE_NETBOX_URL: str = os.getenv("NCE_NETBOX_URL", "").rstrip("/")
+    NCE_NETBOX_TOKEN: str = os.getenv("NCE_NETBOX_TOKEN", "")
+
     # --- NetBox Discovery Defaults (BATCH-P3-NB-005) ---
-    NCE_NETBOX_DEFAULT_INTERFACE_TYPE: str = os.getenv("NCE_NETBOX_DEFAULT_INTERFACE_TYPE", "1000base-t").strip()
+    NCE_NETBOX_DEFAULT_INTERFACE_TYPE: str = os.getenv(
+        "NCE_NETBOX_DEFAULT_INTERFACE_TYPE", "1000base-t"
+    ).strip()
+
+    # --- Dynamics 365 / Dataverse vertical module ---
+    NCE_D365_ENABLED: bool = os.getenv("NCE_D365_ENABLED", "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    NCE_D365_ORG_URL: str = os.getenv("NCE_D365_ORG_URL", "").rstrip("/")
+    NCE_D365_WEBHOOK_SECRET: str = os.getenv("NCE_D365_WEBHOOK_SECRET", "")
+    NCE_D365_SYNC_INTERVAL_MINUTES: int = _int_env("NCE_D365_SYNC_INTERVAL_MINUTES", 60, minimum=5)
+    NCE_D365_SYNC_PAGE_SIZE: int = _int_env("NCE_D365_SYNC_PAGE_SIZE", 500, minimum=10)
+    NCE_D365_HIGH_PRIORITY_SALIENCE_BOOST: float = _float_env(
+        "NCE_D365_HIGH_PRIORITY_SALIENCE_BOOST", 2.0, minimum=1.0
+    )
+    NCE_D365_API_VERSION: str = os.getenv("NCE_D365_API_VERSION", "9.2").strip()
+    NCE_D365_EMPATHIC_URGENCY_KEYWORDS: str = os.getenv(
+        "NCE_D365_EMPATHIC_URGENCY_KEYWORDS",
+        "urgent,critical,asap,escalate,breach,sla,overdue,immediate,p1,p0",
+    )
+    NCE_D365_EMPATHIC_FRUSTRATION_KEYWORDS: str = os.getenv(
+        "NCE_D365_EMPATHIC_FRUSTRATION_KEYWORDS",
+        "disappointed,unacceptable,failed,unresolved,weeks,months,terrible,worst,again,still broken",
+    )
+
+    # --- D365 ↔ NetBox cross-reference bridge ---
+    # Requires NCE_NETBOX_URL + NCE_NETBOX_TOKEN to be set.
+    NCE_D365_NETBOX_BRIDGE_ENABLED: bool = os.getenv(
+        "NCE_D365_NETBOX_BRIDGE_ENABLED", "false"
+    ).strip().lower() in ("1", "true", "yes")
+    # How often (minutes) to re-run the bridge sync.
+    NCE_D365_NETBOX_BRIDGE_INTERVAL_MINUTES: int = _int_env(
+        "NCE_D365_NETBOX_BRIDGE_INTERVAL_MINUTES", 120, minimum=10
+    )
+    # Minimum SequenceMatcher ratio to accept a fuzzy name match (0.0–1.0).
+    NCE_D365_NETBOX_FUZZY_THRESHOLD: float = _float_env(
+        "NCE_D365_NETBOX_FUZZY_THRESHOLD", 0.82, minimum=0.5
+    )
+    # NetBox custom field name that stores the D365 account GUID on a tenant record.
+    # When set, exact-CF matches take priority over all fuzzy matching.
+    NCE_D365_NETBOX_TENANT_CF_NAME: str = os.getenv(
+        "NCE_D365_NETBOX_TENANT_CF_NAME", "d365_account_id"
+    ).strip()
+
+    # --- Chain Verification ---
+    NCE_CHAIN_VERIFY_INTERVAL_MINUTES: int = _int_env(
+        "NCE_CHAIN_VERIFY_INTERVAL_MINUTES", 120, minimum=5
+    )
+    NCE_CHAIN_VERIFY_STARTUP_DEPTH: int = _int_env("NCE_CHAIN_VERIFY_STARTUP_DEPTH", 500, minimum=0)
 
     @classmethod
     def validate_minio_credentials(cls) -> None:
@@ -722,8 +767,7 @@ class _Config:
                     "CRITICAL CONFIGURATION FAILURE: NCE_API_KEY is required in production."
                 )
             log.warning(
-                "SECURITY WARNING: NCE_API_KEY is not set. "
-                "Admin API routes will be inaccessible."
+                "SECURITY WARNING: NCE_API_KEY is not set. Admin API routes will be inaccessible."
             )
 
         # P1: JWT
@@ -741,6 +785,25 @@ class _Config:
 
         # P1: Webhook dedup must fail closed when Redis is unavailable
         cls.validate_webhook_dedup_policy()
+
+        # P1: D365 module — require secrets when enabled in production
+        cls.validate_d365_config()
+
+    @classmethod
+    def validate_d365_config(cls) -> None:
+        """Fail fast when D365 is enabled in production without required secrets."""
+        if not cls.NCE_D365_ENABLED or not cls.IS_PROD:
+            return
+        if not cls.NCE_D365_ORG_URL:
+            raise RuntimeError(
+                "CRITICAL CONFIGURATION FAILURE: NCE_D365_ORG_URL must be set "
+                "when NCE_D365_ENABLED=true in production."
+            )
+        if not cls.NCE_D365_WEBHOOK_SECRET:
+            raise RuntimeError(
+                "CRITICAL CONFIGURATION FAILURE: NCE_D365_WEBHOOK_SECRET must be set "
+                "when NCE_D365_ENABLED=true in production."
+            )
 
     @classmethod
     def validate_webhook_dedup_policy(cls) -> None:
@@ -886,6 +949,7 @@ def assert_admin_override_not_in_production() -> None:
 def __getattr__(name: str) -> Any:
     if name == "OrchestratorConfig":
         import warnings
+
         warnings.warn(
             "OrchestratorConfig is deprecated; use cfg (the Config instance) instead.",
             DeprecationWarning,

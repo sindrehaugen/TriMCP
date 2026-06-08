@@ -12,10 +12,9 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 import nce.providers._http_utils
 import nce.providers.base
+import pytest
 from nce.providers.anthropic_provider import AnthropicProvider
 from nce.providers.base import _redact_api_key
 from nce.providers.google_gemini import GoogleGeminiProvider

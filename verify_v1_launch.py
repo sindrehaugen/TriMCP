@@ -47,7 +47,6 @@ except ModuleNotFoundError as _e:
         "or install dependencies: pip install -r requirements.txt"
     ) from _e
 import httpx
-
 from nce.config import cfg
 from nce.consolidation import ConsolidationWorker
 
@@ -135,7 +134,7 @@ async def _step_a2a(base: str) -> None:
     _ok("A2A /.well-known/agent-card")
 
 
-async def _step_consolidation() -> None:
+async def _step_consolidation() -> UUID:
     pool = await asyncpg.create_pool(cfg.PG_DSN, min_size=1, max_size=2, command_timeout=120)
     try:
         async with pool.acquire(timeout=10.0) as conn:
@@ -150,7 +149,9 @@ async def _step_consolidation() -> None:
                 )
         worker = ConsolidationWorker(pool, _NoopLLM())
         await worker.run_consolidation(UUID(str(ns_id)))
-        async with pool.acquire(timeout=10.0) as conn:
+
+        from nce.db_utils import scoped_pg_session
+        async with scoped_pg_session(pool, ns_id) as conn:
             row = await conn.fetchrow(
                 """
                 SELECT status
@@ -166,9 +167,77 @@ async def _step_consolidation() -> None:
                 "Consolidation dry-run",
                 f"Last run status expected 'completed', got {row!r}",
             )
+        return UUID(str(ns_id))
     finally:
         await pool.close()
     _ok("Sleep consolidation dry-run (consolidation_runs completed)")
+
+
+async def _step_rls_isolation(ns_id: UUID) -> None:
+    from urllib.parse import urlparse, urlunparse
+    app_dsn = None
+    if cfg.PG_DSN:
+        try:
+            parsed = urlparse(cfg.PG_DSN)
+            netloc = parsed.hostname or ""
+            if parsed.port:
+                netloc = f"{netloc}:{parsed.port}"
+            app_pass = cfg.NCE_APP_PASSWORD or "nce_app_secret"
+            netloc = f"nce_app:{app_pass}@{netloc}"
+            app_dsn = urlunparse(parsed._replace(netloc=netloc))
+        except Exception as exc:
+            _fail("RLS Isolation check", f"Failed to construct nce_app DSN: {exc}")
+
+    if not app_dsn:
+        _fail("RLS Isolation check", "Could not resolve app DSN")
+
+    # Connect as nce_app (restricted RLS role)
+    try:
+        conn = await asyncpg.connect(app_dsn, timeout=10.0)
+    except Exception as exc:
+        _fail("RLS Isolation check", f"Failed to connect as nce_app role: {exc}")
+
+    try:
+        # Test 1: Assert that querying RLS-protected table WITHOUT setting nce.namespace_id raises exception
+        try:
+            await conn.fetch(
+                "SELECT status FROM consolidation_runs WHERE namespace_id = $1",
+                ns_id
+            )
+            _fail("RLS Isolation check", "Queried RLS table without setting namespace_id, but no exception was raised!")
+        except asyncpg.PostgresError as exc:
+            if "nce.namespace_id is not set for this transaction" in str(exc):
+                # Correct exception raised!
+                pass
+            else:
+                _fail("RLS Isolation check", f"Expected 'nce.namespace_id is not set' error, got: {exc}")
+
+        # Test 2: Set context to a DIFFERENT/DUMMY namespace, query VERIFY_NS_SLUG's namespace_id.
+        # It should return NO rows because of RLS partition isolation.
+        dummy_ns = UUID("00000000-0000-0000-0000-000000000000")
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('nce.namespace_id', $1, true)", str(dummy_ns))
+            rows = await conn.fetch(
+                "SELECT status FROM consolidation_runs WHERE namespace_id = $1",
+                ns_id
+            )
+            if len(rows) > 0:
+                _fail("RLS Isolation check", f"RLS isolation bypassed! Dummy namespace could see {len(rows)} rows of namespace {ns_id}")
+
+        # Test 3: Set context to the CORRECT namespace_id. Query should succeed and return the row.
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('nce.namespace_id', $1, true)", str(ns_id))
+            rows = await conn.fetch(
+                "SELECT status FROM consolidation_runs WHERE namespace_id = $1",
+                ns_id
+            )
+            if not rows:
+                _fail("RLS Isolation check", f"Could not fetch consolidation run when using correct namespace_id {ns_id}")
+
+    finally:
+        await conn.close()
+    
+    _ok("Multi-Tenant RLS isolation validated successfully (nce_app restricted and isolated)")
 
 
 async def _step_event_log(client: httpx.AsyncClient, api_key: str) -> None:
@@ -212,7 +281,8 @@ async def _async_main(admin_base: str, a2a_base: str) -> None:
     ) as admin_client:
         await _step_health(admin_client, api_key)
     await _step_a2a(a2a_base)
-    await _step_consolidation()
+    ns_id = await _step_consolidation()
+    await _step_rls_isolation(ns_id)
     async with httpx.AsyncClient(
         base_url=admin_base.rstrip("/"), timeout=60.0, limits=limits
     ) as admin_client:

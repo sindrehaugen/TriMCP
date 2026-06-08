@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+
 from starlette.responses import JSONResponse
-from nce.admin_handlers import _shared
-from nce.admin_handlers._shared import *  # noqa: F403
+
 from nce import admin_state
+from nce.admin_handlers._shared import *  # noqa: F403
 
 logger = logging.getLogger("nce-admin-tools")
 

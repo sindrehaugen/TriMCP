@@ -128,6 +128,7 @@ CREATE INDEX IF NOT EXISTS idx_topology_graph_last_verified
 -- Row-Level Security: isolate topology by tenant.
 ALTER TABLE topology_graph ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS topology_graph_tenant_isolation ON topology_graph;
 CREATE POLICY topology_graph_tenant_isolation ON topology_graph
     FOR ALL
     USING (namespace_id = get_nce_namespace());

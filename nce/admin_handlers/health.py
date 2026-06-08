@@ -3,6 +3,7 @@ from __future__ import annotations
 from nce.admin_handlers import _shared
 from nce.admin_handlers._shared import *  # noqa: F403
 
+
 async def get_health(request):
     if not admin_state.engine:
         return JSONResponse({"error": "Engine not connected"}, status_code=503)

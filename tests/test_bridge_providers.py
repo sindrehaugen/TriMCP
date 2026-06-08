@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from nce import bridge_mcp_handlers, bridge_repo, bridge_runtime
 from nce.bridge_providers import BRIDGE_PROVIDERS
 

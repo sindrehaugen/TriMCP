@@ -12,7 +12,6 @@ import gc
 import os
 
 import pytest
-
 from nce.signing import (
     MasterKey,
     MasterKeyMissingError,

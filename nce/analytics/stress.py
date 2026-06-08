@@ -14,8 +14,7 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-
-from nce.signing import decrypt_signing_key, encrypt_signing_key, MasterKey
+from nce.signing import MasterKey, decrypt_signing_key, encrypt_signing_key
 
 log = logging.getLogger("nce.analytics.stress")
 

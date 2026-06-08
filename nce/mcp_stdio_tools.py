@@ -675,12 +675,28 @@ TOOLS = [
                 },
                 "config_overrides": {
                     "type": "object",
+                    "properties": {
+                        "llm_provider": {
+                            "type": "string",
+                            "enum": [
+                                "local-cognitive-model",
+                                "openai",
+                                "azure_openai",
+                                "deepseek",
+                                "moonshot_kimi",
+                                "openai_compatible",
+                                "google_gemini",
+                                "anthropic",
+                            ],
+                        },
+                        "llm_model": {"type": "string"},
+                        "llm_credentials": {"type": "string"},
+                        "llm_temperature": {"type": "number"},
+                    },
+                    "additionalProperties": False,
                     "description": (
                         "Optional overrides for re-execute mode only. "
-                        "Allowed keys: llm_provider (enum: local-cognitive-model, openai, "
-                        "azure_openai, deepseek, moonshot_kimi, openai_compatible, "
-                        "google_gemini, anthropic), llm_model, llm_credentials, llm_temperature. "
-                        "Extra keys and free-text prompt edits are rejected."
+                        "Allowed keys: llm_provider, llm_model, llm_credentials, llm_temperature."
                     ),
                 },
                 "agent_id_filter": {
@@ -1042,11 +1058,11 @@ TOOLS = [
                     "properties": {
                         "slug": {"type": "string"},
                         "parent_id": {"type": "string"},
-                        "metadata": {"type": "object"},
+                        "metadata": {"type": "object", "additionalProperties": True},
                     },
                     "required": ["slug"],
                 },
-                "metadata_patch": {"type": "object"},
+                "metadata_patch": {"type": "object", "additionalProperties": True},
                 "grantee_namespace_id": {"type": "string"},
                 "admin_api_key": {
                     "type": "string",
@@ -1205,7 +1221,7 @@ TOOLS = [
                 "name": {"type": "string"},
                 "agent_id": {"type": "string", "default": "default"},
                 "snapshot_at": {"type": "string", "format": "date-time"},
-                "metadata": {"type": "object"},
+                "metadata": {"type": "object", "additionalProperties": True},
             },
             "required": ["namespace_id", "name"],
         },
@@ -1333,3 +1349,141 @@ TOOLS = [
 # Conditionally include migration tools based on operator config.
 if not cfg.NCE_DISABLE_MIGRATION_MCP:
     TOOLS = TOOLS + _MIGRATION_TOOLS
+
+# Conditionally include Dynamics 365 tools when the module is enabled.
+if cfg.NCE_D365_ENABLED:
+    TOOLS = TOOLS + [
+        Tool(
+            name="d365_query_case",
+            description=(
+                "Query a Dynamics 365 case (incident) by ID, enriched with "
+                "NCE graph context, related annotations, and activity timeline."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "namespace_id": {"type": "string", "description": "Caller namespace UUID."},
+                    "case_id": {
+                        "type": "string",
+                        "description": "Dataverse incident GUID.",
+                    },
+                    "include_notes": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Fetch linked annotations.",
+                    },
+                    "include_activities": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Fetch activity timeline.",
+                    },
+                },
+                "required": ["namespace_id", "case_id"],
+            },
+        ),
+        Tool(
+            name="d365_sync_now",
+            description=(
+                "[Admin] Trigger an immediate Dynamics 365 entity sync for a namespace. "
+                "Syncs Accounts, Contacts, Opportunities, and Incidents to kg_edges."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "namespace_id": {"type": "string"},
+                    "entity_types": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["accounts", "contacts", "opportunities", "incidents"],
+                        },
+                        "description": "Subset to sync; omit for all four entity types.",
+                    },
+                },
+                "required": ["namespace_id"],
+            },
+        ),
+        Tool(
+            name="d365_case_stress_report",
+            description=(
+                "Empathic Tensor frustration and burnout report for Dynamics 365 cases "
+                "linked to a given account. Queries v3_cognitive_ledger for frustration "
+                "trends extracted from case notes."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "namespace_id": {"type": "string"},
+                    "account_name": {
+                        "type": "string",
+                        "description": "Account name as it appears in kg_edges.",
+                    },
+                    "lookback_days": {
+                        "type": "integer",
+                        "default": 30,
+                        "minimum": 1,
+                        "maximum": 365,
+                        "description": "How many days back to include.",
+                    },
+                },
+                "required": ["namespace_id", "account_name"],
+            },
+        ),
+        Tool(
+            name="d365_list_sla_breaches",
+            description=(
+                "[Admin] List Dynamics 365 SLA breach events from the WORM event_log. "
+                "Returns signed, immutable breach records since a given timestamp."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "namespace_id": {"type": "string"},
+                    "since": {
+                        "type": "string",
+                        "description": "ISO-8601 datetime — return breaches after this time.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 50,
+                        "minimum": 1,
+                        "maximum": 500,
+                    },
+                },
+                "required": ["namespace_id", "since"],
+            },
+        ),
+        Tool(
+            name="d365_netbox_mappings",
+            description=(
+                "Query the D365 ↔ NetBox cross-reference mapping table. "
+                "Returns identity links between Dynamics 365 Accounts/Functional Locations "
+                "and NetBox Tenants/Sites, including the match method and confidence score. "
+                "Use this to understand which CRM customer maps to which network tenant or site."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "namespace_id": {"type": "string"},
+                    "entity_type": {
+                        "type": "string",
+                        "enum": ["all", "account", "functional_location"],
+                        "default": "all",
+                        "description": "Filter by D365 entity type.",
+                    },
+                    "confirmed_only": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Return only human-confirmed mappings.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 100,
+                        "minimum": 1,
+                        "maximum": 500,
+                    },
+                },
+                "required": ["namespace_id"],
+            },
+        ),
+    ]

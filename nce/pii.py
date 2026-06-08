@@ -11,10 +11,15 @@ import hashlib
 import hmac
 import logging
 import re
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from nce.models import NamespacePIIConfig, PIIEntity, PIIPolicy, PIIProcessResult
-from nce.signing import encrypt_signing_key, require_master_key, MasterKeyMissingError
+from nce.signing import (
+    MasterKeyMissingError,
+    SecureKeyBuffer,
+    encrypt_signing_key,
+    require_master_key,
+)
 
 if TYPE_CHECKING:
     pass
@@ -288,7 +293,7 @@ async def scan(text: str, config: NamespacePIIConfig, *, locale: str = "en") -> 
     return await asyncio.to_thread(_scan_sync, text, config, locale)
 
 
-def _pseudonym_hmac_key_material(config: NamespacePIIConfig, *, namespace_id: str) -> bytes:
+def _pseudonym_hmac_key_material(config: NamespacePIIConfig, *, namespace_id: str) -> SecureKeyBuffer:
     """Return HMAC key bytes for pseudonym generation."""
     if config.pseudonym_hmac_key is not None:
         key = config.pseudonym_hmac_key.encode("utf-8")
@@ -297,7 +302,7 @@ def _pseudonym_hmac_key_material(config: NamespacePIIConfig, *, namespace_id: st
                 f"pseudonym_hmac_key must be at least {_MIN_PSEUDONYM_SECRET_BYTES} bytes "
                 f"when set; got {len(key)}."
             )
-        return key
+        return SecureKeyBuffer(key)
     try:
         with require_master_key() as mk:
             key_view = mk.key_bytes
@@ -306,7 +311,8 @@ def _pseudonym_hmac_key_material(config: NamespacePIIConfig, *, namespace_id: st
                     "Pseudonymisation requires NCE_MASTER_KEY (≥32 UTF-8 bytes) or "
                     f"a namespace pseudonym_hmac_key (≥{_MIN_PSEUDONYM_SECRET_BYTES} bytes)."
                 )
-            return hmac.new(bytes(key_view), namespace_id.encode("utf-8"), hashlib.sha256).digest()
+            derived = hmac.new(bytes(key_view), namespace_id.encode("utf-8"), hashlib.sha256).digest()
+            return SecureKeyBuffer(derived)
     except MasterKeyMissingError:
         raise ValueError(
             "Pseudonymisation requires NCE_MASTER_KEY (≥32 UTF-8 bytes) or "
@@ -314,7 +320,7 @@ def _pseudonym_hmac_key_material(config: NamespacePIIConfig, *, namespace_id: st
         )
 
 
-def _pseudonym_token_suffix(entity_type: str, value: str, hmac_key: bytes) -> str:
+def _pseudonym_token_suffix(entity_type: str, value: str, hmac_key: bytes | SecureKeyBuffer) -> str:
     """
     Deterministic opaque suffix: first 16 bytes of HMAC-SHA256, base64url-encoded.
 
@@ -326,7 +332,8 @@ def _pseudonym_token_suffix(entity_type: str, value: str, hmac_key: bytes) -> st
     Message binds entity type and raw value so types do not collide across categories.
     """
     msg = f"{entity_type}\x00{value}".encode()
-    raw = hmac.new(hmac_key, msg, hashlib.sha256).digest()
+    key_bytes = bytes(hmac_key) if isinstance(hmac_key, SecureKeyBuffer) else hmac_key
+    raw = hmac.new(key_bytes, msg, hashlib.sha256).digest()
     # Truncate to 16 bytes (128 bits), encode as base64url without padding.
     return base64.urlsafe_b64encode(raw[:16]).rstrip(b"=").decode("ascii")
 
@@ -367,17 +374,18 @@ async def process(text: str, config: NamespacePIIConfig) -> PIIProcessResult:
     # Redact or Pseudonymise
     sanitized_text = text
     vault_entries = []
-    pseudonym_key: bytes | None = None
+    pseudonym_key_buf: SecureKeyBuffer | None = None
     if config.policy == PIIPolicy.pseudonymise:
-        pseudonym_key = _pseudonym_hmac_key_material(config, namespace_id=str(config.namespace_id))
+        pseudonym_key_buf = _pseudonym_hmac_key_material(config, namespace_id=str(config.namespace_id))
 
     from contextlib import nullcontext
 
     cm = require_master_key() if config.reversible else nullcontext()
+    pm = pseudonym_key_buf if pseudonym_key_buf else nullcontext()
 
     replacement_triples: list[tuple[int, int, str]] = []
 
-    with cm as mk:
+    with cm as mk, pm as pkb:
         for entity in entities:
             if entity.start < 0 or entity.end > len(sanitized_text) or entity.start > entity.end:
                 for e in entities:
@@ -389,10 +397,11 @@ async def process(text: str, config: NamespacePIIConfig) -> PIIProcessResult:
 
         for entity in entities:
             if config.policy == PIIPolicy.pseudonymise:
+                assert pkb is not None
                 digest = _pseudonym_token_suffix(
                     entity.entity_type,
                     entity.value,
-                    cast(bytes, pseudonym_key),
+                    bytes(pkb),
                 )
                 token = f"<{entity.entity_type}_{digest}>"
 

@@ -20,7 +20,6 @@ import math
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from nce.temporal_decay import (
     RETENTION_PRUNE_THRESHOLD,
     MemoryClass,
@@ -487,6 +486,7 @@ class TestPruneSQLCorrectness:
         closing triple-quote.
         """
         import inspect
+
         import nce.temporal_decay as td
         source = inspect.getsource(td._decay_prune_tick)
         # Anchor on the conn.execute call that contains the WITH-CTE UPDATE.
@@ -526,6 +526,7 @@ class TestPruneSQLCorrectness:
     def test_prune_tick_no_duplicate_release_import(self):
         """TD-DECAY-3: verify finally block does not re-import release_cron_lock."""
         import inspect
+
         import nce.temporal_decay as td
         source = inspect.getsource(td._decay_prune_tick)
         # The finally block should use release_cron_lock directly (imported at top)

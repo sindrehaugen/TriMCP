@@ -64,6 +64,7 @@ JSON-RPC 2.0 error codes (server-defined range, extends nce.auth)
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
 from typing import Any
 from uuid import UUID
 
@@ -77,13 +78,11 @@ from jwt.exceptions import (
     MissingRequiredClaimError,
 )
 from pydantic import ValidationError
-from functools import lru_cache
-
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from nce.auth import NamespaceContext, validate_agent_id, jsonrpc_error_response
+from nce.auth import NamespaceContext, jsonrpc_error_response, validate_agent_id
 from nce.config import cfg
 
 log = logging.getLogger("nce.jwt_auth")

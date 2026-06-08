@@ -18,8 +18,9 @@ once at import time from the registry — no duplicated inline sets elsewhere.
 from __future__ import annotations
 
 import types
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from nce import (
     a2a_mcp_handlers,
@@ -34,6 +35,7 @@ from nce import (
     replay_mcp_handlers,
     snapshot_mcp_handlers,
 )
+from nce.vertical_modules.dynamics365 import mcp_handlers as d365_mcp_handlers
 
 
 def _h(module: types.ModuleType, attr: str) -> Callable[..., Any]:
@@ -320,6 +322,30 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     ),
     "describe_schema": ToolSpec(
         _h(catalog_mcp_handlers, "handle_describe_schema"),
+    ),
+    # ------------------------------------------------------------------
+    # Dynamics 365 / Dataverse vertical module tools
+    # ------------------------------------------------------------------
+    "d365_query_case": ToolSpec(
+        _h(d365_mcp_handlers, "handle_d365_query_case"),
+        cacheable=True,
+    ),
+    "d365_sync_now": ToolSpec(
+        _h(d365_mcp_handlers, "handle_d365_sync_now"),
+        admin_only=True,
+        mutation=True,
+    ),
+    "d365_case_stress_report": ToolSpec(
+        _h(d365_mcp_handlers, "handle_d365_case_stress_report"),
+        cacheable=True,
+    ),
+    "d365_list_sla_breaches": ToolSpec(
+        _h(d365_mcp_handlers, "handle_d365_list_sla_breaches"),
+        admin_only=True,
+    ),
+    "d365_netbox_mappings": ToolSpec(
+        _h(d365_mcp_handlers, "handle_d365_netbox_mappings"),
+        cacheable=True,
     ),
 }
 

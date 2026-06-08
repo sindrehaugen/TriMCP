@@ -15,7 +15,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from nce.a2a import (
     A2AAuthorizationError,
     A2AGrantRequest,

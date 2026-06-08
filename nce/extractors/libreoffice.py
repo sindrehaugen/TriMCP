@@ -73,17 +73,32 @@ def libreoffice_convert(
                 str(td),
                 str(src),
             ]
-            proc = subprocess.run(
+            from nce.subprocess_registry import tracked_process
+
+            proc = subprocess.Popen(
                 cmd,
-                capture_output=True,
-                timeout=timeout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=False,
             )
+            with tracked_process(proc):
+                try:
+                    stdout, stderr = proc.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.communicate()
+                    log.warning("libreoffice_timeout")
+                    return None
+                except Exception as e:
+                    proc.kill()
+                    proc.communicate()
+                    raise e
+
             if proc.returncode != 0:
                 log.warning(
                     "libreoffice_failed rc=%s stderr=%s",
                     proc.returncode,
-                    (proc.stderr or b"")[:500],
+                    (stderr or b"")[:500],
                 )
                 return None
             # LO names output: source.docx from source.doc

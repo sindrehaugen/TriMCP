@@ -26,9 +26,6 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 import pytest
-
-from tests.fixtures.event_log_params import minimal_store_memory_params
-from tests.fixtures.fake_asyncpg import RecordingFakeConnection
 from nce import event_log as event_log_mod
 from nce.event_log import (
     _GENESIS_SENTINEL,
@@ -37,6 +34,9 @@ from nce.event_log import (
     append_event,
     verify_merkle_chain,
 )
+
+from tests.fixtures.event_log_params import minimal_store_memory_params
+from tests.fixtures.fake_asyncpg import RecordingFakeConnection
 
 _RAW_SIGNING_SECRET = hashlib.sha256(b"pytest-merkle-hmac-secret").digest()
 
@@ -214,6 +214,7 @@ async def test_two_events_have_linked_chain_hashes(namespace_id: UUID) -> None:
         occurred_at_iso=r2.occurred_at.isoformat(),
         params=params2,
         parent_event_id=None,
+        prev_chain_hash_hex=record1["chain_hash"].hex(),
     )
     content_hash2 = _compute_content_hash(signing_fields=fields2)
     expected_chain2 = _compute_chain_hash(
@@ -483,6 +484,7 @@ async def test_genesis_sentinel_used_for_seq1_in_chain_verification(
         occurred_at_iso=record["occurred_at"].isoformat(),
         params=json.loads(record["params"]),
         parent_event_id=None,
+        prev_chain_hash_hex=_GENESIS_SENTINEL.hex(),
     )
     content_h = _compute_content_hash(signing_fields=fields)
     expected = _compute_chain_hash(content_hash=content_h, previous_chain_hash=_GENESIS_SENTINEL)

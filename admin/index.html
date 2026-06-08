@@ -2426,6 +2426,429 @@
       </div>
     </div>
 
+    <!-- Tab: Dynamics 365 -->
+    <div id="panel-d365" x-show="adminTab === 'd365'" x-cloak class="space-y-8" x-data="d365Panel" x-init="init()">
+      <div class="border-b border-slate-200 pb-2.5 mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
+        <div>
+          <h2 class="text-xl font-bold font-hanken tracking-tight bg-gradient-to-r from-blue-700 via-indigo-600 to-purple-600 bg-clip-text text-transparent uppercase">Dynamics 365 Integration</h2>
+          <p class="text-xs text-slate-500 mt-1">Dataverse entity sync · webhook events · SLA breach log · per-namespace control</p>
+        </div>
+        <span class="self-start sm:self-auto text-[10px] font-mono text-slate-600 uppercase tracking-widest font-bold bg-slate-100 px-2.5 py-1 rounded-md border border-slate-200">CRM VERTICAL MODULE</span>
+      </div>
+
+      <!-- Config card -->
+      <section class="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+        <div class="flex items-center justify-between px-5 py-3 border-b border-slate-100 bg-slate-50">
+          <h3 class="text-[11px] font-bold uppercase tracking-widest text-slate-700">Environment Configuration</h3>
+          <button type="button" @click="fetchConfig()"
+                  class="text-[10px] font-bold text-indigo-600 hover:underline">Refresh</button>
+        </div>
+        <div x-show="configLoading" class="px-5 py-6 text-xs text-slate-400 text-center">Loading…</div>
+        <div x-show="!configLoading" class="px-5 py-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div>
+            <p class="text-[9px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Status</p>
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold border"
+                  :class="config.enabled ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-slate-100 text-slate-500 border-slate-200'">
+              <span class="h-1.5 w-1.5 rounded-full"
+                    :class="config.enabled ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'"></span>
+              <span x-text="config.enabled ? 'ENABLED' : 'DISABLED'"></span>
+            </span>
+          </div>
+          <div>
+            <p class="text-[9px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Org URL</p>
+            <p class="text-xs font-mono text-slate-800 truncate" x-text="config.org_url || '—'"></p>
+          </div>
+          <div>
+            <p class="text-[9px] uppercase tracking-wider text-slate-500 font-semibold mb-1">API Version</p>
+            <p class="text-xs font-mono text-slate-800" x-text="config.api_version || '—'"></p>
+          </div>
+          <div>
+            <p class="text-[9px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Sync Interval</p>
+            <p class="text-xs font-mono text-slate-800" x-text="config.sync_interval_minutes ? config.sync_interval_minutes + ' min' : '—'"></p>
+          </div>
+          <div>
+            <p class="text-[9px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Page Size</p>
+            <p class="text-xs font-mono text-slate-800" x-text="config.sync_page_size || '—'"></p>
+          </div>
+          <div>
+            <p class="text-[9px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Webhook Secret</p>
+            <span class="inline-flex items-center gap-1 text-[10px] font-bold"
+                  :class="config.webhook_secret_set ? 'text-emerald-700' : 'text-rose-600'"
+                  x-text="config.webhook_secret_set ? 'Set' : 'Not set'"></span>
+          </div>
+          <div class="sm:col-span-2 lg:col-span-3">
+            <p class="text-[9px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Urgency Keywords</p>
+            <p class="text-[10px] font-mono text-slate-600 truncate" x-text="config.empathic_urgency_keywords || '—'"></p>
+          </div>
+          <div class="sm:col-span-2 lg:col-span-3">
+            <p class="text-[9px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Frustration Keywords</p>
+            <p class="text-[10px] font-mono text-slate-600 truncate" x-text="config.empathic_frustration_keywords || '—'"></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Integrations table -->
+      <section class="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+        <div class="flex flex-wrap items-center justify-between gap-3 px-5 py-3 border-b border-slate-100 bg-slate-50">
+          <h3 class="text-[11px] font-bold uppercase tracking-widest text-slate-700">Active Integrations</h3>
+          <div class="flex gap-2">
+            <button type="button" @click="fetchIntegrations()"
+                    class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-[10px] font-bold text-slate-700 hover:border-slate-400 transition shadow-sm">
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div x-show="integrationsLoading" class="px-5 py-8 text-center text-xs text-slate-400">Loading integrations…</div>
+        <div x-show="!integrationsLoading" class="overflow-x-auto">
+          <table class="min-w-full text-left text-xs">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Namespace</th>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Org URL</th>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Status</th>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">D365 Sync</th>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Last Sync</th>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="row in integrations" :key="row.id">
+                <tr class="border-b border-slate-100 hover:bg-slate-50/80 transition">
+                  <td class="px-4 py-3 align-middle">
+                    <p class="font-bold text-indigo-700" x-text="row.namespace_slug"></p>
+                    <p class="text-[9px] font-mono text-slate-400 mt-0.5 truncate max-w-[120px]" x-text="row.namespace_id"></p>
+                  </td>
+                  <td class="px-4 py-3 align-middle">
+                    <p class="font-mono text-slate-700 text-[10px] truncate max-w-[200px]" x-text="row.org_url"></p>
+                  </td>
+                  <td class="px-4 py-3 align-middle">
+                    <span class="px-2 py-0.5 rounded-full text-[9px] font-bold border"
+                          :class="{
+                            'bg-emerald-50 text-emerald-800 border-emerald-200': row.status === 'ACTIVE',
+                            'bg-amber-50 text-amber-900 border-amber-200': row.status === 'DEGRADED',
+                            'bg-slate-100 text-slate-500 border-slate-200': row.status === 'DISABLED'
+                          }"
+                          x-text="row.status"></span>
+                  </td>
+                  <td class="px-4 py-3 align-middle">
+                    <button type="button"
+                            @click="toggleNamespaceD365(row)"
+                            :disabled="row._toggling"
+                            class="px-2.5 py-1 rounded-lg text-[10px] font-bold border transition disabled:opacity-40"
+                            :class="row.d365_enabled
+                              ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                              : 'bg-slate-100 text-slate-600 border-slate-300 hover:bg-slate-200'">
+                      <span x-show="!row._toggling" x-text="row.d365_enabled ? 'Enabled' : 'Disabled'"></span>
+                      <span x-show="row._toggling">…</span>
+                    </button>
+                  </td>
+                  <td class="px-4 py-3 align-middle">
+                    <div x-show="row.last_sync_at">
+                      <p class="text-[10px] font-mono text-slate-700" x-text="fmtIsoShort(row.last_sync_at)"></p>
+                      <template x-if="row.last_sync_stats">
+                        <p class="text-[9px] text-slate-500 mt-0.5">
+                          <template x-for="[k, v] in Object.entries(row.last_sync_stats || {})" :key="k">
+                            <span class="mr-2"><span class="text-slate-400" x-text="k"></span>:<span class="font-mono font-bold" x-text="v"></span></span>
+                          </template>
+                        </p>
+                      </template>
+                    </div>
+                    <p x-show="!row.last_sync_at" class="text-[10px] text-slate-400 italic">Never synced</p>
+                  </td>
+                  <td class="px-4 py-3 align-middle">
+                    <div class="flex flex-col gap-1.5">
+                      <button type="button"
+                              @click="openSyncModal(row)"
+                              :disabled="row._syncing || !config.enabled"
+                              class="rounded-lg bg-indigo-600 text-white px-3 py-1.5 text-[10px] font-bold hover:bg-indigo-700 transition disabled:opacity-40 whitespace-nowrap">
+                        <span x-show="!row._syncing">Sync now…</span>
+                        <span x-show="row._syncing">Syncing…</span>
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+              <tr x-show="!integrations.length && !integrationsLoading">
+                <td colspan="6" class="px-5 py-8 text-center text-xs text-slate-400 italic">
+                  No D365 integrations found. Rows are created automatically when a namespace first syncs.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="flex justify-between items-center px-5 py-3 border-t border-slate-100 text-xs text-slate-500">
+          <p>Total: <span class="font-mono font-bold text-slate-800" x-text="integrationsTotal"></span></p>
+          <div class="flex gap-2">
+            <button type="button" @click="integrationsPage = Math.max(1, integrationsPage - 1); fetchIntegrations()"
+                    :disabled="integrationsPage <= 1 || integrationsLoading"
+                    class="rounded-lg border border-slate-300 px-3 py-1.5 font-bold disabled:opacity-40">Prev</button>
+            <button type="button" @click="integrationsPage++; fetchIntegrations()"
+                    :disabled="integrationsLoading || integrationsPage * 20 >= integrationsTotal"
+                    class="rounded-lg border border-slate-300 px-3 py-1.5 font-bold disabled:opacity-40">Next</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- D365 ↔ NetBox Cross-Reference Mappings -->
+      <section class="rounded-xl border border-indigo-200 bg-white shadow-sm overflow-hidden">
+        <div class="flex flex-wrap items-center justify-between gap-3 px-5 py-3 border-b border-indigo-100 bg-indigo-50/50">
+          <div>
+            <h3 class="text-[11px] font-bold uppercase tracking-widest text-indigo-800">D365 ↔ NetBox Cross-Reference</h3>
+            <p class="text-[9px] text-slate-500 mt-0.5">
+              Identity mappings: CRM Accounts → NetBox Tenants · Functional Locations → Sites
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-2 items-center">
+            <select x-model="nbEntityFilter"
+                    class="rounded-lg border border-slate-300 px-2.5 py-1 text-[10px] font-mono focus:border-indigo-400 outline-none transition">
+              <option value="all">All types</option>
+              <option value="account">Accounts → Tenants</option>
+              <option value="functional_location">Locations → Sites</option>
+            </select>
+            <label class="flex items-center gap-1.5 text-[10px] font-semibold text-slate-600 cursor-pointer">
+              <input type="checkbox" x-model="nbConfirmedOnly" class="rounded border-slate-300 text-indigo-600">
+              Confirmed only
+            </label>
+            <button type="button" @click="nbPage = 1; fetchNbMappings()"
+                    class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-[10px] font-bold text-slate-700 hover:border-indigo-400 transition shadow-sm">
+              Search
+            </button>
+            <button type="button" @click="triggerBridgeSync()"
+                    :disabled="nbBridgeSyncing || !config.enabled"
+                    class="rounded-lg bg-indigo-600 text-white px-3 py-1.5 text-[10px] font-bold hover:bg-indigo-700 transition disabled:opacity-40 whitespace-nowrap">
+              <span x-show="!nbBridgeSyncing">Run bridge sync…</span>
+              <span x-show="nbBridgeSyncing">Syncing…</span>
+            </button>
+          </div>
+        </div>
+
+        <div x-show="nbLoading" class="px-5 py-8 text-center text-xs text-slate-400">Loading mappings…</div>
+        <div x-show="!nbLoading" class="overflow-x-auto">
+          <table class="min-w-full text-left text-xs">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">D365 Entity</th>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">NetBox Entity</th>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Method</th>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Confidence</th>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Confirmed</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="row in nbMappings" :key="row.id">
+                <tr class="border-b border-slate-100 hover:bg-indigo-50/30 transition">
+                  <td class="px-4 py-3 align-middle">
+                    <p class="font-bold text-slate-800" x-text="row.d365_entity_name"></p>
+                    <p class="text-[9px] font-mono text-slate-400 mt-0.5 capitalize" x-text="row.d365_entity_type.replace('_',' ')"></p>
+                  </td>
+                  <td class="px-4 py-3 align-middle">
+                    <p class="font-bold text-indigo-700" x-text="row.nb_entity_name"></p>
+                    <p class="text-[9px] font-mono text-slate-400 mt-0.5" x-text="'#' + row.nb_entity_id + ' · ' + row.nb_entity_type + (row.nb_entity_slug ? ' · ' + row.nb_entity_slug : '')"></p>
+                  </td>
+                  <td class="px-4 py-3 align-middle">
+                    <span class="px-2 py-0.5 rounded-full text-[9px] font-bold border"
+                          :class="{
+                            'bg-emerald-50 text-emerald-800 border-emerald-200': row.match_method === 'custom_field' || row.match_method === 'exact',
+                            'bg-blue-50 text-blue-800 border-blue-200': row.match_method === 'slug',
+                            'bg-amber-50 text-amber-900 border-amber-200': row.match_method === 'fuzzy',
+                            'bg-purple-50 text-purple-800 border-purple-200': row.match_method === 'manual',
+                          }"
+                          x-text="row.match_method"></span>
+                  </td>
+                  <td class="px-4 py-3 align-middle">
+                    <div class="flex items-center gap-2">
+                      <div class="w-16 h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                        <div class="h-full rounded-full transition-all"
+                             :class="row.match_confidence >= 0.9 ? 'bg-emerald-500' : row.match_confidence >= 0.75 ? 'bg-amber-400' : 'bg-rose-400'"
+                             :style="'width:' + (row.match_confidence * 100).toFixed(0) + '%'"></div>
+                      </div>
+                      <span class="text-[10px] font-mono font-bold" x-text="(row.match_confidence * 100).toFixed(0) + '%'"></span>
+                    </div>
+                  </td>
+                  <td class="px-4 py-3 align-middle">
+                    <button type="button"
+                            @click="toggleMappingConfirm(row)"
+                            :disabled="row._confirming"
+                            class="px-2.5 py-1 rounded-lg text-[10px] font-bold border transition disabled:opacity-40"
+                            :class="row.confirmed
+                              ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                              : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'">
+                      <span x-show="!row._confirming" x-text="row.confirmed ? '✓ Confirmed' : 'Unconfirmed'"></span>
+                      <span x-show="row._confirming">…</span>
+                    </button>
+                  </td>
+                </tr>
+              </template>
+              <tr x-show="!nbMappings.length && !nbLoading">
+                <td colspan="5" class="px-5 py-8 text-center text-xs text-slate-400 italic">
+                  No cross-reference mappings found. Run a bridge sync to discover matches.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="flex justify-between items-center px-5 py-3 border-t border-slate-100 text-xs text-slate-500">
+          <div class="flex items-center gap-4">
+            <p>Total: <span class="font-mono font-bold text-slate-800" x-text="nbTotal"></span></p>
+            <div class="flex gap-3 text-[9px]">
+              <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>exact / CF</span>
+              <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-blue-400 inline-block"></span>slug</span>
+              <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-400 inline-block"></span>fuzzy</span>
+              <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-purple-400 inline-block"></span>manual</span>
+            </div>
+          </div>
+          <div class="flex gap-2">
+            <button type="button" @click="nbPage = Math.max(1, nbPage - 1); fetchNbMappings()"
+                    :disabled="nbPage <= 1 || nbLoading"
+                    class="rounded-lg border border-slate-300 px-3 py-1.5 font-bold disabled:opacity-40">Prev</button>
+            <button type="button" @click="nbPage++; fetchNbMappings()"
+                    :disabled="nbLoading || nbPage * 50 >= nbTotal"
+                    class="rounded-lg border border-slate-300 px-3 py-1.5 font-bold disabled:opacity-40">Next</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLA Breach Log -->
+      <section class="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+        <div class="flex flex-wrap items-center justify-between gap-3 px-5 py-3 border-b border-slate-100 bg-slate-50">
+          <div>
+            <h3 class="text-[11px] font-bold uppercase tracking-widest text-slate-700">SLA Breach Log</h3>
+            <p class="text-[9px] text-slate-500 mt-0.5">WORM-verified entries from <code class="font-mono bg-slate-100 px-1 rounded">event_log</code> where <code class="font-mono bg-slate-100 px-1 rounded">event_type = 'd365_sla_breach'</code></p>
+          </div>
+          <div class="flex flex-wrap gap-2 items-end">
+            <label>
+              <span class="block text-[9px] uppercase tracking-wider text-slate-500 font-semibold mb-0.5">Namespace filter</span>
+              <input type="text" x-model="slaNsFilter" placeholder="UUID (optional)"
+                     class="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-mono focus:border-indigo-400 outline-none transition w-52">
+            </label>
+            <button type="button" @click="slaPage = 1; fetchSlaBreaches()"
+                    class="rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-[10px] font-bold text-slate-700 hover:border-indigo-400 transition shadow-sm">
+              Search
+            </button>
+          </div>
+        </div>
+
+        <div x-show="slaLoading" class="px-5 py-8 text-center text-xs text-slate-400">Loading breach log…</div>
+        <div x-show="!slaLoading" class="overflow-x-auto">
+          <table class="min-w-full text-left text-xs">
+            <thead class="bg-slate-50 border-b border-slate-200">
+              <tr>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Seq</th>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Occurred</th>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Namespace</th>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Agent</th>
+                <th class="px-4 py-2.5 font-bold text-slate-600 uppercase tracking-wider">Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="row in slaBreaches" :key="row.id">
+                <tr class="border-b border-slate-100 hover:bg-rose-50/40 transition">
+                  <td class="px-4 py-3 align-middle font-mono text-slate-500 text-[10px]" x-text="row.event_seq"></td>
+                  <td class="px-4 py-3 align-middle font-mono text-[10px] text-slate-700" x-text="fmtIsoShort(row.occurred_at)"></td>
+                  <td class="px-4 py-3 align-middle font-mono text-[10px] text-indigo-700 truncate max-w-[120px]" x-text="row.namespace_id.slice(0,8) + '…'"></td>
+                  <td class="px-4 py-3 align-middle text-[10px] text-slate-600" x-text="row.agent_id || '—'"></td>
+                  <td class="px-4 py-3 align-middle">
+                    <p class="text-[10px] text-slate-700" x-text="row.result_summary || '—'"></p>
+                    <template x-if="row.params">
+                      <p class="text-[9px] font-mono text-slate-400 mt-0.5 truncate max-w-[240px]" x-text="JSON.stringify(row.params)"></p>
+                    </template>
+                  </td>
+                </tr>
+              </template>
+              <tr x-show="!slaBreaches.length && !slaLoading">
+                <td colspan="5" class="px-5 py-8 text-center text-xs text-slate-400 italic">No SLA breach records found.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="flex justify-between items-center px-5 py-3 border-t border-slate-100 text-xs text-slate-500">
+          <p>Total: <span class="font-mono font-bold text-slate-800" x-text="slaTotal"></span></p>
+          <div class="flex gap-2">
+            <button type="button" @click="slaPage = Math.max(1, slaPage - 1); fetchSlaBreaches()"
+                    :disabled="slaPage <= 1 || slaLoading"
+                    class="rounded-lg border border-slate-300 px-3 py-1.5 font-bold disabled:opacity-40">Prev</button>
+            <button type="button" @click="slaPage++; fetchSlaBreaches()"
+                    :disabled="slaLoading || slaPage * 50 >= slaTotal"
+                    class="rounded-lg border border-slate-300 px-3 py-1.5 font-bold disabled:opacity-40">Next</button>
+          </div>
+        </div>
+      </section>
+
+    </div>
+    <!-- D365 Sync modal -->
+    <div x-show="syncModal.open" x-cloak class="fixed inset-0 z-[70] flex items-center justify-center p-4" style="display:none;">
+      <div class="absolute inset-0 bg-slate-900/55" @click="syncModal.open = false"></div>
+      <div class="relative z-10 max-w-md w-full rounded-2xl bg-white border border-slate-200 shadow-2xl p-6">
+        <h4 class="text-sm font-bold text-slate-900 uppercase tracking-wide">Sync Dynamics 365</h4>
+        <template x-if="syncModal.row">
+          <p class="text-xs text-slate-500 mt-1">
+            Namespace: <span class="font-bold text-indigo-700" x-text="syncModal.row.namespace_slug"></span>
+          </p>
+        </template>
+        <p class="text-xs text-slate-600 mt-3 mb-3 font-medium">Select entity types to sync (all = full sync):</p>
+
+        <!-- Entity type checkboxes grouped by category -->
+        <div class="space-y-3">
+          <div>
+            <p class="text-[9px] uppercase tracking-wider text-slate-500 font-bold mb-1.5">Core CRM</p>
+            <div class="flex flex-wrap gap-2">
+              <template x-for="et in ['accounts','contacts','opportunities','incidents']" :key="et">
+                <label class="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" :value="et" x-model="syncModal.selectedTypes"
+                         class="rounded border-slate-300 text-indigo-600">
+                  <span class="text-[10px] font-mono capitalize" x-text="et.replace('_',' ')"></span>
+                </label>
+              </template>
+            </div>
+          </div>
+          <div>
+            <p class="text-[9px] uppercase tracking-wider text-slate-500 font-bold mb-1.5">Field Service</p>
+            <div class="flex flex-wrap gap-2">
+              <template x-for="et in ['work_orders','agreements','customer_assets','functional_locations']" :key="et">
+                <label class="flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" :value="et" x-model="syncModal.selectedTypes"
+                         class="rounded border-slate-300 text-indigo-600">
+                  <span class="text-[10px] font-mono capitalize" x-text="et.replace(/_/g,' ')"></span>
+                </label>
+              </template>
+            </div>
+          </div>
+          <div>
+            <p class="text-[9px] uppercase tracking-wider text-slate-500 font-bold mb-1.5">Knowledge</p>
+            <div class="flex flex-wrap gap-2">
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" value="knowledge_articles" x-model="syncModal.selectedTypes"
+                       class="rounded border-slate-300 text-indigo-600">
+                <span class="text-[10px] font-mono">knowledge articles</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4 flex gap-2">
+          <button type="button" @click="syncModal.selectedTypes = ['accounts','contacts','opportunities','incidents','work_orders','agreements','customer_assets','functional_locations','knowledge_articles']"
+                  class="text-[10px] font-bold text-indigo-600 hover:underline">Select all</button>
+          <button type="button" @click="syncModal.selectedTypes = []"
+                  class="text-[10px] font-bold text-slate-500 hover:underline">Clear</button>
+        </div>
+
+        <div class="mt-5 flex justify-end gap-2">
+          <button type="button" class="px-4 py-2 text-xs font-bold rounded-lg border border-slate-300 text-slate-700"
+                  @click="syncModal.open = false">Cancel</button>
+          <button type="button"
+                  class="px-4 py-2 text-xs font-bold rounded-lg bg-indigo-600 text-white disabled:opacity-50"
+                  :disabled="syncModal.running || !syncModal.selectedTypes.length"
+                  @click="confirmSync()">
+            <span x-show="!syncModal.running">Start sync</span>
+            <span x-show="syncModal.running">Syncing…</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- /Tab: Dynamics 365 -->
+
     </div><!-- /inner max-width column -->
 
   </main>
@@ -2778,6 +3201,7 @@
           { slug: 'datastores', label: 'Datastores' },
           { slug: 'tools', label: 'Tools' },
           { slug: 'maintenance', label: 'Maintenance' },
+          { slug: 'd365', label: 'Dynamics 365' },
         ],
         adminTab: 'fleet',
 
@@ -4449,6 +4873,223 @@
             this.saveLoading = false;
           }
         }
+      }));
+
+      Alpine.data('d365Panel', () => ({
+        config: {},
+        configLoading: false,
+
+        integrations: [],
+        integrationsTotal: 0,
+        integrationsLoading: false,
+        integrationsPage: 1,
+
+        slaBreaches: [],
+        slaTotal: 0,
+        slaLoading: false,
+        slaPage: 1,
+        slaNsFilter: '',
+
+        syncModal: {
+          open: false,
+          row: null,
+          running: false,
+          selectedTypes: [
+            'accounts','contacts','opportunities','incidents',
+            'work_orders','agreements','customer_assets',
+            'functional_locations','knowledge_articles',
+          ],
+        },
+
+        // D365 ↔ NetBox bridge state
+        nbMappings: [],
+        nbTotal: 0,
+        nbLoading: false,
+        nbPage: 1,
+        nbEntityFilter: 'all',
+        nbConfirmedOnly: false,
+        nbBridgeSyncing: false,
+        nbBridgeSyncNsId: '',   // namespace_id to use for bridge sync (first integration)
+
+        async init() {
+          await Promise.all([this.fetchConfig(), this.fetchIntegrations(), this.fetchSlaBreaches(), this.fetchNbMappings()]);
+        },
+
+        fmtIsoShort(iso) {
+          if (!iso) return '—';
+          try {
+            const d = new Date(iso);
+            return d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+          } catch (_) { return iso; }
+        },
+
+        async fetchConfig() {
+          this.configLoading = true;
+          try {
+            const resp = await signedFetch(undefined, '/api/admin/d365/config');
+            if (!resp.ok) throw new Error((await resp.json()).error || 'Failed to load config');
+            this.config = await resp.json();
+          } catch (err) {
+            trimcpShellToast(err.message || String(err), 'error');
+          } finally {
+            this.configLoading = false;
+          }
+        },
+
+        async fetchIntegrations() {
+          this.integrationsLoading = true;
+          try {
+            const resp = await signedFetch(undefined, '/api/admin/d365/integrations', {
+              query: { page: this.integrationsPage, limit: 20 }
+            });
+            if (!resp.ok) throw new Error((await resp.json()).error || 'Failed to load integrations');
+            const data = await resp.json();
+            this.integrations = (data.items || []).map(r => ({ ...r, _syncing: false, _toggling: false }));
+            this.integrationsTotal = data.total || 0;
+          } catch (err) {
+            trimcpShellToast(err.message || String(err), 'error');
+          } finally {
+            this.integrationsLoading = false;
+          }
+        },
+
+        async toggleNamespaceD365(row) {
+          row._toggling = true;
+          try {
+            const resp = await signedFetch(undefined, `/api/admin/d365/namespace/${row.namespace_id}/d365-enabled`, {
+              method: 'POST',
+              body: { enabled: !row.d365_enabled }
+            });
+            if (!resp.ok) throw new Error((await resp.json()).error || 'Failed to update');
+            const data = await resp.json();
+            row.d365_enabled = data.d365_enabled;
+            trimcpShellToast(`D365 sync ${data.d365_enabled ? 'enabled' : 'disabled'} for ${row.namespace_slug}`, 'ok');
+          } catch (err) {
+            trimcpShellToast(err.message || String(err), 'error');
+          } finally {
+            row._toggling = false;
+          }
+        },
+
+        openSyncModal(row) {
+          this.syncModal.row = row;
+          this.syncModal.running = false;
+          // reset to full sync
+          this.syncModal.selectedTypes = [
+            'accounts','contacts','opportunities','incidents',
+            'work_orders','agreements','customer_assets',
+            'functional_locations','knowledge_articles',
+          ];
+          this.syncModal.open = true;
+        },
+
+        async confirmSync() {
+          const row = this.syncModal.row;
+          if (!row) return;
+          this.syncModal.running = true;
+          row._syncing = true;
+          try {
+            const body = { namespace_id: row.namespace_id };
+            if (this.syncModal.selectedTypes.length < 9) {
+              body.entity_types = this.syncModal.selectedTypes;
+            }
+            const resp = await signedFetch(undefined, '/api/admin/d365/sync', {
+              method: 'POST',
+              body,
+            });
+            if (!resp.ok) throw new Error((await resp.json()).error || 'Sync failed');
+            const data = await resp.json();
+            const stats = data.stats && data.stats.entity_results
+              ? data.stats.entity_results.map(r => `${r.entity}:${r.edges_written ?? r.upserted ?? 0}`).join(' ')
+              : 'done';
+            trimcpShellToast(`Sync complete for ${row.namespace_slug} — ${stats}`, 'ok');
+            this.syncModal.open = false;
+            await this.fetchIntegrations();
+          } catch (err) {
+            trimcpShellToast(err.message || String(err), 'error');
+          } finally {
+            this.syncModal.running = false;
+            row._syncing = false;
+          }
+        },
+
+        async fetchNbMappings() {
+          this.nbLoading = true;
+          try {
+            const query = { page: this.nbPage, limit: 50 };
+            if (this.nbEntityFilter !== 'all') query.d365_entity_type = this.nbEntityFilter;
+            if (this.nbConfirmedOnly) query.confirmed = 'true';
+            const resp = await signedFetch(undefined, '/api/admin/d365/netbox-mappings', { query });
+            if (!resp.ok) throw new Error((await resp.json()).error || 'Failed to load mappings');
+            const data = await resp.json();
+            this.nbMappings = (data.items || []).map(r => ({ ...r, _confirming: false }));
+            this.nbTotal = data.total || 0;
+          } catch (err) {
+            trimcpShellToast(err.message || String(err), 'error');
+          } finally {
+            this.nbLoading = false;
+          }
+        },
+
+        async toggleMappingConfirm(row) {
+          row._confirming = true;
+          try {
+            const resp = await signedFetch(undefined, `/api/admin/d365/netbox-mappings/${row.id}/confirm`, {
+              method: 'POST',
+              body: { confirmed: !row.confirmed }
+            });
+            if (!resp.ok) throw new Error((await resp.json()).error || 'Failed to update');
+            const data = await resp.json();
+            row.confirmed = data.confirmed;
+            trimcpShellToast(`Mapping ${data.confirmed ? 'confirmed' : 'unconfirmed'}: ${row.d365_entity_name} → ${row.nb_entity_name}`, 'ok');
+          } catch (err) {
+            trimcpShellToast(err.message || String(err), 'error');
+          } finally {
+            row._confirming = false;
+          }
+        },
+
+        async triggerBridgeSync() {
+          // Use the first integration's namespace_id, or let user pick
+          const ns = this.integrations.length ? this.integrations[0] : null;
+          if (!ns) {
+            trimcpShellToast('No integrations found — enable D365 on a namespace first', 'error');
+            return;
+          }
+          this.nbBridgeSyncing = true;
+          try {
+            const resp = await signedFetch(undefined, '/api/admin/d365/netbox-bridge/sync', {
+              method: 'POST',
+              body: { namespace_id: ns.namespace_id }
+            });
+            if (!resp.ok) throw new Error((await resp.json()).error || 'Bridge sync failed');
+            const data = await resp.json();
+            const total = data.stats ? data.stats.total_edges : '?';
+            trimcpShellToast(`Bridge sync complete — ${total} cross-reference edges written`, 'ok');
+            await this.fetchNbMappings();
+          } catch (err) {
+            trimcpShellToast(err.message || String(err), 'error');
+          } finally {
+            this.nbBridgeSyncing = false;
+          }
+        },
+
+        async fetchSlaBreaches() {
+          this.slaLoading = true;
+          try {
+            const query = { page: this.slaPage, limit: 50 };
+            if (this.slaNsFilter.trim()) query.namespace_id = this.slaNsFilter.trim();
+            const resp = await signedFetch(undefined, '/api/admin/d365/sla-breaches', { query });
+            if (!resp.ok) throw new Error((await resp.json()).error || 'Failed to load SLA breaches');
+            const data = await resp.json();
+            this.slaBreaches = data.items || [];
+            this.slaTotal = data.total || 0;
+          } catch (err) {
+            trimcpShellToast(err.message || String(err), 'error');
+          } finally {
+            this.slaLoading = false;
+          }
+        },
       }));
 
       Alpine.data('toolsPanel', () => ({

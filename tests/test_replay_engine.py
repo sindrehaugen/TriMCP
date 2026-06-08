@@ -8,7 +8,6 @@ from typing import get_args
 from unittest.mock import MagicMock
 
 import pytest
-
 from nce.event_types import EventType
 from nce.replay import (
     ForkedReplay,
@@ -62,3 +61,240 @@ async def test_replay_mode_error_on_invalid_llm_mode() -> None:
             target_namespace_id=ns,
             source_namespace_id=ns,
         )
+
+
+@pytest.mark.asyncio
+async def test_replay_checksum_error_on_payload_hash_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nce.replay as replay_mod
+    from nce.replay import ReplayChecksumError
+
+    ns = uuid.UUID("00000000-0000-4000-8000-000000000001")
+    src = _EventRow(
+        event_id=uuid.uuid4(),
+        event_seq=1,
+        event_type="store_memory",
+        occurred_at=datetime.now(timezone.utc),
+        agent_id="agent-1",
+        params={},
+        result_summary=None,
+        parent_event_id=None,
+        llm_payload_uri="nce-llm-payloads/ns/event.json",
+        llm_payload_hash=b"invalid-hash-here-32-bytes-long",
+    )
+
+    mock_payload = {"prompt": "test prompt", "response": {"test": "response"}}
+
+    async def fake_fetch_payload(uri: str) -> dict:
+        return mock_payload
+
+    monkeypatch.setattr(replay_mod, "_fetch_llm_payload", fake_fetch_payload)
+
+    with pytest.raises(ReplayChecksumError, match="LLM payload hash mismatch"):
+        await _resolve_llm_payload(
+            src,
+            replay_mode="deterministic",
+            config_overrides=None,
+            target_namespace_id=ns,
+            source_namespace_id=ns,
+        )
+
+
+@pytest.mark.asyncio
+async def test_replay_checksum_success_on_correct_hash(monkeypatch: pytest.MonkeyPatch) -> None:
+    import hashlib
+
+    import nce.replay as replay_mod
+    from nce.signing import canonical_json
+
+    ns = uuid.UUID("00000000-0000-4000-8000-000000000001")
+    mock_payload = {"prompt": "test prompt", "response": {"test": "response"}}
+    expected_hash = hashlib.sha256(canonical_json(mock_payload)).digest()
+
+    src = _EventRow(
+        event_id=uuid.uuid4(),
+        event_seq=1,
+        event_type="store_memory",
+        occurred_at=datetime.now(timezone.utc),
+        agent_id="agent-1",
+        params={},
+        result_summary=None,
+        parent_event_id=None,
+        llm_payload_uri="nce-llm-payloads/ns/event.json",
+        llm_payload_hash=expected_hash,
+    )
+
+    async def fake_fetch_payload(uri: str) -> dict:
+        return mock_payload
+
+    async def fake_put_payload(uri: str, payload: dict) -> bytes:
+        return expected_hash
+
+    monkeypatch.setattr(replay_mod, "_fetch_llm_payload", fake_fetch_payload)
+    monkeypatch.setattr(replay_mod, "_put_llm_payload", fake_put_payload)
+
+    payload, fork_uri, fork_hash = await _resolve_llm_payload(
+        src,
+        replay_mode="deterministic",
+        config_overrides=None,
+        target_namespace_id=ns,
+        source_namespace_id=ns,
+    )
+
+    assert payload == mock_payload
+    assert fork_hash == expected_hash
+
+
+@pytest.mark.asyncio
+async def test_handle_store_memory_handler() -> None:
+    from unittest.mock import AsyncMock
+
+    from nce.replay import _handle_store_memory
+
+    mock_conn = AsyncMock()
+    # Mock conn.fetchrow for the source memories SELECT query and memory_salience SELECT query
+    mock_conn.fetchrow.side_effect = [
+        # First query: SELECT embedding, assertion_type, memory_type, metadata FROM memories
+        {
+            "embedding": [0.1] * 768,
+            "assertion_type": "fact",
+            "memory_type": "episodic",
+            "metadata": {"some_key": "some_val"},
+        },
+        # Second query: SELECT salience_score FROM memory_salience
+        {
+            "salience_score": 0.85,
+        },
+    ]
+
+    target_ns = uuid.uuid4()
+    src_ns = uuid.uuid4()
+    src_mem_id = uuid.uuid4()
+    payload_ref = "0123456789abcdef01234567"  # 24-hex ObjectId
+
+    src = _EventRow(
+        event_id=uuid.uuid4(),
+        event_seq=1,
+        event_type="store_memory",
+        occurred_at=datetime.now(timezone.utc),
+        agent_id="agent-1",
+        params={
+            "memory_id": str(src_mem_id),
+            "source_namespace_id": str(src_ns),
+            "payload_ref": payload_ref,
+        },
+        result_summary=None,
+        parent_event_id=None,
+        llm_payload_uri=None,
+        llm_payload_hash=None,
+    )
+
+    result = await _handle_store_memory(
+        mock_conn,
+        src,
+        target_ns,
+        None,
+        None,
+    )
+
+    # Verify that the correct queries and inserts were made
+    assert result["source_memory_id"] == str(src_mem_id)
+    assert result["target_namespace"] == str(target_ns)
+    new_mem_id = uuid.UUID(result["new_memory_id"])
+
+    # Check fetchrow calls
+    # Call 1: memories select
+    # Call 2: memory_salience select
+    assert mock_conn.fetchrow.call_count == 2
+
+    # Check execute calls
+    # Call 1: INSERT INTO memories
+    # Call 2: INSERT INTO memory_salience
+    assert mock_conn.execute.call_count == 2
+
+    # Verify the arguments to INSERT INTO memories
+    memories_insert_call = mock_conn.execute.call_args_list[0]
+    sql_query_memories = memories_insert_call[0][0]
+    args_memories = memories_insert_call[0][1:]
+
+    assert "INSERT INTO memories" in sql_query_memories
+    assert "summary" not in sql_query_memories
+    assert "salience" not in sql_query_memories
+    assert "payload_ref" in sql_query_memories
+    assert args_memories[0] == new_mem_id
+    assert args_memories[1] == target_ns
+    assert args_memories[2] == "agent-1"
+    assert args_memories[3] == [0.1] * 768
+    assert args_memories[4] == "fact"
+    assert args_memories[5] == "episodic"
+    assert args_memories[6] == payload_ref
+
+    # Verify the arguments to INSERT INTO memory_salience
+    salience_insert_call = mock_conn.execute.call_args_list[1]
+    sql_query_salience = salience_insert_call[0][0]
+    args_salience = salience_insert_call[0][1:]
+
+    assert "INSERT INTO memory_salience" in sql_query_salience
+    assert args_salience[0] == new_mem_id
+    assert args_salience[1] == "agent-1"
+    assert args_salience[2] == target_ns
+    assert args_salience[3] == 0.85
+
+
+@pytest.mark.asyncio
+async def test_handle_boost_memory_handler() -> None:
+    from unittest.mock import AsyncMock
+
+    from nce.replay import _handle_boost_memory
+
+    mock_conn = AsyncMock()
+    mock_conn.execute.return_value = "UPDATE 1"
+
+    target_ns = uuid.uuid4()
+    src_mem_id = uuid.uuid4()
+    factor = 0.25
+
+    src = _EventRow(
+        event_id=uuid.uuid4(),
+        event_seq=1,
+        event_type="boost_memory",
+        occurred_at=datetime.now(timezone.utc),
+        agent_id="agent-1",
+        params={
+            "memory_id": str(src_mem_id),
+            "factor": factor,
+        },
+        result_summary=None,
+        parent_event_id=None,
+        llm_payload_uri=None,
+        llm_payload_hash=None,
+    )
+
+    result = await _handle_boost_memory(
+        mock_conn,
+        src,
+        target_ns,
+        None,
+        None,
+    )
+
+    assert result["rows_updated"] == 1
+    assert result["factor"] == factor
+
+    mock_conn.execute.assert_called_once()
+    execute_call = mock_conn.execute.call_args
+    sql_query = execute_call[0][0]
+    args = execute_call[0][1:]
+
+    assert "INSERT INTO memory_salience" in sql_query
+    assert "memories" in sql_query
+    assert "ON CONFLICT (memory_id, agent_id) DO UPDATE" in sql_query
+    assert (
+        "salience_score = LEAST(1.0, memory_salience.salience_score + EXCLUDED.salience_score)"
+        in sql_query
+    )
+    assert args[0] == factor
+    assert args[1] == target_ns
+    assert args[2] == "agent-1"
+    assert args[3] == str(src_mem_id)

@@ -7,26 +7,20 @@ and synaptic weight adaptation.
 
 from __future__ import annotations
 
-import asyncio
 import uuid
-from datetime import datetime, timezone
-from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 import asyncpg
-
+import pytest
 from nce.graph_query import (
-    SpikingActivationEngine,
-    adapt_synaptic_weights,
-    GraphRAGTraverser,
-    Subgraph,
-    GraphNode,
     GraphEdge,
+    GraphNode,
+    GraphRAGTraverser,
+    SpikingActivationEngine,
+    Subgraph,
+    adapt_synaptic_weights,
 )
-from tests.fixtures.mock_db import MockConnection, MockTransaction, MockPool
-
+from tests.fixtures.mock_db import MockConnection, MockPool
 
 # ---------------------------------------------------------------------------
 # 1. SpikingActivationEngine Unit Tests
@@ -571,15 +565,13 @@ class TestNeuromorphicSearch:
             GraphNode(label="switch_01", entity_type="device", payload_ref=None, distance=0.1)
         ])
         
-        # switch_01 connected to router_02. With high decay (e.g. 0.2) and max_depth = 5,
+        # switch_01 connected to router_02. With high decay (e.g. 0.2) and max_depth = 3,
         # router_02 potential will decay to:
         # Step 1: switch_01 fires (potential 1.0). router_02 potential = alpha (1.0) * 1.0 * 0.4 = 0.4.
         # Step 2: router_02 decays to 0.4 * 0.2 = 0.08.
         # Step 3: router_02 decays to 0.08 * 0.2 = 0.016.
-        # Step 4: router_02 decays to 0.016 * 0.2 = 0.0032.
-        # Step 5: router_02 decays to 0.0032 * 0.2 = 0.00064.
         # Threshold is theta = 0.5. sub_threshold = 0.05.
-        # At final tick, router_02 potential (0.00064) is way below sub_threshold (0.05).
+        # At final tick, router_02 potential (0.016) is way below sub_threshold (0.05).
         # But its peak potential was 0.4 (which is >= 0.05).
         # It must be retained because of max_potentials tracking.
         traverser._bfs = AsyncMock(return_value=(
@@ -598,11 +590,11 @@ class TestNeuromorphicSearch:
 
         traverser._hydrate_sources = AsyncMock(return_value=[])
 
-        # Run neuromorphic search with max_depth=5 and decay=0.2
+        # Run neuromorphic search with max_depth=3 and decay=0.2
         subgraph = await traverser.neuromorphic_search(
             query="switch status",
             namespace_id=str(ns),
-            max_depth=5,
+            max_depth=3,
             theta=0.5,
             decay=0.2,
             alpha=1.0,

@@ -21,12 +21,12 @@ from nce.a2a import (
     A2AGrantResponse,
     create_grant,
     enforce_scope,
+    inspect_grant,
     list_grants,
     revoke_grant,
-    verify_token,
-    verify_grant_status,
     update_grant_scopes,
-    inspect_grant,
+    verify_grant_status,
+    verify_token,
 )
 from nce.auth import NamespaceContext
 from nce.mcp_errors import mcp_handler

@@ -655,11 +655,68 @@ async def test_run_gc_loop_cancelled_error_propagates():
             new_callable=AsyncMock,
             return_value={"deleted_docs": 0, "deleted_salience": 0, "deleted_contradictions": 0},
         ),
-        patch(
-            "nce.garbage_collector._release_gc_lock",
-            new_callable=AsyncMock,
-        ),
+        patch("nce.garbage_collector._release_gc_lock", new_callable=AsyncMock),
         patch("nce.garbage_collector.asyncio.sleep", side_effect=_sleep),
     ):
         with pytest.raises(asyncio.CancelledError):
             await run_gc_loop()
+
+
+@pytest.mark.asyncio
+async def test_fetch_pg_refs_propagates_exception():
+    from nce.garbage_collector import _fetch_pg_refs
+
+    pool = MagicMock()
+    pool.acquire.side_effect = RuntimeError("PG error")
+
+    with pytest.raises(RuntimeError, match="PG error"):
+        await _fetch_pg_refs(pool, [uuid4()])
+
+
+@pytest.mark.asyncio
+async def test_fetch_minio_refs_propagates_exception():
+    from nce.garbage_collector import _fetch_minio_refs
+
+    pool = MagicMock()
+    pool.acquire.side_effect = RuntimeError("MinIO reference query error")
+
+    with pytest.raises(RuntimeError, match="MinIO reference query error"):
+        await _fetch_minio_refs(pool, [uuid4()])
+
+
+@pytest.mark.asyncio
+async def test_collect_minio_orphans_sweeps_incomplete_uploads():
+    from datetime import datetime, timedelta, timezone
+
+    from nce.garbage_collector import _collect_minio_orphans
+
+    minio_client = MagicMock()
+
+    bucket = MagicMock()
+    bucket.name = "mcp-test-bucket"
+    minio_client.list_buckets.return_value = [bucket]
+
+    minio_client.list_objects.return_value = []
+
+    upload_stale = MagicMock()
+    upload_stale.object_name = "stale-upload"
+    upload_stale.upload_id = "stale-id"
+    upload_stale.initiated_time = datetime.now(timezone.utc) - timedelta(days=2)
+
+    upload_fresh = MagicMock()
+    upload_fresh.object_name = "fresh-upload"
+    upload_fresh.upload_id = "fresh-id"
+    upload_fresh.initiated_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+
+    res = MagicMock()
+    res.uploads = [upload_stale, upload_fresh]
+    res.is_truncated = False
+
+    minio_client._list_multipart_uploads.return_value = res
+
+    count = await _collect_minio_orphans(minio_client, minio_refs=set())
+
+    minio_client._abort_multipart_upload.assert_called_once_with(
+        "mcp-test-bucket", "stale-upload", "stale-id"
+    )
+    assert count == 1

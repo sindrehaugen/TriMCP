@@ -6,8 +6,9 @@ Generalized connection, transaction, and pool mocks for PostgreSQL database unit
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator
+from typing import Any
 
 
 class MockTransaction:

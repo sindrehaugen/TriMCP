@@ -7,17 +7,11 @@ Unit tests for the Longitudinal Operator Stress Tracking system (StressTracker).
 from __future__ import annotations
 
 import datetime
-import os
 import uuid
-from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
-
 from nce.analytics.stress import StressTracker
-from nce.signing import require_master_key, SigningKeyDecryptionError, MasterKey
-
-
+from nce.signing import SigningKeyDecryptionError, require_master_key
 from tests.fixtures.mock_db import MockConnection
 
 

@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from nce.contradictions import ContradictionResult, detect_contradictions
 
 from tests.conftest import first_recorded_contradiction as _first_recorded_contradiction
-from nce.contradictions import ContradictionResult, detect_contradictions
 
 
 def _mock_pg_pool(conn: AsyncMock) -> MagicMock:

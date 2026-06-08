@@ -10,11 +10,10 @@ compatibility with any older enqueue sites that haven't been migrated.
 
 import logging
 
-from redis import from_url
-from rq import Queue, Worker
-
 from nce.config import cfg
 from nce.extractors.dispatch import BATCH_QUEUE, HIGH_PRIORITY_QUEUE
+from redis import from_url
+from rq import Queue, Worker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [Worker] %(levelname)s %(message)s")
 

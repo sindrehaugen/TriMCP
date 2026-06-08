@@ -54,7 +54,7 @@ verify:
 	python verify_v1_launch.py
 
 typecheck:
-	mypy trimcp/
+	mypy nce/
 
 lint:
 	ruff check .

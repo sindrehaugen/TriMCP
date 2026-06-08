@@ -9,14 +9,12 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 import httpx
+import pytest
 from jsonschema import ValidationError
-
+from nce.config import cfg
 from nce.vertical_modules.netbox.discovery import NetBoxDiscoveryReconciler
 from nce.vertical_modules.netbox.graphql_activation import NetBoxGraphQLClient
-from nce.config import cfg
-
 
 GRAPHQL_INVENTORY_RESPONSE = {
     "data": {

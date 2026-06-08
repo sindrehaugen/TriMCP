@@ -54,10 +54,10 @@ _SAFE_ID_RE = re.compile(r"^[\w\-]{1,128}$")
 _MAX_SUMMARY_LEN: int = 8_192
 _MAX_PAYLOAD_LEN: int = 10 * 1024 * 1024  # 10 MB hard cap [GLOBAL CONSTRAINT]
 _MAX_TOP_K: int = 100
-_MAX_DEPTH: int = 3
+MAX_GRAPH_DEPTH: int = 3
 # Subgraph / GraphRAG — keep max_edges_per_node default aligned with ``nce.graph_query.MAX_EDGES_PER_NODE``.
 _MAX_GRAPH_EDGES_PER_NODE: int = 2048
-_MAX_GRAPH_EDGE_PAGE: int = 5000
+MAX_GRAPH_EDGE_PAGE: int = 1000
 _MAX_CONTENT_LEN: int = 1_000_000  # 1 MB of text for embedding
 _MAX_QUERY_LEN: int = 10_000  # search and graph query strings
 
@@ -755,7 +755,7 @@ class GraphSearchRequest(BaseModel):
         description="Filter graph traversal by agent. None = all agents in namespace.",
     )
     query: str = Field(min_length=1)
-    max_depth: int = Field(default=2, ge=1, le=_MAX_DEPTH)
+    max_depth: int = Field(default=2, ge=1, le=MAX_GRAPH_DEPTH)
     anchor_top_k: int = Field(
         default=3,
         ge=1,
@@ -775,7 +775,7 @@ class GraphSearchRequest(BaseModel):
     edge_limit: int | None = Field(
         default=None,
         ge=1,
-        le=_MAX_GRAPH_EDGE_PAGE,
+        le=MAX_GRAPH_EDGE_PAGE,
         description="If set, return at most this many edges after deduplication (pagination).",
     )
     edge_offset: int = Field(

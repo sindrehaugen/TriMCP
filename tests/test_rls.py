@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
-
-from tests.fixtures.fake_asyncpg import RecordingFakeConnection, RecordingFakePool
 from nce.auth import audited_session
 from nce.db_utils import scoped_pg_session
+
+from tests.fixtures.fake_asyncpg import RecordingFakeConnection, RecordingFakePool
 
 
 class MockRLSConnection(RecordingFakeConnection):

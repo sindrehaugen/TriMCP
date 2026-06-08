@@ -36,7 +36,6 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-
 from nce.config import cfg
 from nce.observability import SagaMetrics
 
@@ -196,6 +195,50 @@ class TestSagaMetricsSuccessFailureRecording:
 
         assert fired == [], "on_failure was called on success"
 
+    def test_store_memory_non_opt_in_emits_always(self, monkeypatch) -> None:
+        """SagaMetrics for operation='store_memory' must emit metrics even when NCE_OBSERVABILITY_ENABLED is False."""
+        monkeypatch.setattr(cfg, "NCE_OBSERVABILITY_ENABLED", False)
+        results: list[str] = []
+
+        from nce.observability import SAGA_DURATION
+
+        original_labels = SAGA_DURATION.labels
+
+        def _capture_labels(**kw):
+            if kw.get("operation") == "store_memory":
+                results.append(kw.get("result", ""))
+            return original_labels(**kw)
+
+        monkeypatch.setattr(SAGA_DURATION, "labels", _capture_labels)
+
+        with SagaMetrics("store_memory"):
+            pass
+
+        assert "success" in results, f"Expected 'success' result even with observability disabled, got {results}"
+
+    def test_store_memory_non_opt_in_failure_emits_always(self, monkeypatch) -> None:
+        """SagaMetrics for operation='store_memory' must emit failure metrics even when NCE_OBSERVABILITY_ENABLED is False."""
+        monkeypatch.setattr(cfg, "NCE_OBSERVABILITY_ENABLED", False)
+        results: list[str] = []
+
+        from nce.observability import SAGA_DURATION
+
+        original_labels = SAGA_DURATION.labels
+
+        def _capture_labels(**kw):
+            if kw.get("operation") == "store_memory":
+                results.append(kw.get("result", ""))
+            return original_labels(**kw)
+
+        monkeypatch.setattr(SAGA_DURATION, "labels", _capture_labels)
+
+        with pytest.raises(ValueError):
+            with SagaMetrics("store_memory"):
+                raise ValueError("failed saga")
+
+        assert "failure" in results, f"Expected 'failure' result even with observability disabled, got {results}"
+
+
 
 # ===========================================================================
 # 2. Tracer span wrapping — verifies OTel spans wrap the work
@@ -293,24 +336,24 @@ class TestMemoryModuleStructure:
         return blocks
 
     def test_store_memory_no_pass_in_saga_metrics(self) -> None:
-        """store_memory must NOT have ``pass`` as the only statement in
+        """_run_store_memory_saga must NOT have ``pass`` as the only statement in
         the SagaMetrics context. The fix indented the entire body."""
-        method = self._get_method_ast("store_memory")
+        method = self._get_method_ast("_run_store_memory_saga")
         blocks = self._get_saga_metrics_blocks(method)
 
-        assert len(blocks) >= 1, "No SagaMetrics context found in store_memory"
+        assert len(blocks) >= 1, "No SagaMetrics context found in _run_store_memory_saga"
 
         for with_node in blocks:
             body = with_node.body
             # The body must NOT consist solely of a `pass` statement
             assert not (len(body) == 1 and isinstance(body[0], ast.Pass)), (
-                "SagaMetrics context in store_memory still contains only `pass` — "
+                "SagaMetrics context in _run_store_memory_saga still contains only `pass` — "
                 "the P0 bug fix was not applied. The body must contain the "
                 "actual saga work."
             )
             # The body must have multiple statements (actual work)
             assert len(body) > 2, (
-                f"SagaMetrics context in store_memory has only "
+                f"SagaMetrics context in _run_store_memory_saga has only "
                 f"{len(body)} statement(s) — expected real work"
             )
 
@@ -333,9 +376,9 @@ class TestMemoryModuleStructure:
             )
 
     def test_store_memory_no_unused_metrics_variable(self) -> None:
-        """store_memory must NOT use ``as metrics:`` — the variable was
+        """_run_store_memory_saga must NOT use ``as metrics:`` — the variable was
         unused even before the fix."""
-        method = self._get_method_ast("store_memory")
+        method = self._get_method_ast("_run_store_memory_saga")
 
         for node in ast.walk(method):
             if isinstance(node, ast.With):
@@ -347,7 +390,7 @@ class TestMemoryModuleStructure:
                         and item.optional_vars is not None
                     ):
                         pytest.fail(
-                            "store_memory uses 'with SagaMetrics(...) as metrics:' — "
+                            "_run_store_memory_saga uses 'with SagaMetrics(...) as metrics:' — "
                             "the `metrics` variable is unused. Remove `as metrics:`. "
                             "Fix: with SagaMetrics('store_memory'):"
                         )
@@ -730,3 +773,69 @@ class TestMemoryOrchestratorObservabilityContract:
 
         assert entered[0], "The store_artifact OTel span was never entered"
         assert exited[0], "The store_artifact OTel span was never exited"
+
+
+# ===========================================================================
+# 5. RQ Trace Context Propagation Tests
+# ===========================================================================
+
+def test_rq_trace_context_propagation(monkeypatch) -> None:
+    """Verify that enqueue_traced injects OpenTelemetry trace context and
+    traced_worker_job extracts and restores it correctly in the worker."""
+    monkeypatch.setattr(cfg, "NCE_OBSERVABILITY_ENABLED", True)
+
+    from nce.observability import HAS_OTEL, enqueue_traced, traced_worker_job
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.trace import get_current_span
+
+    if not HAS_OTEL:
+        pytest.skip("OpenTelemetry is not installed")
+
+    # Set up active tracer provider for testing
+    provider = TracerProvider()
+    trace.set_tracer_provider(provider)
+    tracer = trace.get_tracer("test_propagation")
+
+    mock_queue = MagicMock()
+    mock_job = MagicMock()
+    mock_job.meta = {}
+    mock_job.id = "test-job-id"
+    mock_job.origin = "high_priority"
+
+    # Capture the enqueued meta
+    enqueued_meta = {}
+
+    def mock_enqueue(func, *args, **kwargs):
+        nonlocal enqueued_meta
+        enqueued_meta.update(kwargs.get("meta", {}))
+        mock_job.meta = kwargs.get("meta", {})
+        return mock_job
+
+    mock_queue.enqueue = mock_enqueue
+
+    # 1. Enqueue a job under an active span
+    with tracer.start_as_current_span("parent_span") as parent_span:
+        parent_span_context = parent_span.get_span_context()
+        enqueue_traced(mock_queue, lambda: None)
+
+    assert "traceparent" in enqueued_meta
+
+    # 2. Worker executes job, extracts context
+    # Mock rq.get_current_job
+    monkeypatch.setattr("rq.get_current_job", lambda: mock_job)
+
+    extracted_parent_span_id = None
+    inside_span_name = None
+
+    @traced_worker_job("test_worker_task")
+    def run_worker_task():
+        nonlocal extracted_parent_span_id, inside_span_name
+        current_span = get_current_span()
+        inside_span_name = current_span.name
+        extracted_parent_span_id = current_span.parent.span_id if current_span.parent else None
+
+    run_worker_task()
+
+    assert inside_span_name == "rq_worker:test_worker_task"
+    assert extracted_parent_span_id == parent_span_context.span_id

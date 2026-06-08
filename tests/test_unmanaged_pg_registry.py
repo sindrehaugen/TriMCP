@@ -6,7 +6,6 @@ import ast
 from pathlib import Path
 
 import pytest
-
 from nce.db_utils import UNMANAGED_PG_AUDITED_SITES, unmanaged_pg_connection
 
 

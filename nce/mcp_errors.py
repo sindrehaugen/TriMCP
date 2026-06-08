@@ -118,9 +118,18 @@ def client_visible_detail(message: str | None) -> str | None:
 def internal_error_data(exc: Exception, *, request_id: str | None = None) -> dict[str, Any]:
     """Build a production-safe ``error.data`` payload for uncaught handler failures."""
     rid = request_id or str(uuid.uuid4())
+    exc_type = type(exc).__name__
+    if not cfg.IS_DEV:
+        module = exc.__class__.__module__
+        if not (module == "builtins" or module.startswith("nce.")):
+            if "asyncpg" in module or "mongo" in module or "redis" in module:
+                exc_type = "DatabaseError"
+            else:
+                exc_type = "InternalException"
+
     data: dict[str, Any] = {
         "reason": "internal_error",
-        "type": type(exc).__name__,
+        "type": exc_type,
         "request_id": rid,
     }
     detail = client_visible_detail(str(exc))

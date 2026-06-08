@@ -249,6 +249,8 @@ async def extract_pdf(blob: bytes) -> ExtractionResult:
 
         full_text = "\n\n".join(s.text for s in sections)
         metadata = {"page_sections": len(sections), "method_chain": method}
+        import gc
+        gc.collect()
         return ExtractionResult(
             method=method,
             text=full_text,

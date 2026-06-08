@@ -1,338 +1,238 @@
-# NCE — Enterprise-Grade AI Memory Layer
+# NCE — Neuro-Cognitive Engine
 
-NCE is an **MCP-native memory engine** for autonomous agents: a **quad-database** stack (PostgreSQL + pgvector, MongoDB, Redis, MinIO) with a **Saga**-style write path, **temporal** recall (`as_of` time-travel on semantic and graph search), **A2A** scoped sharing between agents, and **background workers** for re-embedding, bridge renewal, and GC. This repository ships **release 2.0.0** (`pyproject.toml`) with a **v1.0 integration surface** in `server.py`, `admin_server.py`, `nce/a2a_server.py`, and `nce/cron.py`.
+> A cognitive memory and reasoning substrate for autonomous agents.
+> Persistent, multi-tenant, time-travelling memory across a four-database stack — with a brain on top.
 
-Longer-horizon roadmap items (universal installers, 300+ language packs, broad format extraction) live in the innovation roadmap; deploy today **from source** with Docker Compose per [deploy/README.md](deploy/README.md).
+<p>
+  <img alt="version" src="https://img.shields.io/badge/version-3.0.0-blue">
+  <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
+  <img alt="protocol" src="https://img.shields.io/badge/MCP-JSON--RPC%202.0-6e40c9">
+  <img alt="license" src="https://img.shields.io/badge/license-Proprietary-lightgrey">
+</p>
 
-## v1.0 capabilities
+NCE began life as **TriMCP** — a Model Context Protocol server backed by a tri-database stack. It has since grown into a full **Neuro-Cognitive Engine**: MCP is now just *one* of several front doors onto a system that consolidates memories while agents sleep, models how knowledge decays and is reinforced, maintains logical consistency across competing beliefs, reasons about cause and effect, and federates memory securely between independent agent networks.
 
-- **Semantic search & GraphRAG**: pgvector nearest-neighbor search, MongoDB hydration, BFS over `kg_edges` with structured subgraphs. Includes automated spaCy entity extraction (bundled).
-- **Zero-Config Deployment**: Automated PostgreSQL schema initialization with extensions (vector, pgcrypto) and mandatory Row Level Security (RLS) policies.
-- **Temporal queries**: Optional **`as_of`** (ISO 8601) on `semantic_search` and `graph_search` via `nce/temporal.py` and orchestrator filters.
-- **A2A protocol**: Grant/verify token flow and JSON-RPC skills on **`nce/a2a_server.py`** (`nce/a2a.py`, `a2a_grants` table).
-- **Quotas & auth**: Namespace-scoped consumption and HMAC-aware admin API patterns with deep v1.0 health monitoring.
-- **Cognitive workers**: **`python -m nce.cron`** — APScheduler jobs for **document-bridge renewal** and **`ReembeddingWorker`** sweeps; **`ConsolidationWorker`** (`nce/consolidation.py`) for sleep-style abstraction (integrate with your scheduler); MCP startup runs **orphan GC** (`run_gc_loop`).
-- **MCP tools**: Memory, media, code indexing (RQ async), bridges, salience, contradictions, embedding migration, **replay** (`replay_observe` / `replay_fork` / `replay_status`), and more — see `TOOLS` in `server.py`.
-- **Quad-DB + Saga**: Mongo payload → Postgres vectors/KG, with rollback on failure.
+The engine is **provider-agnostic** (BYO LLM — local, OpenAI, Anthropic, Gemini, and more), **multi-tenant by construction** (database-enforced Row-Level Security), and **auditable by design** (an append-only, hash-chained event log that makes every state reconstructable and every memory's causal provenance traceable).
 
-## Phase 3 Capabilities (NetBox & Cognitive Extensions)
+---
 
-- **NetBox Integrations**:
-  - **Reconciliation & Staging**: Automatic discovery reconciliation of live topologies against NetBox inventories. Stages change proposals via the NetBox Branching API, ensuring absolute production safety.
-  - **GraphQL Infrastructure Topology**: Undirected physical infrastructure parsing with polymorphic cable terminations and parallel edge max-weight unification.
-  - **Circuit Causal Escalation**: Evaluation of circuit outage causal impact using do-calculus, auto-triggering structured provider escalations.
-- **Neuromorphic Spreading Activation**: Symmetrical/bidirectional edge weight updates (`adapt_synaptic_weights`) and membrane potential clamping (`max_charge = 10.0`) preventing mathematical overflows.
-- **Longitudinal Stress Tracking**: Bio-metric operator stress forecasting implementing exponential smoothing, frustration trending, and burnout standby weight redistribution.
-- **Active Learning Queue**: Micro-confirmation enqueuing system for low-confidence memories ($R < 0.65$), featuring gamified XP milestones and streak multipliers.
-- **NetBox Cognitive Dashboard Plugin**: Standalone PyPI-compatible package deploying a glassmorphic dashboard panel inside NetBox detail pages with live incident lists, SVG trends, and a timeline scrubber bounded by Postgres tenant RLS.
+## Table of Contents
 
-## v1.0 architecture (MCP, temporal, A2A, workers)
+- [Why NCE](#why-nce)
+- [The Cognitive Model](#the-cognitive-model)
+- [System Architecture](#system-architecture)
+- [The Quad-Database Stack](#the-quad-database-stack)
+- [Capabilities](#capabilities)
+- [Surfaces & Entrypoints](#surfaces--entrypoints)
+- [Quickstart](#quickstart)
+- [Connecting an MCP Client](#connecting-an-mcp-client)
+- [MCP Tool Surface](#mcp-tool-surface)
+- [Security Model](#security-model)
+- [Vertical Modules](#vertical-modules)
+- [Tech Stack](#tech-stack)
+- [Testing & Quality Gates](#testing--quality-gates)
+- [Documentation](#documentation)
+- [Production Checklist](#production-checklist)
+
+---
+
+## Why NCE
+
+Most "agent memory" is a vector index with a `search()` call bolted on. That works until an agent runs for weeks, serves multiple tenants, accumulates contradictory facts, and someone asks *"what did the agent believe last Tuesday, and why?"*
+
+NCE is built for that second world:
+
+| Concern | Naïve approach | NCE |
+| :--- | :--- | :--- |
+| **Recall** | Flat vector search | Semantic search **+** GraphRAG traversal **+** spiking spreading activation |
+| **Isolation** | App-layer `WHERE tenant = ?` | PostgreSQL **Row-Level Security**, forced on every table |
+| **History** | Last-write-wins | Append-only **WORM event log**; `as_of` time-travel on every read |
+| **Knowledge quality** | Store everything forever | **Consolidation** (sleep cycle), **salience decay**, **contradiction detection** |
+| **Truth** | Trust the latest write | **ATMS** belief revision with justification graphs |
+| **Sharing** | Copy data between agents | **A2A** cryptographic, scope-bound, RLS-enforced federation |
+| **Auditability** | Logs, maybe | Hash-chained provenance; deterministic **replay & fork** of any namespace |
+
+---
+
+## The Cognitive Model
+
+NCE treats memory the way a mind does — as a lifecycle, not a bucket.
+
+```
+   ingest ──▶ EPISODIC ──▶ consolidate ──▶ SEMANTIC ──▶ knowledge graph
+   (raw)       memories      (sleep cycle)   abstractions      (entities + relations)
+                  │                                                  │
+            salience decay                                    spreading activation
+          (Ebbinghaus curve)                                 (neuromorphic recall)
+                  │                                                  │
+              reinforced ◀──────────── retrieval ───────────────────┘
+```
+
+- **Episodic → Semantic consolidation.** A background "sleep cycle" runs HDBSCAN density clustering over episodic embeddings, distils each cluster into a *Semantic Abstraction* via an LLM (output strictly validated by Pydantic V2), and upserts the result into both the memory store and the knowledge graph.
+- **Salience & forgetting.** Every memory carries a salience score that decays exponentially per the **Ebbinghaus forgetting curve**, `s(t) = s₀·e^(−λΔt)`, and is reinforced on retrieval, `s ← min(1.0, s + δ)`. Important things stay sharp; noise fades.
+- **Contradiction detection.** New facts are checked against existing knowledge via semantic match → KG conflict → a **cross-encoder NLI** model (`nli-deberta-v3-small`) → an LLM tiebreaker. Unresolved conflicts are surfaced for the agent to settle.
+- **Belief revision (ATMS).** An Assumption-Based Truth Maintenance System tracks `ASSUMPTION` / `PREMISE` / `DERIVED` nodes and their justifications, propagating deprecation through the justification graph (cycle-safe) when an assumption is retracted.
+- **Causal reasoning.** A do-calculus causal engine and counterfactual **chrono-branching** let agents ask *"what if"* — overlaying hypothetical mutations on an isolated timeline without ever touching production rows.
+
+See [docs/cognitive_layer.md](docs/cognitive_layer.md) and [docs/netbox_and_cognitive_extensions.md](docs/netbox_and_cognitive_extensions.md).
+
+---
+
+## System Architecture
 
 ```mermaid
 flowchart TB
-  subgraph Clients
-    IDE[MCP clients]
+  subgraph Clients [Clients]
+    IDE[MCP clients · Claude Desktop · Cursor]
+    PEER[Peer agent networks]
+    OPS[Operators / Admins]
   end
-  subgraph Entrypoints
-    STDIO[server.py MCP stdio]
-    A2A[a2a_server.py skills]
-    ADM[admin_server.py REST]
-    CRON[cron.py scheduler]
-    RQ[start_worker.py RQ]
+
+  subgraph Surfaces [Surfaces]
+    STDIO[server.py · MCP stdio]
+    A2A[a2a_server.py · A2A federation]
+    ADM[admin_server.py · REST + Admin UI]
+    WH[webhook_receiver · document bridges]
   end
-  subgraph Data
-    PG[(Postgres pgvector)]
+
+  subgraph Background [Background processing]
+    RQ[start_worker.py · RQ worker]
+    CRON[nce.cron · schedulers]
+  end
+
+  subgraph Engine [NCEEngine — orchestration]
+    ORCH[Saga write path]
+    COG[Cognitive workers]
+    TMP[Temporal / replay]
+  end
+
+  subgraph Data [Quad-Database Stack]
+    PG[(PostgreSQL + pgvector)]
     MG[(MongoDB)]
     RD[(Redis)]
     S3[(MinIO)]
   end
-  subgraph Cross_cutting["Cross-cutting"]
-    TMP["temporal.parse_as_of"]
-    TSE[TriStackEngine]
-  end
+
   IDE --> STDIO
-  STDIO --> TMP
-  STDIO --> TSE
-  A2A --> TSE
-  ADM --> PG
-  TSE --> PG
-  TSE --> MG
-  TSE --> RD
-  TSE --> S3
-  RQ --> PG
-  RQ --> MG
-  CRON --> PG
-  CRON --> MG
+  PEER --> A2A
+  OPS --> ADM
+  STDIO --> ORCH
+  A2A --> ORCH
+  ADM --> ORCH
+  WH --> RQ
+  RQ --> ORCH
+  CRON --> COG
+  ORCH --> PG & MG & RD & S3
+  COG --> PG & MG
+  TMP --> PG & S3
 ```
 
-Full diagrams (sequence charts for temporal + A2A, worker data flow): [docs/architecture-v1.md](docs/architecture-v1.md).
+Every standard write travels a transaction-scoped **Saga** path with automatic compensating rollbacks, so a partial failure across the four stores never leaves orphaned state. Detailed sequence diagrams live in [docs/architecture-v1.md](docs/architecture-v1.md) and [docs/database_architecture.md](docs/database_architecture.md).
 
-**Documentation index**: [docs/README.md](docs/README.md) — architecture, database internals, security, service integrations, configuration reference, and developer onboarding.
+---
 
-## 🛠️ Tech Stack
+## The Quad-Database Stack
 
-- **Language**: Python 3.10+ (required by `pyproject.toml` and the MCP SDK stack)
-- **Protocol**: MCP (Model Context Protocol) JSON-RPC 2.0
-- **Working Memory & Queues**: Redis
-- **Semantic Memory**: PostgreSQL with `pgvector`
-- **Episodic Memory**: MongoDB
-- **Media Storage**: MinIO
-- **Embeddings**: SentenceTransformers (Jina 768-dim) or Hash Stub
-- **AST Parsing**: Tree-sitter
-- **GraphRAG**: spaCy (Entity Extraction) / NetworkX (or custom BFS)
+Duties are split across four engines so each does only what it is best at:
 
-## 📋 Prerequisites
+| Store | Role | Holds |
+| :--- | :--- | :--- |
+| **PostgreSQL + pgvector** | Relational core & vector index | Semantic embeddings (HNSW), knowledge-graph triplets (`kg_nodes` / `kg_edges`), RLS policies, the WORM `event_log` |
+| **MongoDB** | Episodic payload archive | Heavy unstructured content — transcripts, code, document pages — referenced by ObjectID |
+| **Redis** | Transient & coordination | TTL context caches, rate limits, distributed locks, single-use HMAC nonces, RQ job queues |
+| **MinIO** | Object storage (S3 API) | Binary artifacts (image/audio/video) and the deterministic LLM response cache used by replay |
 
-- **Docker Desktop** (Latest) - To run the Redis, PostgreSQL, MongoDB, and MinIO containers.
-- **Python 3.10+** — matches `requires-python` in `pyproject.toml`.
-- **pip** - For managing Python dependencies.
+---
 
-Pinned transitive versions for reproducible installs live in **`requirements.lock`** (regenerate with `make lockfile` or `python scripts/compile_requirements.py` after editing `requirements.txt`).
+## Capabilities
 
-## 🚀 Quick Start
+- **Hybrid recall** — `semantic_search` (pgvector cosine) with MongoDB hydration, `graph_search` GraphRAG BFS traversal, and neuromorphic **spiking spreading activation** with LTP/LTD weight adaptation.
+- **Time travel** — pass an `as_of` ISO-8601 timestamp to any read and see memory exactly as it stood: `valid_from <= as_of AND (valid_to IS NULL OR valid_to > as_of)`. Applies symmetrically to vector search and graph traversal.
+- **Snapshots & state diffing** — name a point in time (`create_snapshot`) and diff two instants with `compare_states`.
+- **Replay engine** — `replay_observe` streams the event log read-only; `replay_fork` rebuilds a namespace into an isolated target, either *deterministically* (LLM responses served from the MinIO cache, byte-identical) or *re-executed* (call the LLM fresh for A/B "what-if" divergence); `replay_reconstruct` for exact rebuilds.
+- **Code intelligence** — `index_code_file` AST-parses source (Tree-sitter; Python, JS, TS, Go, Rust) into per-symbol chunks; `search_codebase` returns matching functions/classes with line ranges.
+- **Document bridges** — OAuth + webhook sync from **SharePoint/OneDrive, Google Drive, and Dropbox**, with subscription renewal, retry, and a dead-letter queue.
+- **Rich ingestion** — extractors for PDF, Office (Word/Excel/PowerPoint), email, CAD, diagrams, project files, plaintext, with OCR and LibreOffice fallbacks.
+- **Provider-agnostic cognition** — `local-cognitive-model`, `openai`, `azure_openai`, `anthropic`, `google_gemini`, `deepseek`, `moonshot_kimi`, and any `openai_compatible` endpoint.
+- **Edge & air-gapped** — local inference stack with optional **OpenVINO NPU** acceleration; see [docs/airgapped_deployment.md](docs/airgapped_deployment.md).
+- **Observability** — OpenTelemetry → OTLP/Jaeger tracing and a Prometheus metrics endpoint, on by default.
 
-For **v1.0**, run from this repository: start the **Compose** stack (see [deploy/README.md](deploy/README.md)), configure `.env`, then launch `server.py` and workers as needed. Optional packaged installers remain on the **product roadmap**; multi-mode install flows below describe the target operator experience once shipping.
+---
 
-### 1. Environment & deployment mode (reference)
+## Surfaces & Entrypoints
 
-- **Local**: Quad-DB via Docker on one machine (default dev path).
-- **Multi-user**: Shared Postgres/Mongo/Redis/MinIO; enforce namespace isolation and auth in production.
-- **Cloud**: Managed databases and object storage; same codebase, different connection strings.
+NCE is no longer "just an MCP server." It exposes several coordinated surfaces:
 
-### 2. Environment Configuration
+| Entrypoint | Transport | Purpose |
+| :--- | :--- | :--- |
+| `server.py` | MCP stdio (JSON-RPC 2.0) | Tool surface for LLM clients (Claude Desktop, Cursor, …) |
+| `admin_server.py` | HTTP (Starlette REST + Admin UI) | Operations, namespace/quota management, runtime tool toggles |
+| `nce/a2a_server.py` | HTTP (A2A RPC) | Federated, scope-bound memory sharing between agent networks |
+| `nce/webhook_receiver` | HTTP | Inbound document-bridge change notifications |
+| `start_worker.py` | RQ worker | Async jobs — code indexing, bridge sync, re-embedding |
+| `nce/cron.py` | Scheduler | Consolidation cycles, bridge renewal, GC |
 
-Copy the environment template and fill in your values:
+A **Dynamic Tools Console** in the Admin UI can enable/disable individual stdio tools or A2A skills at runtime (persisted to a Redis hash); disabled calls are rejected by the dispatch interceptor. If Redis is unreachable the interceptor fails *open* to avoid cascading outages.
+
+---
+
+## Quickstart
+
+> Prerequisites: **Docker Desktop** and **Python 3.10+**.
+
+### 1. Configure
 
 ```bash
 cp .env.example .env
 ```
 
-Minimum variables for local development:
+Generate real secrets in `.env` (never commit it):
 
-| Variable | Example | Notes |
-|---|---|---|
-| `PG_DSN` | `postgresql://mcp_user:mcp_password@localhost:5432/memory_meta` | Required |
-| `MONGO_URI` | `mongodb://localhost:27017` | Required |
-| `REDIS_URL` | `redis://localhost:6379/0` | Required |
-| `MINIO_ENDPOINT` | `localhost:9000` | Required |
-| `MINIO_ACCESS_KEY` | `mcp_admin` | Required — no default in production |
-| `MINIO_SECRET_KEY` | `your_secret` | Required — no default in production |
-| `NCE_MASTER_KEY` | 32+ random bytes | Required — server refuses to start without it |
-| `NCE_MCP_API_KEY` | long random secret | Required in production for MCP stdio tenant tools (`mcp_api_key` argument) |
-| `NCE_MCP_NAMESPACE_ID` | UUID | Required in production when `NCE_MCP_API_KEY` is set — binds stdio tenant tools to one namespace |
-| `NCE_ADMIN_API_KEY` | long random secret | Required in production for MCP admin tools (`admin_api_key` argument) |
+- `NCE_MASTER_KEY` — ≥32 random bytes; AES-256-GCM key for PII/credential encryption. `openssl rand -base64 32`
+- `NCE_API_KEY` / `NCE_ADMIN_API_KEY` / `NCE_MCP_API_KEY` — long random tokens
+- `NCE_MCP_NAMESPACE_ID` — a UUID pinning the stdio connection to one tenant, e.g. `00000000-0000-4000-8000-000000000001`
 
-For Cursor/Claude, copy [mcp_config.json.example](mcp_config.json.example) to `mcp_config.json` (gitignored) and set both keys in the `env` block.
-
-For the complete reference of all ~70 environment variables, see [docs/configuration_reference.md](docs/configuration_reference.md).
-
-*Never commit `.env` or `mcp_config.json` to version control.*
-
-### 3. Start the Server
-
-In development, start the **RQ worker** (`start_worker.py`) and **MCP server** separately (or use your process supervisor). MCP listens on stdio:
+### 2. Bring up the full stack
 
 ```bash
-python server.py
+make up          # bootstraps compose secrets, then `docker compose up -d --build`
+make status      # container health
 ```
 
-## 🧠 Architecture Deep-Dive
+This launches the Quad-Stack (`nce-postgres`, `nce-mongo`, `nce-redis`, `nce-minio`), the cognitive model, and the application services (`worker`, `cron`, `admin`, `a2a`, `webhook-receiver`) behind Caddy, plus Jaeger.
 
-For **temporal**, **A2A**, and **background worker** sequence diagrams, use **[docs/architecture-v1.md](docs/architecture-v1.md)**. The following sections summarise the quad-DB and saga contracts.
+**Databases only** (when you want to run the app from your host):
 
-NCE is built to treat memory as distinct layers with strict boundaries and absolute rollback guarantees. 
-
-### The Quad-DB Philosophy
-
-Each database is assigned exclusively to the data structure it is optimal for — no overlapping responsibilities:
-
-| Layer | Database | Role | Key Property |
-|---|---|---|---|
-| **Working Memory & Cache** | Redis | TTL-bound summary cache, RQ, and API cache | Sub-millisecond recall, O(1) cache invalidation |
-| **Semantic Index** | PostgreSQL + pgvector | Vector embeddings + KG triplets | ACID guarantees, cosine similarity search |
-| **Episodic Archive** | MongoDB | Raw heavy payloads (transcripts, source files) | Schema-less, high-throughput I/O |
-| **Media Store** | MinIO | Audio, Video, Image blob storage | High capacity object storage |
-
-### Saga Pattern Guarantee
-
-When a memory or file is ingested, the `TriStackEngine` employs the Saga pattern to guarantee data purity across the stack. If an error occurs in Postgres, MongoDB is automatically rolled back.
-
-```text
-Mongo ──► PG ──► Redis
-            │
-         FAILURE
-            │
-            └──► DELETE Mongo doc  ← automatic, synchronous
-                 RAISE exception   ← propagates to caller
+```bash
+make local-up    # docker-compose.local.yml — just Postgres, Mongo, Redis, MinIO
 ```
 
-The `garbage_collector.py` runs hourly as an independent safety net: any MongoDB document older than 5 minutes with no matching `mongo_ref_id` in PostgreSQL is automatically purged.
+### 3. Run from the host (optional)
 
-### Recursive AST Indexing & Background Processing
+```bash
+python -m venv .venv
+.venv\Scripts\activate            # Windows ·  source .venv/bin/activate on macOS/Linux
+pip install -r requirements.txt
 
-NCE can autonomously ingest its own codebase. When an LLM agent calls the `index_code_file` tool, the request is instantly enqueued to an asynchronous Redis Queue (RQ) worker (`start_worker.py`). The worker handles the heavy AST parsing (via Tree-sitter) to split the source into chunks, stores the raw payload in Mongo, embeds vectors/KG triplets in Postgres, and updates the working context in Redis. The MCP tool immediately returns a `job_id` to the LLM to track progress via `check_indexing_status`.
-
-See the [Recursive Indexing Flow Diagram](docs/recursive_indexing_flow.md) and [v1.0 architecture](docs/architecture-v1.md) (temporal, A2A, cognitive workers).
-
-### Advanced GraphRAG Layer
-
-NCE implements a state-of-the-art GraphRAG pipeline:
-1. The query undergoes a pgvector cosine search to find the nearest **anchor knowledge graph node**.
-2. A **BFS traversal** executes over `kg_edges` (up to 3 hops, max 50 nodes).
-3. The engine **hydrates source documents** from MongoDB (e.g., 600-character excerpts) mapped to the nodes.
-4. Returns a highly structured subgraph context: `{ nodes, edges, sources }`.
-
-## 📂 Directory Structure
-
-```text
-NCE/
-├── docker-compose.yml       # Redis, PostgreSQL/pgvector, MongoDB, MinIO
-├── requirements.txt         # Python dependencies
-├── .env.example             # Environment variable template
-├── start_worker.py          # Background worker (RQ) for async indexing
-├── index_all.py             # Bulk recursive code ingestion
-├── server.py                # MCP stdio server
-├── admin_server.py          # Admin UI & Observability
-├── admin/
-│   └── index.html           # Admin dashboard UI
-├── nce/
-│   ├── __init__.py
-│   ├── orchestrator.py      # Core Saga engine + Quad-Stack connections
-│   ├── config.py            # Configuration loading
-│   ├── active_learning.py   # Active learning queue & operator gamification
-│   ├── embeddings.py        # Jina embeddings (thread executor + stub fallback)
-│   ├── ast_parser.py        # Tree-sitter AST parser + line-splitter fallback
-│   ├── graph_extractor.py   # Entity + relation extraction (spaCy / regex)
-│   ├── graph_query.py       # GraphRAG BFS traverser & SpikingActivationEngine
-│   ├── temporal.py          # as_of parsing (time-travel queries)
-│   ├── a2a.py               # Agent-to-agent grants + token verify
-│   ├── a2a_server.py        # A2A JSON-RPC / Starlette app
-│   ├── cron.py              # Bridge renewal + re-embedding scheduler
-│   ├── reembedding_worker.py # Batch re-embed sweep
-│   ├── consolidation.py     # Sleep / cluster consolidation (LLM)
-│   ├── garbage_collector.py # Orphan GC (paginated, retry-enabled)
-│   ├── notifications.py     # Webhook / alert notification dispatcher
-│   ├── tasks.py             # RQ async tasks and indexing logic
-│   ├── analytics/
-│   │   └── stress.py        # Biometric stress tracking & VAD exhaustion models
-│   ├── causal/
-│   │   ├── chrono.py        # Counterfactual timeline branching
-│   │   ├── correlation.py   # Pearl's causal do-calculus evaluations
-│   │   └── synthesis.py     # MTBF Synthesis & predictive failure generator
-│   └── vertical_modules/
-│       └── netbox/
-│           ├── circuits.py  # NetBox circuits fetcher & provider escalator
-│           ├── contacts.py  # NetBox contacts to NCE operator profiles sync
-│           ├── discovery.py # Reconciler & Branching API write-back stage
-│           ├── graphql_activation.py # GraphQL multihop topology extraction
-│           └── mtbf.py      # Device forecasting and Weibull age decay
-├── src/
-│   └── nce-netbox-plugin/   # PyPI-compatible NetBox Dashboard Plugin package
-│       ├── pyproject.toml   # Packager configuration metadata
-│       ├── MANIFEST.in      # Assets recursive inclusion manifest
-│       └── nce_netbox_plugin/
-│           ├── __init__.py  # Configures dashboard layout extensions
-│           ├── template_content.py # DRY panel rendering hook base classes
-│           ├── api/
-│           │   ├── __init__.py
-│           │   ├── simulators.py   # Fallback simulated telemetry generator
-│           │   ├── urls.py         # REST URL endpoints
-│           │   └── views.py        # Scoped RLS stats with temporal playback
-│           ├── static/
-│           │   └── nce_netbox_plugin/css/nce_netbox_plugin.css
-│           └── templates/
-│               └── nce_netbox_plugin/cognitive_panel.html
-├── tests/
-│   ├── __init__.py
-│   ├── test_integration_engine.py  # End-to-end integration tests
-│   ├── test_mcp_cache.py           # API Caching logic testing
-│   ├── test_notifications.py       # Notification dispatcher tests
-│   ├── test_smoke_stdio.py         # Smoke testing for Stdio MCP
-│   ├── fixtures/
-│   │   └── mock_db.py              # Shared mock connection/transaction/pool fixture
-│   └── unit/
-│       ├── test_atms.py            # Truth Maintenance System tests
-│       ├── test_causal.py          # Causal do-calculus & graph extraction tests
-│       ├── test_chrono.py          # Chrono time travel & branching tests
-│       ├── test_neuromorphic.py    # Potential clamping & bidirectional updates tests
-│       ├── test_stress.py          # Operator stress & burnout standby tests
-│       └── test_synthesis.py       # Predictive synthesis & MTBF tests
-└── docs/                    # Architectural diagrams and documentation
+python server.py                   # MCP stdio server (listens on stdin for JSON-RPC)
+python start_worker.py             # background RQ worker  (separate shell)
+python -m nce.cron                 # schedulers           (separate shell)
 ```
 
+### 4. Verify
 
-## 🔌 MCP Tool Reference
-
-NCE exposes the following tools directly to LLM clients via JSON-RPC 2.0, utilizing a highly efficient API cache layer with generation-counter invalidation:
-
-| Tool | Description |
-|---|---|
-| `store_memory` | Persist a memory to the DB stack. Triggers entity extraction and KG upsert. |
-| `store_media` | Save a media payload (MinIO) and index its metadata into the memory stack. |
-| `semantic_search` | Cosine search + Mongo hydration; optional **`as_of`** for temporal recall. *(Cached)* |
-| `index_code_file` | AST-parse a source file into chunks, embed each chunk, archive the full file. Returns `job_id` asynchronously. |
-| `check_indexing_status` | Check the progress of an async indexing job using its `job_id`. |
-| `search_codebase` | Semantic search over indexed code chunks, returning file path and exact line numbers. *(Cached)* |
-| `graph_search` | GraphRAG: vector anchor → BFS subgraph → excerpts; optional **`as_of`**. *(Cached)* |
-| `get_recent_context`| Redis-only instant recall for the most recent session summary. |
-| `connect_bridge` … `bridge_status` | Document bridge OAuth and lifecycle (SharePoint / Google Drive / Dropbox). |
-| `boost_memory` / `forget_memory` | Salience tuning (per agent). |
-| `list_contradictions` / `resolve_contradiction` | Contradiction workflow. |
-| `start_migration` … `abort_migration` | Embedding model migration controls. |
-| `replay_observe` / `replay_fork` / `replay_status` | Event-log replay and forked namespaces. |
-| `a2a_create_grant` / `a2a_revoke_grant` / `a2a_list_grants` | Basic agent sharing grant administration. |
-| `a2a_verify_grant_status` | Verify the validity, scopes, status, and expiration of a grant by token/ID. |
-| `a2a_update_grant_scopes` | Dynamically mutate scopes on an active grant (replace or append strategy). |
-| `a2a_inspect_grant` | Retrieve metadata for a single grant safely for audit compliance (cryptographically secure). |
-
-*Full list and schemas: `TOOLS` in `nce/mcp_stdio_tools.py`.*
-
-## 🎛️ Dynamic Tools Control Console & Interceptor Routing
-
-NCE features an **Enterprise-Grade Admin Tools Console** integrated directly into the Starlette Admin panel. This console allows IT administrators to dynamically enable and disable specific local stdio MCP tools and public A2A server skills at runtime with zero system downtime.
-
-### Architecture & Propagation
-1. **Dynamic State Persistence**: Toggling a tool's state dynamically publishes and persists the value within a Redis hash named `nce:tools:disabled`.
-2. **Real-time Routing Interceptors**:
-   - **Stdio MCP Transport**: Custom middleware intercepts invocations in `mcp_stdio_dispatch.py`. If a tool is flagged as disabled, the server rejects it instantly, returning JSON-RPC error code `-32005` (Scope forbidden).
-   - **Agent-to-Agent (A2A) Skill Server**: Inbound network skills are intercepted inside `a2a_server.py`. If a skill is disabled, the request is rejected with RPC code `-32011` / HTTP 403 (Scope violation).
-3. **High-Availability Resiliency**: In the event of a Redis outage or fallback, the interceptor defaults to "enabled" (no-op pass-through) to guarantee high availability and prevent downstream microservice cascading failures.
-
-### Admin API Endpoints
-- `GET /api/admin/tools`: Retrieve a list of all MCP tools and A2A network skills, including localized operational impact descriptions, descriptions, and toggle states.
-- `POST /api/admin/tools/toggle`: Persist the state mutation (`tool_name`, `tool_type`, `enabled`) to the Redis registry.
-
-## 🔗 Connecting to an LLM Client
-
-The MCP server block is identical across all clients. Here are common configurations:
-
-### Cursor
-
-Add to your `~/.cursor/mcp.json` or configure via **Cursor Settings → MCP → Add Server**:
-
-```json
-{
-  "mcpServers": {
-    "nce-memory": {
-      "command": "python",
-      "args": ["/absolute/path/to/NCE/server.py"],
-      "env": {
-        "MONGO_URI": "mongodb://localhost:27017",
-        "PG_DSN": "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta",
-        "REDIS_URL": "redis://localhost:6379/0",
-        "MINIO_ENDPOINT": "localhost:9000",
-        "MINIO_ACCESS_KEY": "minioadmin",
-        "MINIO_SECRET_KEY": "minioadmin"
-      }
-    }
-  }
-}
+```bash
+make verify                        # runs verify_v1_launch.py end-to-end
 ```
-*Note for Windows: Use double backslashes `C:\\path\\to\\NCE\\server.py` or forward slashes `C:/path/to/NCE/server.py`.*
+
+---
+
+## Connecting an MCP Client
 
 ### Claude Desktop
 
-Edit your `claude_desktop_config.json` (Windows: `%APPDATA%\Claude\`, macOS: `~/Library/Application Support/Claude/`):
+Edit `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
 
 ```json
 {
@@ -341,54 +241,132 @@ Edit your `claude_desktop_config.json` (Windows: `%APPDATA%\Claude\`, macOS: `~/
       "command": "python",
       "args": ["/absolute/path/to/NCE/server.py"],
       "env": {
-        "MONGO_URI": "mongodb://localhost:27017",
-        "PG_DSN": "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta",
-        "REDIS_URL": "redis://localhost:6379/0",
-        "MINIO_ENDPOINT": "localhost:9000",
-        "MINIO_ACCESS_KEY": "minioadmin",
-        "MINIO_SECRET_KEY": "minioadmin"
+        "MONGO_URI": "mongodb://127.0.0.1:27017",
+        "PG_DSN": "postgresql://mcp_user:mcp_password@127.0.0.1:5432/memory_meta",
+        "REDIS_URL": "redis://127.0.0.1:6379/0",
+        "MINIO_ENDPOINT": "127.0.0.1:9002",
+        "MINIO_ACCESS_KEY": "mcp_admin",
+        "MINIO_SECRET_KEY": "super_secure_minio_password",
+        "NCE_MASTER_KEY": "your-32-byte-master-key",
+        "NCE_MCP_API_KEY": "your-client-api-key",
+        "NCE_MCP_NAMESPACE_ID": "00000000-0000-4000-8000-000000000001"
       }
     }
   }
 }
 ```
 
-## 🧪 Testing
+**Cursor** — *Settings → MCP → Add New Tool*, command `python`, args `["/absolute/path/to/NCE/server.py"]`, same `env` block. A ready-to-edit template ships as [`mcp_config.json.example`](mcp_config.json.example).
 
-Ensure all containers are running, then execute the test suite:
+---
+
+## MCP Tool Surface
+
+Tools are dispatched through `nce/mcp_stdio_dispatch.py`, which enforces auth, quotas, and runtime enable/disable state. Highlights (`[ADMIN]` tools require `admin_api_key`):
+
+| Tool | What it does |
+| :--- | :--- |
+| `store_memory` | Persist a memory; extract entities; build KG edges (Saga write) |
+| `store_artifact` | Ingest media/PDF/logs into MinIO + index metadata |
+| `semantic_search` | Vector cosine search + Mongo hydration; optional `as_of` |
+| `graph_search` | GraphRAG: anchor by similarity, BFS the KG, return a subgraph; optional `as_of` |
+| `describe_schema` | List live entity types & edge predicates (avoid hallucinated graph constraints) |
+| `suggest_queries` / `execute_query_template` | Discover and run pre-optimised query templates |
+| `index_code_file` / `check_indexing_status` / `search_codebase` | Async AST code indexing & semantic code search |
+| `boost_memory` / `forget_memory` | Reinforce or zero a memory's salience |
+| `list_contradictions` / `resolve_contradiction` | Surface and settle logical conflicts |
+| `create_snapshot` / `list_snapshots` / `compare_states` | Point-in-time references & state diffing |
+| `replay_observe` / `replay_fork` / `replay_reconstruct` / `replay_status` | Deterministic & forked replay |
+| `verify_memory` / `get_event_provenance` | Integrity check & causal-chain trace |
+| `a2a_create_grant` · `a2a_query_shared` · `a2a_revoke_grant` · `a2a_list_grants` · … | Cross-agent federated sharing |
+| `connect_bridge` / `complete_bridge_auth` / `list_bridges` / `force_resync_bridge` | Document-bridge lifecycle |
+| `manage_namespace` · `manage_quotas` · `trigger_consolidation` · `rotate_signing_key` · `get_health` · `list_dlq` | `[ADMIN]` operations |
+
+Migration tools (`start_migration`, `validate_migration`, `commit_migration`, …) are included unless disabled, and Dynamics 365 tools (`d365_query_case`, `d365_netbox_mappings`, …) appear when that vertical is enabled. The authoritative list is [`nce/mcp_stdio_tools.py`](nce/mcp_stdio_tools.py).
+
+---
+
+## Security Model
+
+- **Multi-tenant by construction.** Every application checkout passes through `scoped_pg_session`, which sets `SET LOCAL nce.namespace_id = '<tenant-uuid>'`. All relational tables have RLS **enabled and forced**; policies validate via `get_nce_namespace()`. Privileged GC runs under a separate `BYPASSRLS` role, out of band.
+- **Encryption at rest.** PII, credentials, and biometric tensors are AES-256-GCM encrypted under `NCE_MASTER_KEY`. An automated PII pipeline (Presidio/regex) supports redaction and reversible pseudonymisation — see [docs/pii.md](docs/pii.md).
+- **Integrity & non-repudiation.** The `event_log` is append-only (a `prevent_mutation` trigger blocks edits) and hash-chained; entries are HMAC-SHA256 signed over RFC 8785 (JCS) canonical JSON, with rotatable signing keys. See [docs/signing.md](docs/signing.md).
+- **AuthN/Z.** HMAC-authenticated admin HTTP with optional Redis-backed replay protection; JWT (HS256 secret or RS256 public key) for A2A and protected routes; optional **mTLS** behind your edge proxy.
+- **A2A federation.** Sharing tokens are stored only as SHA-256 hashes mapped to expirations and JSONB scopes; inbound queries are scope-checked then executed bound to the *owner's* RLS namespace.
+
+Full guide: [docs/enterprise_security.md](docs/enterprise_security.md) · [docs/multi_tenancy.md](docs/multi_tenancy.md).
+
+---
+
+## Vertical Modules
+
+NCE ships domain verticals that turn the cognitive core into an operational tool:
+
+- **NetBox** — GraphQL topology activation (sites/racks/devices/cables → adjacency graph), unregistered-asset discovery against live telemetry, a do-calculus circuit-provider escalator, longitudinal **operator stress tracking** with on-call weight redistribution, and an **active-learning queue** (low-confidence memories quarantined for gamified operator review). There is also a NetBox **Cognitive Dashboard** Django plugin under `src/nce-netbox-plugin/`.
+- **Dynamics 365** — case enrichment with graph context, entity sync to `kg_edges`, empathic-tensor frustration/burnout reports, SLA-breach records from the WORM log, and a D365 ↔ NetBox cross-reference mapper.
+
+Details: [docs/netbox_and_cognitive_extensions.md](docs/netbox_and_cognitive_extensions.md) · [docs/d365_integration_reference.md](docs/d365_integration_reference.md).
+
+---
+
+## Tech Stack
+
+- **Runtime** — Python 3.10+
+- **Protocol** — MCP over JSON-RPC 2.0 (stdio); HTTP for admin/A2A/webhooks
+- **Relational + vector** — PostgreSQL 16 with `pgvector` and `pgcrypto`
+- **Episodic store** — MongoDB 7.0
+- **Cache / queues** — Redis 7.4 (+ `rq`)
+- **Object storage** — MinIO (S3-compatible)
+- **NLP / graph** — spaCy (entities), NetworkX, HDBSCAN, cross-encoder NLI
+- **Code parsing** — Tree-sitter
+- **Validation** — Pydantic V2
+- **Observability** — OpenTelemetry, Prometheus, Jaeger
+
+Transitive dependencies are pinned in [`requirements.lock`](requirements.lock); regenerate with `make lockfile`.
+
+---
+
+## Testing & Quality Gates
 
 ```bash
-uv run pytest tests/
+pytest tests/                 # full suite (RLS scoping, Saga rollbacks, temporal reads, tools)
+pytest -m integration         # integration tests (require running backing services)
+
+make lint                     # ruff check + ruff format --check (the CI gate)
+make typecheck                # mypy (strict)
+make fmt                      # apply the formatter
 ```
 
-The test suite validates saga writes, Redis cache invalidation, pgvector search, code search, GraphRAG, temporal `as_of` paths, A2A grants, quotas, notifications, and related MCP tools. Run `pytest tests/` from the repo root (see `pytest.ini`).
+---
 
-## 🛡️ Production Deployment Notes
+## Documentation
 
-- **TLS / Authentication**: Always use authenticated, TLS-encrypted URIs in `.env` for production (e.g., `?sslmode=require`).
-- **Connection Pools**: Tune `PG_MIN_POOL` and `PG_MAX_POOL` based on your expected traffic.
-- **Process Management**: Run `server.py` and `start_worker.py` under a supervisor (e.g., systemd or pm2) for automatic restarts.
-- **Security**: The server boundary (`server.py`) wraps all exceptions as safe MCP error responses. Stack traces are never leaked to the client. Input validation strictly bounds parameter limits and sanitizes file paths.
+The [`docs/`](docs/) tree is the source of truth. Start here:
 
-## ⚠️ Troubleshooting
+| Area | Document |
+| :--- | :--- |
+| Get running fast | [quick_start.md](docs/quick_start.md) · [developer_onboarding.md](docs/developer_onboarding.md) |
+| How it talks | [usage_modes.md](docs/usage_modes.md) |
+| Architecture | [architecture-v1.md](docs/architecture-v1.md) · [database_architecture.md](docs/database_architecture.md) |
+| Configuration | [configuration_reference.md](docs/configuration_reference.md) · [it_admin_guide.md](docs/it_admin_guide.md) |
+| Security | [enterprise_security.md](docs/enterprise_security.md) · [signing.md](docs/signing.md) · [pii.md](docs/pii.md) |
+| Cognition | [cognitive_layer.md](docs/cognitive_layer.md) · [llm_providers.md](docs/llm_providers.md) |
+| Time & simulation | [time_travel.md](docs/time_travel.md) · [replay.md](docs/replay.md) · [migrations.md](docs/migrations.md) |
+| Integrations | [service_integrations.md](docs/service_integrations.md) · [bridge_setup_guide.md](docs/bridge_setup_guide.md) · [a2a.md](docs/a2a.md) |
+| Edge | [airgapped_deployment.md](docs/airgapped_deployment.md) · [vram_monitoring.md](docs/vram_monitoring.md) |
 
-### Connection Refused
-**Error**: `could not connect to server: Connection refused`
-**Solution**:
-1. Verify Docker containers are running: `docker ps`.
-2. Check that ports (27017, 5432, 6379, 9000) are not occupied by local host services.
-3. Validate connection strings in your `.env` or MCP config block.
+---
 
-### Missing Dependencies
-**Error**: `ModuleNotFoundError: No module named 'tree_sitter'`
-**Solution**: Ensure you have activated your virtual environment and installed the optional dependencies:
-```bash
-pip install tree-sitter==0.20.4 tree-sitter-python==0.20.4 tree-sitter-javascript==0.20.1
-```
+## Production Checklist
 
-### Async Indexing Hanging
-**Error**: `check_indexing_status` stays pending indefinitely.
-**Solution**: The background worker process may not be running. Start it in a separate terminal:
-```bash
-.venv\Scripts\python.exe start_worker.py
-```
+- Set `NCE_ENV=production`; supply strong random `NCE_API_KEY`, `NCE_ADMIN_API_KEY`, `NCE_MASTER_KEY` (≥32 bytes).
+- `NCE_ADMIN_PASSWORD` must be a `$pbkdf2$…` hash; set `NCE_LOAD_DOTENV=false`, `NCE_ALLOW_ADMIN_DOTENV_PERSIST=false`.
+- Keep guardrails on: `NCE_ADMIN_OVERRIDE=false`, `NCE_BYPASS_WORM=false`, `NCE_BYPASS_RLS=false`.
+- Enforce TLS everywhere (`?sslmode=require` for Postgres); prefer `NCE_ADMIN_MTLS_ENABLED=true` behind your edge proxy.
+- Leave the `prevent_mutation` trigger on `event_log` in place — never disable WORM.
+- Migration MCP tools stay disabled in prod (`NCE_DISABLE_MIGRATION_MCP=true`) outside controlled windows.
+- Rotate HMAC keys and JWT certificates on a schedule.
+
+---
+
+<sub>NCE — Neuro-Cognitive Engine · v3.0.0 · © Sindre Løvlie Haugen · Proprietary. Formerly TriMCP.</sub>

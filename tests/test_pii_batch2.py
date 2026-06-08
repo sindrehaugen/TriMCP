@@ -6,7 +6,6 @@ import builtins
 from unittest.mock import patch
 
 import pytest
-
 from nce.models import NamespacePIIConfig, PIIEntity, PIIPolicy
 from nce.pii import (
     _MAX_ENTITIES,

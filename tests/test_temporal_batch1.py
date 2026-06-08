@@ -7,7 +7,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from nce.temporal import (
     _normalize_to_utc,
     as_of_query,

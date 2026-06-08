@@ -7,12 +7,11 @@ Unit tests for Predictive MTBF Synthesis forecasting module.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from nce.vertical_modules.netbox.mtbf import NetBoxMTBFForecaster
 
 NS = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000001")

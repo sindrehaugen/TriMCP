@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from nce.admin_handlers import _shared
 from nce.admin_handlers._shared import *  # noqa: F403
+
 
 async def api_a2a_create_grant(request):
     """POST /api/a2a/grants/create
@@ -30,6 +30,12 @@ async def api_a2a_create_grant(request):
 
     try:
         ns_id = uuid.UUID(body["namespace_id"])
+        ns_ctx = getattr(request.state, "namespace_ctx", None)
+        if ns_ctx is None or ns_ctx.namespace_id != ns_id:
+            return JSONResponse(
+                {"error": "Forbidden: namespace context mismatch"},
+                status_code=403,
+            )
         agent_id_val = body.get("agent_id", "default")
         caller_ctx = NamespaceContext(namespace_id=ns_id, agent_id=agent_id_val)
         scopes_raw = body.get("scopes", [])
@@ -87,6 +93,12 @@ async def api_a2a_revoke_grant(request):
 
     try:
         ns_id = uuid.UUID(body["namespace_id"])
+        ns_ctx = getattr(request.state, "namespace_ctx", None)
+        if ns_ctx is None or ns_ctx.namespace_id != ns_id:
+            return JSONResponse(
+                {"error": "Forbidden: namespace context mismatch"},
+                status_code=403,
+            )
         agent_id_val = body.get("agent_id", "default")
         caller_ctx = NamespaceContext(namespace_id=ns_id, agent_id=agent_id_val)
     except (KeyError, ValueError) as exc:
@@ -124,6 +136,12 @@ async def api_a2a_list_grants(request):
 
     try:
         ns_id = uuid.UUID(ns_id_str)
+        ns_ctx = getattr(request.state, "namespace_ctx", None)
+        if ns_ctx is None or ns_ctx.namespace_id != ns_id:
+            return JSONResponse(
+                {"error": "Forbidden: namespace context mismatch"},
+                status_code=403,
+            )
     except ValueError:
         return JSONResponse(
             {"error": "namespace_id is required and must be a valid UUID"},

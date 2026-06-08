@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from nce.bridges.sharepoint import GRAPH_DELTA_URL_PREFIXES, SharePointBridge
 from nce.net_safety import BridgeURLValidationError, assert_url_allowed_prefix
 

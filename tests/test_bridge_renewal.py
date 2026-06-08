@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import jwt
 import pytest
-
 from nce.bridge_renewal import (
     _acquire_refresh_lock,
     _perform_oauth_refresh,
@@ -320,3 +319,54 @@ async def test_release_refresh_lock_closes_client():
 async def test_release_refresh_lock_none_client_is_noop():
     """Releasing with None client is a safe no-op."""
     await _release_refresh_lock(None, "sharepoint", "bridge-000")
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_oauth_token_rq_worker_warning_window() -> None:
+    pool = AsyncMock()
+    # 3 minutes in the future (within warning window)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=3)
+    payload = {
+        "access_token": "worker_access_123",
+        "refresh_token": "refresh_token_456",
+        "expires_at": expires_at.timestamp(),
+    }
+    enc = encrypt_signing_key(json.dumps(payload).encode("utf-8"), require_master_key())
+    row = {"id": uuid.uuid4(), "provider": "sharepoint", "oauth_access_token_enc": enc}
+
+    # Mock get_current_job to return a job (meaning we are inside an RQ worker)
+    mock_job = MagicMock()
+    with patch("rq.get_current_job", return_value=mock_job), \
+         patch("nce.bridge_renewal._bg_refresh_token", new_callable=AsyncMock) as mock_bg:
+        res = await ensure_fresh_oauth_token(pool, row, "")
+        # Returns current token
+        assert res == "worker_access_123"
+        # Should NOT spawn background task inside RQ worker context
+        mock_bg.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_acquire_refresh_lock_redis_connection_error() -> None:
+    """If Redis is down, _acquire_refresh_lock catches the exception and returns None."""
+    mock_redis = AsyncMock()
+    mock_redis.set = AsyncMock(side_effect=Exception("Connection refused"))
+    mock_redis.close = AsyncMock()
+
+    mock_cls = MagicMock()
+    mock_cls.from_url = MagicMock(return_value=mock_redis)
+
+    with patch("nce.bridge_renewal.AsyncRedis", mock_cls), \
+         patch("nce.bridge_renewal.cfg.REDIS_URL", "redis://localhost:6379"):
+        client = await _acquire_refresh_lock("sharepoint", "bridge-123")
+        assert client is None
+
+
+@pytest.mark.asyncio
+async def test_acquire_refresh_lock_empty_redis_url_non_prod() -> None:
+    """If REDIS_URL is empty in non-prod environment, return _DummyRedis."""
+    with patch("nce.bridge_renewal.cfg.REDIS_URL", ""), \
+         patch("nce.bridge_renewal.cfg.IS_PROD", False):
+        client = await _acquire_refresh_lock("sharepoint", "bridge-123")
+        from nce.bridge_renewal import _DummyRedis
+        assert isinstance(client, _DummyRedis)
+

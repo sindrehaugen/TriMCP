@@ -141,5 +141,5 @@ async def process_sharepoint_event(payload: dict[str, Any]) -> dict[str, Any]:
                 )
     except BridgeAuthError as e:
         log.error("%s", e)
-        return {"status": "error", "error": str(e)}
+        raise
     return {"status": "ok", "items_seen": count}

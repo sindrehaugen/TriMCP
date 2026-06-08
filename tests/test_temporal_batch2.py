@@ -7,7 +7,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from nce.config import cfg
 from nce.temporal import _enforce_lookback_boundary, as_of_query, parse_as_of
 

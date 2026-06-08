@@ -5,7 +5,6 @@ or expand recursive entity declarations.
 """
 
 import pytest
-
 from nce.extractors import adobe_ext, diagrams, plaintext
 
 _BILLION_LAUGHS = b"""<?xml version="1.0"?>

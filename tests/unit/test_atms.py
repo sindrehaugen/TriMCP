@@ -7,11 +7,9 @@ Unit tests for the ATMS (Assumption-Based Truth Maintenance System) module.
 from __future__ import annotations
 
 import uuid
-import pytest
 
 from nce.atms import ATMSEngine, ATMSNodeType, build_atms_from_causal_graph
 from nce.causal.correlation import CausalGraph
-
 
 # ---------------------------------------------------------------------------
 # Fixture & Helpers
@@ -314,12 +312,12 @@ class TestTenantScaling:
         
         affected = target_engine.invalidate_assumption("power")
         assert "power" in affected
-        assert f"switch_100" in affected
-        assert f"server_100" in affected
+        assert "switch_100" in affected
+        assert "server_100" in affected
 
         assert target_engine.nodes["power"].is_valid is False
-        assert target_engine.nodes[f"switch_100"].is_valid is False
-        assert target_engine.nodes[f"server_100"].is_valid is False
+        assert target_engine.nodes["switch_100"].is_valid is False
+        assert target_engine.nodes["server_100"].is_valid is False
 
         # Verify other tenants are isolated and remain valid
         for i, (ns_id, engine) in enumerate(tenant_engines.items()):

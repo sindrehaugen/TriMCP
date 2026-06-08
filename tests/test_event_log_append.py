@@ -18,17 +18,18 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import pytest
-
-from tests.fixtures.event_log_params import minimal_store_memory_params
-from tests.fixtures.fake_asyncpg import RecordingFakeConnection
 from nce import event_log as event_log_mod
 from nce.event_log import (
+    _GENESIS_SENTINEL,
     EventLogSequenceError,
     EventLogTimestampError,
     InvalidEventTypeError,
     append_event,
 )
 from nce.signing import verify_fields
+
+from tests.fixtures.event_log_params import minimal_store_memory_params
+from tests.fixtures.fake_asyncpg import RecordingFakeConnection
 
 # Fixed 32-byte HMAC key — matches patched get_active_key below.
 _RAW_SIGNING_SECRET = hashlib.sha256(b"pytest-event-log-hmac-secret").digest()
@@ -100,6 +101,7 @@ async def test_signature_detects_params_tampering(namespace_id: UUID) -> None:
         occurred_at_iso=res.occurred_at.isoformat(),
         params=params_out,
         parent_event_id=None,
+        prev_chain_hash_hex=_GENESIS_SENTINEL.hex(),
     )
     assert verify_fields(fields, _RAW_SIGNING_SECRET, row["signature"]) is True
 

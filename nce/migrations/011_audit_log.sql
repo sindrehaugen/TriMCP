@@ -36,6 +36,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_event_type
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_log FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS audit_log_tenant_isolation ON audit_log;
 CREATE POLICY audit_log_tenant_isolation ON audit_log
     FOR ALL
     USING (namespace_id = get_nce_namespace());

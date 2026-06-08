@@ -10,14 +10,13 @@ Unit tests for batch 1 security hardening:
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
+
 import pytest
-
-from nce.orchestrator import NCEEngine
-from nce.auth import enforce_mcp_tool_auth, ScopeError
-from nce.mtls import MTLSAuthMiddleware, DEFAULT_MTLS_ERROR_CODE
 from nce.a2a import A2AMTLSError
-
+from nce.auth import ScopeError, enforce_mcp_tool_auth
+from nce.mtls import DEFAULT_MTLS_ERROR_CODE, MTLSAuthMiddleware
+from nce.orchestrator import NCEEngine
 
 # ---------------------------------------------------------------------------
 # 1. Special character handling in passwords via secure ALTER ROLE

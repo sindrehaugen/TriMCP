@@ -12,8 +12,6 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic import ValidationError
-
 from nce import a2a_mcp_handlers
 from nce.a2a import (
     A2AAuthorizationError,
@@ -23,6 +21,7 @@ from nce.a2a import (
     VerifiedGrant,
 )
 from nce.mcp_errors import MCP_INVALID_PARAMS, McpError
+from pydantic import ValidationError
 
 NS = "00000000-0000-4000-8000-000000000001"
 CONSUMER_NS = "00000000-0000-4000-8000-000000000002"

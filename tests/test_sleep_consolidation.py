@@ -20,6 +20,8 @@ pytest.importorskip("numpy")
 from nce.consolidation import ConsolidatedAbstraction, ConsolidationWorker
 from nce.providers.base import LLMProvider
 
+pytestmark = pytest.mark.heavy
+
 
 class StubLLMProvider(LLMProvider):
     """Test stub inheriting from LLMProvider ABC — ensures signature compliance."""
@@ -96,9 +98,9 @@ class FakeConsolidationConn:
             return self.event_seq
         if "clock_timestamp" in q or "current_timestamp" in q:
             from datetime import datetime, timezone
+
             return datetime.now(tz=timezone.utc)
         raise AssertionError(f"unexpected fetchval: {query!r}")
-
 
     async def fetch(self, query: str, *args: Any) -> list:
         q = query.lower()
@@ -120,6 +122,7 @@ class FakeConsolidationConn:
             return None  # Genesis event — no previous chain hash
         if "insert into event_log" in q:
             from datetime import datetime, timezone
+
             # Also track in executes so test SQL assertions on conn.executes work
             self.executes.append((query, args))
             return {
@@ -131,9 +134,6 @@ class FakeConsolidationConn:
 
         raise AssertionError(f"unexpected fetchrow: {query!r}")
 
-
-
-
     async def execute(self, query: str, *args: Any) -> str:
         self.executes.append((query, args))
         return "UPDATE 1"
@@ -141,8 +141,6 @@ class FakeConsolidationConn:
     def is_in_transaction(self) -> bool:
         """Simulate an active PG transaction — required by append_event()."""
         return True
-
-
 
 
 class _FakeHDBSCAN:
@@ -181,7 +179,6 @@ def patch_signing(monkeypatch: pytest.MonkeyPatch):
     # Also patch on consolidation module for forward-compatibility
     monkeypatch.setattr("nce.consolidation.get_active_key", _gk)
     monkeypatch.setattr("nce.consolidation.sign_fields", lambda fields, key: b"signed-by-test")
-
 
 
 def test_consolidation_no_memories_completes(patch_signing, monkeypatch: pytest.MonkeyPatch):

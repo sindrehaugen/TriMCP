@@ -11,7 +11,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from nce import auth as auth_mod
 from nce import migration_mcp_handlers
 from nce.mcp_errors import MCP_INTERNAL_ERROR, McpError

@@ -3,6 +3,6 @@ revision = 3
 requires-python = ">=3.10"
 
 [[package]]
-name = "trimcp"
-version = "0"
+name = "nce"
+version = "3.0.0"
 source = { virtual = "." }

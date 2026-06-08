@@ -249,7 +249,7 @@ class CausalGraph:
         namespace_id: uuid.UUID,
         *,
         active_only: bool = True,
-    ) -> "CausalGraph":
+    ) -> CausalGraph:
         """Load the topology_graph for *namespace_id* into memory.
 
         Args:
@@ -320,7 +320,7 @@ class CausalGraph:
         cls,
         rows: list[dict],
         namespace_id: uuid.UUID,
-    ) -> "CausalGraph":
+    ) -> CausalGraph:
         """Build a CausalGraph from a list of row dicts (or asyncpg Records).
 
         Each row must have keys: source_node_id, source_node_type,
@@ -597,7 +597,7 @@ class CausalGraph:
     # Intervention operator: do(X) — edge-type-aware (TD-CAUSAL-1)
     # ------------------------------------------------------------------
 
-    def mutilate(self, node_id: str) -> "CausalGraph":
+    def mutilate(self, node_id: str) -> CausalGraph:
         """Return G̃ = G_{do(node_id)}: sever all causal CAUSES of node_id.
 
         Pearl's do-operator forces a node to a specific value, removing all

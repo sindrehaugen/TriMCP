@@ -191,7 +191,7 @@ class GraphOrchestrator(OrchestratorBase):
             rows = await conn.fetch(
                 """
                 SELECT m.id, m.payload_ref, m.language, m.filepath, m.assertion_type,
-                       m.metadata, m.content_fts
+                       m.metadata, m.content_fts, m.name, m.node_type, m.start_line, m.end_line
                 FROM memories m
                 WHERE m.id = ANY($1::uuid[])
                 """,
@@ -232,11 +232,11 @@ class GraphOrchestrator(OrchestratorBase):
                             )
                     elif isinstance(raw, dict):
                         meta = dict(raw)
+                name = row["name"] or meta.get("name") or row["filepath"]
+                node_type = row["node_type"] or meta.get("node_type") or "chunk"
+                start_line = row["start_line"] if row["start_line"] is not None else meta.get("start_line", 0)
+                end_line = row["end_line"] if row["end_line"] is not None else meta.get("end_line", 0)
 
-                name = meta.get("name") or row["filepath"]
-                node_type = meta.get("node_type") or "chunk"
-                start_line = meta.get("start_line", 0)
-                end_line = meta.get("end_line", 0)
 
                 ref_key = normalize_payload_ref(row["payload_ref"])
                 raw_code = code_docs.get(ref_key, "") if ref_key else ""

@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from nce.models import NamespacePIIConfig, PIIEntity, PIIPolicy
 from nce.pii import _merge_overlapping_entities, process
 

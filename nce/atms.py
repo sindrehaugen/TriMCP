@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from nce.causal.correlation import CausalGraph, _FORWARD_FAILURE_TYPES, _REVERSE_FAILURE_TYPES
+from nce.causal.correlation import _FORWARD_FAILURE_TYPES, _REVERSE_FAILURE_TYPES, CausalGraph
 
 log = logging.getLogger("nce.atms")
 

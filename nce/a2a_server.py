@@ -37,11 +37,17 @@ import asyncio
 import collections
 import json
 import logging
+import os
 import signal
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+
+try:
+    import psutil  # type: ignore[import-untyped]
+except ImportError:
+    psutil = None
 
 if TYPE_CHECKING:
     from nce.orchestrator import NCEEngine
@@ -67,11 +73,21 @@ from nce.config import cfg
 from nce.correlation import correlation_id_var
 from nce.jwt_auth import JWTAuthMiddleware
 from nce.models import GraphSearchRequest
+from nce.providers import LLMCircuitOpenError
 
 log = logging.getLogger("nce.a2a_server")
 
 # JSON-RPC 2.0 error code for mTLS failures (same range as A2A_UNAUTHORIZED)
 A2A_CODE_MTLS = -32015  # mTLS client certificate validation failed
+
+
+def _get_process_memory_mb() -> float | None:
+    if psutil is not None:
+        try:
+            return psutil.Process(os.getpid()).memory_info().rss / (1024.0 * 1024.0)
+        except Exception:
+            pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +175,28 @@ class BoundedDict(collections.OrderedDict):
 
 
 _tasks: BoundedDict = BoundedDict(maxlen=10000)
+
+
+async def _store_task(task_id: str, task: dict[str, Any]) -> None:
+    _tasks[task_id] = task
+    if _engine is not None and _engine.redis_client is not None:
+        try:
+            key = f"nce:a2a:tasks:{task_id}"
+            await _engine.redis_client.set(key, json.dumps(task), ex=3600)
+        except Exception as exc:
+            log.warning("Failed to store task in Redis: %s", exc)
+
+
+async def _get_task(task_id: str) -> dict[str, Any] | None:
+    if _engine is not None and _engine.redis_client is not None:
+        try:
+            key = f"nce:a2a:tasks:{task_id}"
+            raw = await _engine.redis_client.get(key)
+            if raw:
+                return json.loads(raw)
+        except Exception as exc:
+            log.warning("Failed to get task from Redis: %s", exc)
+    return _tasks.get(task_id)
 
 # ---------------------------------------------------------------------------
 # Engine reference (injected via lifespan)
@@ -343,6 +381,16 @@ async def tasks_send(request: Request) -> JSONResponse:
     if _engine is None:
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
 
+    # Check Uvicorn process memory usage to prevent OOM degradation
+    mem_mb = _get_process_memory_mb()
+    mem_limit = getattr(cfg, "NCE_A2A_MEMORY_LIMIT_MB", 2048.0)
+    if mem_mb is not None and mem_mb > mem_limit:
+        log.warning("Uvicorn memory threshold exceeded: %.1f MB > %.1f MB", mem_mb, mem_limit)
+        return JSONResponse(
+            _jsonrpc_err(-32017, "Resource exhaustion: memory threshold exceeded", f"Memory usage: {mem_mb:.1f} MB"),
+            status_code=503,
+        )
+
     caller_ctx: NamespaceContext | None = getattr(request.state, "namespace_ctx", None)
     if caller_ctx is None:
         return JSONResponse(
@@ -385,7 +433,7 @@ async def tasks_send(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    _tasks[task_id] = _make_task(task_id, "submitted")
+    await _store_task(task_id, _make_task(task_id, "submitted"))
 
     async with _track_active_request():
         try:
@@ -422,26 +470,33 @@ async def tasks_send(request: Request) -> JSONResponse:
                 "completed",
                 artifacts=[{"type": "text", "text": json.dumps(result)}],
             )
-            _tasks[task_id] = task
+            await _store_task(task_id, task)
             return JSONResponse(task, status_code=200)
 
         except A2AAuthorizationError as exc:
             task = _make_task(task_id, "failed", message=str(exc))
-            _tasks[task_id] = task
+            await _store_task(task_id, task)
             return JSONResponse(
                 _jsonrpc_err(A2A_CODE_UNAUTHORIZED, "A2A authorization failure", str(exc)),
                 status_code=403,
             )
         except A2AScopeViolationError as exc:
             task = _make_task(task_id, "failed", message=str(exc))
-            _tasks[task_id] = task
+            await _store_task(task_id, task)
             return JSONResponse(
                 _jsonrpc_err(A2A_CODE_SCOPE_VIOLATION, "Scope violation", str(exc)),
                 status_code=403,
             )
+        except LLMCircuitOpenError as exc:
+            task = _make_task(task_id, "failed", message=str(exc))
+            await _store_task(task_id, task)
+            return JSONResponse(
+                _jsonrpc_err(-32016, "Service temporarily degraded (circuit breaker open)", str(exc)),
+                status_code=503,
+            )
         except ValueError as exc:
             task = _make_task(task_id, "failed", message=str(exc))
-            _tasks[task_id] = task
+            await _store_task(task_id, task)
             return JSONResponse(
                 _jsonrpc_err(A2A_CODE_BAD_REQUEST, "Invalid skill parameters", str(exc)),
                 status_code=400,
@@ -449,8 +504,15 @@ async def tasks_send(request: Request) -> JSONResponse:
         except Exception as exc:
             log.exception("tasks_send failed task_id=%s skill=%s", task_id, skill)
             task = _make_task(task_id, "failed", message=f"Internal error: {type(exc).__name__}")
-            _tasks[task_id] = task
+            await _store_task(task_id, task)
             return JSONResponse({"error": "Internal error"}, status_code=500)
+        except BaseException as exc:
+            import asyncio
+            state = "canceled" if isinstance(exc, asyncio.CancelledError) else "failed"
+            msg = "Task cancelled (client disconnected or timed out)" if state == "canceled" else f"Task failed: {type(exc).__name__}"
+            task = _make_task(task_id, state, message=msg)
+            await asyncio.shield(_store_task(task_id, task))
+            raise
         finally:
             correlation_id_var.reset(_cid_token)
 
@@ -462,7 +524,7 @@ async def tasks_get(request: Request) -> JSONResponse:
         return rejected
     async with _track_active_request():
         task_id = request.path_params.get("task_id", "")
-        task = _tasks.get(task_id)
+        task = await _get_task(task_id)
         if task is None:
             return JSONResponse({"error": "Task not found", "task_id": task_id}, status_code=404)
         return JSONResponse(task)
@@ -475,7 +537,7 @@ async def tasks_cancel(request: Request) -> JSONResponse:
         return rejected
     async with _track_active_request():
         task_id = request.path_params.get("task_id", "")
-        task = _tasks.get(task_id)
+        task = await _get_task(task_id)
         if task is None:
             return JSONResponse({"error": "Task not found", "task_id": task_id}, status_code=404)
 
@@ -489,8 +551,9 @@ async def tasks_cancel(request: Request) -> JSONResponse:
                 status_code=409,
             )
 
-        _tasks[task_id] = _make_task(task_id, "canceled")
-        return JSONResponse(_tasks[task_id])
+        task = _make_task(task_id, "canceled", message="Cancelled by user")
+        await _store_task(task_id, task)
+        return JSONResponse(task)
 
 
 # ---------------------------------------------------------------------------

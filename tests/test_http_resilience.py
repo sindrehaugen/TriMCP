@@ -7,9 +7,8 @@ from email.utils import format_datetime
 from unittest.mock import AsyncMock, patch
 
 import httpx
-import pytest
-
 import nce.http_resilience as hr
+import pytest
 
 
 async def _run_operation_without_retry(op, **_kw):

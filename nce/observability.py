@@ -11,8 +11,8 @@ import functools
 import logging
 import time
 from collections.abc import Callable
-from contextlib import asynccontextmanager
-from typing import Any, TypeVar
+from contextlib import ContextDecorator, asynccontextmanager
+from typing import Any, Literal, TypeVar
 
 log = logging.getLogger("nce.observability")
 
@@ -30,7 +30,7 @@ class _StubMetric:
     def __init__(self, *args: object, **kwargs: object) -> None:
         pass
 
-    def labels(self, *args: object, **kwargs: object) -> "_StubMetric":
+    def labels(self, *args: object, **kwargs: object) -> _StubMetric:
         return self
 
     def inc(self, amount: float = 1, **kwargs: object) -> None:
@@ -61,6 +61,8 @@ except ImportError:
 try:
     from prometheus_client import (
         REGISTRY as _PROM_REGISTRY,
+    )
+    from prometheus_client import (
         Counter,
         Gauge,
         Histogram,
@@ -101,7 +103,7 @@ try:
 except ImportError:
     HAS_PROMETHEUS = False
 
-    Counter = Histogram = Gauge = _StubMetric
+    Counter = Histogram = Gauge = _StubMetric  # type: ignore[misc, assignment]
 
     def start_http_server(*args, **kwargs):
         pass
@@ -182,7 +184,6 @@ REEMBEDDER_VRAM_PEAK = _safe_gauge(
 SCOPED_SESSION_LATENCY = _safe_histogram(
     "nce_scoped_session_latency_seconds",
     "Latency of scoped_session acquisition + SET LOCAL RLS",
-    ["namespace_id"],
     buckets=(0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, float("inf")),
 )
 
@@ -208,7 +209,6 @@ EVENT_LOG_PARTITION_MONTHS_AHEAD = _safe_gauge(
 MERKLE_CHAIN_VALID = _safe_gauge(
     "nce_merkle_chain_valid",
     "Merkle chain validity: 1=valid, 0=corrupted",
-    ["namespace_id"],
 )
 
 # Transactional outbox relay (Phase 1.1)
@@ -571,3 +571,66 @@ class OpenTelemetryTraceMiddleware:
                 return
 
         await self.app(scope, receive, send)
+
+
+def enqueue_traced(queue, func, *args, **kwargs):
+    """Enqueue a job onto *queue* while propagating OpenTelemetry trace context.
+
+    Extracts the active tracing context and injects it into the job's `meta` dictionary
+    so the worker can associate the async execution with the enqueuer's span.
+    """
+    meta = kwargs.setdefault("meta", {})
+    if HAS_OTEL and cfg.NCE_OBSERVABILITY_ENABLED:
+        try:
+            propagate.inject(meta)
+        except Exception as e:
+            log.warning("Failed to inject trace context into job meta: %s", e)
+    return queue.enqueue(func, *args, **kwargs)
+
+
+class traced_worker_job(ContextDecorator):
+    """Context manager and decorator for RQ worker tasks to extract OTel trace context from job.meta.
+
+    Restores the remote trace context and starts a new nested span for the job execution.
+    """
+    def __init__(self, operation_name: str) -> None:
+        self.operation_name = operation_name
+        self.token = None
+        self.span_ctx = None
+        self.span = None
+
+    def __enter__(self):
+        if not (HAS_OTEL and cfg.NCE_OBSERVABILITY_ENABLED):
+            return self
+
+        from rq import get_current_job
+        job = get_current_job()
+        if job and job.meta:
+            try:
+                ctx = propagate.extract(job.meta)
+                self.token = otel_context.attach(ctx)
+            except Exception as e:
+                log.warning("Failed to extract trace context from job meta: %s", e)
+
+        tracer = get_tracer()
+        self.span_ctx = tracer.start_as_current_span(f"rq_worker:{self.operation_name}")
+        self.span = self.span_ctx.__enter__()
+        if job and self.span:
+            self.span.set_attribute("rq.job_id", job.id)
+            self.span.set_attribute("rq.queue", job.origin)
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Literal[False]:
+        if not (HAS_OTEL and cfg.NCE_OBSERVABILITY_ENABLED):
+            return False
+
+        try:
+            if self.span_ctx:
+                if exc_type is not None and self.span:
+                    self.span.record_exception(exc_val)
+                    self.span.set_status(trace.Status(trace.StatusCode.ERROR))
+                self.span_ctx.__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            if self.token:
+                otel_context.detach(self.token)
+        return False

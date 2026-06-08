@@ -233,6 +233,20 @@ async def store_dead_letter(
         # Refresh backlog gauge from DB.
         await _refresh_backlog_gauge(pg_pool, task_name)
 
+        # Dispatch alert to operators non-blockingly, caught and logged if failing
+        try:
+            from nce.notifications import dispatcher
+
+            title = f"Task Dead-Lettered: {task_name}"
+            message = f"Task '{task_name}' (job {job_id}) failed: {error_message}"
+            await dispatcher.dispatch_alert(title, message)
+        except Exception:
+            log.exception(
+                "[DLQ] Failed to dispatch alert for dead-lettered task %s (job %s)",
+                task_name,
+                job_id,
+            )
+
         log.critical(
             "[DLQ] Task %s (job %s) failed %d times — routed to dead_letter_queue id=%s. Error: %s",
             task_name,

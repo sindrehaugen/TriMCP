@@ -12,6 +12,7 @@ Hardening:
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -160,8 +161,49 @@ async def _fetch_pg_refs(pg_pool: asyncpg.Pool, namespaces: list[UUID]) -> set[s
                                 break  # last page
         except Exception as e:
             log.error("GC: Failed to fetch PG refs for namespace=%s: %s", ns_id, e)
+            raise
 
     return pg_refs
+
+
+async def _fetch_minio_refs(pg_pool: asyncpg.Pool, namespaces: list[UUID]) -> set[str]:
+    """Build the set of all known MinIO object_names in PG using keyset-based pagination."""
+    minio_refs: set[str] = set()
+    ZERO_UUID = UUID(int=0)
+
+    for ns_id in namespaces:
+        try:
+            async with pg_pool.acquire(timeout=30.0) as conn:
+                async with conn.transaction():
+                    await set_namespace_context(conn, ns_id)
+                    for table in ("memories",):
+                        last_seen_id = ZERO_UUID
+                        while True:
+                            rows = await conn.fetch(
+                                f"SELECT id, metadata FROM {table} "
+                                f"WHERE id > $1 "
+                                f"ORDER BY id LIMIT $2",
+                                last_seen_id,
+                                PAGE_SIZE,
+                            )
+                            if not rows:
+                                break
+                            for row in rows:
+                                meta = row["metadata"]
+                                if meta:
+                                    meta_dict = meta if isinstance(meta, dict) else json.loads(meta)
+                                    obj_name = meta_dict.get("object_name")
+                                    if obj_name:
+                                        minio_refs.add(obj_name)
+                            last_seen_id = rows[-1]["id"]
+
+                            if len(rows) < PAGE_SIZE:
+                                break  # last page
+        except Exception as e:
+            log.error("GC: Failed to fetch MinIO refs for namespace=%s: %s", ns_id, e)
+            raise
+
+    return minio_refs
 
 
 # --- Namespace-aware maintenance helpers ---
@@ -292,9 +334,110 @@ async def _clean_orphaned_cascade(
 # --- Core GC pass ---
 
 
+async def _collect_minio_orphans(
+    minio_client: Any,
+    minio_refs: set[str],
+) -> int:
+    """List all mcp-* buckets and remove objects that are not in minio_refs and older than GC_ORPHAN_AGE_SECONDS."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=cfg.GC_ORPHAN_AGE_SECONDS)
+    deleted_count = 0
+
+    def _sweep():
+        nonlocal deleted_count
+        try:
+            buckets = minio_client.list_buckets()
+        except Exception as e:
+            log.error("GC: Failed to list MinIO buckets: %s", e)
+            return
+
+        for bucket in buckets:
+            if not bucket.name.startswith("mcp-"):
+                continue
+            try:
+                objects = minio_client.list_objects(bucket.name, recursive=True)
+                for obj in objects:
+                    if obj.is_dir:
+                        continue
+                    if obj.last_modified and obj.last_modified < cutoff:
+                        if obj.object_name not in minio_refs:
+                            log.warning(
+                                "GC: deleting orphaned MinIO object %s/%s",
+                                bucket.name,
+                                obj.object_name,
+                            )
+                            try:
+                                minio_client.remove_object(bucket.name, obj.object_name)
+                                deleted_count += 1
+                            except Exception as ex:
+                                log.error(
+                                    "GC: failed to remove MinIO object %s/%s: %s",
+                                    bucket.name,
+                                    obj.object_name,
+                                    ex,
+                                )
+            except Exception as e:
+                log.error("GC: Failed to scan MinIO bucket %s: %s", bucket.name, e)
+
+            # Sweep incomplete multipart uploads
+            try:
+                key_marker = None
+                upload_id_marker = None
+                while True:
+                    res = minio_client._list_multipart_uploads(
+                        bucket.name,
+                        key_marker=key_marker,
+                        upload_id_marker=upload_id_marker,
+                    )
+                    uploads = getattr(res, "uploads", None) or []
+                    for upload in uploads:
+                        initiated = upload.initiated_time
+                        if initiated:
+                            if initiated.tzinfo is None:
+                                initiated = initiated.replace(tzinfo=timezone.utc)
+                            if initiated < cutoff:
+                                log.warning(
+                                    "GC: deleting incomplete MinIO upload %s/%s initiated=%s",
+                                    bucket.name,
+                                    upload.object_name,
+                                    initiated,
+                                )
+                                try:
+                                    minio_client._abort_multipart_upload(
+                                        bucket.name,
+                                        upload.object_name,
+                                        upload.upload_id,
+                                    )
+                                    deleted_count += 1
+                                except Exception as ex:
+                                    log.error(
+                                        "GC: failed to abort incomplete MinIO upload %s/%s: %s",
+                                        bucket.name,
+                                        upload.object_name,
+                                        ex,
+                                    )
+                    is_trunc = getattr(res, "is_truncated", False)
+                    if not isinstance(is_trunc, bool) or not is_trunc:
+                        break
+                    key_marker = getattr(res, "next_key_marker", None)
+                    upload_id_marker = getattr(res, "next_upload_id_marker", None)
+                    if not key_marker and uploads:
+                        key_marker = uploads[-1].object_name
+                        upload_id_marker = uploads[-1].upload_id
+                    if not key_marker or not isinstance(key_marker, str):
+                        break
+            except Exception as e:
+                log.error(
+                    "GC: Failed to scan incomplete uploads for MinIO bucket %s: %s", bucket.name, e
+                )
+
+    await asyncio.to_thread(_sweep)
+    return deleted_count
+
+
 async def _collect_orphans(
     mongo_client: AsyncIOMotorClient,
     pg_pool: asyncpg.Pool,
+    minio_client: Any | None = None,
 ) -> dict:
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=cfg.GC_ORPHAN_AGE_SECONDS)
     db = mongo_client.memory_archive
@@ -315,11 +458,22 @@ async def _collect_orphans(
 
     if not candidates:
         log.info("GC: no candidates — Tri-Stack is clean.")
-        return {
+        deleted_minio = 0
+        if minio_client:
+            try:
+                # Still run MinIO check even if no MongoDB candidates to keep MinIO aligned
+                minio_refs = await _fetch_minio_refs(pg_pool, await _fetch_all_namespaces(pg_pool))
+                deleted_minio = await _collect_minio_orphans(minio_client, minio_refs)
+            except Exception as exc:
+                log.error("GC: Failed to collect MinIO orphans: %s", exc)
+        ret = {
             "deleted_docs": 0,
             "deleted_salience": 0,
             "deleted_contradictions": 0,
         }
+        if minio_client is not None:
+            ret["deleted_minio"] = deleted_minio
+        return ret
 
     log.info(
         "GC: %d candidate(s) older than %ds. Cross-referencing PG (page=%d)...",
@@ -337,34 +491,40 @@ async def _collect_orphans(
             "GC: no namespaces found in PG — aborting orphan deletion to prevent "
             "data loss. This may indicate an empty or misconfigured database."
         )
-        return {
+        ret = {
             "deleted_docs": 0,
             "deleted_salience": 0,
             "deleted_contradictions": 0,
         }
+        if minio_client is not None:
+            ret["deleted_minio"] = 0
+        return ret
 
     pg_refs = await _fetch_pg_refs(pg_pool, namespaces)
     orphans = [(col, oid) for col, oid in candidates if oid not in pg_refs]
 
-    if not orphans:
-        log.info("GC: all %d candidates referenced in PG — no orphans.", len(candidates))
-        return {
-            "deleted_docs": 0,
-            "deleted_nodes": 0,
-            "deleted_salience": 0,
-            "deleted_contradictions": 0,
-        }
-
-    log.warning("GC: %d orphan(s) detected. Purging...", len(orphans))
     deleted = 0
-    for col_name, str_id in orphans:
+    if orphans:
+        log.warning("GC: %d orphan(s) detected. Purging...", len(orphans))
+        for col_name, str_id in orphans:
+            try:
+                result = await db[col_name].delete_one({"_id": ObjectId(str_id)})
+                if result.deleted_count:
+                    log.info("GC: deleted orphan [%s] %s", col_name, str_id)
+                    deleted += 1
+            except Exception as exc:
+                log.error("GC: failed to delete %s from [%s]: %s", str_id, col_name, exc)
+    else:
+        log.info("GC: all %d candidates referenced in PG — no orphans.", len(candidates))
+
+    # Run MinIO cleanup if client is available
+    deleted_minio = 0
+    if minio_client:
         try:
-            result = await db[col_name].delete_one({"_id": ObjectId(str_id)})
-            if result.deleted_count:
-                log.info("GC: deleted orphan [%s] %s", col_name, str_id)
-                deleted += 1
+            minio_refs = await _fetch_minio_refs(pg_pool, namespaces)
+            deleted_minio = await _collect_minio_orphans(minio_client, minio_refs)
         except Exception as exc:
-            log.error("GC: failed to delete %s from [%s]: %s", str_id, col_name, exc)
+            log.error("GC: Failed to collect MinIO orphans: %s", exc)
 
     # --- Namespace-aware PG maintenance passes ---
     # These operations hit RLS-protected tables (memory_salience,
@@ -400,12 +560,19 @@ async def _collect_orphans(
             total_contradictions,
         )
 
-    log.info("GC: pass complete — %d orphan(s) removed.", deleted)
-    return {
+    log.info(
+        "GC: pass complete — %d Mongo orphan(s), %d MinIO orphan(s) removed.",
+        deleted,
+        deleted_minio,
+    )
+    ret = {
         "deleted_docs": deleted,
         "deleted_salience": total_salience,
         "deleted_contradictions": total_contradictions,
     }
+    if minio_client is not None:
+        ret["deleted_minio"] = deleted_minio
+    return ret
 
 
 # --- Long-running loop ---
@@ -435,6 +602,21 @@ async def run_gc_loop():
         )
         return
 
+    minio_client: Any | None = None
+    if cfg.MINIO_ENDPOINT:
+        try:
+            from minio import Minio
+
+            minio_client = Minio(
+                cfg.MINIO_ENDPOINT,
+                access_key=cfg.MINIO_ACCESS_KEY,
+                secret_key=cfg.MINIO_SECRET_KEY,
+                secure=cfg.MINIO_SECURE,
+            )
+            log.info("GC connected to MinIO endpoint: %s", cfg.MINIO_ENDPOINT)
+        except Exception as exc:
+            log.error("GC could not create MinIO client: %s", exc)
+
     # Create a single shared Redis client for the lock lifecycle.
     redis_client: Any | None = None
     if cfg.REDIS_URL:
@@ -443,9 +625,7 @@ async def run_gc_loop():
 
             redis_client = AsyncRedis.from_url(cfg.REDIS_URL)
         except Exception as exc:
-            log.error(
-                "GC could not create Redis client — distributed lock disabled: %s", exc
-            )
+            log.error("GC could not create Redis client — distributed lock disabled: %s", exc)
     else:
         log.warning("REDIS_URL not set — GC distributed lock disabled.")
 
@@ -462,7 +642,7 @@ async def run_gc_loop():
                 continue
 
             try:
-                await _collect_orphans(mongo_client, pg_pool)
+                await _collect_orphans(mongo_client, pg_pool, minio_client)
             except Exception as exc:
                 log.error("GC pass raised unexpected error: %s", exc)
             finally:

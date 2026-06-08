@@ -37,7 +37,6 @@ _MCP_CACHE_PREFIX = "mcp_cache"
 # Cache TTL for cacheable tool responses (seconds).
 # Canonical value lives in nce.constants.MCP_CACHE_TTL_S (300 s).
 # The old value here was 60 — stale, never matched the dispatch loop's 300 s.
-from nce.constants import MCP_CACHE_TTL_S as _MCP_CACHE_TTL_S
 
 # Redis key for the global cache-generation counter.
 _MCP_CACHE_GENERATION_KEY: str = "mcp_cache_generation"

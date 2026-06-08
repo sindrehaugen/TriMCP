@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from nce.orchestrators.graph import GraphOrchestrator
 
 NS = "00000000-0000-4000-8000-000000000001"
@@ -52,6 +51,10 @@ def _memory_row(
         "assertion_type": None,
         "metadata": metadata,
         "content_fts": "def main",
+        "name": None,
+        "node_type": None,
+        "start_line": None,
+        "end_line": None,
     }
 
 

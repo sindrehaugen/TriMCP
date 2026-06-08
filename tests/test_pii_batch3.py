@@ -6,7 +6,6 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from nce import pii as pii_mod
 from nce.models import NamespacePIIConfig
 from nce.pii import _get_analyzer, _scan_sync

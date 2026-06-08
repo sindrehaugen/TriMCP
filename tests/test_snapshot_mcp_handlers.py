@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-
 from nce.orchestrator import NCEEngine
 from nce.snapshot_mcp_handlers import (
     _MAX_EXPORT_ROWS,

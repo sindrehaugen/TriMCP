@@ -8,14 +8,13 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from nce import a2a_mcp_handlers
 from nce.a2a import (
     A2AAuthorizationError,
     A2AScope,
-    verify_grant_status,
-    update_grant_scopes,
     inspect_grant,
+    update_grant_scopes,
+    verify_grant_status,
 )
 from nce.auth import NamespaceContext
 

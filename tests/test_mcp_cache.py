@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-
 from nce.mcp_args import (
     _document_cache_pattern,
     _namespace_cache_pattern,
@@ -364,3 +363,56 @@ async def test_cacheable_graph_search(mock_engine):
     mock_engine.redis_client.setex.assert_called_once()
     key = mock_engine.redis_client.setex.call_args[0][0]
     assert TEST_NS in key
+
+
+@pytest.mark.asyncio
+async def test_a2a_scope_violation_bypasses_cache_write(mock_engine, monkeypatch):
+    """An A2A scope violation on a cacheable tool must bypass writing to the Redis cache."""
+    from nce.a2a import A2AScopeViolationError
+    from server import call_tool
+
+    # Make semantic_search raise an A2AScopeViolationError
+    mock_engine.semantic_search.side_effect = A2AScopeViolationError("A2A Scope violation")
+    mock_engine.redis_client.get.return_value = None
+
+    args = {
+        "namespace_id": TEST_NS,
+        "agent_id": "u1",
+        "query": "forbidden query",
+        "limit": 5,
+    }
+    
+    # We call the tool. It returns an error response (since it handles the exception).
+    res = await call_tool("semantic_search", args)
+    
+    # Verify the handler was indeed called
+    mock_engine.semantic_search.assert_called_once()
+    
+    # Verify we did NOT call setex on the Redis cache
+    mock_engine.redis_client.setex.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a2a_scope_violation_bypasses_generation_bump(mock_engine, monkeypatch):
+    """An A2A scope violation on a mutation tool must bypass bumping the cache generation."""
+    from nce.a2a import A2AScopeViolationError
+    from server import call_tool
+
+    # Make store_memory raise an A2AScopeViolationError
+    mock_engine.store_memory.side_effect = A2AScopeViolationError("A2A Scope violation")
+
+    args = {
+        "namespace_id": TEST_NS,
+        "agent_id": "u1",
+        "content": "new memory content",
+        "summary": "new memory",
+        "heavy_payload": "full content",
+    }
+    
+    res = await call_tool("store_memory", args)
+    
+    # Verify store_memory was called
+    mock_engine.store_memory.assert_called_once()
+    
+    # Verify Redis incr was NOT called (which is called by bump_cache_generation)
+    mock_engine.redis_client.incr.assert_not_called()

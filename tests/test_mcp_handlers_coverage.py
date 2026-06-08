@@ -14,7 +14,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from nce import (
     a2a_mcp_handlers,
     admin_mcp_handlers,

@@ -14,6 +14,7 @@ import time
 from uuid import uuid4
 
 import pytest
+from nce.auth import HMACAuthMiddleware, NamespaceContext, resolve_namespace
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.requests import Request
@@ -22,7 +23,6 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from tests.fixtures.http_hmac_helpers import admin_hmac_headers, compute_admin_hmac
-from nce.auth import HMACAuthMiddleware, NamespaceContext, resolve_namespace
 
 _KEY = "fixture-hmac-shared-secret-32b+"
 

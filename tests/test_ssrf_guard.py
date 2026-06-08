@@ -14,7 +14,6 @@ import socket
 from typing import Any
 
 import pytest
-
 from nce.net_safety import (
     BridgeURLValidationError,
     validate_extractor_url,

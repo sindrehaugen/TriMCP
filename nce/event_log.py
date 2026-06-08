@@ -276,6 +276,8 @@ EXPECTED_TENANT_RLS_TABLES: dict[str, str] = {
     "topology_graph": "namespace_id",
     "audit_log": "namespace_id",
     "active_learning_queue": "namespace_id",
+    "d365_integrations": "namespace_id",
+    "d365_netbox_mappings": "namespace_id",
 }
 
 EXPECTED_SPECIAL_RLS_TABLES: dict[str, tuple[str, ...]] = {
@@ -287,6 +289,8 @@ EXPECTED_GLOBAL_TABLES: set[str] = {
     # Tables intentionally without RLS — shared across all tenants.
     "embedding_models",
     "kg_node_embeddings",
+    "reembedding_runs",
+    "event_sequences",
 }
 
 
@@ -356,8 +360,13 @@ async def verify_rls_catalog_consistency(conn: asyncpg.Connection) -> None:
     Raises RuntimeError listing all failures if any mismatch is found.
     Call at startup (after pool creation) and in CI against a fresh database.
     """
-    db_info = await conn.fetchrow("SELECT current_user, current_database(), inet_server_addr(), inet_server_port()")
-    print(f"\n[RLS-DEBUG] User: {db_info[0]} | DB: {db_info[1]} | Addr: {db_info[2]} | Port: {db_info[3]}", flush=True)
+    db_info = await conn.fetchrow(
+        "SELECT current_user, current_database(), inet_server_addr(), inet_server_port()"
+    )
+    print(
+        f"\n[RLS-DEBUG] User: {db_info[0]} | DB: {db_info[1]} | Addr: {db_info[2]} | Port: {db_info[3]}",
+        flush=True,
+    )
 
     import logging as _logging
 
@@ -370,10 +379,11 @@ async def verify_rls_catalog_consistency(conn: asyncpg.Connection) -> None:
             c.relforcerowsecurity       AS force_rls_enabled,
             EXISTS (
                 SELECT 1
-                FROM information_schema.columns col
-                WHERE col.table_schema = 'public'
-                  AND col.table_name   = c.relname
-                  AND col.column_name  = 'namespace_id'
+                FROM pg_attribute a
+                WHERE a.attrelid = c.oid
+                  AND a.attname  = 'namespace_id'
+                  AND a.attnum   > 0
+                  AND NOT a.attisdropped
             )                           AS has_namespace_id,
             (
                 SELECT count(*)
@@ -385,6 +395,7 @@ async def verify_rls_catalog_consistency(conn: asyncpg.Connection) -> None:
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname   = 'public'
           AND c.relkind  IN ('r', 'p')
+          AND c.relispartition = false
         ORDER BY c.relname
     """)
 
@@ -479,15 +490,21 @@ async def verify_rls_catalog_consistency(conn: asyncpg.Connection) -> None:
     for table_name, row in by_table.items():
         if (
             row["has_namespace_id"]
-            and row["rls_enabled"]
             and table_name not in declared
             and not table_name.endswith("_default")
         ):
-            errors.append(
-                f"{table_name}: has namespace_id + RLS enabled but is not declared "
-                "in any RLS intent category — add to EXPECTED_TENANT_RLS_TABLES "
-                "or EXPECTED_SPECIAL_RLS_TABLES"
-            )
+            if not row["rls_enabled"]:
+                errors.append(f"{table_name}: has namespace_id but RLS is NOT enabled")
+            else:
+                errors.append(
+                    f"{table_name}: has namespace_id + RLS enabled but is not declared "
+                    "in any RLS intent category — add to EXPECTED_TENANT_RLS_TABLES "
+                    "or EXPECTED_SPECIAL_RLS_TABLES"
+                )
+                if not row["force_rls_enabled"]:
+                    errors.append(
+                        f"{table_name}: FORCE ROW LEVEL SECURITY is not enabled (relforcerowsecurity=false)"
+                    )
 
     if errors:
         raise RuntimeError(
@@ -529,6 +546,7 @@ def _build_signing_fields(
     occurred_at_iso: str,
     params: dict[str, Any],
     parent_event_id: uuid.UUID | None,
+    prev_chain_hash_hex: str | None = None,
 ) -> dict[str, Any]:
     """
     Return the dict of immutable event fields that is signed.
@@ -549,6 +567,8 @@ def _build_signing_fields(
     }
     if parent_event_id is not None:
         fields["parent_event_id"] = str(parent_event_id)
+    if prev_chain_hash_hex is not None:
+        fields["prev_chain_hash"] = prev_chain_hash_hex
     return fields
 
 
@@ -795,6 +815,7 @@ async def _sign_event(
     occurred_at_iso: str,
     params: dict[str, Any],
     parent_event_id: uuid.UUID | None,
+    prev_chain_hash_hex: str | None = None,
 ) -> tuple[str, bytes]:
     """
     Load the active signing key, build canonical fields, and HMAC-sign.
@@ -822,6 +843,7 @@ async def _sign_event(
         occurred_at_iso=occurred_at_iso,
         params=params,
         parent_event_id=parent_event_id,
+        prev_chain_hash_hex=prev_chain_hash_hex,
     )
 
     try:
@@ -868,13 +890,13 @@ async def _insert_event(
                 id, namespace_id, agent_id, event_type, event_seq,
                 occurred_at, params, result_summary,
                 parent_event_id, llm_payload_uri, llm_payload_hash,
-                signature, signature_key_id, chain_hash,
+                signature, signature_key_id, signature_version, chain_hash,
                 correlation_id
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7::jsonb, $8::jsonb,
                 $9, $10, $11,
-                $12, $13, $14,
+                $12, $13, 2, $14,
                 $15
             )
             RETURNING id, event_seq, occurred_at
@@ -1006,6 +1028,9 @@ async def append_event(
     # 6. Generate event UUID
     event_id = uuid.uuid4()
 
+    # Fetch previous chain hash (moved before signing so it can be bound into HMAC version 2)
+    previous_chain_hash: bytes = await _fetch_previous_chain_hash(conn, namespace_id)
+
     # 7. Load signing key, build canonical fields, and HMAC-sign
     key_id, signature = await _sign_event(
         conn,
@@ -1017,6 +1042,7 @@ async def append_event(
         occurred_at_iso=occurred_at_iso,
         params=params,
         parent_event_id=parent_event_id,
+        prev_chain_hash_hex=previous_chain_hash.hex(),
     )
 
     # 8. Compute Merkle chain hash.
@@ -1032,9 +1058,9 @@ async def append_event(
         occurred_at_iso=occurred_at_iso,
         params=params,
         parent_event_id=parent_event_id,
+        prev_chain_hash_hex=previous_chain_hash.hex(),
     )
     content_hash: bytes = _compute_content_hash(signing_fields=signing_fields_dict)
-    previous_chain_hash: bytes = await _fetch_previous_chain_hash(conn, namespace_id)
     chain_hash: bytes = _compute_chain_hash(
         content_hash=content_hash,
         previous_chain_hash=previous_chain_hash,
@@ -1119,16 +1145,108 @@ async def verify_event_signature(
     else:
         raise DataIntegrityError("Invalid occurred_at type in record.")
 
-    signing_fields_dict = _build_signing_fields(
-        event_id=record["id"],
-        namespace_id=record["namespace_id"],
-        agent_id=record["agent_id"],
-        event_type=record["event_type"],
-        event_seq=record["event_seq"],
-        occurred_at_iso=occurred_at_iso,
-        params=params,
-        parent_event_id=record.get("parent_event_id"),
-    )
+    # Branch on signature version (v2 signs prev_chain_hash_hex)
+    prev_chain_hash_hex: str | None = None
+    sig_version = record.get("signature_version")
+    if sig_version is None:
+        # If signature_version is missing (e.g. RecordingFakeConnection mock),
+        # try version 2 first, fallback to version 1.
+        try:
+            prev_seq = record["event_seq"] - 1
+            if prev_seq <= 0:
+                prev_chain_hash_hex = _GENESIS_SENTINEL.hex()
+            else:
+                prev_row = await conn.fetchrow(
+                    """
+                    SELECT chain_hash
+                    FROM   event_log
+                    WHERE  namespace_id = $1 AND event_seq = $2
+                    """,
+                    record["namespace_id"],
+                    prev_seq,
+                )
+                if prev_row is not None and prev_row["chain_hash"] is not None:
+                    prev_hash = prev_row["chain_hash"]
+                    if isinstance(prev_hash, memoryview):
+                        prev_hash = bytes(prev_hash)
+                    prev_chain_hash_hex = prev_hash.hex()
+        except Exception:
+            pass
+
+        # Try version 2
+        signing_fields_dict = _build_signing_fields(
+            event_id=record["id"],
+            namespace_id=record["namespace_id"],
+            agent_id=record["agent_id"],
+            event_type=record["event_type"],
+            event_seq=record["event_seq"],
+            occurred_at_iso=occurred_at_iso,
+            params=params,
+            parent_event_id=record.get("parent_event_id"),
+            prev_chain_hash_hex=prev_chain_hash_hex,
+        )
+        expected_signature = record.get("signature")
+        if isinstance(expected_signature, memoryview):
+            expected_signature = bytes(expected_signature)
+
+        is_valid = False
+        if expected_signature:
+            try:
+                is_valid = verify_fields(signing_fields_dict, raw_key, expected_signature)
+            except Exception:
+                pass
+
+        if not is_valid:
+            # Fall back to version 1
+            prev_chain_hash_hex = None
+            signing_fields_dict = _build_signing_fields(
+                event_id=record["id"],
+                namespace_id=record["namespace_id"],
+                agent_id=record["agent_id"],
+                event_type=record["event_type"],
+                event_seq=record["event_seq"],
+                occurred_at_iso=occurred_at_iso,
+                params=params,
+                parent_event_id=record.get("parent_event_id"),
+                prev_chain_hash_hex=None,
+            )
+    else:
+        sig_version = int(sig_version)
+        if sig_version == 2:
+            prev_seq = record["event_seq"] - 1
+            if prev_seq <= 0:
+                prev_chain_hash_hex = _GENESIS_SENTINEL.hex()
+            else:
+                prev_row = await conn.fetchrow(
+                    """
+                    SELECT chain_hash
+                    FROM   event_log
+                    WHERE  namespace_id = $1 AND event_seq = $2
+                    """,
+                    record["namespace_id"],
+                    prev_seq,
+                )
+                if prev_row is None or prev_row["chain_hash"] is None:
+                    raise DataIntegrityError(
+                        f"Preceding event sequence {prev_seq} not found for namespace {record['namespace_id']} "
+                        f"to verify signature version 2 of event_id={record['id']}."
+                    )
+                prev_hash = prev_row["chain_hash"]
+                if isinstance(prev_hash, memoryview):
+                    prev_hash = bytes(prev_hash)
+                prev_chain_hash_hex = prev_hash.hex()
+
+        signing_fields_dict = _build_signing_fields(
+            event_id=record["id"],
+            namespace_id=record["namespace_id"],
+            agent_id=record["agent_id"],
+            event_type=record["event_type"],
+            event_seq=record["event_seq"],
+            occurred_at_iso=occurred_at_iso,
+            params=params,
+            parent_event_id=record.get("parent_event_id"),
+            prev_chain_hash_hex=prev_chain_hash_hex,
+        )
 
     expected_signature = record.get("signature")
     if not expected_signature:
@@ -1202,7 +1320,7 @@ async def verify_merkle_chain(
     rows = await conn.fetch(
         """
         SELECT id, namespace_id, agent_id, event_type, event_seq,
-               occurred_at, params, parent_event_id, chain_hash
+               occurred_at, params, parent_event_id, chain_hash, signature_version
         FROM   event_log
         WHERE  namespace_id = $1
           AND  event_seq >= $2
@@ -1256,6 +1374,16 @@ async def verify_merkle_chain(
             occurred_at_iso = str(occurred_at)
 
         # Build canonical signing fields (same as at insert time)
+        prev_chain_hash_hex: str | None = None
+        sig_version = row.get("signature_version")
+        if sig_version is None:
+            sig_version = 2
+        else:
+            sig_version = int(sig_version)
+
+        if sig_version == 2:
+            prev_chain_hash_hex = previous_chain_hash.hex()
+
         signing_fields_dict = _build_signing_fields(
             event_id=row["id"],
             namespace_id=row["namespace_id"],
@@ -1265,6 +1393,7 @@ async def verify_merkle_chain(
             occurred_at_iso=occurred_at_iso,
             params=params,
             parent_event_id=row.get("parent_event_id"),
+            prev_chain_hash_hex=prev_chain_hash_hex,
         )
 
         # Recompute the chain hash

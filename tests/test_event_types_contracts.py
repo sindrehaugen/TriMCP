@@ -8,8 +8,6 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-
-from tests.fixtures.fake_asyncpg import RecordingFakeConnection
 from nce import event_log as event_log_mod
 from nce.event_log import (
     InvalidEventTypeError,
@@ -22,6 +20,8 @@ from nce.event_types import (
     EventType,
 )
 from nce.replay import ForkedReplay
+
+from tests.fixtures.fake_asyncpg import RecordingFakeConnection
 
 _RAW_SIGNING_SECRET = hashlib.sha256(b"pytest-event-log-hmac-secret").digest()
 

@@ -19,7 +19,6 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-
 from nce.graph_query import GraphRAGTraverser
 
 # ---------------------------------------------------------------------------

@@ -19,17 +19,14 @@ Exercises:
 from __future__ import annotations
 
 import json
-import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
-import pytest
-
 import nce.query_catalog as catalog_mod
-from nce.query_catalog import CatalogManager, GraphSchema, TemplateSuggestion
-
+import pytest
+from nce.query_catalog import CatalogManager, GraphSchema
 
 # ---------------------------------------------------------------------------
 # Helpers / fake infrastructure

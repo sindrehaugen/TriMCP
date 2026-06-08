@@ -26,12 +26,30 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import asyncpg
 
 log = logging.getLogger("nce.outbox_relay")
+
+_ALERT_THROTTLE_CACHE: dict[str, float] = {}
+_THROTTLE_WINDOW_SECONDS = 300.0
+
+
+async def _dispatch_throttled_alert(key: str, title: str, message: str) -> None:
+    now = time.time()
+    last_sent = _ALERT_THROTTLE_CACHE.get(key, 0.0)
+    if now - last_sent >= _THROTTLE_WINDOW_SECONDS:
+        _ALERT_THROTTLE_CACHE[key] = now
+        try:
+            from nce.notifications import dispatcher
+
+            await dispatcher.dispatch_alert(title, message)
+        except Exception:
+            log.exception("Failed to dispatch throttled alert for key %s", key)
+
 
 # Handlers may return an optional zero-arg callable to run after the
 # transaction commits (e.g. Redis enqueue, HTTP notification).
@@ -186,6 +204,11 @@ async def move_to_dead_letter_if_exhausted(
         event["event_type"],
         MAX_OUTBOX_ATTEMPTS,
     )
+    await _dispatch_throttled_alert(
+        f"outbox.dlq.{event['event_type']}",
+        f"Outbox Event Dead-Lettered: outbox:{event['event_type']}",
+        f"Outbox event '{event['event_type']}' (id {event['id']}) failed: {error_message}",
+    )
 
 
 async def deliver_one(
@@ -240,6 +263,11 @@ async def run_outbox_relay_once(
                         "[outbox] delivery failed event_id=%s event_type=%s",
                         event["id"],
                         event["event_type"],
+                    )
+                    await _dispatch_throttled_alert(
+                        f"outbox.delivery_failed.{event['event_type']}",
+                        f"Outbox Delivery Failed: {event['event_type']}",
+                        f"Outbox event delivery failed for event_id {event['id']}: {error_message}",
                     )
                     try:
                         from nce.observability import OUTBOX_DELIVERY_FAILURES_TOTAL

@@ -1,7 +1,6 @@
 from unittest.mock import patch
 
 import pytest
-
 from nce.graph_extractor import _regex_extract, deduplicate_graph, extract, extract_async
 from nce.models import KGEdge, KGNode
 

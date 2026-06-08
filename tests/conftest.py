@@ -54,9 +54,7 @@ def _inject_mcp_tenant_api_key_for_tool_calls(monkeypatch):
         return _real(tool_name, args)
 
     monkeypatch.setattr("nce.auth.enforce_mcp_tool_auth", _enforce_with_test_keys)
-    monkeypatch.setattr(
-        "nce.mcp_stdio_dispatch.enforce_mcp_tool_auth", _enforce_with_test_keys
-    )
+    monkeypatch.setattr("nce.mcp_stdio_dispatch.enforce_mcp_tool_auth", _enforce_with_test_keys)
 
 
 def _env_bool(name: str, *, default: bool) -> bool:
@@ -104,29 +102,21 @@ def _restore_nce_cfg_from_env() -> None:
     cfg.IS_DEV = not cfg.IS_PROD and not cfg.IS_TEST
     cfg.REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     cfg.NCE_API_KEY = os.environ.get("NCE_API_KEY", getattr(cfg, "NCE_API_KEY", ""))
-    cfg.NCE_MCP_API_KEY = os.environ.get(
-        "NCE_MCP_API_KEY", "test-mcp-api-key-for-unit-tests"
-    )
+    cfg.NCE_MCP_API_KEY = os.environ.get("NCE_MCP_API_KEY", "test-mcp-api-key-for-unit-tests")
     cfg.NCE_MCP_NAMESPACE_ID = os.environ.get("NCE_MCP_NAMESPACE_ID", "")
-    cfg.NCE_ADMIN_API_KEY = os.environ.get(
-        "NCE_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests"
-    )
+    cfg.NCE_ADMIN_API_KEY = os.environ.get("NCE_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests")
     cfg.NCE_ADMIN_OVERRIDE = _env_bool("NCE_ADMIN_OVERRIDE", default=False)
     cfg.NCE_QUOTAS_ENABLED = _env_bool("NCE_QUOTAS_ENABLED", default=True)
     cfg.NCE_QUOTA_REDIS_COUNTERS = _env_bool("NCE_QUOTA_REDIS_COUNTERS", default=True)
     cfg.NCE_OBSERVABILITY_ENABLED = _env_bool("NCE_OBSERVABILITY_ENABLED", default=True)
-    cfg.NCE_MAX_TEMPORAL_LOOKBACK_DAYS = int(
-        os.environ.get("NCE_MAX_TEMPORAL_LOOKBACK_DAYS", "90")
-    )
+    cfg.NCE_MAX_TEMPORAL_LOOKBACK_DAYS = int(os.environ.get("NCE_MAX_TEMPORAL_LOOKBACK_DAYS", "90"))
     cfg.NCE_JWT_SECRET = os.environ.get("NCE_JWT_SECRET", "")
     cfg.NCE_JWT_PUBLIC_KEY = os.environ.get("NCE_JWT_PUBLIC_KEY", "")
     cfg.NCE_JWT_ALGORITHM = (os.environ.get("NCE_JWT_ALGORITHM") or "HS256").upper().strip()
     cfg.NCE_JWT_ISSUER = os.environ.get("NCE_JWT_ISSUER", "")
     cfg.NCE_JWT_AUDIENCE = os.environ.get("NCE_JWT_AUDIENCE", "")
     cfg.NCE_JWT_LEEWAY_SECONDS = int(os.environ.get("NCE_JWT_LEEWAY_SECONDS", "30"))
-    cfg.NCE_DISABLE_MIGRATION_MCP = _env_bool(
-        "NCE_DISABLE_MIGRATION_MCP", default=cfg.IS_PROD
-    )
+    cfg.NCE_DISABLE_MIGRATION_MCP = _env_bool("NCE_DISABLE_MIGRATION_MCP", default=cfg.IS_PROD)
     cfg.NCE_MINIO_REQUIRED = _env_bool("NCE_MINIO_REQUIRED", default=True)
     cfg.NCE_EMBEDDING_MODEL_REVISION = os.environ.get("NCE_EMBEDDING_MODEL_REVISION", "")
     cfg.AZURE_CLIENT_ID = os.environ.get("AZURE_CLIENT_ID", "")
@@ -250,8 +240,8 @@ def _integration_pool_dsn() -> str | None:
 
 
 @pytest.fixture(autouse=True)
-def _reset_signing_key_cache_after_test() -> None:
-    """Reset the signing key module-level cache after each test.
+def _reset_signing_key_cache_after_test(request: pytest.FixtureRequest) -> None:
+    """Reset the signing key module-level cache after each test if isolated.
 
     Prevents test-order dependencies by clearing ``_key_cache`` so each
     test starts with a fresh signing state.  Uses ``yield`` to run after
@@ -259,14 +249,15 @@ def _reset_signing_key_cache_after_test() -> None:
     because each worker has its own module namespace.
     """
     yield
-    try:
-        import nce.signing as signing_mod
+    if request.node.get_closest_marker("signing_isolation") is not None:
+        try:
+            import nce.signing as signing_mod
 
-        # _key_cache is a _SigningKeyCache(TTLCache) — clear() removes all
-        # entries and __delitem__ zeros their MutableKeyBuffer.
-        signing_mod._key_cache.clear()
-    except Exception:
-        return
+            # _key_cache is a _SigningKeyCache(TTLCache) — clear() removes all
+            # entries and __delitem__ zeros their MutableKeyBuffer.
+            signing_mod._key_cache.clear()
+        except Exception:
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +379,7 @@ async def pg_app_conn(
         from urllib.parse import urlparse, urlunparse
 
         from nce.config import cfg
+
         try:
             parsed = urlparse(primary)
             netloc = parsed.hostname or ""

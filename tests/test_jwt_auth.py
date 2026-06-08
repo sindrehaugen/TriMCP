@@ -13,12 +13,6 @@ from uuid import UUID
 
 import jwt
 import pytest
-from starlette.applications import Starlette
-from starlette.middleware import Middleware
-from starlette.responses import JSONResponse
-from starlette.routing import Route
-from starlette.testclient import TestClient
-
 from nce.config import cfg
 from nce.jwt_auth import (
     JWTAuthMiddleware,
@@ -27,6 +21,11 @@ from nce.jwt_auth import (
     _load_public_key,
     decode_agent_token,
 )
+from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+from starlette.testclient import TestClient
 
 # Spec uses a short dev secret; PyJWT warns under pytest filterwarnings=error.
 pytestmark = pytest.mark.filterwarnings("ignore::jwt.warnings.InsecureKeyLengthWarning")

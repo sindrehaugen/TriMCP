@@ -7,6 +7,7 @@ RQ worker imports `dispatch_bridge_event` from here, or the concrete
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from nce.bridges.base import BridgeAuthError, BridgeProvider, redis_client
@@ -37,7 +38,9 @@ async def dispatch_bridge_event(provider: str, payload: dict[str, Any]) -> dict[
     if p == "sharepoint":
         return await process_sharepoint_event(payload)
     if p in ("gdrive", "google_drive", "drive"):
-        return process_gdrive_event(payload)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, process_gdrive_event, payload)
     if p == "dropbox":
-        return process_dropbox_event(payload)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, process_dropbox_event, payload)
     raise ValueError(f"Unknown bridge provider: {provider!r}")

@@ -1,7 +1,6 @@
 """TASK-09: Verify deployed schema matches RLS intent declarations."""
 
 import pytest
-
 from nce.event_log import EXPECTED_TENANT_RLS_TABLES, verify_rls_catalog_consistency
 
 
@@ -49,6 +48,9 @@ async def _require_current_tenant_columns(conn) -> None:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_rls_catalog_consistency(pg_app_conn):
-    await _require_current_tenant_columns(pg_app_conn)
+async def test_rls_catalog_consistency(pg_admin_conn, pg_app_conn):
+    await _require_current_tenant_columns(pg_admin_conn)
+    # Verify using the database owner/admin connection to test full catalog schema visibility
+    await verify_rls_catalog_consistency(pg_admin_conn)
+    # Verify using the nce_app application role connection
     await verify_rls_catalog_consistency(pg_app_conn)

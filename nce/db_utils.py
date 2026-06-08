@@ -30,6 +30,10 @@ UNMANAGED_PG_AUDITED_SITES: Final[frozenset[str]] = frozenset(
         "cron.saga_recovery.mark_failed",
         "cron.saga_recovery.mark_completed_no_memory",
         "tasks.code_indexing.legacy_no_namespace",
+        "cron.d365_sync.namespace_scan",
+        "cron.d365_sync.update_stats",
+        "cron.d365_netbox_bridge.namespace_scan",
+        "cron.chain_verify.namespace_scan",
     }
 )
 
@@ -89,9 +93,7 @@ async def scoped_pg_session(
 
         async with conn.transaction():
             await set_namespace_context(conn, ns_uuid)
-            SCOPED_SESSION_LATENCY.labels(
-                namespace_id=str(ns_uuid)[:8],  # truncated for cardinality safety
-            ).observe(time.perf_counter() - t0)
+            SCOPED_SESSION_LATENCY.observe(time.perf_counter() - t0)
             yield conn
             # SET LOCAL is automatically cleared at transaction end.
             # No explicit _reset_rls_context() call: that would run inside the

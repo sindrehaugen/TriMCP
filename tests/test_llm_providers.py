@@ -13,17 +13,16 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+import nce.providers.base
 import pytest
+from nce.providers.anthropic_provider import AnthropicProvider
+from nce.providers.base import LLMProviderError, LLMTimeoutError
+from nce.providers.openai_compat import OpenAICompatProvider
 
 # ---------------------------------------------------------------------------
 # Shared test models
 # ---------------------------------------------------------------------------
 from pydantic import BaseModel
-
-import nce.providers.base
-from nce.providers.anthropic_provider import AnthropicProvider
-from nce.providers.base import LLMProviderError, LLMTimeoutError
-from nce.providers.openai_compat import OpenAICompatProvider
 
 
 class _DummyResponse(BaseModel):

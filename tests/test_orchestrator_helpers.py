@@ -20,7 +20,6 @@ import logging
 from uuid import UUID, uuid4
 
 import pytest
-
 from nce.orchestrator import NCEEngine
 
 

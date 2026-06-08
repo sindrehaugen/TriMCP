@@ -33,8 +33,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from nce.observability import HAS_PROMETHEUS, _StubMetric, _safe_counter, _safe_gauge, _safe_histogram
-
+from nce.observability import (
+    _safe_counter,
+    _safe_gauge,
+    _safe_histogram,
+    _StubMetric,
+)
 
 log = logging.getLogger("nce.background_task_manager")
 

@@ -107,16 +107,43 @@ class ConsolidationWorker:
 
     async def _cluster_memories_async(self, memories: list) -> tuple[list, dict]:
         """Async wrapper: parse embeddings + HDBSCAN clustering (offloaded to thread)."""
+        import math
+
         import numpy as np
         from sklearn.cluster import HDBSCAN
 
+
         valid_memories = []
         embeddings = []
+        expected_dim = None
         for m in memories:
-            if m["embedding"]:
-                emb_list = json.loads(m["embedding"])
-                embeddings.append(emb_list)
-                valid_memories.append(m)
+            if m.get("embedding"):
+                try:
+                    emb_list = json.loads(m["embedding"])
+                    if not isinstance(emb_list, list) or len(emb_list) == 0:
+                        log.warning(
+                            "Memory %s has empty or non-list embedding format",
+                            m.get("id"),
+                        )
+                        continue
+                    if expected_dim is None:
+                        expected_dim = len(emb_list)
+                    elif len(emb_list) != expected_dim:
+                        log.warning(
+                            "Memory %s has mismatched embedding dimension: expected %d, got %d",
+                            m.get("id"),
+                            expected_dim,
+                            len(emb_list),
+                        )
+                        continue
+                    if not all(isinstance(x, (int, float)) and math.isfinite(x) for x in emb_list):
+                        log.warning("Memory %s has non-finite values in embedding", m.get("id"))
+                        continue
+                    embeddings.append([float(x) for x in emb_list])
+                    valid_memories.append(m)
+                except Exception as e:
+                    log.warning("Failed to parse embedding for memory %s: %s", m.get("id"), e)
+                    continue
 
         if len(embeddings) < 2:
             return [], {}

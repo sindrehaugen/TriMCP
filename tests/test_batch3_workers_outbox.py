@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import asyncio
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
-import pytest
-
-import nce.tasks as tasks
-from nce.orchestrator import NCEEngine
 import nce.outbox_relay as outbox_relay
+import nce.tasks as tasks
+import pytest
+from nce.orchestrator import NCEEngine
 
 
 class DummyLock:
@@ -23,20 +21,16 @@ class DummyLock:
         pass
 
 
-def test_singleton_nce_engine_initialization():
-    """Verify that NCEEngine is initialized and connected only once when calling
+def test_local_nce_engine_initialization():
+    """Verify that NCEEngine is initialized and connected locally for each call
 
-    process_code_indexing multiple times, and mock Redis and DB connection pools
+    to process_code_indexing, and mock Redis and DB connection pools
     to avoid actual connection attempts.
     """
     # Save original tasks module states to prevent test pollution
-    orig_engine = tasks._engine
     orig_redis_client = tasks._redis_client
-    orig_lock = tasks._engine_lock
     
-    tasks._engine = None
     tasks._redis_client = None
-    tasks._engine_lock = DummyLock()
 
     try:
         mock_redis = MagicMock()
@@ -71,7 +65,7 @@ def test_singleton_nce_engine_initialization():
         async def mock_scoped_session(self_inst, namespace_id):
             yield mock_conn
 
-        # Mock the engine connect method
+        # Mock the engine connect/disconnect methods
         async def mock_connect(self_inst):
             self_inst.mongo_client = MagicMock()
             # Setup mongo insert_one return value
@@ -85,7 +79,11 @@ def test_singleton_nce_engine_initialization():
             self_inst.redis_client = MagicMock()
             self_inst.redis_client.setex = AsyncMock()
 
+        async def mock_disconnect(self_inst):
+            pass
+
         with patch.object(NCEEngine, "connect", autospec=True, side_effect=mock_connect) as mock_connect_spy, \
+             patch.object(NCEEngine, "disconnect", autospec=True, side_effect=mock_disconnect) as mock_disconnect_spy, \
              patch("nce.tasks.Redis") as mock_redis_cls, \
              patch("nce.tasks.parse_file", new=mock_parse_file), \
              patch("nce.tasks._embeddings.embed_batch", new=mock_embed_batch), \
@@ -113,13 +111,13 @@ def test_singleton_nce_engine_initialization():
             assert result1 == {"status": "success", "chunks": 1}
             assert result2 == {"status": "success", "chunks": 1}
 
-            # Assert that NCEEngine.connect was only called once (singleton initialization)
-            assert mock_connect_spy.call_count == 1
+            # Assert that NCEEngine.connect was called twice (local initialization per task execution)
+            assert mock_connect_spy.call_count == 2
+            # Assert that NCEEngine.disconnect was called twice
+            assert mock_disconnect_spy.call_count == 2
     finally:
         # Restore module state
-        tasks._engine = orig_engine
         tasks._redis_client = orig_redis_client
-        tasks._engine_lock = orig_lock
 
 
 @pytest.mark.asyncio
@@ -214,3 +212,98 @@ async def test_structural_outbox_failure_dlq_bypass():
 
     assert "OutboxDeliveryError" in insert_args[4]
     assert insert_args[5] == outbox_relay.MAX_OUTBOX_ATTEMPTS  # 5 (attempt_count)
+
+
+def test_engine_is_not_reused_across_loop_boundaries():
+    """Verify that NCEEngine is not reused across event loop boundaries.
+    
+    Each call to process_code_indexing must instantiate a fresh NCEEngine
+    and run its connect lifecycle independently.
+    """
+    orig_redis_client = tasks._redis_client
+    tasks._redis_client = None
+
+    try:
+        mock_redis = MagicMock()
+        mock_redis.delete = MagicMock()
+        mock_redis.incr.return_value = 1
+
+        mock_embed_batch = AsyncMock(return_value=[[0.1] * 1536])
+        mock_chunk = MagicMock()
+        mock_chunk.name = "mock_chunk"
+        mock_chunk.code_string = "def foo(): pass"
+        mock_chunk.node_type = "function"
+        mock_chunk.start_line = 1
+        mock_chunk.end_line = 2
+        mock_parse_file = MagicMock(return_value=[mock_chunk])
+
+        @asynccontextmanager
+        async def mock_transaction_cm():
+            yield
+
+        mock_conn = MagicMock()
+        mock_conn.transaction = MagicMock(side_effect=mock_transaction_cm)
+        mock_conn.execute = AsyncMock()
+        mock_conn.fetch = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_unmanaged_conn(pool, site):
+            yield mock_conn
+
+        @asynccontextmanager
+        async def mock_scoped_session(self_inst, namespace_id):
+            yield mock_conn
+
+        async def mock_connect(self_inst):
+            self_inst.mongo_client = MagicMock()
+            mock_insert_result = MagicMock()
+            mock_insert_result.inserted_id = "mock_mongo_id"
+            self_inst.mongo_client.memory_archive.code_files.insert_one = AsyncMock(
+                return_value=mock_insert_result
+            )
+            self_inst.mongo_client.memory_archive.code_files.delete_one = AsyncMock()
+            self_inst.pg_pool = MagicMock()
+            self_inst.redis_client = MagicMock()
+            self_inst.redis_client.setex = AsyncMock()
+
+        async def mock_disconnect(self_inst):
+            pass
+
+        with patch.object(NCEEngine, "connect", autospec=True, side_effect=mock_connect) as mock_connect_spy, \
+             patch.object(NCEEngine, "disconnect", autospec=True, side_effect=mock_disconnect) as mock_disconnect_spy, \
+             patch("nce.tasks.Redis") as mock_redis_cls, \
+             patch("nce.tasks.parse_file", new=mock_parse_file), \
+             patch("nce.tasks._embeddings.embed_batch", new=mock_embed_batch), \
+             patch("nce.tasks.unmanaged_pg_connection", new=mock_unmanaged_conn), \
+             patch.object(NCEEngine, "scoped_session", new=mock_scoped_session):
+
+            mock_redis_cls.from_url.return_value = mock_redis
+
+            # Execute two consecutive calls to tasks.process_code_indexing()
+            result1 = tasks.process_code_indexing(
+                filepath="test.py",
+                raw_code="def foo(): pass",
+                language="python",
+                user_id="user_123",
+                namespace_id=str(uuid4())
+            )
+            result2 = tasks.process_code_indexing(
+                filepath="test.py",
+                raw_code="def foo(): pass",
+                language="python",
+                user_id="user_123",
+                namespace_id=str(uuid4())
+            )
+
+            # Assert results are successful
+            assert result1 == {"status": "success", "chunks": 1}
+            assert result2 == {"status": "success", "chunks": 1}
+
+            # Assert that NCEEngine.connect was called exactly twice
+            assert mock_connect_spy.call_count == 2
+            # Assert that NCEEngine.disconnect was called exactly twice
+            assert mock_disconnect_spy.call_count == 2
+
+    finally:
+        tasks._redis_client = orig_redis_client
+

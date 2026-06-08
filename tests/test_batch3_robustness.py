@@ -10,13 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import nce.a2a_server as a2a_server
 import pytest
 from mcp.types import TextContent
-
-import nce.a2a_server as a2a_server
 from nce.auth import NamespaceContext
 from nce.mcp_stdio_dispatch import execute_call_tool
 from nce.mcp_stdio_rpc import _try_cached_mcp_tool_response

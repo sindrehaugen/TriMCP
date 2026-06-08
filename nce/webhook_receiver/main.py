@@ -16,6 +16,7 @@ from starlette.responses import JSONResponse
 from nce.config import cfg
 from nce.extractors.dispatch import get_priority_queue
 from nce.net_safety import BridgeURLValidationError, validate_webhook_payload_url
+from nce.observability import enqueue_traced
 from nce.tasks import process_bridge_event
 
 log = logging.getLogger("nce.webhook_receiver")
@@ -70,6 +71,9 @@ def _require_cfg_secret(attr: str) -> str:
 DROPBOX_APP_SECRET = _require_cfg_secret("DROPBOX_APP_SECRET")
 GRAPH_CLIENT_STATE = _require_cfg_secret("GRAPH_CLIENT_STATE")
 DRIVE_CHANNEL_TOKEN = _require_cfg_secret("DRIVE_CHANNEL_TOKEN")
+
+# D365 webhook secret — only validated at request time (optional integration).
+_D365_WEBHOOK_SECRET: str = (os.environ.get("NCE_D365_WEBHOOK_SECRET") or "").strip()
 
 
 @lru_cache(maxsize=1)
@@ -236,7 +240,8 @@ def enqueue_process_bridge_event(provider: str, payload: dict[str, Any]) -> str:
         return "dedup-skipped"
 
     q = get_priority_queue(0, _redis_client())
-    job = q.enqueue(
+    job = enqueue_traced(
+        q,
         process_bridge_event,
         kwargs={"provider": provider, "payload": payload},
         job_timeout="30m",
@@ -309,6 +314,56 @@ async def graph_webhook(
     enqueue_payload: dict[str, Any] = {"notifications": list(payload.get("value", []))}
     job_id = enqueue_process_bridge_event("sharepoint", enqueue_payload)
     return {"status": "queued", "job_id": job_id}
+
+
+@app.post("/webhooks/dynamics365")
+async def dynamics365_webhook(request: Request):
+    """
+    Receive Dataverse service endpoint webhook notifications.
+
+    Validates ``x-ms-signaturecontent`` HMAC-SHA256 header, deduplicates
+    repeated deliveries, and enqueues ``nce.tasks.process_d365_event`` to
+    the ``high_priority`` RQ lane.  Returns 200 immediately — Dataverse
+    requires a response within ~30 s or it retries.
+    """
+    if not cfg.NCE_D365_ENABLED:
+        raise HTTPException(status_code=404, detail="D365 integration not enabled")
+
+    signature = request.headers.get("x-ms-signaturecontent", "")
+    body = await _read_body_bounded(request)
+
+    from nce.vertical_modules.dynamics365.webhooks import D365WebhookValidator
+
+    if not D365WebhookValidator.validate_signature(body, signature, _D365_WEBHOOK_SECRET):
+        log.warning("D365 webhook invalid signature — rejecting")
+        raise HTTPException(status_code=403, detail="Invalid D365 webhook signature")
+
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from None
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="Expected a JSON object")
+
+    dedup = D365WebhookValidator.dedup_key(parsed)
+    if dedup and not _claim_dedup(dedup):
+        log.info("D365 webhook dedup skip key=%s", dedup)
+        return {"status": "deduplicated"}
+
+    # Enqueue to high-priority lane — CRM events are time-sensitive
+    from nce.extractors.dispatch import get_priority_queue
+
+    q = get_priority_queue(1, _redis_client())  # high_priority lane
+    job = enqueue_traced(
+        q,
+        "nce.tasks.process_d365_event",
+        kwargs={"payload": parsed},
+        job_timeout="15m",
+    )
+    log.info("D365 webhook queued entity=%s op=%s job=%s",
+             parsed.get("PrimaryEntityName"), parsed.get("MessageName"), job.id)
+    return {"status": "queued", "job_id": job.id}
 
 
 @app.post("/webhooks/drive")

@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from nce.extractors import libreoffice
 from nce.extractors.dispatch import _is_security_relevant_mismatch, extract_bytes
 from nce.extractors.libreoffice import _safe_source_ext

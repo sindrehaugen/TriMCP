@@ -7,7 +7,6 @@ from email.mime.multipart import MIMEMultipart
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from nce.extractors.dispatch import _MAX_ATTACHMENTS_PER_MESSAGE
 from nce.extractors.email_ext import extract_eml
 

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from nce.dead_letter_queue import _sanitize_dlq_kwargs
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from nce.dead_letter_queue import _sanitize_dlq_kwargs, store_dead_letter
 
 
 class TestSanitizeDlqKwargs:
@@ -57,3 +60,78 @@ class TestSanitizeDlqKwargs:
         long_str = "y" * 5000
         out = _sanitize_dlq_kwargs({"items": [long_str]})
         assert out["items"][0].endswith("...[truncated]")
+
+
+class TestDeadLetterQueueAlerts:
+    @pytest.mark.asyncio
+    async def test_store_dead_letter_triggers_alert(self):
+        # Arrange
+        mock_conn = AsyncMock()
+        # First return value is the DLQ ID, second is the count for _refresh_backlog_gauge
+        mock_conn.fetchval.side_effect = ["mock-dlq-id", 5]
+
+        mock_pool = MagicMock()
+        mock_acquire_cm = MagicMock()
+        mock_acquire_cm.__aenter__.return_value = mock_conn
+        mock_pool.acquire.return_value = mock_acquire_cm
+
+        task_name = "test_indexing_task"
+        job_id = "job-123"
+        kwargs = {"namespace_id": "ns-456", "foo": "bar"}
+        error_message = "Test error occurred"
+        attempt_count = 5
+
+        # Mock NotificationDispatcher.dispatch_alert
+        with patch(
+            "nce.notifications.dispatcher.dispatch_alert", new_callable=AsyncMock
+        ) as mock_dispatch_alert:
+            # Act
+            dlq_id = await store_dead_letter(
+                pg_pool=mock_pool,
+                task_name=task_name,
+                job_id=job_id,
+                kwargs=kwargs,
+                error_message=error_message,
+                attempt_count=attempt_count,
+            )
+
+            # Assert
+            assert dlq_id == "mock-dlq-id"
+            mock_dispatch_alert.assert_called_once()
+            args, _ = mock_dispatch_alert.call_args
+            title, message = args
+            assert task_name in title
+            assert task_name in message
+            assert job_id in message
+            assert error_message in message
+
+    @pytest.mark.asyncio
+    async def test_store_dead_letter_alert_failure_does_not_raise(self):
+        # Arrange
+        mock_conn = AsyncMock()
+        mock_conn.fetchval.side_effect = ["mock-dlq-id", 5]
+
+        mock_pool = MagicMock()
+        mock_acquire_cm = MagicMock()
+        mock_acquire_cm.__aenter__.return_value = mock_conn
+        mock_pool.acquire.return_value = mock_acquire_cm
+
+        task_name = "test_indexing_task"
+        job_id = "job-123"
+        kwargs = {"foo": "bar"}
+        error_message = "Test error occurred"
+        attempt_count = 5
+
+        with patch(
+            "nce.notifications.dispatcher.dispatch_alert", side_effect=RuntimeError("alert failed")
+        ):
+            # Act & Assert (should NOT raise RuntimeError)
+            dlq_id = await store_dead_letter(
+                pg_pool=mock_pool,
+                task_name=task_name,
+                job_id=job_id,
+                kwargs=kwargs,
+                error_message=error_message,
+                attempt_count=attempt_count,
+            )
+            assert dlq_id == "mock-dlq-id"

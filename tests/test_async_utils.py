@@ -8,7 +8,6 @@ import asyncio
 import time
 
 import pytest
-
 from nce.background_task_manager import (
     TaskRegistry,
     TrackedTask,

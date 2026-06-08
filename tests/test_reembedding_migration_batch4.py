@@ -6,7 +6,6 @@ import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from nce.reembedding_migration import (
     InMemoryReembeddingStore,
     MemoryEmbeddingRow,

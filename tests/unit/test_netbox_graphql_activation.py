@@ -12,12 +12,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from nce.vertical_modules.netbox.graphql_activation import (
-    NetBoxGraphQLClient,
-    GraphQLSpikingActivator,
-    parse_topology,
     UNIFIED_TOPOLOGY_QUERY,
+    GraphQLSpikingActivator,
+    NetBoxGraphQLClient,
+    parse_topology,
 )
 
 NS = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000001")

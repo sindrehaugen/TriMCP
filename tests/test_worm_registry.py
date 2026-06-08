@@ -10,7 +10,6 @@ FROM <app_role> in schema.sql.
 
 import asyncpg
 import pytest
-
 from nce.event_log import _WORM_TABLES
 
 # ---------------------------------------------------------------------------

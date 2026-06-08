@@ -15,7 +15,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from nce.event_log import _GENESIS_SENTINEL
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))

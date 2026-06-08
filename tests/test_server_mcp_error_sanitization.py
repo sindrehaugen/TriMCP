@@ -7,7 +7,6 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from nce.config import cfg
 from nce.quotas import null_reservation
 
@@ -90,7 +89,6 @@ async def test_call_tool_scope_error_hides_detail_in_prod(monkeypatch):
     monkeypatch.setattr(cfg, "IS_DEV", False)
 
     import server as srv
-
     from nce.auth import ScopeError
 
     async def _scoped(*_a, **_k):
@@ -127,3 +125,83 @@ def test_check_admin_delegates_to_validate_scope(monkeypatch):
     assert ei.value.code == -32001
 
     srv._check_admin({"admin_api_key": "server-secret-key"})
+
+
+@pytest.mark.asyncio
+async def test_call_tool_database_exception_masking_in_prod(monkeypatch, mock_engine):
+    monkeypatch.setattr(cfg, "IS_DEV", False)
+
+    # Simulate a third party exception, e.g. asyncpg QueryCanceledError
+    import asyncpg
+    import server as srv
+    class DummyQueryCanceledError(asyncpg.exceptions.QueryCanceledError):
+        __module__ = "asyncpg.exceptions"
+
+    async def _boom(*_a, **_k):
+        raise DummyQueryCanceledError("database query was cancelled")
+
+    import nce.mcp_stdio_dispatch as dispatch
+
+    with patch.object(dispatch.memory_mcp_handlers, "handle_store_memory", _boom):
+        err = _parse_error_payload(
+            await srv.call_tool(
+                "store_memory",
+                {
+                    "namespace_id": str(uuid.uuid4()),
+                    "agent_id": "agent",
+                    "content": "hello",
+                },
+            )
+        )
+    data = err.get("data") or {}
+    assert err["code"] == -32603
+    assert "detail" not in data
+    assert data.get("type") == "DatabaseError"  # Masked!
+
+
+@pytest.mark.asyncio
+async def test_dispatch_concurrency_limit(monkeypatch, mock_engine):
+    import asyncio
+
+    import nce.mcp_stdio_dispatch as dispatch
+    from nce.mcp_stdio_dispatch import get_concurrency_semaphore
+    
+    # Set max concurrent tools to 2
+    monkeypatch.setattr(cfg, "NCE_MAX_CONCURRENT_TOOLS", 2)
+    
+    # Reset the global semaphore so it is recreated with our new limit
+    monkeypatch.setattr(dispatch, "_concurrency_semaphore", None)
+    
+    sem = get_concurrency_semaphore()
+    assert sem._value == 2
+    
+    active_count = 0
+    max_observed_active = 0
+    
+    async def _slow_tool(*_a, **_k):
+        nonlocal active_count, max_observed_active
+        active_count += 1
+        max_observed_active = max(max_observed_active, active_count)
+        await asyncio.sleep(0.05)
+        active_count -= 1
+        return "ok"
+        
+    import server as srv
+    with patch.object(dispatch.memory_mcp_handlers, "handle_store_memory", _slow_tool):
+        # Call the tool 4 times concurrently
+        tasks = [
+            srv.call_tool(
+                "store_memory",
+                {
+                    "namespace_id": str(uuid.uuid4()),
+                    "agent_id": "agent",
+                    "content": "hello",
+                },
+            )
+            for _ in range(4)
+        ]
+        await asyncio.gather(*tasks)
+        
+    # Max observed active should be capped at 2
+    assert max_observed_active <= 2
+

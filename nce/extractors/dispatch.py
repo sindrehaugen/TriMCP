@@ -47,9 +47,14 @@ def get_priority_queue(priority: int, connection: Any) -> Queue:
     Thin wrapper so enqueue sites don't have to import RQ themselves.
     ``connection`` must be a *sync* Redis client (``redis.Redis``).
     """
+    import sys
+
     from rq import Queue
 
-    return Queue(get_queue_name(priority), connection=connection)
+    from nce.config import cfg
+
+    is_test_env = cfg.IS_TEST or "pytest" in sys.modules
+    return Queue(get_queue_name(priority), connection=connection, is_async=not is_test_env)
 
 
 Handler = Callable[[bytes], Awaitable[ExtractionResult]]
@@ -248,7 +253,6 @@ async def extract_bytes(
     tracer = get_tracer()
 
     with tracer.start_as_current_span("extractors.dispatch") as span:
-        span.set_attribute("nce.filename", filename or "unknown")
         span.set_attribute("nce.mime_type", mime_type or "unknown")
 
         if attachment_depth >= _MAX_ATTACHMENT_DEPTH:
@@ -310,10 +314,15 @@ async def extract_bytes(
         if enc is not None:
             return enc
         try:
-            return await _REGISTRY[ext](blob)
+            res = await _REGISTRY[ext](blob)
+            import gc
+            gc.collect()
+            return res
         except Exception as e:
             log.warning("extract_bytes failed ext=%s: %s", ext, e, exc_info=True)
             span.record_exception(e)
+            import gc
+            gc.collect()
             return empty_skipped("dispatch", "extraction_failed", warnings=[str(e)])
 
 

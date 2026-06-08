@@ -9,7 +9,6 @@ os.environ.setdefault("NCE_MASTER_KEY", "x" * 32)
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from nce.cron_lock import CronLock
 from nce.cron_lock import acquire_cron_lock as _acquire_cron_lock
 

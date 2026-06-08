@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 from uuid import UUID
 
 import asyncpg
 
-from nce.models import StoreMemoryRequest
-from nce.db_utils import scoped_pg_session
 from nce.config import cfg
+from nce.db_utils import scoped_pg_session
+from nce.models import StoreMemoryRequest
 
 log = logging.getLogger("nce.active_learning")
 

@@ -22,22 +22,59 @@ from rq import get_current_job
 
 from nce import embeddings as _embeddings
 from nce.ast_parser import parse_file
+from nce.cache_keys import get_code_index_cache_key
 from nce.config import cfg
 from nce.db_utils import unmanaged_pg_connection
 from nce.dead_letter_queue import _clear_attempt, _track_attempt, store_dead_letter
+from nce.observability import enqueue_traced, traced_worker_job
 from nce.orchestrator import NCEEngine
 
 log = logging.getLogger("nce-tasks")
 
 
 def run_async(coro):
-    """Helper to run async code in sync RQ worker context."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    """Helper to run async code in sync RQ worker context.
+
+    If an event loop is already running (e.g., during pytest execution),
+    attempting to run loop.run_until_complete() on the same thread will clash.
+    In that case, we execute the coroutine in a separate thread with its own loop.
+    """
     try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is None:
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            return new_loop.run_until_complete(coro)
+        finally:
+            new_loop.close()
+    else:
+        import threading
+        res = []
+        err = []
+
+        def worker():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                val = new_loop.run_until_complete(coro)
+                res.append(val)
+            except BaseException as e:
+                err.append(e)
+            finally:
+                new_loop.close()
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+        if err:
+            raise err[0]
+        return res[0]
+
 
 
 def _get_job_id() -> str:
@@ -50,20 +87,6 @@ def _get_job_id() -> str:
 
 
 _redis_client: Redis | None = None
-_engine: NCEEngine | None = None
-_engine_lock = asyncio.Lock()
-
-
-async def _get_engine() -> NCEEngine:
-    """Get or connect the thread-safe worker NCEEngine singleton."""
-    global _engine
-    if _engine is None:
-        async with _engine_lock:
-            if _engine is None:
-                engine = NCEEngine()
-                await engine.connect()
-                _engine = engine
-    return _engine
 
 
 def _get_redis() -> Redis:
@@ -130,10 +153,10 @@ async def _store_dlq_async(
 ) -> None:
     """Persist a poisoned task to the dead_letter_queue table (async).
 
-    If *pg_pool* is provided (reuse an existing pool), it is used directly.
+    If *pg_pool* is provided (reuse an existing pool and is not closed), it is used directly.
     Otherwise a lightweight temporary pool is created and torn down.
     """
-    if pg_pool is not None:
+    if pg_pool is not None and not getattr(pg_pool, "_closed", False):
         await store_dead_letter(pg_pool, task_name, job_id, kwargs, error_msg, attempt)
         return
 
@@ -147,6 +170,7 @@ async def _store_dlq_async(
         await pool.close()
 
 
+@traced_worker_job("process_code_indexing")
 def process_code_indexing(
     filepath: str,
     raw_code: str,
@@ -172,8 +196,13 @@ def process_code_indexing(
         job_id,
     )
 
+    pg_pool_ref = None
+
     async def _index():
-        engine = await _get_engine()
+        nonlocal pg_pool_ref
+        engine = NCEEngine()
+        await engine.connect()
+        pg_pool_ref = engine.pg_pool
         inserted_mongo_id = None
         db = engine.mongo_client.memory_archive
         collection = db.code_files
@@ -251,11 +280,8 @@ def process_code_indexing(
                         )
 
             # STEP 3: Cache hash in Redis
-            scope_key = f"private:{user_id}" if user_id else "shared"
-            namespace_prefix = f"{namespace_id}:" if namespace_id else ""
-            await engine.redis_client.setex(
-                f"hash:{namespace_prefix}{scope_key}:{filepath}", 3600, file_hash
-            )
+            cache_key = get_code_index_cache_key(namespace_id, user_id, filepath)
+            await engine.redis_client.setex(cache_key, 3600, file_hash)
             log.info("[Worker] Finished indexing %s (%d chunks)", filepath, len(chunks))
 
             # Success — clear the attempt counter
@@ -292,6 +318,8 @@ def process_code_indexing(
                     "_dlq_attempt": attempt_count,
                 }
             raise  # retry — let RQ re-enqueue
+        finally:
+            await engine.disconnect()
 
     result = run_async(_index())
 
@@ -299,7 +327,7 @@ def process_code_indexing(
     # in a SEPARATE event loop to avoid nesting (run_async creates a new loop).
     if isinstance(result, dict) and result.get("status") == "dead_lettered":
         try:
-            pool = _engine.pg_pool if _engine else None
+            pool = pg_pool_ref
             run_async(
                 _store_dlq_async(
                     task_name="process_code_indexing",
@@ -322,6 +350,7 @@ def process_code_indexing(
     return result
 
 
+@traced_worker_job("process_bridge_event")
 def process_bridge_event(provider: str, payload: dict) -> dict:
     """
     RQ worker: process a validated webhook payload for a document bridge.
@@ -381,6 +410,156 @@ def process_bridge_event(provider: str, payload: dict) -> dict:
         raise  # retry — let RQ re-enqueue
 
 
+@traced_worker_job("process_d365_event")
+def process_d365_event(payload: dict) -> dict:
+    """
+    RQ worker task: process a validated Dataverse webhook event.
+
+    Routes to the appropriate ``DataverseIngestionWorker`` method based on
+    ``entity_type`` and ``operation`` extracted from the Dataverse payload.
+
+    Follows the same poison-pill / DLQ pattern as ``process_bridge_event``.
+    """
+    from nce.vertical_modules.dynamics365.webhooks import D365WebhookValidator
+
+    job_id = _get_job_id()
+    redis_client = _get_redis()
+
+    entity_ctx = D365WebhookValidator.extract_entity_context(payload)
+    entity_type = entity_ctx.get("entity_type", "unknown")
+    operation = entity_ctx.get("operation", "unknown")
+
+    log.info(
+        "[D365 Worker] entity_type=%s operation=%s job=%s",
+        entity_type, operation, job_id,
+    )
+
+    try:
+        result = run_async(_dispatch_d365_event(entity_ctx, payload))
+        _clear_attempt(redis_client, job_id)
+        return result
+    except Exception as exc:
+        log.exception(
+            "[D365 Worker] Unhandled failure entity_type=%s operation=%s", entity_type, operation
+        )
+        poisoned, attempt_count, error_msg = _check_poison_pill(
+            task_name="process_d365_event",
+            job_id=job_id,
+            redis_client=redis_client,
+            exc=exc,
+        )
+        if poisoned:
+            try:
+                run_async(
+                    _store_dlq_async(
+                        task_name="process_d365_event",
+                        job_id=job_id,
+                        kwargs={"payload": payload},
+                        error_msg=error_msg,
+                        attempt=attempt_count,
+                        pg_pool=None,
+                    )
+                )
+            except Exception as dlq_exc:
+                log.critical(
+                    "[DLQ] CRITICAL — Could not persist DLQ entry for process_d365_event (job %s): %s",
+                    job_id,
+                    dlq_exc,
+                )
+            return {"status": "dead_lettered", "job_id": job_id}
+        raise  # retry — let RQ re-enqueue
+
+
+async def _dispatch_d365_event(
+    entity_ctx: dict,
+    raw_payload: dict,
+) -> dict:
+    """
+    Async dispatch: create engine resources and route to the correct ingestion method.
+    Called inside ``run_async()`` from ``process_d365_event``.
+    """
+    from uuid import UUID
+
+    import asyncpg
+    import redis.asyncio as aioredis
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    from nce.config import cfg
+    from nce.db_utils import scoped_pg_session
+    from nce.vertical_modules.dynamics365.auth import DataverseTokenManager
+    from nce.vertical_modules.dynamics365.client import DataverseClient
+    from nce.vertical_modules.dynamics365.ingestion import DataverseIngestionWorker
+    from nce.vertical_modules.dynamics365.sync import DataverseSyncEngine
+
+    entity_type = entity_ctx.get("entity_type", "")
+    operation = entity_ctx.get("operation", "")
+    entity_id = entity_ctx.get("entity_id", "")
+
+    # Build connection resources
+    pg_pool = await asyncpg.create_pool(cfg.PG_DSN, min_size=1, max_size=2)
+    mongo_client = AsyncIOMotorClient(cfg.MONGO_URI, serverSelectionTimeoutMS=5_000)
+    redis_client = aioredis.from_url(cfg.REDIS_URL)
+
+    try:
+        token_mgr = DataverseTokenManager(redis_client)
+        token = await token_mgr.get_access_token()
+        d365_client = DataverseClient(cfg.NCE_D365_ORG_URL, token)
+
+        # Determine namespace from org ID (use default namespace if no mapping)
+        org_id = entity_ctx.get("org_id", "")
+        ns_id_str: str | None = None
+        async with pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM d365_integrations WHERE org_url ILIKE $1 AND status='ACTIVE' LIMIT 1",
+                f"%{org_id}%" if org_id else cfg.NCE_D365_ORG_URL,
+            )
+            if row:
+                # Fetch the namespace_id from d365_integrations
+                d365_row = await conn.fetchrow(
+                    "SELECT namespace_id FROM d365_integrations WHERE id = $1", row["id"]
+                )
+                if d365_row:
+                    ns_id_str = str(d365_row["namespace_id"])
+
+        if not ns_id_str:
+            log.warning("[D365 Worker] No namespace mapping for org_id=%s — skipping", org_id)
+            return {"status": "skipped", "reason": "no_namespace_mapping"}
+
+        ns_id = UUID(ns_id_str)
+        worker = DataverseIngestionWorker(pg_pool, mongo_client, redis_client, ns_id)
+
+        # Route by entity type + operation
+        if entity_type == "annotation" and operation == "Create":
+            raw_target = entity_ctx.get("raw_target") or {}
+            text = raw_target.get("notetext") or raw_target.get("NoteText") or ""
+            incident_id = raw_target.get("objectid_incident") or entity_id
+            result = await worker.ingest_case_note(incident_id=incident_id, annotation_text=text)
+            return {"status": "ok", "action": "ingest_case_note", **result}
+
+        if entity_type == "email" and operation in ("Create", "Update"):
+            raw_target = entity_ctx.get("raw_target") or {}
+            subject = raw_target.get("subject") or ""
+            body = raw_target.get("description") or ""
+            related_id = raw_target.get("regardingobjectid") or entity_id
+            result = await worker.ingest_activity("email", subject, body, related_id)
+            return {"status": "ok", "action": "ingest_activity_email", **result}
+
+        if entity_type in ("incident", "account", "opportunity", "contact"):
+            # Structural change → re-sync graph edges for affected entity type
+            async with scoped_pg_session(pg_pool, ns_id_str) as conn:
+                sync_engine = DataverseSyncEngine(conn, ns_id, d365_client)
+                stats = await sync_engine.run_full_sync(entity_types=[f"{entity_type}s"])
+            return {"status": "ok", "action": "sync_edges", "stats": stats}
+
+        log.info("[D365 Worker] Unhandled entity_type=%s operation=%s — no action", entity_type, operation)
+        return {"status": "no_action", "entity_type": entity_type, "operation": operation}
+
+    finally:
+        await pg_pool.close()
+        mongo_client.close()
+        await redis_client.aclose()
+
+
 def enqueue_memory_postprocess(payload: dict) -> None:
     """
     Enqueue post-processing work for a stored memory onto the high-priority RQ queue.
@@ -395,13 +574,15 @@ def enqueue_memory_postprocess(payload: dict) -> None:
 
     redis_conn = _get_redis()
     q = Queue(HIGH_PRIORITY_QUEUE, connection=redis_conn)
-    q.enqueue(
+    enqueue_traced(
+        q,
         "nce.tasks._process_memory_postprocess",
         kwargs={"payload": payload},
         job_timeout=300,
     )
 
 
+@traced_worker_job("process_memory_postprocess")
 def _process_memory_postprocess(payload: dict) -> dict:
     """
     Worker task: post-processing after a memory is stored.

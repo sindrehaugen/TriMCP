@@ -12,9 +12,8 @@ import re
 import socket
 from typing import Any
 
-import pytest
-
 import nce.net_safety as net_safety
+import pytest
 from nce.net_safety import (
     ALLOWED_WEBHOOK_URL_PREFIXES,
     BridgeURLValidationError,

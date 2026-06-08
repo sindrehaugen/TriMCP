@@ -19,9 +19,16 @@ def _normalize_to_utc(ts: datetime) -> datetime:
     return ts.astimezone(timezone.utc)
 
 
-def _assert_not_future(dt: datetime, now: datetime, label: str = "timestamp") -> None:
+def _assert_not_future(
+    dt: datetime,
+    now: datetime,
+    label: str = "timestamp",
+    *,
+    allow_skew: bool = False,
+) -> None:
     """Raise ValueError if *dt* is in the future relative to *now*."""
-    if dt > now:
+    tolerance = timedelta(seconds=5) if allow_skew else timedelta(0)
+    if dt > now + tolerance:
         raise ValueError(
             f"{label} must not be in the future — temporal queries read past state only"
         )
@@ -54,7 +61,7 @@ def parse_as_of(
         )
     dt = _normalize_to_utc(dt)
     now = _now if _now is not None else datetime.now(timezone.utc)
-    _assert_not_future(dt, now, "as_of")
+    _assert_not_future(dt, now, "as_of", allow_skew=(_now is None))
     _enforce_lookback_boundary(dt, now)
     return dt
 
@@ -111,7 +118,7 @@ def as_of_query(
         return "AND valid_to IS NULL", []
     now = datetime.now(timezone.utc)
     as_of = _normalize_to_utc(as_of)
-    _assert_not_future(as_of, now, "as_of")
+    _assert_not_future(as_of, now, "as_of", allow_skew=True)
     return (
         f"AND valid_from <= ${start_index} AND (valid_to IS NULL OR valid_to > ${start_index})",
         [as_of],
@@ -129,4 +136,4 @@ def validate_write_timestamp(ts: datetime | None) -> None:
         return
     now = datetime.now(timezone.utc)
     ts = _normalize_to_utc(ts)
-    _assert_not_future(ts, now, "write timestamp")
+    _assert_not_future(ts, now, "write timestamp", allow_skew=True)

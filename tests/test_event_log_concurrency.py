@@ -3,9 +3,9 @@
 import asyncio
 
 import pytest
+from nce.event_log import append_event, verify_merkle_chain
 
 from tests.fixtures.event_log_params import minimal_store_memory_params
-from nce.event_log import append_event, verify_merkle_chain
 
 
 @pytest.mark.integration

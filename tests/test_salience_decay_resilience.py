@@ -10,7 +10,6 @@ Tests for salience.py math resilience:
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from nce.salience import compute_decayed_score
 
 # ---------------------------------------------------------------------------

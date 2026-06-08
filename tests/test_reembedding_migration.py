@@ -6,7 +6,6 @@ import asyncio
 import math
 
 import pytest
-
 from nce.reembedding_migration import (
     InMemoryReembeddingStore,
     MemoryEmbeddingRow,

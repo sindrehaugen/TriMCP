@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-
 from nce.models import AssertionType, MemoryType, StoreMemoryRequest
 
 # ---------------------------------------------------------------------------

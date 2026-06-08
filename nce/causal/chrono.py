@@ -16,7 +16,7 @@ from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 
-from nce.causal.correlation import CausalGraph, CausalNode, CausalEdge
+from nce.causal.correlation import CausalEdge, CausalGraph, CausalNode
 from nce.temporal import parse_as_of
 
 log = logging.getLogger("nce.causal.chrono")

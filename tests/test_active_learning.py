@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 from contextlib import asynccontextmanager
@@ -8,11 +7,10 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from nce.active_learning import ActiveLearningManager
+from nce.config import cfg
 from nce.models import AssertionType, MemoryType, StoreMemoryRequest
 from nce.orchestrators.memory import MemoryOrchestrator
-from nce.config import cfg
 
 NS_ID = uuid.UUID("00000000-0000-4000-8000-000000000001")
 

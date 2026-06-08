@@ -7,7 +7,6 @@ import time
 from unittest.mock import patch
 
 import pytest
-
 from nce.reembedding_migration import (
     InMemoryReembeddingStore,
     MemoryEmbeddingRow,

@@ -21,8 +21,6 @@ os.environ.setdefault("NCE_MASTER_KEY", "dev-schema-key-32chars-long-xxxx")
 
 def build_schema() -> dict:
     """Return the combined JSON Schema for all public NCE API models."""
-    from pydantic.json_schema import models_json_schema
-
     from nce.models import (
         ForgetMemoryRequest,
         GetRecentContextRequest,
@@ -44,6 +42,7 @@ def build_schema() -> dict:
         StoreMemoryRequest,
         UnredactMemoryRequest,
     )
+    from pydantic.json_schema import models_json_schema
 
     _PUBLIC_MODELS = [
         NamespaceCreate,

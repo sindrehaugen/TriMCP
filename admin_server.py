@@ -4,8 +4,10 @@ import logging
 
 from nce import admin_state
 from nce.admin_app import app
-from nce.admin_http_support import admin_error_response
-from nce.admin_http_support import update_dotenv  # noqa: F401 — re-export for tests
+from nce.admin_http_support import (
+    admin_error_response as _admin_error_response,
+    update_dotenv,  # noqa: F401 — re-export for tests
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -13,12 +15,10 @@ logging.basicConfig(level=logging.INFO)
 engine = admin_state.engine
 
 
-from nce.admin_http_support import admin_error_response as _admin_error_response
 
 
 if __name__ == "__main__":
     import uvicorn
-
     from nce.config import assert_admin_override_not_in_production
 
     assert_admin_override_not_in_production()

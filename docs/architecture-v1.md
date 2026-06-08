@@ -1,363 +1,257 @@
-# NCE v1.0 — System architecture
+# NCE v2.0.0 — System Architecture & C4 Context
 
-This document is the **public, code-aligned** view of the NCE **v1.0** runtime: quad-database memory stack, **temporal** (time-travel) queries, **A2A** (agent-to-agent) sharing, and **cognitive / background** workers. For namespaces and signing, see [multi_tenancy.md](./multi_tenancy.md) and [signing.md](./signing.md). Compose layout: [deploy/README.md](../deploy/README.md).
+This document provides a comprehensive, code-aligned specification of the **Neuro Cognitive Engine (NCE) version 2.0.0** runtime architecture. It details the C4 System Context and Container structures, the primary processes and entry points, the Quad-Database stack, the transactional Saga pattern, the GraphRAG query hydration pipeline, and background asynchronous/scheduled tasks.
 
 ---
 
-## 1. Runtime topology
+## 1. C4 Architecture Specification
 
-Multiple OS processes cooperate: the **MCP server** (stdio), optional **A2A** and **admin** HTTP services, an **RQ worker** for async code indexing, and a **cron** scheduler for bridge renewal and batch re-embedding. All paths share the same **quad-DB** contracts (PostgreSQL + pgvector, MongoDB, Redis, MinIO).
+### 1.1 Level 1: System Context Diagram
+The System Context Diagram shows how users, IDEs, and other agent systems interface with the NCE, and how NCE depends on downstream LLM/embedding platforms and external file/document sources.
 
 ```mermaid
 flowchart TB
-  subgraph Clients
-    MCPc[MCP IDE / agent]
-    HTTPc[HTTP clients]
+  subgraph Users["Users & Agents"]
+    User["Developer / Operator\n(Admin Basic Auth / HMAC)"]
+    IDE["IDE Client (Cursor / Claude Desktop)\n(NCE_MCP_API_KEY stdio)"]
+    Agent["Downstream Agent Fleet\n(JWT Bearer / mTLS)"]
   end
 
-  subgraph Processes["NCE processes"]
-    MCPsrv["server.py\n(MCP stdio)"]
-    A2Asrv["nce/a2a_server.py\n(JSON-RPC skills)"]
-    Admin["admin_server.py\n(HMAC + REST)"]
-    Cron["python -m nce.cron\n(APScheduler)"]
-    Worker["start_worker.py\n(RQ consumer)"]
+  subgraph System["Sovereign Cognitive Boundary"]
+    NCE["Neuro Cognitive Engine (NCE)\nv2.0.0"]
   end
 
-  subgraph Stores["Data plane"]
-    PG[("Postgres\npgvector")]
-    MG[("MongoDB\npayloads")]
-    RD[("Redis\nRQ + cache")]
-    S3[("MinIO\nmedia + replay cache")]
+  subgraph Downstream["External & Edge Dependencies"]
+    LLM["LLM Provider (Consolidation/NLI)\n(OpenAI / Anthropic / Local)"]
+    Emb["Cognitive Sidecar / Embedding Engine\n(Jina 768-dim / Edge Server)"]
   end
 
-  subgraph Cognitive["Inference"]
-    Emb["Embeddings\n(nce/embeddings)"]
-    Prov["LLM provider\n(consolidation, contradictions, reembed)"]
+  subgraph Sources["Enterprise Document Bridges"]
+    SP["SharePoint / MS Graph\n(Webhook Client Secret)"]
+    GD["Google Drive\n(Webhook Client Token)"]
+    DP["Dropbox\n(Webhook HMAC-SHA256)"]
   end
 
-  MCPc --> MCPsrv
-  HTTPc --> A2Asrv
-  HTTPc --> Admin
-
-  MCPsrv --> PG
-  MCPsrv --> MG
-  MCPsrv --> RD
-  MCPsrv --> S3
-  MCPsrv --> Emb
-
-  A2Asrv --> PG
-  A2Asrv --> MG
-  A2Asrv --> RD
-  A2Asrv --> S3
-  A2Asrv --> Emb
-
-  Admin --> PG
-  Worker --> PG
-  Worker --> MG
-  Worker --> RD
-  Worker --> S3
-  Worker --> Emb
-
-  Cron --> PG
-  Cron --> MG
-
-  Prov -.-> PG
-  Prov -.-> MG
+  User -->|HTTP REST / UI| NCE
+  IDE -->|MCP stdio JSON-RPC 2.0| NCE
+  Agent -->|JSON-RPC Skills| NCE
+  Sources -->|Webhooks / Change Feeds| NCE
+  NCE -->|Syncs/Pulls Documents| Sources
+  NCE -->|Vector Embeddings HTTP| Emb
+  NCE -->|Consolidation / NLI Reasoning| LLM
 ```
 
 ---
 
-## 2. Temporal engine (memory time-travel)
+### 1.2 Level 2: Container Diagram
+The Container Diagram illustrates NCE's primary runtime processes, entry points, background execution lanes, and the Quad-Database stack managed by `NCEEngine` (formerly known as `TriStackEngine`).
 
-**Purpose:** Query **semantic** recall and **graph** structure *as they existed at or before* a client-supplied instant, without allowing future timestamps.
+```mermaid
+flowchart TB
+  subgraph Clients["Inbound Interfaces"]
+    IDE_Client["IDE Client (Cursor / Claude)"]
+    Admin_Client["Operator Dashboard / Browser"]
+    A2A_Client["External Agent Callers"]
+    Web_Hook["Bridge Webhook Publishers"]
+  end
 
-| Artifact | Role |
-|----------|------|
-| `nce/temporal.py` | `parse_as_of()` — ISO 8601 in, UTC-normalised `datetime` or `None`; rejects malformed input and future times. |
-| `TriStackEngine.semantic_search(..., as_of=)` | Adds SQL predicates on `memories.created_at` (and optional namespace retention window from metadata). |
-| `TriStackEngine.graph_search(..., as_of=)` | Restricts graph visibility to the same temporal cut. |
-| MCP tools | `semantic_search` and `graph_search` expose optional `as_of` in `server.py`. |
+  subgraph Containers["NCE Processes"]
+    MCP["server.py\nMCP Server (stdio)"]
+    Admin["admin_server.py\nHTTP Admin (Basic/HMAC)"]
+    A2A["nce/a2a_server.py\nJSON-RPC (mTLS/JWT)"]
+    Webhook["nce/webhook_receiver/main.py\nFastAPI Webhook Receiver\n(Sliding Window Rate Limiter)"]
+    Worker["start_worker.py\nRQ Async Worker\n(Default/High/Batch lanes)"]
+    Cron["nce/cron.py\nAPScheduler Cron Engine\n(Distributed CronLock)"]
+  end
+
+  subgraph Orchestrator["Unified Persistence Layer"]
+    Engine["NCEEngine\n(Saga transaction rollback)\n(nce/orchestrator.py)"]
+  end
+
+  subgraph Datastores["Quad-Database Stack"]
+    PG[("PostgreSQL + pgvector\n(Metadata, Graph, RLS session setting,\nRange partitioning)")]
+    Mongo[("MongoDB\n(Raw Episodic & Code Archive\nWORM layout)")]
+    Redis[("Redis\n(Job Queue, Locks, TTL Cache)")]
+    MinIO[("MinIO S3-Compatible\n(Media, Replay Payload Cache)")]
+  end
+
+  IDE_Client -->|stdio JSON-RPC| MCP
+  Admin_Client -->|HTTP REST (:8003)| Admin
+  A2A_Client -->|HTTP JSON-RPC (:8004)| A2A
+  Web_Hook -->|HTTP Webhooks (:8080)| Webhook
+
+  MCP -->|Orchestrates| Engine
+  Admin -->|Orchestrates| Engine
+  A2A -->|Orchestrates| Engine
+  Webhook -->|Rate Limits & Enqueues| Redis
+  Worker -->|Processes Jobs| Engine
+  Cron -->|Schedules Sagas & Outbox| Engine
+
+  Engine -->|Queries & RLS| PG
+  Engine -->|Saves Raw Payloads| Mongo
+  Engine -->|Locks / Caching| Redis
+  Engine -->|Saves Objects| MinIO
+
+  Worker -->|Subscribes to lanes| Redis
+  Cron -->|Orchestrates locks| Redis
+```
+
+---
+
+## 2. Primary Entry Points
+
+NCE version 2.0.0 exposes six distinct entry points, isolating workloads across dedicated runtimes:
+
+### 2.1 `server.py` — MCP stdio Server
+- **Role**: Entry point for IDE integration (Cursor, Claude Desktop). Envelopes the core cognitive engine in the Model Context Protocol (MCP) using the stdio transport.
+- **Protocol**: JSON-RPC 2.0 over standard input/output.
+- **Authentication**: `mcp_api_key` matching `NCE_MCP_API_KEY`.
+- **Lifecycle**: Initiated when the IDE launches the agent. A garbage collector background loop is co-launched in the process as a co-routine on engine initialization.
+
+### 2.2 `admin_server.py` — Admin UI & REST API
+- **Role**: Web administration dashboard and REST endpoints for operations management.
+- **Protocol**: HTTP/HTTPS (Port 8003).
+- **Authentication**: HTTP Basic Auth (for the web UI) and HMAC-SHA256 API verification with Redis-backed nonce replay protection.
+- **Operations**: Namespace management, quota modification, DLQ inspecting/replaying, signing key rotation, and diagnostic health checks.
+
+### 2.3 `start_worker.py` — RQ Background Worker
+- **Role**: Background task consumer driving expensive, asynchronous operations.
+- **Protocol**: Redis queue polling.
+- **Lanes & Priority Scopes**:
+  - `high_priority`: Fast, user-facing operations (e.g. real-time document indexing, PII scrubbing verification).
+  - `batch_processing`: Heavy, non-interactive sweeps (e.g. database re-embedding migrations).
+  - `default`: Backward-compatibility fallback.
+
+### 2.4 `nce/a2a_server.py` — A2A Skills Server
+- **Role**: Starlette-based ASGI application exposing the public Agent-to-Agent (A2A) network bridge.
+- **Protocol**: HTTP/HTTPS JSON-RPC 2.0 (Port 8004).
+- **Authentication**: Optional mTLS certificate pinning combined with HS256/RS256 JWT validation.
+- **Exposed Skills**: `recall_relevant_context`, `archive_session`, `find_related_decisions`, `verify_memory_integrity`, and `get_cognitive_state`.
+
+### 2.5 `nce/cron.py` — APScheduler Cron Engine
+- **Role**: Master cron daemon scheduling administrative tasks. Only a single instance should be active per cluster.
+- **Locking**: Distributed locking backed by Redis (`CronLock` via `nce/cron_lock.py`) prevents race conditions when scaling horizontally.
+- **Startup Jitter**: Applies a randomized startup delay (`CRON_STARTUP_JITTER_MAX_SECONDS`) to prevent thundering-herd database load spikes.
+
+### 2.6 `nce/webhook_receiver/main.py` — Webhook Receiver
+- **Role**: FastAPI-based listener endpoint receiving third-party document and CRM notifications.
+- **Protocol**: HTTP/HTTPS (Port 8080).
+- **Security**: Validates signatures (SharePoint client secret, Google client token, Dropbox HMAC-SHA256, and Dynamics 365 `x-ms-signaturecontent` HMAC-SHA256). Webhooks decode events and enqueue corresponding sync jobs in Redis to be processed by the RQ worker. Dynamics 365 events are routed to the `high_priority` lane to ensure low latency.
+
+---
+
+## 3. Quad-Stack & Saga Transaction Engine
+
+`NCEEngine` (defined in `nce/orchestrator.py`) serves as the central orchestration controller, unifying the four datastores:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                           NCEEngine                             │
+│ ┌────────────────┐ ┌────────────────┐ ┌───────────┐ ┌─────────┐ │
+│ │   PostgreSQL   │ │    MongoDB     │ │   Redis   │ │  MinIO  │ │
+│ │ (asyncpg pool) │ │ (Motor client) │ │  (async)  │ │ (S3 SDK)│ │
+│ └────────────────┘ └────────────────┘ └───────────┘ └─────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 3.1 Distributed Transaction Safety (Saga Pattern)
+Ingestion tasks (e.g. `store_memory`) must guarantee transactional integrity across NoSQL, SQL, and Cache boundaries. If the SQL constraint checks fail (e.g. RLS checks, format boundaries, or pool timeout), MongoDB changes must be rolled back.
 
 ```mermaid
 sequenceDiagram
-  participant C as MCP client
-  participant S as server.py
-  participant P as parse_as_of
-  participant E as TriStackEngine
-  participant Q as Postgres
+  participant Client as Ingestion Caller
+  participant Engine as NCEEngine
+  participant Mongo as MongoDB
+  participant PG as PostgreSQL
+  participant Redis as Redis Cache
 
-  C->>S: semantic_search(..., as_of?)
-  S->>P: parse_as_of(as_of)
-  alt omitted or valid past instant
-    P-->>S: None or UTC datetime
-    S->>E: semantic_search(..., as_of=dt)
-    E->>Q: pgvector + temporal filters
-    Q-->>E: rows
-    E-->>S: hydrated hits
-    S-->>C: tool result
-  else invalid / future
-    P-->>S: ValueError
-    S-->>C: MCP error
+  Client->>Engine: store_memory(request)
+  activate Engine
+  Engine->>Mongo: Insert raw payload document (WORM draft)
+  Mongo-->>Engine: Return ObjectId (payload_ref)
+  
+  Engine->>PG: Insert memory record (id, payload_ref, embedding)
+  alt PG Write Success
+    PG-->>Engine: Row committed (durable)
+    Engine->>Redis: Increment generation counter (cache invalidate)
+    Redis-->>Engine: Success
+    Engine-->>Client: Return Success (payload_ref, memory_id)
+  else PG Write Fails (Constraint, Timeout, RLS)
+    PG-->>Engine: Database Error / Rollback
+    Engine->>Mongo: Delete raw payload by ObjectId (Saga Rollback)
+    Mongo-->>Engine: Rollback Complete
+    Engine-->>Client: Raise TransactionError (No orphans left)
   end
+  deactivate Engine
 ```
 
----
-
-## 3. A2A protocol (agent-to-agent memory)
-
-**Purpose:** **Agent A** grants **scoped read** access to **Agent B** for namespaces, individual memories, KG nodes, or subgraphs, using an out-of-band sharing token. Tokens are stored only as **SHA-256 hashes** in `a2a_grants`.
-
-| Artifact | Role |
-|----------|------|
-| `nce/a2a.py` | Grant creation, token verification, JSON-RPC error codes (-32010 / -32011 / -32012). |
-| `nce/a2a_server.py` | Starlette app: agent card, JSON-RPC skill dispatch, `TriStackEngine` lifespan. |
-| `nce/schema.sql` | `a2a_grants` table + indexes. |
-
-```mermaid
-sequenceDiagram
-  participant OA as Owner agent (A)
-  participant G as Grant API / DB
-  participant PG as Postgres
-  participant OB as Consumer agent (B)
-  participant V as verify_token
-  participant SK as Skill handler
-
-  OA->>G: create_grant(scopes, target_ns, target_agent, TTL)
-  G->>PG: INSERT token_hash, scopes, expires_at
-  G-->>OA: sharing_token (once, OOB to B)
-
-  OB->>SK: JSON-RPC skill + token + NamespaceContext
-  SK->>V: verify_token(conn, token, consumer_ctx)
-  V->>PG: lookup active hash, check expiry + binding
-  alt valid
-    V-->>SK: VerifiedGrant + scopes
-    SK->>SK: enforce scope on resource
-    SK-->>OB: recall / archive / graph result
-  else invalid
-    V-->>SK: A2AAuthorizationError
-    SK-->>OB: JSON-RPC error -32010 / -32011
-  end
-```
-
-Skills (non-exhaustive) are declared on the agent card in `a2a_server.py` and map to orchestrator methods (for example semantic + graph recall, session archive).
+### 3.2 Datastore Roles and Schema Configurations
+- **PostgreSQL**: Implements RANGE partitioning on temporal columns (e.g. `memories` on `created_at`, `event_log` on `created_at`). Row-Level Security (RLS) is strictly enforced for multi-tenancy. Vector similarity search is enabled using the HNSW index on `memories.embedding` with the cosine operator (`<=>`).
+- **MongoDB**: Stores heavy payloads (unstructured conversation text, code documents, media metadata) indexable via `payload_ref` pointers.
+- **Redis**: Houses the RQ task queues, serves as a distributed locking provider for cron routines, and hosts high-speed TTL-limited caches (`semantic_search` result caches invalidated when a namespace writing operation increments the namespace's write-generation counter).
+- **MinIO**: Acts as the object store hosting raw file artifacts (audio, video, images) under corresponding scopes (`nce-memories`, `nce-media`, `nce-replay-cache`).
 
 ---
 
-## 4. PII Redaction pipeline (Phase 0.3)
+## 4. GraphRAG Hydration Pipeline
 
-**Purpose:** Automatically detect and mask sensitive entities (names, emails, SSNs) before they are stored or processed by external LLMs.
-
-| Artifact | Role |
-|----------|------|
-| `nce/pii.py` | Core pipeline: detection via **Microsoft Presidio** (primary) or **Regex** (fallback); policies: `redact`, `pseudonymise`, `reject`, `flag`. |
-| `pii_redactions` | Reversible vault (PostgreSQL) storing encrypted original values (AES-256-GCM). |
-| `unredact_memory` | Admin tool to temporarily restore PII context for authorized requests. |
-
----
-
-## 5. Memory replay engine (Phase 2.3)
-
-**Purpose:** Observational playback of events or active simulation into isolated **forked namespaces**.
-
-| Artifact | Role |
-|----------|------|
-| `nce/replay.py` | `ForkedReplayEngine` — async generator based; supports `deterministic` (MinIO cache) and `re-execute` (fresh LLM) modes. |
-| `replay_runs` | PostgreSQL table tracking replay progress and parent-child event causal links. |
-| Causal signatures | Every replayed event is signed with a fresh HMAC-SHA256, providing **alternate causal provenance**. |
-
----
-
-## 6. Cognitive and background workers
-
-These components run **outside** the MCP hot path (batch / scheduled / optional LLM calls).
-
-| Component | Entry | Function |
-|-----------|--------|----------|
-| **Re-embedding** | `nce/reembedding_worker.py`, invoked from `nce/cron.py` | Keyset-paginated sweep: refresh embeddings when the active model changes; optional Mongo text hydration; rate-limited batches; audit via `reembedding_runs`. |
-| **Bridge renewal** | `nce/cron.py` → `nce/bridge_renewal.py` | Interval job: renew expiring document-bridge subscriptions (SharePoint / Drive / Dropbox). |
-| **Orphan GC** | `nce/garbage_collector.py`, `run_gc_loop` from `server.py` startup | Safety net for Mongo payloads without matching Postgres references. |
-| **Sleep consolidation** | `nce/consolidation.py` | `ConsolidationWorker` clusters episodic memories via configured **LLMProvider** and writes abstractions (validated Pydantic output); wire to your scheduler or ops workflow as needed. |
-| **Contradictions** | `nce/contradictions.py` + MCP tools `list_contradictions` / `resolve_contradiction` | Detection and resolution workflow tied to namespace memory. |
-
-```mermaid
-flowchart LR
-  subgraph Scheduler["nce.cron (APScheduler)"]
-    J1[bridge_subscription_renewal]
-    J2[phase_2_1_reembedding]
-  end
-
-  J1 --> BR[renew_expiring_subscriptions]
-  BR --> PG1[(Postgres)]
-
-  J2 --> RW[ReembeddingWorker.run_once]
-  RW --> PG2[(Postgres)]
-  RW --> MG[(MongoDB)]
-
-  subgraph MCP_boot["MCP server lifecycle"]
-    GC[run_gc_loop]
-  end
-
-  GC --> MG3[(MongoDB)]
-
-### 6.1 RLS and background workers
-
-**Design decision — Prompt 28 audit:**
-
-Background workers operate with **system-level database privileges** that intentionally
-bypass Postgres Row-Level Security (RLS).  This is a deliberate architectural choice, not
-an oversight:
-
-| Worker | RLS bypass reason |
-|--------|-------------------|
-| **Garbage Collector** (`garbage_collector.py`) | Scans *all* namespaces for orphaned Mongo payloads. Cross-namespace visibility is required — `WHERE payload_ref NOT IN (SELECT payload_ref FROM memories)` must see every row regardless of tenant. |
-| **Re-embedding Worker** (`reembedding_worker.py`) | Keyset-paginates across all memories to refresh embeddings when the active model changes. A per-namespace WHERE would require N separate scans. RLS bypass avoids combinatorial overhead. |
-| **RQ Code Indexing** (`tasks.py`) | Uses `scoped_session(namespace_id)` when a namespace is provided — RLS is enforced for tenant-scoped indexing. Falls back to raw `pg_pool.acquire()` for shared/enterprise indexing. |
-
-**Mitigation:** System-level connections are only used by background workers that do not
-serve user requests directly.  All user-facing paths (MCP tools, A2A, admin HTTP) go through
-`scoped_session()` which sets `nce.namespace_id` via `SET LOCAL`.
-
-**Future:** Add a dedicated `nce_background` Postgres role with CROSS-NAMESPACE READ
-grant but no WRITE privilege on user-data tables. This would limit the blast radius of a
-compromised background worker while preserving the necessary cross-tenant scan capability.
-
----
-
-## 7. Vector index performance with RLS
-
-**Prompt 28 audit — pgvector HNSW + RLS interaction:**
-
-When Row-Level Security filters are combined with pgvector HNSW indexes, PostgreSQL
-follows this execution path:
-
-1. **Index scan**: The HNSW index on `memory_embeddings.embedding` performs the vector
-   proximity search (`<=>` operator), producing candidate rows ordered by distance.
-2. **Filter application**: RLS policies are applied as an additional filter on top of the
-   index results, not inside the index itself. This means RLS does NOT prevent use of the
-   HNSW index — the index still accelerates the distance computation.
-3. **Potential inefficiency**: If RLS filters a large fraction of rows (e.g., a namespace
-   with only 1% of total memories), the HNSW index may return many candidates that are
-   subsequently discarded by RLS. The effective `LIMIT` after RLS filtering may be lower
-   than the requested `top_k`.
-
-**Recommendations:**
-
-| Scenario | Action |
-|----------|--------|
-| Small namespaces (<10k vectors) | No action — HNSW overhead is negligible. |
-| Large namespaces (>100k vectors, many tenants) | Increase `candidate_k` from `top_k * 4` to `top_k * 8` in `semantic_search()` and `search_codebase()`. |
-| Extreme multi-tenancy (>1k tenants) | Consider partial indexes per hot namespace. |
-| Monitoring | Track `SCOPED_SESSION_LATENCY` histogram (added Prompt 28). If median >2 ms, investigate pool sizing. |
-
-**Current state:** HNSW indexes are defined in `schema.sql` on `memories.embedding` and
-`memory_embeddings.embedding`. RLS policies are applied as `SELECT` filters post-index-scan.
-The index is never bypassed — RLS filters candidates after the HNSW proximity search.
-
----
-
-## 7.1 GraphRAG hydration pipeline
-
-`semantic_search` does not stop at the vector ANN hit list. It continues through a three-stage pipeline that enriches each result with its knowledge-graph neighbourhood and the full payload from MongoDB.
+NCE's retrieval engine combines vector space proximity searching, security gating, and Knowledge Graph (KG) relation walking to assemble multi-dimensional context.
 
 ```mermaid
 flowchart TD
-  A["Client: semantic_search(query, top_k, as_of?)"] --> B
-
-  subgraph PG["PostgreSQL — asyncpg"]
-    B["Embed query\nnce/embeddings"]
-    B --> C["pgvector ANN scan\nmemories.embedding <=> query_vec\nWHERE created_at <= as_of\nLIMIT top_k × 4 candidates"]
-    C --> D["RLS filter\nnamespace_id = current_setting(nce.namespace_id)"]
-    D --> E["Top-k rows\n(id, mongo_ref_id, confidence)"]
+  Client["Client: semantic_search(query, top_k, as_of)"] --> Embed
+  
+  subgraph PG["PostgreSQL — pgvector & RLS"]
+    Embed["Embed Query (nce/embeddings)"] --> Scan
+    Scan["HNSW Vector Scan (<=> Cosine Dist)\nWHERE created_at <= as_of\nOver-fetches candidate_k = top_k × 4"] --> RLS
+    RLS["Apply Postgres RLS filter\n(namespace_id = current_setting)"] --> Candidates
+    Candidates["Filter candidates to top_k rows\n(payload_ref, labels)"]
   end
 
-  E --> F
+  Candidates --> GraphRAG
 
-  subgraph KG["Knowledge Graph BFS — graph_query.py"]
-    F["GraphRAGTraverser.traverse(anchor_labels)"]
-    F --> G["WITH RECURSIVE traversal\npath text[] — cycle guard FIX-038\ndepth < 50 cap\nkg_edges JOIN traversal"]
-    G --> H["Subgraph: nodes + edges\nup to 3 BFS hops"]
+  subgraph GraphRAG["Knowledge Graph BFS — graph_query.py"]
+    BFS["GraphRAGTraverser.traverse(anchor_labels)"] --> CycleGuard
+    CycleGuard["Recursive CTE BFS (up to 3 hops)\nDepth limit: 50\nCycle guard: path text[] accumulation"] --> Subgraph
+    Subgraph["Assemble local Subgraph\n(Nodes & Edges)"]
   end
 
-  H --> I
+  Subgraph --> Mongo
 
-  subgraph MG["MongoDB — Motor"]
-    I["Batch payload fetch\nfind({'_id': {'\$in': mongo_ref_ids}})\nN+1 prevention FIX-024"]
-    I --> J["Hydrated documents\n{content, metadata, ...}"]
+  subgraph Mongo["MongoDB Hydration"]
+    Batch["Batch Payload Fetch\nfind({_id: {$in: payload_refs}})\n(Prevents N+1 database round-trips)"]
   end
 
-  J --> K["Merge: semantic hits + KG subgraph + payloads"]
-  K --> L["Return SearchResult[] to client"]
+  Batch --> Merge["Merge: Semantic hits + KG Subgraph + Raw text"]
+  Merge --> Return["Return SearchResult[] to caller"]
 ```
 
-**Key design decisions**:
-
-| Decision | Detail |
-|---|---|
-| `top_k × 4` over-fetch | Compensates for RLS post-filtering on small namespaces (§7 above). The final list is re-ranked to `top_k` after hydration. |
-| BFS cycle guard | `path text[]` accumulator prevents infinite loops on cyclic KG graphs. Hard cap at depth 50 bounds worst-case query time (FIX-038). |
-| Mongo batch fetch | Single `find({'_id': {'$in': [...]}})` instead of one `find_one` per memory row. Prevents O(n) round-trips on large result sets (FIX-024). |
-| Temporal isolation | `WHERE created_at <= as_of` in the ANN scan ensures KG and payload results also respect the time-travel anchor — nodes added after `as_of` are never returned. |
-
-**Code location**: `nce/graph_query.py` (`GraphRAGTraverser`), `nce/orchestrators/memory.py` (`semantic_search`).
-
 ---
 
-## 8. Database partitioning vs declarative referential integrity
+## 5. Background Worker & Cron Tasks
 
-**Design tradeoff — Partitioning on composite keys (`id, created_at`):**
+Background systems operate outside the MCP stdio path to maintain data purity, renew subscriptions, and trigger cognitive updates:
 
-To support high-throughput temporal operations and efficient time-based pruning, NCE leverages **PostgreSQL RANGE partitioning** on several high-volume tables (e.g., `memories` on `created_at`, `event_log` on `occurred_at`, `contradictions` on `detected_at`). 
+### 5.1 RQ Workflows
+The `start_worker.py` daemon processes operations enqueued by entry points:
+- **Asynchronous Code Indexing**: The `index_code_file` tool accepts files, parses their structure asynchronously via the `tree-sitter` AST parser (generating separate code chunks for classes and functions), extracts relationships, and publishes vectors. Workloads run on `high_priority` to avoid delays from batch processes.
+- **Document Bridge Processing**: File change events from the webhook receiver are converted to sync jobs, pulling raw content from Google Drive, SharePoint, or Dropbox and piping them into the ingestion engine.
+- **Dynamics 365 Webhook & Ingestion Processing**: Webhooks from Microsoft Dynamics 365 trigger real-time updates enqueued directly to the `high_priority` queue lane via `process_d365_event` to process CRM events (e.g., annotations, case notes, emails, case updates) immediately. High-priority updates are prioritized to minimize response times, while structural changes prompt targeted GraphRAG relationship updates.
 
-PostgreSQL imposes a strict rule on partitioned tables: **any primary key or unique constraint must include all partition key columns**. 
+### 5.2 Scheduled Cron Tasks (APScheduler)
+The `nce/cron.py` process drives the following scheduled operations:
 
-### The Problem: Declarative FK Blockers
+| Task Name | Schedule | Lock / TTL | Purpose |
+| :--- | :--- | :--- | :--- |
+| `bridge_subscription_renewal` | Every $N$ minutes (env config) | `bridge_subscription_renewal` lock (TTL: $N$m $+ 60$s) | Renew expiring document-bridge subscriptions (OAuth client refreshes). |
+| `phase_2_1_reembedding` | Every $M$ minutes (env config) | Running task constraints (no overlap) | Sweep PostgreSQL and MongoDB to update embeddings when the active model configuration changes. |
+| `sleep_consolidation` | Every $C$ minutes (env config) | `sleep_consolidation` lock (TTL: $C$m $+ 60$s) | Scan namespaces with consolidation enabled, cluster episodic memories via HDBSCAN, and write abstract consolidated records. |
+| `event_log_maintenance` | Monthly (1st at 00:00 UTC) | `event_log_partition_maintenance` lock (TTL: 3600s) | Automatically execute dynamic schema routines ensuring future monthly event_log partitions exist. |
+| `saga_recovery` | Every 5 minutes | `saga_recovery` lock (TTL: 600s) | Sweep and finalize sagas stuck in `pg_committed` state (e.g. due to crashes between Postgres commits and Mongo callback completions). |
+| `outbox_relay` | Every $S$ seconds (env config) | `outbox_relay` lock (TTL: $2 \times S$s) | Poll and forward outbound notification events to external webhook targets. |
+| `d365_entity_sync` | Every $D$ minutes (env config) | `d365_entity_sync` lock (TTL: $D$m $+ 60$s) | Trigger full entity synchronization cycles against Dynamics 365 / Dataverse instances for active integration profiles. |
 
-Because `memories` has the composite primary key `(id, created_at)` and `event_log` has `(id, occurred_at)`, child tables such as `memory_salience` or `pii_redactions` cannot declare standard SQL foreign key references on `id` alone:
-
-```sql
--- This standard syntax fails in PostgreSQL:
-ALTER TABLE memory_salience ADD CONSTRAINT fk_memory_salience_memory 
-    FOREIGN KEY (memory_id) REFERENCES memories(id);
--- ERROR: there is no unique constraint matching given keys for referenced table "memories"
-```
-
-### Evaluated Architectural Options
-
-| Option | Mechanics | Advantages | Disadvantages |
-|--------|-----------|------------|---------------|
-| **A. Global Lookup Table** | Create a non-partitioned, unique table `memory_ids(id UUID PRIMARY KEY)` populated via database triggers on the partitioned parent. Child tables declare FKs to `memory_ids`. | Restores declarative foreign keys on child tables; prevents orphaned records at the schema level. | Introduces lock contention, duplicate index overhead, and write-amplification via trigger overhead on hot ingestion paths. |
-| **B. Hash Partitioning on ID** | Partition `memories` on `(id)` instead of RANGE on `(created_at)`. Allows `id` to be the sole PK and restores declarative FKs. | Native referential integrity; standard unconstrained foreign keys. | Completely destroys temporal performance. Range/time-travel queries (`created_at <= as_of`) must scan *all* partitions, eliminating partition pruning benefits. |
-| **C. Standardized Trigger + GC Cascade Patterns** | Accept the lack of declarative FKs as a necessary performance tradeoff. Enforce integrity via (1) transaction safety (Saga/atomic commits), (2) database trigger validations where immediate enforcement is vital, and (3) optimized, scheduled background garbage collection. | **Selected & Approved Approach.** Zero ingestion overhead, maximum time-travel query pruning, highly performant bulk deletion. | Requires robust validation of the background GC engine (`garbage_collector.py`) and explicit application-layer consistency. |
-
-### Implemented Mitigations
-
-1. **Trigger-Based References (for `event_log` parent-child tracking)**:
-   Since `event_log` partitions are append-only (WORM) but parent-child causal links (`parent_event_id`) must refer to valid events, a custom trigger `trg_event_log_parent_fk_insupd` performs a single-row verification lookup. Deletes trigger `trg_event_log_parent_fk_del` to nullify child references safely.
-2. **Unified Cascading Garbage Collection**:
-   The `garbage_collector.py` loops hourly (via the MCP background lifecycle) to sweep for orphan rows across unlinked tables. Rather than executing disjointed scans against `memories`, the GC compiles a single, unified cascading CTE (`_clean_orphaned_cascade()`) that identifies orphans across `memory_salience`, `contradictions`, `event_log`, and `kg_nodes` in a single pass, performing atomic cascading deletes with high performance.
-
----
-
-## 9. MCP tool surface (v1.0)
-
-The following tools are exposed via the Model Context Protocol (MCP) in `server.py`:
-
-| Category | Tools | Description |
-|----------|-------|-------------|
-| **Ingestion** | `store_memory`, `store_media`, `index_code_file` | Primary write path; supports Saga consistency and PII redaction. |
-| **Recall** | `semantic_search`, `graph_search`, `get_recent_context` | Primary read path; supports `as_of` temporal queries. |
-| **Cognitive** | `list_contradictions`, `resolve_contradiction`, `boost_memory`, `forget_memory` | Salience management and factual integrity. |
-| **Sim / Audit** | `replay_observe`, `replay_fork`, `verify_memory`, `compare_states` | Simulation, time travel, and integrity verification. |
-| **A2A Sharing** | `a2a_create_grant`, `a2a_revoke_grant`, `a2a_list_grants`, `a2a_query_shared` | Cryptographic scoped sharing protocol. |
-| **Admin** | `manage_namespace`, `manage_quotas`, `rotate_signing_key`, `get_health`, `trigger_consolidation` | Governance, security, and diagnostics. |
-
----
-
-## 10. Related diagrams
-
-| Topic | Document |
-|-------|----------|
-| Async `index_code_file` + RQ worker saga | [recursive_indexing_flow.md](./recursive_indexing_flow.md) |
-| Namespaces, signing, Phase 0 data model | [multi_tenancy.md](./multi_tenancy.md), [signing.md](./signing.md) |
-| Push / webhooks | [push_architecture.md](./push_architecture.md) |
-| Compose services | [deploy/README.md](../deploy/README.md) |
+### 5.3 Co-Launched Garbage Collector Loop
+- **Context**: The Garbage Collector (`nce/garbage_collector.py`) runs as a background co-routine co-launched directly by `server.py` on MCP startup.
+- **Operation**: Periodically executes an hourly sweep. It identifies and removes orphaned MongoDB payloads that lack active PostgreSQL metadata records.
+- **Integrity**: Runs with system-level privileges bypassing Postgres RLS to execute a fleet-wide scan efficiently in a single cascading CTE (`_clean_orphaned_cascade`).

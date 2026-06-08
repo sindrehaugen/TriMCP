@@ -60,9 +60,8 @@ def test_admin_error_response_includes_detail_in_dev() -> None:
 
 
 def test_admin_validation_error_hides_pydantic_detail_in_prod() -> None:
-    from pydantic import BaseModel, ValidationError
-
     from nce.admin_http_support import admin_validation_error
+    from pydantic import BaseModel, ValidationError
 
     class _M(BaseModel):
         x: int

@@ -111,5 +111,5 @@ def process_dropbox_event(payload: dict[str, Any]) -> dict[str, Any]:
             count += 1
     except BridgeAuthError as e:
         log.error("%s", e)
-        return {"status": "error", "error": str(e)}
+        raise
     return {"status": "ok", "entries_seen": count}

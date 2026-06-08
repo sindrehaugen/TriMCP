@@ -7,15 +7,11 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from starlette.requests import Request
-from starlette.responses import JSONResponse
-
-from nce import admin_state
+from nce.a2a import A2AScopeViolationError
+from nce.a2a_server import NamespaceContext, _dispatch_skill
 from nce.admin_handlers.tools import api_admin_tools, api_admin_tools_toggle
-from nce.mcp_errors import McpError
 from nce.mcp_stdio_dispatch import execute_call_tool
-from nce.a2a import A2AScopeViolationError, A2AScope
-from nce.a2a_server import _dispatch_skill, NamespaceContext
+from starlette.requests import Request
 
 
 class MockRedis:

@@ -10,8 +10,6 @@ import sys
 
 import asyncpg
 from motor.motor_asyncio import AsyncIOMotorClient
-from redis import from_url as redis_from_url
-
 from nce.config import cfg
 
 logging.basicConfig(level=logging.ERROR)
@@ -32,19 +30,22 @@ async def probe():
 
     # 2. Redis Probe
     try:
-        r = redis_from_url(cfg.REDIS_URL, socket_connect_timeout=2)
-        r.ping()
+        from redis.asyncio import from_url as async_redis_from_url
+        r = async_redis_from_url(cfg.REDIS_URL, socket_connect_timeout=2)
+        await r.ping()
+        await r.aclose()
     except Exception as e:
         print(f"Redis Connection Failed: {e}")
         return False
 
     # 3. Postgres Probe
     try:
-        conn = await asyncpg.connect(cfg.PG_DSN, timeout=2)
-        await conn.execute("SELECT 1")
+        conn = await asyncpg.connect(cfg.PG_DSN, timeout=5)
+        # Verify pgvector extension is functional by running a distance query
+        await conn.execute("SELECT '[1.0, 2.0]'::vector <=> '[1.0, 2.0]'::vector")
         await conn.close()
     except Exception as e:
-        print(f"Postgres Connection Failed: {e}")
+        print(f"Postgres Connection Failed (pgvector validation failed): {e}")
         return False
 
     # 4. MongoDB Probe

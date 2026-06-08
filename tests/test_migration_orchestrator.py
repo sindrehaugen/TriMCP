@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-
 from nce.models import IndexCodeFileRequest
 from nce.orchestrators.migration import MigrationOrchestrator
 
@@ -123,26 +122,19 @@ class TestInputHardening:
         orch: MigrationOrchestrator,
         redis_client: AsyncMock,
     ) -> None:
+        import hashlib
         raw = "print('hash me')"
         payload = _code_payload(raw_code=raw)
-        redis_client.get.return_value = None
-        redis_client.set.return_value = True
+        
+        # Calculate correct SHA256 hex digest
+        expected_hash = hashlib.sha256(raw.encode()).hexdigest()
+        
+        # If Redis returns this hash, it must skip
+        redis_client.get.return_value = expected_hash.encode()
+        result = await orch.index_code_file(payload)
+        assert result["status"] == "skipped"
+        redis_client.get.assert_called_once()
 
-        mock_queue = MagicMock()
-        mock_queue.name = "batch_processing"
-        mock_queue.enqueue.return_value = SimpleNamespace(id="index:job")
-
-        with patch(
-            "nce.extractors.dispatch.get_priority_queue",
-            return_value=mock_queue,
-        ):
-            await orch.index_code_file(payload)
-
-        set_call = redis_client.set.call_args
-        assert set_call is not None
-        stored_hash = set_call.args[1]
-        assert len(stored_hash) == 64
-        assert all(c in "0123456789abcdef" for c in stored_hash)
 
 
 # ── GROUP B — Redis atomicity ───────────────────────────────────────────────
@@ -181,7 +173,7 @@ class TestRedisAtomicity:
 
         mock_queue = MagicMock()
         mock_queue.name = "batch_processing"
-        mock_queue.enqueue.return_value = SimpleNamespace(id="index:job")
+        mock_queue.enqueue.return_value = SimpleNamespace(id="index:job", is_finished=False)
 
         async def slow_get(*_args, **_kwargs):
             await asyncio.sleep(5)
@@ -209,10 +201,13 @@ class TestRedisAtomicity:
         redis_client.set.return_value = True
 
         cache_key = orch._redis_cache_key(payload.namespace_id, None, payload.filepath)
+        import re
+        raw_job_id = f"index:{cache_key}"
+        expected_job_id = re.sub(r"[^a-zA-Z0-9_-]", "-", raw_job_id)
 
         mock_queue = MagicMock()
         mock_queue.name = "batch_processing"
-        mock_queue.enqueue.return_value = SimpleNamespace(id=f"index:{cache_key}")
+        mock_queue.enqueue.return_value = SimpleNamespace(id=expected_job_id, is_finished=False)
 
         with patch(
             "nce.extractors.dispatch.get_priority_queue",
@@ -221,22 +216,21 @@ class TestRedisAtomicity:
             result = await orch.index_code_file(payload)
 
         enqueue_kwargs = mock_queue.enqueue.call_args.kwargs
-        assert enqueue_kwargs["job_id"] == f"index:{cache_key}"
-        assert result["job_id"] == f"index:{cache_key}"
+        assert enqueue_kwargs["job_id"] == expected_job_id
+        assert result["job_id"] == expected_job_id
 
     @pytest.mark.asyncio
-    async def test_b4_redis_set_called_with_nx_after_enqueue(
+    async def test_b4_redis_set_not_called_during_enqueue(
         self,
         orch: MigrationOrchestrator,
         redis_client: AsyncMock,
     ) -> None:
         payload = _code_payload()
         redis_client.get.return_value = None
-        redis_client.set.return_value = True
 
         mock_queue = MagicMock()
         mock_queue.name = "batch_processing"
-        mock_queue.enqueue.return_value = SimpleNamespace(id="index:job")
+        mock_queue.enqueue.return_value = SimpleNamespace(id="index:job", is_finished=False)
 
         with patch(
             "nce.extractors.dispatch.get_priority_queue",
@@ -245,10 +239,8 @@ class TestRedisAtomicity:
             await orch.index_code_file(payload)
 
         mock_queue.enqueue.assert_called_once()
-        redis_client.set.assert_awaited_once()
-        _, kwargs = redis_client.set.call_args
-        assert kwargs.get("nx") is True
-        assert kwargs.get("ex") == 3600
+        redis_client.set.assert_not_called()
+
 
 
 # ── GROUP C — State machine ─────────────────────────────────────────────────

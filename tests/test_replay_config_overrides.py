@@ -7,8 +7,6 @@ import uuid
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
-
 from nce.models import (
     FrozenForkConfig,
     ReplayConfigOverrides,
@@ -18,6 +16,7 @@ from nce.models import (
 )
 from nce.replay import ReplayChecksumError
 from nce.signing import canonical_json
+from pydantic import ValidationError
 
 
 def _expected_replay_checksum(

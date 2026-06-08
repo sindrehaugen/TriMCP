@@ -7,7 +7,6 @@ import os
 os.environ.setdefault("NCE_MASTER_KEY", "dev-test-key-32chars-long!!")
 
 import pytest
-
 from nce.extractors.plaintext import _html_sections_from_headings, extract_html
 
 

@@ -337,6 +337,49 @@ def build_admin_routes() -> list[Route]:
             endpoint=h.api_admin_bridge_renew,
             methods=["POST"],
         ),
+        # ------------------------------------------------------------------
+        # Dynamics 365 / Dataverse admin endpoints
+        # ------------------------------------------------------------------
+        Route(
+            "/api/admin/d365/config",
+            endpoint=h.api_admin_d365_config,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/d365/integrations",
+            endpoint=h.api_admin_d365_integrations,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/d365/sync",
+            endpoint=h.api_admin_d365_sync_now,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/d365/sla-breaches",
+            endpoint=h.api_admin_d365_sla_breaches,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/d365/namespace/{ns_id}/d365-enabled",
+            endpoint=h.api_admin_d365_namespace_update,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/d365/netbox-mappings",
+            endpoint=h.api_admin_d365_netbox_mappings,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/d365/netbox-mappings/{mapping_id}/confirm",
+            endpoint=h.api_admin_d365_netbox_mapping_confirm,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/d365/netbox-bridge/sync",
+            endpoint=h.api_admin_d365_netbox_bridge_sync,
+            methods=["POST"],
+        ),
     ]
 
 

@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-
 from nce.db_utils import POOL_ACQUIRE_TIMEOUT, scoped_pg_session, unmanaged_pg_connection
 
 

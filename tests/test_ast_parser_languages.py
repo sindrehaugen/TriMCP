@@ -1,5 +1,4 @@
-import pytest
-from nce.ast_parser import parse_file, CodeChunk
+from nce.ast_parser import parse_file
 
 
 def test_java_parsing():

@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-
-from tests.conftest import first_recorded_contradiction as _first_recorded_contradiction
 from nce.contradictions import ContradictionResult, detect_contradictions
 from nce.models import KGEdge
+
+from tests.conftest import first_recorded_contradiction as _first_recorded_contradiction
 
 
 def _mock_pg_pool(conn: AsyncMock) -> MagicMock:

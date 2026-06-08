@@ -9,11 +9,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timezone
+
 import pytest
-
-from nce.causal.chrono import branch_timeline, get_active_branch, apply_hypothetical_states
+from nce.causal.chrono import apply_hypothetical_states, branch_timeline, get_active_branch
 from nce.causal.correlation import CausalGraph, DoCalculusEngine
-
 
 NS = uuid.UUID("cccccccc-0000-0000-0000-000000000001")
 

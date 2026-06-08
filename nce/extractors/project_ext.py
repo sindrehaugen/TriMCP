@@ -76,20 +76,34 @@ def _extract_mpp_sync(blob: bytes) -> ExtractionResult:
                 "mpp_bad_command",
                 warnings=["NCE_MPXJ_EXTRACTOR is not on the allowlist or contains shell metacharacters"],
             )
-        proc = subprocess.run(
+        from nce.subprocess_registry import tracked_process
+
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=120,
             env={**os.environ, "NCE_MPP_INPUT": str(path)},
         )
+        with tracked_process(proc):
+            try:
+                stdout, stderr = proc.communicate(timeout=120)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                return empty_skipped("mpp", "mpp_sidecar_timeout", warnings=["MPXJ extractor timed out"])
+            except Exception as e:
+                proc.kill()
+                proc.communicate()
+                raise e
+
         if proc.returncode != 0:
             return empty_skipped(
                 "mpp",
                 "mpp_sidecar_failed",
-                warnings=[(proc.stderr or proc.stdout or f"exit {proc.returncode}")[:500]],
+                warnings=[(stderr or stdout or f"exit {proc.returncode}")[:500]],
             )
-        raw = (proc.stdout or "").strip()
+        raw = (stdout or "").strip()
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as e:

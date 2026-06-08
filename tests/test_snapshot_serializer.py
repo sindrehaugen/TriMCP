@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 import pytest
-
 from nce.models import (
     _MAX_TOP_K,
     AssertionType,

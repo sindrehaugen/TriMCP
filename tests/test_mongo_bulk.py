@@ -7,7 +7,6 @@ from unittest.mock import MagicMock
 
 import pytest
 from bson import ObjectId
-
 from nce.mongo_bulk import (
     _fetch_field_by_refs,
     normalize_payload_ref,

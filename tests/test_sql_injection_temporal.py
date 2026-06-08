@@ -2,7 +2,6 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from nce.orchestrator import NCEEngine
 
 

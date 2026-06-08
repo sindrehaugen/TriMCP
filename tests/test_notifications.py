@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 import pytest_asyncio
-
 from nce.net_safety import BridgeURLValidationError
 from nce.notifications import (
     _MAX_MESSAGE_LEN,

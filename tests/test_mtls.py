@@ -11,7 +11,6 @@ os.environ.setdefault("NCE_MASTER_KEY", "dev-test-key-32chars-long!!")
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from nce.a2a import A2AMTLSError
 from nce.mtls import DEFAULT_MTLS_ERROR_CODE, MTLSAuthMiddleware
 

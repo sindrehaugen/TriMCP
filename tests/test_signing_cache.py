@@ -6,7 +6,6 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from nce.signing import (
     _ACTIVE_KEY_CACHE_KEY,
     MutableKeyBuffer,
@@ -16,6 +15,8 @@ from nce.signing import (
     get_active_key,
     get_key_by_id,
 )
+
+pytestmark = pytest.mark.signing_isolation
 
 # ── helpers ────────────────────────────────────────────────────────────────
 

@@ -12,14 +12,11 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 import asyncpg
 import httpx
-
-from nce.signing import MasterKey, encrypt_signing_key, decrypt_signing_key
-from nce.analytics.stress import StressTracker
+from nce.signing import MasterKey, decrypt_signing_key, encrypt_signing_key
 
 log = logging.getLogger("nce.vertical_modules.netbox.contacts")
 

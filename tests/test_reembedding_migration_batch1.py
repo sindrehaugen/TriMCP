@@ -6,7 +6,6 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from nce.reembedding_migration import (
     _MAX_BATCH_SIZE,
     _MAX_CANONICAL_TEXT_BYTES,

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Any
 
 from django.conf import settings
-from django.db import connection, utils, transaction
+from django.db import connection, transaction
 from django.http import JsonResponse
 from django.views import View
 

@@ -205,6 +205,12 @@ async def validate_extractor_url(url: str, *, what: str = "extractor") -> str:
     rejects URLs that resolve to private, loopback, link-local, reserved,
     multicast, or AWS/cloud metadata IPs before any bytes leave the machine.
 
+    .. warning::
+        This validation is subject to a Time-of-Check to Time-of-Use (TOCTOU)
+        DNS rebinding risk since HTTP clients (e.g., ``httpx``) perform their
+        own DNS resolution subsequently. Pinning the resolved IP or utilizing
+        a custom connection resolver is recommended in high-risk environments.
+
     Returns *url* unchanged on success.  Raises ``BridgeURLValidationError``
     on failure.
     """
@@ -282,6 +288,12 @@ async def validate_webhook_payload_url(
     *Resource paths* (relative, no scheme) must match a known-safe Microsoft
     Graph resource prefix (``/sites/``, ``/users/``, ``/groups/``, ``/drives/``,
     ``/me/``).
+
+    .. warning::
+        This validation is subject to a Time-of-Check to Time-of-Use (TOCTOU)
+        DNS rebinding risk since HTTP clients (e.g., ``httpx``) perform their
+        own DNS resolution subsequently. Pinning the resolved IP or utilizing
+        a custom connection resolver is recommended in high-risk environments.
 
     Returns the validated URL on success.  Raises ``BridgeURLValidationError``
     with a descriptive message on failure.

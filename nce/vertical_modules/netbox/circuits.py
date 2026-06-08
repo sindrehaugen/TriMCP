@@ -11,14 +11,12 @@ degradation is causally linked to circuit nodes.
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-
 from nce.causal.correlation import CausalGraph, DoCalculusEngine
 
 log = logging.getLogger("nce.vertical_modules.netbox.circuits")

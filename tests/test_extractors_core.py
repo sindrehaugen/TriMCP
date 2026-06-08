@@ -4,7 +4,6 @@ import zipfile
 from unittest.mock import patch
 
 import pytest
-
 from nce.extractors.chunking import chunk_structured
 from nce.extractors.core import Section
 from nce.extractors.dispatch import extract_with_fallback

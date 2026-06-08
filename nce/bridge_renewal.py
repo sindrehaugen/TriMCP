@@ -32,21 +32,47 @@ def _refresh_lock_key(provider: str, bridge_id: Any) -> str:
     return f"{_REFRESH_LOCK_PREFIX}:{provider}:{bridge_id}"
 
 
+class _DummyRedis:
+    async def delete(self, key: str) -> None:
+        pass
+    async def close(self) -> None:
+        pass
+
+
 async def _acquire_refresh_lock(provider: str, bridge_id: Any) -> Any:
     """Try to acquire a Redis SET-NX-EX lock for *bridge_id*.
 
     Returns the Redis client instance on success so the caller can close it,
     or ``None`` if the lock is already held.
     """
-    if AsyncRedis is None:
+    if not cfg.REDIS_URL or AsyncRedis is None:
+        if cfg.IS_PROD:
+            log.error(
+                "REDIS_URL not set — skipping background OAuth refresh for bridge_id=%s in production.",
+                bridge_id,
+            )
+            return None
+        log.debug(
+            "REDIS_URL not set — returning dummy lock client for bridge_id=%s in non-prod.",
+            bridge_id,
+        )
+        return _DummyRedis()
+
+    try:
+        redis_client = AsyncRedis.from_url(cfg.REDIS_URL)
+        key = _refresh_lock_key(provider, bridge_id)
+        acquired = await redis_client.set(key, "1", nx=True, ex=_REFRESH_LOCK_TTL_SECONDS)
+        if acquired is not None:
+            return redis_client
+        await redis_client.close()
         return None
-    redis_client = AsyncRedis.from_url(cfg.REDIS_URL)
-    key = _refresh_lock_key(provider, bridge_id)
-    acquired = await redis_client.set(key, "1", nx=True, ex=_REFRESH_LOCK_TTL_SECONDS)
-    if acquired is not None:
-        return redis_client
-    await redis_client.close()
-    return None
+    except Exception as exc:
+        log.warning(
+            "Redis connection error during OAuth refresh lock acquisition for bridge_id=%s: %s",
+            bridge_id,
+            exc,
+        )
+        return None
 
 
 async def _release_refresh_lock(redis_client: Any, provider: str, bridge_id: Any) -> None:
@@ -289,6 +315,20 @@ async def ensure_fresh_oauth_token(pool: asyncpg.Pool, row: asyncpg.Record, env_
 
     if expires_at is None or expires_at < now + timedelta(minutes=5):
         if expires_at and now < expires_at < now + timedelta(minutes=5):
+            from rq import get_current_job
+            try:
+                in_worker = get_current_job() is not None
+            except Exception:
+                in_worker = False
+
+            if in_worker:
+                log.info(
+                    "Token for bridge_id=%s is in warning window and running inside RQ worker. "
+                    "Returning valid token directly and skipping background task spawn.",
+                    bridge_id,
+                )
+                return access_token
+
             log.info(
                 "Token for bridge_id=%s is still valid but within 5-min warning window. Spawning background refresh.",
                 bridge_id,

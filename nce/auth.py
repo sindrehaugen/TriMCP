@@ -43,6 +43,7 @@ import inspect
 import logging
 import os
 import secrets
+import threading
 import time
 from base64 import b64decode
 from binascii import Error as BinasciiError
@@ -50,6 +51,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
+from cachetools import TTLCache
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -556,7 +558,8 @@ class RateLimitError(Exception):
         )
 
 
-_IN_MEMORY_LIMITS: dict[str, list[float]] = {}
+_IN_MEMORY_LIMITS: TTLCache = TTLCache(maxsize=10000, ttl=300)
+_rate_limit_lock = threading.Lock()
 
 # Atomic Lua script for sliding-window rate limiting.
 # Returns 1 if allowed, 0 if limit exceeded.
@@ -581,13 +584,16 @@ return 1
 def _check_in_memory_rate_limit(key: str, limit: int, period: int) -> bool:
     """Safe local sliding window fallback if Redis is unavailable/offline."""
     now = time.time()
-    if key not in _IN_MEMORY_LIMITS:
-        _IN_MEMORY_LIMITS[key] = []
-    _IN_MEMORY_LIMITS[key] = [t for t in _IN_MEMORY_LIMITS[key] if t > now - period]
-    if len(_IN_MEMORY_LIMITS[key]) >= limit:
-        return False
-    _IN_MEMORY_LIMITS[key].append(now)
-    return True
+    with _rate_limit_lock:
+        if key not in _IN_MEMORY_LIMITS:
+            _IN_MEMORY_LIMITS[key] = []
+        timestamps = [t for t in _IN_MEMORY_LIMITS[key] if t > now - period]
+        if len(timestamps) >= limit:
+            _IN_MEMORY_LIMITS[key] = timestamps
+            return False
+        timestamps.append(now)
+        _IN_MEMORY_LIMITS[key] = timestamps
+        return True
 
 
 def admin_rate_limit(limit: int = 10, period: int = 60):

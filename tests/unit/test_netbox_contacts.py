@@ -6,19 +6,15 @@ Unit tests for NetBox Tenancy Contact and Operator Stress Tracking integration.
 
 from __future__ import annotations
 
-import json
-import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from httpx import Response, Request
-
-from nce.vertical_modules.netbox.contacts import NetBoxClient, NetBoxContactSync
+from httpx import Request, Response
 from nce.signing import require_master_key
-
+from nce.vertical_modules.netbox.contacts import NetBoxClient, NetBoxContactSync
 
 NS = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000001")
 

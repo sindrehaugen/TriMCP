@@ -5,8 +5,6 @@ from __future__ import annotations
 from uuid import UUID
 
 import pytest
-from pydantic import BaseModel
-
 from nce.mcp_args import (
     _canonicalize,
     _validate_metadata_values,
@@ -14,6 +12,7 @@ from nce.mcp_args import (
     extract_namespace_id,
     validate_nested_models,
 )
+from pydantic import BaseModel
 
 VALID_UUID = "550e8400-e29b-41d4-a716-446655440000"
 

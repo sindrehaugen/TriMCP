@@ -15,7 +15,7 @@ import json
 import logging
 import math
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from nce.vertical_modules.netbox.graphql_activation import NetBoxGraphQLClient

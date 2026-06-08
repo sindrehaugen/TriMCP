@@ -34,6 +34,7 @@ def _is_pack_supported(language: str) -> bool:
     if not _MANIFEST_LANGUAGES:
         try:
             from typing import get_args
+
             from tree_sitter_language_pack import SupportedLanguage
             allowed = frozenset(get_args(SupportedLanguage))
             return language in allowed

@@ -3,6 +3,7 @@ from __future__ import annotations
 from nce.admin_handlers import _shared
 from nce.admin_handlers._shared import *  # noqa: F403
 
+
 async def api_admin_events(request):
     """GET /api/admin/events
 
@@ -239,7 +240,7 @@ async def api_admin_verify_chain(request):
         )
 
     valid = bool(result.get("valid"))
-    MERKLE_CHAIN_VALID.labels(namespace_id=str(namespace_id)).set(1 if valid else 0)
+    MERKLE_CHAIN_VALID.set(1 if valid else 0)
 
     return JSONResponse(
         {

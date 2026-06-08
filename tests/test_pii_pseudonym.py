@@ -5,10 +5,9 @@ from __future__ import annotations
 import re
 
 import pytest
-from pydantic import ValidationError
-
 from nce.models import NamespacePIIConfig, PIIPolicy
 from nce.pii import _pseudonym_token_suffix, process
+from pydantic import ValidationError
 
 
 def _cfg_pseudo(

@@ -100,5 +100,5 @@ def process_gdrive_event(payload: dict[str, Any]) -> dict[str, Any]:
             count += 1
     except BridgeAuthError as e:
         log.error("%s", e)
-        return {"status": "error", "error": str(e)}
+        raise
     return {"status": "ok", "changes_seen": count}

@@ -38,6 +38,8 @@ from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from nce.config import cfg
+from nce.models import MAX_GRAPH_DEPTH, MAX_GRAPH_EDGE_PAGE
+from nce.providers import CircuitBreaker, LLMCircuitOpenError
 
 log = logging.getLogger("nce-graphrag")
 
@@ -358,6 +360,7 @@ class GraphRAGTraverser:
         self.mongo_client = mongo_client
         self._embed = embedding_fn
         self._search_semaphore = asyncio.Semaphore(max_concurrent_searches)
+        self.circuit_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30.0)
 
     # --- Time-travel signature verification ---
 
@@ -590,11 +593,12 @@ class GraphRAGTraverser:
                 labels = await c.fetch(
                     """
                     WITH RECURSIVE traversal AS (
-                        SELECT $1::text AS label, 0 AS depth
+                        SELECT $1::text AS label, 0 AS depth, ARRAY[$1::text] AS path
                         UNION
                         SELECT DISTINCT
-                            CASE WHEN h.subject_label = t.label THEN h.object_label ELSE h.subject_label END,
-                            t.depth + 1
+                            h.neighbor,
+                            t.depth + 1,
+                            t.path || h.neighbor
                         FROM traversal t
                         JOIN LATERAL (
                             WITH ns AS (
@@ -627,18 +631,19 @@ class GraphRAGTraverser:
                                     memory_id, event_id
                                 FROM active_memories
                             )
-                            SELECT e.subject_label, e.object_label, e.event_id
+                            SELECT 
+                                CASE WHEN e.subject_label = t.label THEN e.object_label ELSE e.subject_label END AS neighbor
                             FROM historical_edges e
                             JOIN memories m ON e.memory_id = m.id
                             WHERE e.subject_label = t.label OR e.object_label = t.label
                             LIMIT $5
                         ) h ON true
                         WHERE t.depth < $2
-                          AND (SELECT count(*) = 0 FROM traversal AS exclude
-                               WHERE exclude.label IN (h.subject_label, h.object_label))
-                          AND (SELECT count(DISTINCT label) FROM traversal) < $6
+                          AND h.neighbor <> ALL(t.path)
                     )
-                    SELECT DISTINCT label FROM traversal ORDER BY depth ASC
+                    SELECT label FROM (
+                        SELECT label, MIN(depth) as min_depth FROM traversal GROUP BY label
+                    ) AS distinct_labels ORDER BY min_depth ASC LIMIT $6
                     """,
                     start_label,
                     max_depth,
@@ -714,24 +719,32 @@ class GraphRAGTraverser:
                         SELECT $1::text AS label, 0 AS depth, ARRAY[$1::text] AS path
                         UNION
                         SELECT DISTINCT
-                            CASE WHEN e.subject_label = t.label THEN e.object_label ELSE e.subject_label END,
+                            e.neighbor,
                             t.depth + 1,
-                            t.path || (CASE WHEN e.subject_label = t.label THEN e.object_label ELSE e.subject_label END)
+                            t.path || e.neighbor
                         FROM traversal t
-                        JOIN kg_edges e ON (e.subject_label = t.label OR e.object_label = t.label)
+                        JOIN LATERAL (
+                            SELECT 
+                                CASE WHEN e2.subject_label = t.label THEN e2.object_label ELSE e2.subject_label END AS neighbor
+                            FROM kg_edges e2
+                            WHERE (e2.subject_label = t.label OR e2.object_label = t.label)
+                              AND ($4::uuid IS NULL OR e2.namespace_id = $4::uuid)
+                            ORDER BY e2.confidence DESC
+                            LIMIT $5
+                        ) e ON true
                         WHERE t.depth < $2
                           -- Path-array cycle guard: new label must not already be in this path
-                          AND (CASE WHEN e.subject_label = t.label THEN e.object_label ELSE e.subject_label END) <> ALL(t.path)
-                          -- Respect MAX_NODES cap
-                          AND (SELECT count(DISTINCT label) FROM traversal) < $3
-                          AND ($4::uuid IS NULL OR e.namespace_id = $4::uuid)
+                          AND e.neighbor <> ALL(t.path)
                     )
-                    SELECT DISTINCT label FROM traversal ORDER BY depth ASC
+                    SELECT label FROM (
+                        SELECT label, MIN(depth) as min_depth FROM traversal GROUP BY label
+                    ) AS distinct_labels ORDER BY min_depth ASC LIMIT $3
                     """,
                     start_label,
                     max_depth,
                     MAX_NODES,
                     namespace_id,
+                    max_edges_per_node,
                 )
                 visited = {r["label"] for r in labels}
 
@@ -872,11 +885,16 @@ class GraphRAGTraverser:
         edge_limit: int | None,
         method_name: str,
         _allow_global_sweep: bool,
+        max_depth: int = 2,
     ) -> int:
         if namespace_id is None and not _allow_global_sweep:
             raise ValueError(
                 f"{method_name}: namespace_id is required for tenant-scoped graph searches. "
                 "Pass _allow_global_sweep=True only for admin/diagnostic cross-tenant operations."
+            )
+        if not (1 <= max_depth <= MAX_GRAPH_DEPTH):
+            raise ValueError(
+                f"max_depth must be between 1 and {MAX_GRAPH_DEPTH}, got {max_depth}"
             )
         if as_of is not None:
             if not isinstance(as_of, datetime):
@@ -890,8 +908,11 @@ class GraphRAGTraverser:
             raise ValueError("max_edges_per_node must be >= 1")
         if edge_offset < 0:
             raise ValueError("edge_offset must be >= 0")
-        if edge_limit is not None and edge_limit < 1:
-            raise ValueError("edge_limit must be >= 1 when provided")
+        if edge_limit is not None:
+            if edge_limit < 1 or edge_limit > MAX_GRAPH_EDGE_PAGE:
+                raise ValueError(
+                    f"edge_limit must be between 1 and {MAX_GRAPH_EDGE_PAGE}, got {edge_limit}"
+                )
         return per_node
 
     async def _execute_graph_traversal(
@@ -985,6 +1006,7 @@ class GraphRAGTraverser:
     ) -> list[GraphNode]:
         """Fetches full node metadata (historical time-travel or current state) from DB."""
         if as_of and namespace_id:
+            # Case 1 (as_of + namespace_id): Maintain the existing tenant time-travel temporal CTE path.
             rows = await conn.fetch(
                 self._temporal_cte_prefix(),
                 labels,
@@ -994,9 +1016,24 @@ class GraphRAGTraverser:
             # Verify signatures on event_log rows that contributed to node metadata.
             event_ids = [str(r["event_id"]) for r in rows if r.get("event_id")]
             await self._verify_time_travel_event_signatures(conn, event_ids)
-        else:
+        elif as_of and not namespace_id:
+            # Case 2 (as_of + no namespace_id): Explicitly raise NotImplementedError
+            raise NotImplementedError(
+                "Global cross-tenant time-travel sweeps are not structurally supported."
+            )
+        elif not as_of and namespace_id:
+            # Case 3 (no as_of + namespace_id): Perform an isolated tenant current-state query filtering directly via a parameterized query signature.
             rows = await conn.fetch(
-                "SELECT label, entity_type, payload_ref FROM kg_nodes WHERE label = ANY($1::text[]) AND namespace_id = current_setting('nce.namespace_id')::uuid",
+                "SELECT label, entity_type, payload_ref FROM kg_nodes WHERE label = ANY($1::text[]) AND namespace_id = $2::uuid",
+                labels,
+                namespace_id,
+            )
+        else:
+            # Case 4 (no as_of + no namespace_id): Execute a clean global sweep query without filtering or calling session parameters.
+            # SECURITY TRACKING: This connection invariant requires a database role with active BYPASSRLS privileges
+            # to successfully bypass row-level security on kg_nodes.
+            rows = await conn.fetch(
+                "SELECT label, entity_type, payload_ref FROM kg_nodes WHERE label = ANY($1::text[])",
                 labels,
             )
         return [
@@ -1090,38 +1127,55 @@ class GraphRAGTraverser:
             edge_limit=edge_limit,
             method_name="search",
             _allow_global_sweep=_allow_global_sweep,
+            max_depth=max_depth,
         )
+        # Check circuit breaker
+        allowed = await self.circuit_breaker.check()
+        if not allowed:
+            raise LLMCircuitOpenError(
+                f"GraphRAG search circuit breaker is OPEN (failures={self.circuit_breaker._failure_count}/{self.circuit_breaker.failure_threshold}).",
+                provider="GraphRAG/search",
+                status_code=503,
+            )
+
         async with self._search_semaphore:
-            async with self.pg_pool.acquire(timeout=10.0) as conn:
-                async with conn.transaction():
-                    if namespace_id:
-                        from nce.auth import set_namespace_context
+            try:
+                async with self.pg_pool.acquire(timeout=10.0) as conn:
+                    async with conn.transaction():
+                        if namespace_id:
+                            from nce.auth import set_namespace_context
 
-                        await set_namespace_context(conn, UUID(str(namespace_id)))
+                            await set_namespace_context(conn, UUID(str(namespace_id)))
 
-                    traversal = await self._execute_graph_traversal(
-                        conn=conn,
-                        query=query,
-                        namespace_id=namespace_id,
-                        anchor_top_k=anchor_top_k,
-                        as_of=as_of,
-                        _allow_global_sweep=_allow_global_sweep,
-                        max_depth=max_depth,
-                        per_node=per_node,
-                        method_name="search",
-                    )
-                    if traversal is None:
-                        return Subgraph(anchor="<none>")
+                        traversal = await self._execute_graph_traversal(
+                            conn=conn,
+                            query=query,
+                            namespace_id=namespace_id,
+                            anchor_top_k=anchor_top_k,
+                            as_of=as_of,
+                            _allow_global_sweep=_allow_global_sweep,
+                            max_depth=max_depth,
+                            per_node=per_node,
+                            method_name="search",
+                        )
+                        if traversal is None:
+                            await self.circuit_breaker.record_success()
+                            return Subgraph(anchor="<none>")
 
-                    anchor, visited_labels, edges = traversal
+                        anchor, visited_labels, edges = traversal
 
-                    nodes = await self._fetch_nodes_metadata(
-                        conn=conn,
-                        labels=list(visited_labels),
-                        namespace_id=namespace_id,
-                        as_of=as_of,
-                        anchor=anchor,
-                    )
+                        nodes = await self._fetch_nodes_metadata(
+                            conn=conn,
+                            labels=list(visited_labels),
+                            namespace_id=namespace_id,
+                            as_of=as_of,
+                            anchor=anchor,
+                        )
+                await self.circuit_breaker.record_success()
+            except Exception as exc:
+                if not isinstance(exc, (ValueError, NotImplementedError, LLMCircuitOpenError)):
+                    await self.circuit_breaker.record_failure()
+                raise
 
             return await self._build_subgraph(
                 anchor=anchor,
@@ -1168,95 +1222,112 @@ class GraphRAGTraverser:
             edge_limit=edge_limit,
             method_name="neuromorphic_search",
             _allow_global_sweep=_allow_global_sweep,
+            max_depth=max_depth,
         )
 
+        # Check circuit breaker
+        allowed = await self.circuit_breaker.check()
+        if not allowed:
+            raise LLMCircuitOpenError(
+                f"GraphRAG neuromorphic_search circuit breaker is OPEN (failures={self.circuit_breaker._failure_count}/{self.circuit_breaker.failure_threshold}).",
+                provider="GraphRAG/neuromorphic_search",
+                status_code=503,
+            )
+
         async with self._search_semaphore:
-            async with self.pg_pool.acquire(timeout=10.0) as conn:
-                async with conn.transaction():
-                    if namespace_id:
-                        from nce.auth import set_namespace_context
+            try:
+                async with self.pg_pool.acquire(timeout=10.0) as conn:
+                    async with conn.transaction():
+                        if namespace_id:
+                            from nce.auth import set_namespace_context
 
-                        await set_namespace_context(conn, UUID(str(namespace_id)))
+                            await set_namespace_context(conn, UUID(str(namespace_id)))
 
-                    traversal = await self._execute_graph_traversal(
-                        conn=conn,
-                        query=query,
-                        namespace_id=namespace_id,
-                        anchor_top_k=anchor_top_k,
-                        as_of=as_of,
-                        _allow_global_sweep=_allow_global_sweep,
-                        max_depth=max_depth,
-                        per_node=per_node,
-                        method_name="neuromorphic_search",
-                    )
-                    if traversal is None:
-                        return Subgraph(anchor="<none>")
-
-                    anchor, visited_candidate_labels, candidate_edges = traversal
-
-                    # Build local adjacency list for spreading activation
-                    # Max-weight unify parallel edges
-                    edge_map: dict[tuple[str, str], float] = {}
-                    for e in candidate_edges:
-                        pair = (e.subject, e.obj)
-                        edge_map[pair] = max(edge_map.get(pair, 0.0), e.confidence)
-
-                    adj: dict[str, list[tuple[str, float]]] = {}
-                    for (src, tgt), conf in edge_map.items():
-                        adj.setdefault(src, []).append((tgt, conf))
-                        adj.setdefault(tgt, []).append((src, conf))
-
-                    # Scale threshold and initial potential if system telemetry severity exceeds threshold
-                    actual_theta = theta
-                    initial_charge = 1.0
-                    spike_thresh = cfg.NCE_TELEMETRY_SPIKE_THRESHOLD
-                    if telemetry_severity is not None and telemetry_severity > spike_thresh:
-                        actual_theta = cfg.NCE_TELEMETRY_SPIKE_THETA
-                        initial_charge = cfg.NCE_TELEMETRY_SPIKE_CHARGE
-                        log.info(
-                            "Telemetry severity spike detected (%.1f > %.1f). Lowering threshold to %.2f "
-                            "and raising initial charge to %.2f for wider pre-fetching.",
-                            telemetry_severity,
-                            spike_thresh,
-                            actual_theta,
-                            initial_charge,
+                        traversal = await self._execute_graph_traversal(
+                            conn=conn,
+                            query=query,
+                            namespace_id=namespace_id,
+                            anchor_top_k=anchor_top_k,
+                            as_of=as_of,
+                            _allow_global_sweep=_allow_global_sweep,
+                            max_depth=max_depth,
+                            per_node=per_node,
+                            method_name="neuromorphic_search",
                         )
+                        if traversal is None:
+                            await self.circuit_breaker.record_success()
+                            return Subgraph(anchor="<none>")
 
-                    # Initialize Spiking Neural Engine
-                    engine = SpikingActivationEngine(
-                        theta=actual_theta,
-                        decay=decay,
-                        alpha=alpha,
-                    )
-                    engine.set_potentials({anchor.label: initial_charge})
+                        anchor, visited_candidate_labels, candidate_edges = traversal
 
-                    # Run propagation simulation for specified ticks or max_depth
-                    simulation_ticks = ticks if ticks is not None else max_depth
-                    for _ in range(simulation_ticks):
-                        engine.step(adj)
+                        # Build local adjacency list for spreading activation
+                        # Max-weight unify parallel edges
+                        edge_map: dict[tuple[str, str], float] = {}
+                        for e in candidate_edges:
+                            pair = (e.subject, e.obj)
+                            edge_map[pair] = max(edge_map.get(pair, 0.0), e.confidence)
 
-                    # Select active nodes: fired nodes, anchor node, and sub-threshold activated nodes
-                    active_labels = set(engine.fired_nodes) | {anchor.label}
-                    # Also include any nodes that reached at least 10% of firing threshold
-                    sub_threshold = actual_theta * 0.1
-                    for node_label, pot in engine.max_potentials.items():
-                        if pot >= sub_threshold:
-                            active_labels.add(node_label)
+                        adj: dict[str, list[tuple[str, float]]] = {}
+                        for (src, tgt), conf in edge_map.items():
+                            adj.setdefault(src, []).append((tgt, conf))
+                            adj.setdefault(tgt, []).append((src, conf))
 
-                    # Restrict candidate edges to active nodes
-                    active_edges = [
-                        e
-                        for e in candidate_edges
-                        if e.subject in active_labels and e.obj in active_labels
-                    ]
+                        # Scale threshold and initial potential if system telemetry severity exceeds threshold
+                        actual_theta = theta
+                        initial_charge = 1.0
+                        spike_thresh = cfg.NCE_TELEMETRY_SPIKE_THRESHOLD
+                        if telemetry_severity is not None and telemetry_severity > spike_thresh:
+                            actual_theta = cfg.NCE_TELEMETRY_SPIKE_THETA
+                            initial_charge = cfg.NCE_TELEMETRY_SPIKE_CHARGE
+                            log.info(
+                                "Telemetry severity spike detected (%.1f > %.1f). Lowering threshold to %.2f "
+                                "and raising initial charge to %.2f for wider pre-fetching.",
+                                telemetry_severity,
+                                spike_thresh,
+                                actual_theta,
+                                initial_charge,
+                            )
 
-                    nodes = await self._fetch_nodes_metadata(
-                        conn=conn,
-                        labels=list(active_labels),
-                        namespace_id=namespace_id,
-                        as_of=as_of,
-                        anchor=anchor,
-                    )
+                        # Initialize Spiking Neural Engine
+                        engine = SpikingActivationEngine(
+                            theta=actual_theta,
+                            decay=decay,
+                            alpha=alpha,
+                        )
+                        engine.set_potentials({anchor.label: initial_charge})
+
+                        # Run propagation simulation for specified ticks or max_depth
+                        simulation_ticks = ticks if ticks is not None else max_depth
+                        for _ in range(simulation_ticks):
+                            engine.step(adj)
+
+                        # Select active nodes: fired nodes, anchor node, and sub-threshold activated nodes
+                        active_labels = set(engine.fired_nodes) | {anchor.label}
+                        # Also include any nodes that reached at least 10% of firing threshold
+                        sub_threshold = actual_theta * 0.1
+                        for node_label, pot in engine.max_potentials.items():
+                            if pot >= sub_threshold:
+                                active_labels.add(node_label)
+
+                        # Restrict candidate edges to active nodes
+                        active_edges = [
+                            e
+                            for e in candidate_edges
+                            if e.subject in active_labels and e.obj in active_labels
+                        ]
+
+                        nodes = await self._fetch_nodes_metadata(
+                            conn=conn,
+                            labels=list(active_labels),
+                            namespace_id=namespace_id,
+                            as_of=as_of,
+                            anchor=anchor,
+                        )
+                await self.circuit_breaker.record_success()
+            except Exception as exc:
+                if not isinstance(exc, (ValueError, NotImplementedError, LLMCircuitOpenError)):
+                    await self.circuit_breaker.record_failure()
+                raise
 
             return await self._build_subgraph(
                 anchor=anchor,

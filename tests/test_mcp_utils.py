@@ -6,7 +6,6 @@ import json
 from uuid import UUID
 
 import pytest
-
 from nce.a2a import A2AScope
 from nce.auth import NamespaceContext
 from nce.mcp_utils import (

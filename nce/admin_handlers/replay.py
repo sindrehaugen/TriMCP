@@ -3,6 +3,7 @@ from __future__ import annotations
 from nce.admin_handlers import _shared
 from nce.admin_handlers._shared import *  # noqa: F403
 
+
 async def api_replay_observe(request):
     """POST /api/replay/observe
 

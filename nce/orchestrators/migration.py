@@ -12,6 +12,8 @@ from uuid import UUID
 
 import asyncpg
 
+from nce.cache_keys import get_code_index_cache_key
+from nce.observability import enqueue_traced
 from nce.orchestrators._base import OrchestratorBase
 from nce.orchestrators._utils import _validate_path
 
@@ -43,10 +45,9 @@ class MigrationOrchestrator(OrchestratorBase):
         self, namespace_id: str | UUID | None, user_id: str | None, filepath: str
     ) -> str:
         """Build a deterministic Redis cache key for code indexing."""
-        ns = str(namespace_id) if namespace_id else "global"
-        user = user_id or "shared"
-        safe_path = filepath.replace("\\", "/").rstrip("/")
-        return f"code_index:{ns}:{user}:{safe_path}"
+        return get_code_index_cache_key(
+            str(namespace_id) if namespace_id else None, user_id, filepath
+        )
 
     # ------------------------------------------------------------------
     # Code indexing & RQ job status
@@ -90,11 +91,16 @@ class MigrationOrchestrator(OrchestratorBase):
                 "filepath": payload.filepath,
             }
 
+        import re
+
         from nce.extractors.dispatch import get_priority_queue
         from nce.tasks import process_code_indexing
+        raw_job_id = f"index:{cache_key}"
+        job_id = re.sub(r"[^a-zA-Z0-9_-]", "-", raw_job_id)
 
         q = get_priority_queue(priority, self.redis_sync_client)
-        job = q.enqueue(
+        job = enqueue_traced(
+            q,
             process_code_indexing,
             args=(
                 payload.filepath,
@@ -104,16 +110,8 @@ class MigrationOrchestrator(OrchestratorBase):
                 str(payload.namespace_id) if payload.namespace_id else None,
             ),
             job_timeout="10m",
-            job_id=f"index:{cache_key}",
+            job_id=job_id,
         )
-
-        try:
-            await asyncio.wait_for(
-                self.redis_client.set(cache_key, file_hash, ex=3600, nx=True),
-                timeout=2.0,
-            )
-        except asyncio.TimeoutError:
-            log.warning("[Code] Redis cache write timed out for key=%s", cache_key)
 
         queue_name = q.name
         log.info(
@@ -122,7 +120,8 @@ class MigrationOrchestrator(OrchestratorBase):
             payload.filepath,
             queue_name,
         )
-        return {"status": "enqueued", "job_id": job.id, "filepath": payload.filepath}
+        status = "indexed" if job.is_finished else "enqueued"
+        return {"status": status, "job_id": job.id, "filepath": payload.filepath}
 
     async def get_job_status(self, job_id: str) -> dict:
         """Check the status of an RQ job."""

@@ -10,28 +10,25 @@ the registry exactly mirrors the behaviour encoded in the original if-ladder.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 
 import pytest
-
 from nce.tool_registry import (
     ADMIN_ONLY_TOOLS,
     CACHEABLE_TOOLS,
     MIGRATION_TOOLS,
     MUTATION_TOOLS,
     TOOL_REGISTRY,
-    ToolSpec,
 )
 
 # ---------------------------------------------------------------------------
 # Cardinality
 # ---------------------------------------------------------------------------
 
-_EXPECTED_TOTAL = 54
+_EXPECTED_TOTAL = 59
 
 
-def test_registry_has_54_entries():
+def test_registry_has_59_entries():
     assert len(TOOL_REGISTRY) == _EXPECTED_TOTAL, (
         f"Expected {_EXPECTED_TOTAL} tools, got {len(TOOL_REGISTRY)}. "
         f"Tools: {sorted(TOOL_REGISTRY)}"
@@ -94,6 +91,8 @@ _EXPECTED_MUTATION_TOOLS: frozenset[str] = frozenset(
         "start_migration",
         "commit_migration",
         "abort_migration",
+        # D365 mutations
+        "d365_sync_now",
     }
 )
 
@@ -106,7 +105,7 @@ def test_mutation_tools_exact_match():
 
 
 def test_mutation_tools_count():
-    assert len(MUTATION_TOOLS) == 27
+    assert len(MUTATION_TOOLS) == 28
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +113,14 @@ def test_mutation_tools_count():
 # ---------------------------------------------------------------------------
 
 _EXPECTED_CACHEABLE: frozenset[str] = frozenset(
-    {"semantic_search", "search_codebase", "graph_search"}
+    {
+        "semantic_search",
+        "search_codebase",
+        "graph_search",
+        "d365_query_case",
+        "d365_case_stress_report",
+        "d365_netbox_mappings",
+    }
 )
 
 
@@ -126,7 +132,7 @@ def test_cacheable_tools_exact_match():
 
 
 def test_cacheable_tools_count():
-    assert len(CACHEABLE_TOOLS) == 3
+    assert len(CACHEABLE_TOOLS) == 6
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +146,8 @@ _EXPECTED_ADMIN_ONLY: frozenset[str] = frozenset(
         "replay_reconstruct",
         "replay_fork",
         "replay_status",
+        "d365_sync_now",
+        "d365_list_sla_breaches",
     }
 )
 
@@ -152,7 +160,7 @@ def test_admin_only_tools_exact_match():
 
 
 def test_admin_only_tools_count():
-    assert len(ADMIN_ONLY_TOOLS) == 5
+    assert len(ADMIN_ONLY_TOOLS) == 7
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +276,11 @@ def test_toolspec_is_frozen():
         ("compare_states", {"mutation": False, "cacheable": False, "admin_only": False, "migration": False}),
         # catalog
         ("suggest_queries", {"mutation": False, "cacheable": False, "admin_only": False, "migration": False}),
+        # d365
+        ("d365_query_case", {"mutation": False, "cacheable": True, "admin_only": False, "migration": False}),
+        ("d365_sync_now", {"mutation": True, "cacheable": False, "admin_only": True, "migration": False}),
+        ("d365_case_stress_report", {"mutation": False, "cacheable": True, "admin_only": False, "migration": False}),
+        ("d365_list_sla_breaches", {"mutation": False, "cacheable": False, "admin_only": True, "migration": False}),
     ],
 )
 def test_tool_flags(tool_name: str, expected_flags: dict):

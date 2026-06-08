@@ -29,16 +29,13 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from nce.causal.correlation import (
     _FORWARD_FAILURE_TYPES,
     _REVERSE_FAILURE_TYPES,
     CausalEdge,
     CausalGraph,
-    CausalNode,
     ConfoundingPath,
     DoCalculusEngine,
-    ImpactScore,
     InterventionResult,
     _combine_path_probabilities,
     _path_confidence,

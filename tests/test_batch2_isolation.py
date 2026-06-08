@@ -29,9 +29,11 @@ AGENT = "test-agent"
 # Test 1: Connection Pool Release during slow embeddings
 # ---------------------------------------------------------------------------
 
+
 class MockTransaction:
     async def __aenter__(self):
         return self
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         return False
 
@@ -54,6 +56,7 @@ class TracePool:
 
 def _mongo_client_mock(episode_docs=None):
     docs = episode_docs or {}
+
     async def _find(query, projection=None):
         ids = query.get("_id", {}).get("$in", [])
         for oid in ids:
@@ -78,17 +81,13 @@ async def test_semantic_search_pool_release_during_slow_embedding() -> None:
     mock_conn = AsyncMock()
     mock_conn.fetchrow = AsyncMock(return_value={"metadata": {}})
     mock_conn.fetchval = AsyncMock(return_value="active-model-123")
-    
+
     # Return one result row from fetch
     result_oid = str(ObjectId())
     result_mid = uuid.uuid4()
-    mock_conn.fetch = AsyncMock(return_value=[
-        {
-            "payload_ref": result_oid,
-            "memory_id": result_mid,
-            "final_score": 0.95
-        }
-    ])
+    mock_conn.fetch = AsyncMock(
+        return_value=[{"payload_ref": result_oid, "memory_id": result_mid, "final_score": 0.95}]
+    )
     mock_conn.transaction = MagicMock(return_value=MockTransaction())
     mock_conn.execute = AsyncMock()
 
@@ -103,9 +102,9 @@ async def test_semantic_search_pool_release_during_slow_embedding() -> None:
         return [0.1] * VECTOR_DIM
 
     # Mongo client mock
-    mongo_client = _mongo_client_mock({
-        result_oid: {"_id": ObjectId(result_oid), "raw_data": "retrieved-memory-data"}
-    })
+    mongo_client = _mongo_client_mock(
+        {result_oid: {"_id": ObjectId(result_oid), "raw_data": "retrieved-memory-data"}}
+    )
 
     # Run semantic search
     results = await semantic_search(
@@ -132,7 +131,7 @@ async def test_semantic_search_pool_release_during_slow_embedding() -> None:
     # 4. embedding_call_end
     # 5. acquire_start 2 (run actual query with vector and FTS)
     # 6. acquire_release 2
-    
+
     assert len(trace_log) == 6
     assert trace_log[0] == ("acquire_start", 1)
     assert trace_log[1] == ("acquire_release", 1)
@@ -146,18 +145,19 @@ async def test_semantic_search_pool_release_during_slow_embedding() -> None:
 # Test 2: Multi-Tenant Segregation Filter on kg_nodes fetches
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_graph_query_multi_tenant_segregation_on_kg_nodes_fetches() -> None:
     # Set up mock PG Pool and Connection to trace SQL queries
     mock_pool = MagicMock()
     mock_conn = AsyncMock()
-    
+
     # Mock transaction block
     tx = AsyncMock()
     tx.__aenter__.return_value = None
     tx.__aexit__.return_value = False
     mock_conn.transaction = MagicMock(return_value=tx)
-    
+
     acq = AsyncMock()
     acq.__aenter__.return_value = mock_conn
     acq.__aexit__.return_value = None
@@ -166,16 +166,20 @@ async def test_graph_query_multi_tenant_segregation_on_kg_nodes_fetches() -> Non
     # Mock Mongo client
     mongo_client = MagicMock()
     mongo_client.memory_archive = MagicMock()
-    
+
     # Dummy embedding
     async def dummy_embed(query: str):
         return [0.1, 0.2, 0.3]
 
     # Create GraphRAGTraverser
-    traverser = GraphRAGTraverser(pg_pool=mock_pool, mongo_client=mongo_client, embedding_fn=dummy_embed)
+    traverser = GraphRAGTraverser(
+        pg_pool=mock_pool, mongo_client=mongo_client, embedding_fn=dummy_embed
+    )
 
     # Mock _find_anchor to return a dummy anchor node
-    anchor_node = GraphNode(label="AnchorNode", entity_type="CONCEPT", payload_ref="ref123", distance=0.0)
+    anchor_node = GraphNode(
+        label="AnchorNode", entity_type="CONCEPT", payload_ref="ref123", distance=0.0
+    )
     traverser._find_anchor = AsyncMock(return_value=[anchor_node])
 
     # Mock _bfs to return visited labels set and empty edges
@@ -186,6 +190,7 @@ async def test_graph_query_multi_tenant_segregation_on_kg_nodes_fetches() -> Non
 
     # Record queries executed on fetch
     executed_queries = []
+
     async def mock_fetch(query_str, *args):
         executed_queries.append(query_str)
         return [{"label": "AnchorNode", "entity_type": "CONCEPT", "payload_ref": "ref123"}]
@@ -197,13 +202,13 @@ async def test_graph_query_multi_tenant_segregation_on_kg_nodes_fetches() -> Non
     await traverser.search("latency spikes", namespace_id=target_namespace)
 
     # Verify that the query to fetch node metadata for visited labels was executed
-    # and explicitly contains the namespace_id = current_setting('nce.namespace_id')::uuid filter.
+    # and explicitly contains the namespace_id = $2::uuid filter.
     metadata_query_found = False
     for sql in executed_queries:
         if "kg_nodes" in sql:
             metadata_query_found = True
             # Verify explicit RLS filter condition
-            assert "namespace_id = current_setting('nce.namespace_id')::uuid" in sql
+            assert "namespace_id = $2::uuid" in sql
             assert "label = ANY($1::text[])" in sql
 
     assert metadata_query_found, "Metadata query targeting kg_nodes was not executed."
@@ -212,6 +217,7 @@ async def test_graph_query_multi_tenant_segregation_on_kg_nodes_fetches() -> Non
 # ---------------------------------------------------------------------------
 # Test 3: GC Loop Error Isolation (Acquisition & Transaction Failures)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_gc_loop_error_isolation_acquisition_failure() -> None:
@@ -230,15 +236,13 @@ async def test_gc_loop_error_isolation_acquisition_failure() -> None:
     # It returns a page with payload_ref on the first check of a namespace, then empty list to end pagination.
     # We check the last_seen_id parameter. If it is all-zeros (start of page), we return a row. Otherwise, empty list.
     fetch_calls = []
+
     async def mock_fetch(query_str, last_seen_id, limit):
         fetch_calls.append((query_str, last_seen_id))
         if last_seen_id == uuid.UUID(int=0):
             # Return a valid row
             return [
-                {
-                    "id": uuid.uuid4(),
-                    "payload_ref": f"ref_from_{last_seen_id}_{len(fetch_calls)}"
-                }
+                {"id": uuid.uuid4(), "payload_ref": f"ref_from_{last_seen_id}_{len(fetch_calls)}"}
             ]
         return []
 
@@ -246,6 +250,7 @@ async def test_gc_loop_error_isolation_acquisition_failure() -> None:
 
     # Mock pool.acquire to raise exception on the FIRST namespace (ns1), but succeed on others
     acquire_count = 0
+
     @asynccontextmanager
     async def mock_acquire(timeout=None):
         nonlocal acquire_count
@@ -258,16 +263,13 @@ async def test_gc_loop_error_isolation_acquisition_failure() -> None:
     mock_pool.acquire = mock_acquire
 
     # Call the GC ref builder
-    # Should catch the error for ns1, log it, and continue fetching refs for ns2 and ns3
-    refs = await _fetch_pg_refs(mock_pool, [ns1, ns2, ns3])
+    # Should propagate the error for ns1 immediately
+    with pytest.raises(RuntimeError, match="DB pool acquisition error for namespace 1"):
+        await _fetch_pg_refs(mock_pool, [ns1, ns2, ns3])
 
     # Assertions
-    # 1. Total pool acquire attempts should be 3 (one for each namespace)
-    assert acquire_count == 3
-    # 2. Loop did not stall, it successfully completed and returned references for the other namespaces
-    assert len(refs) > 0
-    # 3. Only the second and third namespaces returned refs
-    assert any("ref_from_" in r for r in refs)
+    # 1. Total pool acquire attempts should be 1 (fails on the first namespace)
+    assert acquire_count == 1
 
 
 @pytest.mark.asyncio
@@ -278,9 +280,10 @@ async def test_gc_loop_error_isolation_transaction_failure() -> None:
     ns3 = uuid.uuid4()
 
     mock_conn = AsyncMock()
-    
+
     # Mock transaction to raise error on the first namespace, but succeed on the others
     transaction_count = 0
+
     class FailingTransaction:
         async def __aenter__(self):
             nonlocal transaction_count
@@ -288,6 +291,7 @@ async def test_gc_loop_error_isolation_transaction_failure() -> None:
             if transaction_count == 1:
                 raise RuntimeError("DB transaction begin failure for namespace 1 (simulated)")
             return self
+
         async def __aexit__(self, exc_type, exc_val, exc_tb):
             return False
 
@@ -298,7 +302,7 @@ async def test_gc_loop_error_isolation_transaction_failure() -> None:
         if last_seen_id == uuid.UUID(int=0):
             return [{"id": uuid.uuid4(), "payload_ref": f"ref_{transaction_count}"}]
         return []
-    
+
     mock_conn.fetch = mock_fetch
 
     # Mock pool acquire to always return connection
@@ -310,13 +314,10 @@ async def test_gc_loop_error_isolation_transaction_failure() -> None:
     mock_pool.acquire = mock_acquire
 
     # Call the GC ref builder
-    # Should catch the error for ns1, log it, and continue fetching refs for ns2 and ns3
-    refs = await _fetch_pg_refs(mock_pool, [ns1, ns2, ns3])
+    # Should propagate the error for ns1 immediately
+    with pytest.raises(RuntimeError, match="DB transaction begin failure for namespace 1"):
+        await _fetch_pg_refs(mock_pool, [ns1, ns2, ns3])
 
     # Assertions
-    # 1. Transaction should have been entered 3 times
-    assert transaction_count == 3
-    # 2. Refs should successfully contain the references from ns2 and ns3, despite ns1 failure
-    assert len(refs) == 2
-    assert "ref_2" in refs
-    assert "ref_3" in refs
+    # 1. Transaction should have been entered 1 time
+    assert transaction_count == 1

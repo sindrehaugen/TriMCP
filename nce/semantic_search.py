@@ -37,6 +37,9 @@ class RawExpression(Term):
         self.sql = sql
 
     def get_sql(self, **kwargs) -> str:
+        alias = getattr(self, "alias", None)
+        if alias and kwargs.get("with_alias"):
+            return f'{self.sql} "{alias}"'
         return self.sql
 
 
@@ -263,9 +266,9 @@ async def semantic_search(
                 RawExpression("COALESCE(v.memory_id, f.memory_id)").as_("memory_id"),
                 RawExpression(
                     f"(COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + f.rank), 0.0))"
-                    f" * ({p_alpha} + (1.0 - {p_alpha}) "
+                    f" * ({p_alpha}::double precision + (1.0::double precision - {p_alpha}::double precision) "
                     f"* nce_decayed_score(COALESCE(v.raw_salience, f.raw_salience), "
-                    f"COALESCE(v.last_updated, f.last_updated), {p_half_life}))"
+                    f"COALESCE(v.last_updated, f.last_updated), {p_half_life}::double precision))"
                 ).as_("final_score"),
             )
             .orderby(Field("final_score"), order=Order.desc)

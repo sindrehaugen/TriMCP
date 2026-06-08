@@ -43,6 +43,7 @@ CREATE INDEX IF NOT EXISTS v3_cognitive_ledger_created_at
 ALTER TABLE v3_cognitive_ledger ENABLE ROW LEVEL SECURITY;
 ALTER TABLE v3_cognitive_ledger FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS tenant_isolation ON v3_cognitive_ledger;
 CREATE POLICY tenant_isolation ON v3_cognitive_ledger
     FOR ALL
     USING (namespace_id = get_nce_namespace());

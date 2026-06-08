@@ -32,7 +32,6 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-
 # ---------------------------------------------------------------------------
 # Report generation
 # ---------------------------------------------------------------------------
@@ -73,7 +72,7 @@ def run_outdated() -> list:
 def build_report(audit_data: list | dict, outdated_data: list) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
-        f"# NCE Dependency Health Report",
+        "# NCE Dependency Health Report",
         f"**Generated:** {now}",
         "",
     ]
@@ -180,9 +179,10 @@ def build_report(audit_data: list | dict, outdated_data: list) -> str:
 
 async def send_email(subject: str, body: str) -> None:
     try:
-        import aiosmtplib
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
+
+        import aiosmtplib
     except ImportError:
         print("aiosmtplib not installed — skipping email notification.", file=sys.stderr)
         return

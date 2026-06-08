@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from typing import Any
 from uuid import UUID
 
@@ -30,6 +31,7 @@ from nce.cron_lock import CronLock, acquire_cron_lock, release_cron_lock
 from nce.db_utils import scoped_pg_session, unmanaged_pg_connection
 from nce.reembedding_worker import CRON_INTERVAL_MINUTES as _REEMBED_INTERVAL
 from nce.reembedding_worker import ReembeddingWorker
+from nce.temporal_decay import _decay_prune_tick, register_decay_jobs
 
 log = logging.getLogger("nce.cron")
 
@@ -44,6 +46,22 @@ _CRON_TICK_ERRORS: tuple[type[BaseException], ...] = (
     json.JSONDecodeError,
 )
 
+_ALERT_THROTTLE_CACHE: dict[str, float] = {}
+_THROTTLE_WINDOW_SECONDS = 300.0
+
+
+async def _dispatch_throttled_alert(key: str, title: str, message: str) -> None:
+    now = time.time()
+    last_sent = _ALERT_THROTTLE_CACHE.get(key, 0.0)
+    if now - last_sent >= _THROTTLE_WINDOW_SECONDS:
+        _ALERT_THROTTLE_CACHE[key] = now
+        try:
+            from nce.notifications import dispatcher
+
+            await dispatcher.dispatch_alert(title, message)
+        except Exception:
+            log.exception("Failed to dispatch throttled alert for key %s", key)
+
 
 async def _renewal_tick(pool: asyncpg.Pool) -> None:
     ttl = cfg.BRIDGE_CRON_INTERVAL_MINUTES * 60 + 60
@@ -54,8 +72,13 @@ async def _renewal_tick(pool: asyncpg.Pool) -> None:
     try:
         stats = await renew_expiring_subscriptions(pool)
         log.info("bridge renewal tick: %s", stats)
-    except _CRON_TICK_ERRORS:
+    except _CRON_TICK_ERRORS as exc:
         log.exception("bridge renewal tick failed unexpectedly")
+        await _dispatch_throttled_alert(
+            "cron.bridge_subscription_renewal",
+            "Cron Job Failed: bridge_subscription_renewal",
+            f"Bridge subscription renewal tick failed: {type(exc).__name__}: {exc}",
+        )
     finally:
         await release_cron_lock(lock)
 
@@ -98,10 +121,20 @@ async def _consolidation_tick(pool: asyncpg.Pool, mongo_client: Any | None = Non
                 worker = ConsolidationWorker(pool, provider, mongo_client=mongo_client)
                 await worker.run_consolidation(ns_id)
                 log.info("consolidation tick completed for namespace %s", ns_id)
-            except _CRON_TICK_ERRORS:
+            except _CRON_TICK_ERRORS as exc:
                 log.exception("consolidation tick failed for namespace %s", ns_id)
-    except _CRON_TICK_ERRORS:
+                await _dispatch_throttled_alert(
+                    f"cron.sleep_consolidation.{ns_id}",
+                    f"Consolidation Failed: Namespace {ns_id}",
+                    f"Consolidation tick failed for namespace {ns_id}: {type(exc).__name__}: {exc}",
+                )
+    except _CRON_TICK_ERRORS as exc:
         log.exception("consolidation tick failed unexpectedly")
+        await _dispatch_throttled_alert(
+            "cron.sleep_consolidation.global",
+            "Cron Job Failed: sleep_consolidation",
+            f"Sleep consolidation tick failed unexpectedly: {type(exc).__name__}: {exc}",
+        )
     finally:
         await release_cron_lock(lock)
 
@@ -141,8 +174,13 @@ async def _partition_maintenance_tick(pool: asyncpg.Pool) -> None:
                     "event_log partition runway low: only %s months ahead (need >= 2)",
                     months_ahead,
                 )
-    except _CRON_TICK_ERRORS:
+    except _CRON_TICK_ERRORS as exc:
         log.exception("event_log partition maintenance tick failed")
+        await _dispatch_throttled_alert(
+            "cron.event_log_partition_maintenance",
+            "Cron Job Failed: event_log_partition_maintenance",
+            f"Event log partition maintenance tick failed: {type(exc).__name__}: {exc}",
+        )
     finally:
         await release_cron_lock(lock)
 
@@ -276,11 +314,21 @@ async def _saga_recovery_tick(pool: asyncpg.Pool) -> None:
                             saga_id,
                         )
 
-            except _CRON_TICK_ERRORS:
+            except _CRON_TICK_ERRORS as exc:
                 log.exception("[SAGA-RECOVERY] Failed to recover saga=%s", saga_id)
+                await _dispatch_throttled_alert(
+                    f"cron.saga_recovery.{saga_id}",
+                    f"Saga Recovery Failed: Saga {saga_id}",
+                    f"Saga recovery tick failed for saga {saga_id}: {type(exc).__name__}: {exc}",
+                )
 
-    except _CRON_TICK_ERRORS:
+    except _CRON_TICK_ERRORS as exc:
         log.exception("saga recovery tick failed unexpectedly")
+        await _dispatch_throttled_alert(
+            "cron.saga_recovery.global",
+            "Cron Job Failed: saga_recovery",
+            f"Saga recovery tick failed unexpectedly: {type(exc).__name__}: {exc}",
+        )
     finally:
         await release_cron_lock(lock)
 
@@ -298,8 +346,13 @@ async def _outbox_relay_tick(pool: asyncpg.Pool) -> None:
         delivered = await run_outbox_relay_once(pool)
         if delivered:
             log.info("outbox relay tick delivered=%s", delivered)
-    except _CRON_TICK_ERRORS:
+    except _CRON_TICK_ERRORS as exc:
         log.exception("outbox relay tick failed unexpectedly")
+        await _dispatch_throttled_alert(
+            "cron.outbox_relay",
+            "Cron Job Failed: outbox_relay",
+            f"Outbox relay tick failed: {type(exc).__name__}: {exc}",
+        )
     finally:
         await release_cron_lock(lock)
 
@@ -311,12 +364,284 @@ async def _reembedding_tick(pool: asyncpg.Pool, mongo_client: Any) -> None:
     Non-fatal — a failure is logged but does not crash the scheduler.
     This tick is coalesced (max_instances=1) so a slow run cannot pile up.
     """
+    ttl = _REEMBED_INTERVAL * 60 + 60
+    lock: CronLock | None = await acquire_cron_lock("reembedding", ttl)
+    if lock is None:
+        log.debug("Skipping reembedding — lock held by another instance")
+        return
     try:
         worker = ReembeddingWorker()
         stats = await worker.run_once(pool, mongo_client)
         log.info("re-embedding tick: %s", stats)
-    except _CRON_TICK_ERRORS:
+    except _CRON_TICK_ERRORS as exc:
         log.exception("re-embedding tick failed unexpectedly")
+        await _dispatch_throttled_alert(
+            "cron.reembedding",
+            "Cron Job Failed: reembedding",
+            f"Re-embedding tick failed: {type(exc).__name__}: {exc}",
+        )
+    finally:
+        await release_cron_lock(lock)
+
+
+async def _d365_sync_tick(pool: asyncpg.Pool) -> None:
+    """
+    APScheduler job: run a full Dataverse entity sync for all D365-enabled namespaces.
+
+    Singleton via CronLock — a slow run on one instance prevents other replicas
+    from starting a duplicate sync cycle.  Non-fatal: errors are logged and
+    do not crash the scheduler.  Only runs when ``NCE_D365_ENABLED=true``.
+    """
+    if not cfg.NCE_D365_ENABLED:
+        return
+
+    ttl = cfg.NCE_D365_SYNC_INTERVAL_MINUTES * 60 + 60
+    lock: CronLock | None = await acquire_cron_lock("d365_entity_sync", ttl)
+    if lock is None:
+        log.debug("Skipping d365_entity_sync — lock held by another instance")
+        return
+
+    import redis.asyncio as aioredis
+
+    redis_client = aioredis.from_url(cfg.REDIS_URL)
+    try:
+        from nce.db_utils import scoped_pg_session
+        from nce.vertical_modules.dynamics365.auth import DataverseTokenManager
+        from nce.vertical_modules.dynamics365.client import DataverseClient
+        from nce.vertical_modules.dynamics365.sync import DataverseSyncEngine
+
+        token_mgr = DataverseTokenManager(redis_client)
+
+        # Scan namespaces that have D365 integration enabled in their metadata.
+        async with unmanaged_pg_connection(pool, site="cron.d365_sync.namespace_scan") as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id FROM namespaces
+                WHERE COALESCE((metadata->'d365'->>'enabled')::boolean, false) = true
+                """
+            )
+
+        if not rows:
+            log.debug("d365_sync_tick: no namespaces with d365.enabled=true")
+            return
+
+        for row in rows:
+            ns_id: UUID = row["id"]
+            try:
+                token = await token_mgr.get_access_token()
+                client = DataverseClient(cfg.NCE_D365_ORG_URL, token)
+                async with scoped_pg_session(pool, str(ns_id)) as conn:
+                    engine = DataverseSyncEngine(conn, ns_id, client)
+                    stats = await engine.run_full_sync()
+                    log.info("D365 sync tick namespace=%s stats=%s", ns_id, stats)
+
+                # Update last_sync_at in d365_integrations if the row exists
+                async with unmanaged_pg_connection(
+                    pool, site="cron.d365_sync.update_stats"
+                ) as conn:
+                    await conn.execute(
+                        """
+                        UPDATE d365_integrations
+                        SET last_sync_at = NOW(), last_sync_stats = $1::jsonb, updated_at = NOW()
+                        WHERE namespace_id = $2::uuid AND status = 'ACTIVE'
+                        """,
+                        json.dumps(stats),
+                        ns_id,
+                    )
+            except _CRON_TICK_ERRORS as exc:
+                log.exception("D365 sync tick failed for namespace=%s", ns_id)
+                await _dispatch_throttled_alert(
+                    f"cron.d365_entity_sync.{ns_id}",
+                    f"D365 Sync Failed: Namespace {ns_id}",
+                    f"D365 sync tick failed for namespace {ns_id}: {type(exc).__name__}: {exc}",
+                )
+    except _CRON_TICK_ERRORS as exc:
+        log.exception("D365 sync tick failed unexpectedly")
+        await _dispatch_throttled_alert(
+            "cron.d365_entity_sync.global",
+            "Cron Job Failed: d365_entity_sync",
+            f"D365 sync tick failed unexpectedly: {type(exc).__name__}: {exc}",
+        )
+    finally:
+        await redis_client.aclose()
+        await release_cron_lock(lock)
+
+
+async def _d365_netbox_bridge_tick(pool: asyncpg.Pool) -> None:
+    """
+    APScheduler job: cross-reference D365 Accounts/FunctionalLocations with NetBox
+    Tenants/Sites for all D365-enabled namespaces.
+
+    Requires ``NCE_D365_NETBOX_BRIDGE_ENABLED=true``, ``NCE_NETBOX_URL``, and
+    ``NCE_NETBOX_TOKEN``.  Guard: CronLock prevents duplicate runs across replicas.
+    """
+    if not cfg.NCE_D365_NETBOX_BRIDGE_ENABLED:
+        return
+    if not cfg.NCE_NETBOX_URL or not cfg.NCE_NETBOX_TOKEN:
+        log.warning("d365_netbox_bridge_tick skipped: NCE_NETBOX_URL or NCE_NETBOX_TOKEN not set")
+        return
+
+    ttl = cfg.NCE_D365_NETBOX_BRIDGE_INTERVAL_MINUTES * 60 + 60
+    lock: CronLock | None = await acquire_cron_lock("d365_netbox_bridge", ttl)
+    if lock is None:
+        log.debug("Skipping d365_netbox_bridge — lock held by another instance")
+        return
+
+    import redis.asyncio as aioredis
+
+    redis_client = aioredis.from_url(cfg.REDIS_URL)
+    try:
+        from nce.db_utils import scoped_pg_session
+        from nce.vertical_modules.dynamics365.auth import DataverseTokenManager
+        from nce.vertical_modules.dynamics365.client import DataverseClient
+        from nce.vertical_modules.dynamics365.netbox_bridge import (
+            D365NetBoxBridge,
+            NetBoxBridgeClient,
+        )
+
+        token_mgr = DataverseTokenManager(redis_client)
+
+        async with unmanaged_pg_connection(
+            pool, site="cron.d365_netbox_bridge.namespace_scan"
+        ) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id FROM namespaces
+                WHERE COALESCE((metadata->'d365'->>'enabled')::boolean, false) = true
+                """
+            )
+
+        if not rows:
+            log.debug("d365_netbox_bridge_tick: no namespaces with d365.enabled=true")
+            return
+
+        nb_client = NetBoxBridgeClient(
+            base_url=cfg.NCE_NETBOX_URL,
+            token=cfg.NCE_NETBOX_TOKEN,
+        )
+
+        for row in rows:
+            ns_id: UUID = row["id"]
+            try:
+                token = await token_mgr.get_access_token()
+                d365_client = DataverseClient(cfg.NCE_D365_ORG_URL, token)
+                async with scoped_pg_session(pool, str(ns_id)) as conn:
+                    bridge = D365NetBoxBridge(
+                        conn=conn,
+                        namespace_id=ns_id,
+                        d365_client=d365_client,
+                        netbox_client=nb_client,
+                    )
+                    stats = await bridge.run_full_bridge_sync()
+                    log.info("D365↔NetBox bridge tick ns=%s stats=%s", ns_id, stats)
+            except _CRON_TICK_ERRORS as exc:
+                log.exception("D365↔NetBox bridge tick failed for namespace=%s", ns_id)
+                await _dispatch_throttled_alert(
+                    f"cron.d365_netbox_bridge.{ns_id}",
+                    f"D365 NetBox Bridge Failed: Namespace {ns_id}",
+                    f"D365 NetBox bridge tick failed for namespace {ns_id}: {type(exc).__name__}: {exc}",
+                )
+    except _CRON_TICK_ERRORS as exc:
+        log.exception("D365↔NetBox bridge tick failed unexpectedly")
+        await _dispatch_throttled_alert(
+            "cron.d365_netbox_bridge.global",
+            "Cron Job Failed: d365_netbox_bridge",
+            f"D365 NetBox bridge tick failed unexpectedly: {type(exc).__name__}: {exc}",
+        )
+    finally:
+        await redis_client.aclose()
+        await release_cron_lock(lock)
+
+
+async def _chain_verification_tick(pool: asyncpg.Pool) -> None:
+    """Run Merkle chain verification for all namespaces.
+
+    Sets the MERKLE_CHAIN_VALID gauge (1=valid, 0=corrupted).
+    On verification failure, logs critical, dispatches an alert,
+    and appends a 'chain_verification_failed' audit event.
+    """
+    ttl = cfg.NCE_CHAIN_VERIFY_INTERVAL_MINUTES * 60 + 60
+    lock: CronLock | None = await acquire_cron_lock("chain_verification", ttl)
+    if lock is None:
+        log.debug("Skipping chain_verification — lock held by another instance")
+        return
+    try:
+        from nce.event_log import append_event, verify_merkle_chain
+        from nce.notifications import dispatcher
+        from nce.observability import MERKLE_CHAIN_VALID
+
+        async with unmanaged_pg_connection(pool, site="cron.chain_verify.namespace_scan") as conn:
+            rows = await conn.fetch("SELECT id FROM namespaces")
+
+        all_valid = True
+        for row in rows:
+            ns_id: UUID = row["id"]
+            try:
+                async with scoped_pg_session(pool, ns_id) as conn:
+                    depth = cfg.NCE_CHAIN_VERIFY_STARTUP_DEPTH
+                    if depth > 0:
+                        max_seq = await conn.fetchval(
+                            "SELECT COALESCE(max(event_seq), 0) FROM event_log"
+                        )
+                        start_seq = max(1, max_seq - depth + 1)
+                    else:
+                        start_seq = 1
+
+                    res = await verify_merkle_chain(conn, namespace_id=ns_id, start_seq=start_seq)
+                    if not res.get("valid", True):
+                        all_valid = False
+                        first_break = res.get("first_break")
+                        reason = res.get("reason") or "Merkle chain signature or hash mismatch"
+
+                        log.critical(
+                            "[CHAIN-VERIFICATION] Merkle chain corrupted for namespace=%s. "
+                            "First break at event_seq=%s. Reason=%s",
+                            ns_id,
+                            first_break,
+                            reason,
+                        )
+
+                        title = f"Merkle Chain Corrupted: Namespace {ns_id}"
+                        message = (
+                            f"Critical data integrity failure: Merkle chain verification failed "
+                            f"for namespace {ns_id}. First break at event_seq {first_break}. "
+                            f"Reason: {reason}"
+                        )
+                        await dispatcher.dispatch_alert(title, message)
+
+                        await append_event(
+                            conn=conn,
+                            namespace_id=ns_id,
+                            agent_id="cron.chain_verify",
+                            event_type="chain_verification_failed",
+                            params={
+                                "first_break": first_break,
+                                "reason": reason,
+                            },
+                        )
+            except _CRON_TICK_ERRORS as exc:
+                log.exception("Error running Merkle chain verification for namespace %s", ns_id)
+                all_valid = False
+                await _dispatch_throttled_alert(
+                    f"cron.chain_verification.{ns_id}",
+                    f"Chain Verification Failed: Namespace {ns_id}",
+                    f"Merkle chain verification job failed for namespace {ns_id}: {type(exc).__name__}: {exc}",
+                )
+
+        if all_valid:
+            MERKLE_CHAIN_VALID.set(1)
+        else:
+            MERKLE_CHAIN_VALID.set(0)
+
+    except _CRON_TICK_ERRORS as exc:
+        log.exception("chain verification tick failed unexpectedly")
+        await _dispatch_throttled_alert(
+            "cron.chain_verification.global",
+            "Cron Job Failed: chain_verification",
+            f"Merkle chain verification cron tick failed unexpectedly: {type(exc).__name__}: {exc}",
+        )
+    finally:
+        await release_cron_lock(lock)
 
 
 async def async_main() -> None:
@@ -423,6 +748,43 @@ async def async_main() -> None:
         replace_existing=True,
     )
 
+    if cfg.NCE_D365_ENABLED:
+        d365_minutes = max(5, int(cfg.NCE_D365_SYNC_INTERVAL_MINUTES))
+        scheduler.add_job(
+            _d365_sync_tick,
+            IntervalTrigger(minutes=d365_minutes),
+            args=[pool],
+            id="d365_entity_sync",
+            coalesce=True,
+            max_instances=1,
+            replace_existing=True,
+        )
+
+    if cfg.NCE_D365_NETBOX_BRIDGE_ENABLED:
+        bridge_minutes = max(10, int(cfg.NCE_D365_NETBOX_BRIDGE_INTERVAL_MINUTES))
+        scheduler.add_job(
+            _d365_netbox_bridge_tick,
+            IntervalTrigger(minutes=bridge_minutes),
+            args=[pool],
+            id="d365_netbox_bridge",
+            coalesce=True,
+            max_instances=1,
+            replace_existing=True,
+        )
+
+    register_decay_jobs(scheduler, pool)
+
+    verify_minutes = max(5, int(cfg.NCE_CHAIN_VERIFY_INTERVAL_MINUTES))
+    scheduler.add_job(
+        _chain_verification_tick,
+        IntervalTrigger(minutes=verify_minutes),
+        args=[pool],
+        id="chain_verification",
+        coalesce=True,
+        max_instances=1,
+        replace_existing=True,
+    )
+
     scheduler.start()
     log.info(
         "Started bridge renewal scheduler: interval=%s min, lookahead=%s h",
@@ -445,15 +807,22 @@ async def async_main() -> None:
     # tick durations; _reembedding_tick in particular can take minutes.  Each tick already
     # catches and logs its own errors, so we gather with return_exceptions=True as a
     # belt-and-suspenders guard.
-    startup_results = await asyncio.gather(
+    startup_coros = [
         _renewal_tick(pool),
         _reembedding_tick(pool, mongo_client),
         _consolidation_tick(pool, mongo_client),
         _partition_maintenance_tick(pool),
         _saga_recovery_tick(pool),
         _outbox_relay_tick(pool),
-        return_exceptions=True,
-    )
+        _decay_prune_tick(pool),
+        _chain_verification_tick(pool),
+    ]
+    if cfg.NCE_D365_ENABLED:
+        startup_coros.append(_d365_sync_tick(pool))
+    if cfg.NCE_D365_NETBOX_BRIDGE_ENABLED:
+        startup_coros.append(_d365_netbox_bridge_tick(pool))
+
+    startup_results = await asyncio.gather(*startup_coros, return_exceptions=True)
     for _result in startup_results:
         if isinstance(_result, BaseException):
             log.error("Startup tick raised uncaught exception: %s", _result)

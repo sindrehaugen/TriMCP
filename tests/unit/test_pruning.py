@@ -24,18 +24,16 @@ Call sequence for a full successful cascade_delete_tenant():
 """
 from __future__ import annotations
 
-import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from nce.database.pruning import (
-    PruneResult,
-    _DryRunRollback,
     _ALLOWED_COLUMN_NAMES,
     _ALLOWED_TABLE_NAMES,
     _ALLOWED_ZERO_EXPRESSIONS,
+    PruneResult,
+    _DryRunRollback,
     _guard_column,
     _guard_table,
     _guard_zero_expr,

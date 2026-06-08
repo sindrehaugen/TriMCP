@@ -411,6 +411,40 @@ class NCEEngine(OrchestratorBase):
             async with self.pg_pool.acquire(timeout=60.0) as conn:
                 async with conn.transaction():
                     await conn.execute("SELECT pg_advisory_xact_lock(123456)")
+                    if "citus" in path.name:
+                        citus_available = await conn.fetchval(
+                            "SELECT EXISTS(SELECT 1 FROM pg_available_extensions WHERE name = 'citus')"
+                        )
+                        if not citus_available:
+                            log.warning(
+                                "[PG] Citus extension missing — applying fallback local topology schema for %s",
+                                path.name,
+                            )
+                            await conn.execute("""
+                                CREATE TABLE IF NOT EXISTS topology_graph (
+                                    id                UUID        NOT NULL DEFAULT gen_random_uuid(),
+                                    namespace_id      UUID        NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
+                                    source_node_id    TEXT        NOT NULL,
+                                    source_node_type  TEXT        NOT NULL,
+                                    target_node_id    TEXT        NOT NULL,
+                                    target_node_type  TEXT        NOT NULL,
+                                    edge_type         TEXT        NOT NULL,
+                                    decay_coefficient FLOAT8      NOT NULL DEFAULT 0.001,
+                                    confidence_score  FLOAT8      NOT NULL DEFAULT 0.9,
+                                    last_verified     TIMESTAMPTZ NOT NULL DEFAULT now(),
+                                    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+                                    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+                                    metadata          JSONB       NOT NULL DEFAULT '{}'::jsonb,
+                                    PRIMARY KEY (id, namespace_id)
+                                );
+                                ALTER TABLE topology_graph ENABLE ROW LEVEL SECURITY;
+                                ALTER TABLE topology_graph FORCE ROW LEVEL SECURITY;
+                                DROP POLICY IF EXISTS topology_graph_tenant_isolation ON topology_graph;
+                                CREATE POLICY topology_graph_tenant_isolation ON topology_graph
+                                    FOR ALL
+                                    USING (namespace_id = get_nce_namespace());
+                            """)
+                            continue
                     await conn.execute(sql)
             log.debug("[PG] migration applied: %s", path.name)
 
@@ -716,6 +750,99 @@ class NCEEngine(OrchestratorBase):
                     await conn.execute("SELECT 1")
                 health["databases"]["postgres"] = "up"
         except _HEALTH_PROBE_ERRORS:
+            health["status"] = "degraded"
+
+        # 2.5 Security, Chain & RLS Deep Probes (III.4)
+        health["security"]["signing_key_decryption"] = "failed"
+        health["security"]["bounded_chain_sample"] = "failed"
+        health["databases"]["rls_read"] = "failed"
+
+        # (a) Decrypt the active signing key (bypassing TTLCache)
+        try:
+            if self.pg_pool:
+                from nce.signing import decrypt_signing_key, require_master_key
+
+                async with self.pg_pool.acquire(timeout=10.0) as conn:
+                    row = await conn.fetchrow("""
+                        SELECT encrypted_key
+                        FROM   signing_keys
+                        WHERE  status = 'active'
+                        ORDER  BY created_at DESC
+                        LIMIT  1
+                    """)
+                    if row is None:
+                        health["security"]["signing_key_decryption"] = "no_active_key"
+                        health["status"] = "degraded"
+                    else:
+                        with require_master_key() as master_key:
+                            decrypt_signing_key(bytes(row["encrypted_key"]), master_key)
+                        health["security"]["signing_key_decryption"] = "valid"
+            else:
+                health["status"] = "degraded"
+        except Exception:
+            log.exception("Health probe (a) decrypt active signing key failed")
+            health["security"]["signing_key_decryption"] = "failed"
+            health["status"] = "degraded"
+
+        # (b) Verify bounded chain sample for active namespaces + set MERKLE_CHAIN_VALID
+        try:
+            from nce.event_log import verify_merkle_chain
+            from nce.observability import MERKLE_CHAIN_VALID
+
+            if self.pg_pool:
+                async with self.pg_pool.acquire(timeout=10.0) as conn:
+                    ns_rows = await conn.fetch("SELECT id FROM namespaces LIMIT 5")
+
+                chain_ok = True
+                for ns_row in ns_rows:
+                    ns_id = ns_row["id"]
+                    async with self.pg_pool.acquire(timeout=10.0) as conn:
+                        max_seq = await conn.fetchval(
+                            "SELECT COALESCE(max(event_seq), 0) FROM event_log WHERE namespace_id = $1",
+                            ns_id,
+                        )
+                        if max_seq > 0:
+                            start_seq = max(1, max_seq - 5 + 1)
+                            res = await verify_merkle_chain(
+                                conn, namespace_id=ns_id, start_seq=start_seq
+                            )
+                            if not res.get("valid", True):
+                                chain_ok = False
+                                break
+
+                if chain_ok:
+                    health["security"]["bounded_chain_sample"] = "valid"
+                    MERKLE_CHAIN_VALID.set(1)
+                else:
+                    health["security"]["bounded_chain_sample"] = "corrupted"
+                    health["status"] = "degraded"
+                    MERKLE_CHAIN_VALID.set(0)
+            else:
+                health["status"] = "degraded"
+                MERKLE_CHAIN_VALID.set(0)
+        except Exception:
+            log.exception("Health probe (b) verify bounded chain sample failed")
+            health["security"]["bounded_chain_sample"] = "failed"
+            health["status"] = "degraded"
+            from nce.observability import MERKLE_CHAIN_VALID
+
+            MERKLE_CHAIN_VALID.set(0)
+
+        # (c) Sample RLS-scoped read
+        try:
+            if self.pg_pool:
+                from nce.db_utils import scoped_pg_session
+
+                dummy_ns = UUID("00000000-0000-0000-0000-000000000000")
+                async with scoped_pg_session(self.pg_pool, dummy_ns) as conn:
+                    # Select from memories RLS-protected table to verify isolation policy functions
+                    await conn.execute("SELECT id FROM memories LIMIT 1")
+                health["databases"]["rls_read"] = "valid"
+            else:
+                health["status"] = "degraded"
+        except Exception:
+            log.exception("Health probe (c) sample RLS read failed")
+            health["databases"]["rls_read"] = "failed"
             health["status"] = "degraded"
 
         # 3. Redis

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -46,6 +47,16 @@ from nce.quotas import QuotaExceededError, null_reservation
 from nce.tool_registry import TOOL_REGISTRY
 
 log = logging.getLogger("nce-mcp")
+
+
+_concurrency_semaphore: asyncio.Semaphore | None = None
+
+
+def get_concurrency_semaphore() -> asyncio.Semaphore:
+    global _concurrency_semaphore
+    if _concurrency_semaphore is None:
+        _concurrency_semaphore = asyncio.Semaphore(cfg.NCE_MAX_CONCURRENT_TOOLS)
+    return _concurrency_semaphore
 
 
 async def execute_call_tool(
@@ -103,52 +114,53 @@ async def execute_call_tool(
             if cached_payload is not None:
                 return cached_payload
 
-            # Quota is incremented only on cache miss, immediately before the tool runs.
-            # Never increment on cache hit — see FIX-020.
-            q_res = await _consume_quota_for_mcp_tool(
-                engine.pg_pool, name, arguments, engine.redis_client
-            )
+            async with get_concurrency_semaphore():
+                # Quota is incremented only on cache miss, immediately before the tool runs.
+                # Never increment on cache hit — see FIX-020.
+                q_res = await _consume_quota_for_mcp_tool(
+                    engine.pg_pool, name, arguments, engine.redis_client
+                )
 
-            # --- Handler call (quota is rolled back on any exception) ---
-            try:
-                if spec.admin_only:
-                    _check_admin(arguments)
-                result_text = await spec.handler(engine, arguments)
-                # Post-success: bump the generation counter so stale cached reads
-                # become unreachable.  Must run AFTER the handler so failed mutations
-                # do not cause unnecessary cache invalidation.
-                if spec.mutation:
-                    await bump_cache_generation(engine.redis_client)
-
-                    doc_id = arguments.get("memory_id") or arguments.get("snapshot_id")
-                    if name in ("forget_memory", "delete_snapshot") and doc_id:
-                        ns_id = arguments.get("namespace_id")
-                        if ns_id:
-                            try:
-                                await purge_document_cache(
-                                    engine.redis_client,
-                                    namespace_id=str(ns_id),
-                                    memory_id=str(doc_id),
-                                )
-                            except Exception as exc:
-                                log.warning(
-                                    "%s: document cache purge failed: %s",
-                                    name,
-                                    exc,
-                                )
-                if spec.cacheable and cache_key:
-                    await engine.redis_client.setex(cache_key, _MCP_CACHE_TTL_S, result_text)
-                return [TextContent(type="text", text=result_text)]
-            except BaseException:
-                # BaseException catches asyncio.CancelledError (Python ≥ 3.8) so
-                # quota is rolled back even when the task is cancelled mid-call.
+                # --- Handler call (quota is rolled back on any exception) ---
                 try:
-                    await q_res.rollback()
-                except Exception as roll_exc:
-                    log.warning(
-                        "Quota rollback failed (not masking original exception): %s", roll_exc
-                    )
-                raise
+                    if spec.admin_only:
+                        _check_admin(arguments)
+                    result_text = await spec.handler(engine, arguments)
+                    # Post-success: bump the generation counter so stale cached reads
+                    # become unreachable.  Must run AFTER the handler so failed mutations
+                    # do not cause unnecessary cache invalidation.
+                    if spec.mutation:
+                        await bump_cache_generation(engine.redis_client)
+
+                        doc_id = arguments.get("memory_id") or arguments.get("snapshot_id")
+                        if name in ("forget_memory", "delete_snapshot") and doc_id:
+                            ns_id = arguments.get("namespace_id")
+                            if ns_id:
+                                try:
+                                    await purge_document_cache(
+                                        engine.redis_client,
+                                        namespace_id=str(ns_id),
+                                        memory_id=str(doc_id),
+                                    )
+                                except Exception as exc:
+                                    log.warning(
+                                        "%s: document cache purge failed: %s",
+                                        name,
+                                        exc,
+                                    )
+                    if spec.cacheable and cache_key:
+                        await engine.redis_client.setex(cache_key, _MCP_CACHE_TTL_S, result_text)
+                    return [TextContent(type="text", text=result_text)]
+                except BaseException:
+                    # BaseException catches asyncio.CancelledError (Python ≥ 3.8) so
+                    # quota is rolled back even when the task is cancelled mid-call.
+                    try:
+                        await q_res.rollback()
+                    except Exception as roll_exc:
+                        log.warning(
+                            "Quota rollback failed (not masking original exception): %s", roll_exc
+                        )
+                    raise
 
         except McpError as e:
             return _jsonrpc_error_response(e.code, e.message, data=e.data)

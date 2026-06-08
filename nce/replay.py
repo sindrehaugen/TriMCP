@@ -497,7 +497,7 @@ async def _handle_store_memory(
     src_memory_id = uuid.UUID(memory_id_str)
     new_memory_id = uuid.uuid4()
 
-    # Fetch the source memory row (embedding + salience + metadata).
+    # Fetch the source memory row (embedding + metadata).
     # The source_namespace_id is injected into params.source_namespace_id by
     # ForkedReplay.execute() when it enriches the params dict.
     raw_src_ns = src.params.get("source_namespace_id")
@@ -507,8 +507,7 @@ async def _handle_store_memory(
 
     src_row = await conn.fetchrow(
         """
-        SELECT summary, embedding, assertion_type, memory_type,
-               salience, metadata
+        SELECT embedding, assertion_type, memory_type, metadata
         FROM memories
         WHERE id = $1 AND namespace_id = $2
           AND valid_to IS NULL
@@ -523,6 +522,10 @@ async def _handle_store_memory(
         )
         return {"skipped": True, "reason": "source_memory_not_found"}
 
+    payload_ref = src.params.get("payload_ref")
+    if not payload_ref:
+        return {"skipped": True, "reason": "payload_ref_missing_in_params"}
+
     meta = dict(src_row["metadata"]) if src_row["metadata"] else {}
     meta["source_memory_id"] = str(src_memory_id)
 
@@ -530,15 +533,13 @@ async def _handle_store_memory(
         """
         INSERT INTO memories (
             id, namespace_id, agent_id,
-            summary, embedding,
-            assertion_type, memory_type,
-            salience, metadata,
+            embedding, assertion_type, memory_type,
+            payload_ref, metadata,
             valid_from
         ) VALUES (
             $1, $2, $3,
-            $4, $5,
-            $6, $7,
-            $8, $9::jsonb,
+            $4, $5, $6,
+            $7, $8::jsonb,
             now()
         )
         ON CONFLICT DO NOTHING
@@ -546,13 +547,40 @@ async def _handle_store_memory(
         new_memory_id,
         target_ns,
         src.agent_id,
-        src_row["summary"],
         src_row["embedding"],
         src_row["assertion_type"],
         src_row["memory_type"],
-        src_row["salience"],
+        payload_ref,
         json.dumps(meta),
     )
+
+    # Carry over salience score if it exists in the source namespace
+    salience_row = await conn.fetchrow(
+        """
+        SELECT salience_score
+        FROM memory_salience
+        WHERE memory_id = $1 AND agent_id = $2 AND namespace_id = $3
+        """,
+        src_memory_id,
+        src.agent_id,
+        src_ns_id,
+    )
+    if salience_row is not None:
+        salience_score = salience_row["salience_score"]
+        await conn.execute(
+            """
+            INSERT INTO memory_salience (
+                memory_id, agent_id, namespace_id, salience_score
+            ) VALUES ($1, $2, $3, $4)
+            ON CONFLICT (memory_id, agent_id) DO UPDATE
+            SET salience_score = EXCLUDED.salience_score,
+                updated_at = now()
+            """,
+            new_memory_id,
+            src.agent_id,
+            target_ns,
+            salience_score,
+        )
 
     return {
         "source_memory_id": str(src_memory_id),
@@ -612,12 +640,16 @@ async def _handle_boost_memory(
 
     result = await conn.execute(
         """
-        UPDATE memories
-        SET salience = LEAST(1.0, salience + $1)
+        INSERT INTO memory_salience (memory_id, agent_id, namespace_id, salience_score)
+        SELECT id, agent_id, namespace_id, $1::real
+        FROM memories
         WHERE namespace_id = $2
           AND agent_id = $3
           AND valid_to IS NULL
           AND metadata->>'source_memory_id' = $4
+        ON CONFLICT (memory_id, agent_id) DO UPDATE
+        SET salience_score = LEAST(1.0, memory_salience.salience_score + EXCLUDED.salience_score),
+            updated_at = now()
         """,
         factor,
         target_ns,
@@ -691,6 +723,10 @@ async def _handle_consolidation_run(
     if not abstraction:
         return {"skipped": True, "reason": "empty_abstraction"}
 
+    payload_ref = src.params.get("payload_ref")
+    if not payload_ref:
+        return {"skipped": True, "reason": "payload_ref_missing_in_params"}
+
     new_memory_id = uuid.uuid4()
 
     # Embed the abstraction (reuse the existing embedding infrastructure
@@ -703,15 +739,13 @@ async def _handle_consolidation_run(
         """
         INSERT INTO memories (
             id, namespace_id, agent_id,
-            summary, embedding,
-            assertion_type, memory_type,
-            salience, metadata,
+            embedding, assertion_type, memory_type,
+            payload_ref, metadata,
             valid_from
         ) VALUES (
             $1, $2, $3,
-            $4, $5,
-            'fact', 'consolidated',
-            $6, $7::jsonb,
+            $4, 'fact', 'consolidated',
+            $5, $6::jsonb,
             now()
         )
         ON CONFLICT DO NOTHING
@@ -719,9 +753,8 @@ async def _handle_consolidation_run(
         new_memory_id,
         target_ns,
         src.agent_id,
-        abstraction,
         vector,
-        response.get("confidence", 0.0),
+        payload_ref,
         json.dumps(
             {
                 "source_memory_ids": response.get("supporting_memory_ids", []),
@@ -730,6 +763,23 @@ async def _handle_consolidation_run(
                 "replay_fork": True,
             }
         ),
+    )
+
+    # Route salience into memory_salience.salience_score
+    salience_score = float(response.get("confidence", 0.0))
+    await conn.execute(
+        """
+        INSERT INTO memory_salience (
+            memory_id, agent_id, namespace_id, salience_score
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (memory_id, agent_id) DO UPDATE
+        SET salience_score = EXCLUDED.salience_score,
+            updated_at = now()
+        """,
+        new_memory_id,
+        src.agent_id,
+        target_ns,
+        salience_score,
     )
 
     return {
@@ -830,6 +880,7 @@ _additional_fork_provenance_types: tuple[str, ...] = (
     "a2a_grant_revoked",
     "a2a_shared_query",
     "signing_key_rotated",
+    "chain_verification_failed",
 )
 for _fork_et in _additional_fork_provenance_types:
     assert _fork_et not in _HANDLER_REGISTRY, (
@@ -885,6 +936,16 @@ async def _resolve_llm_payload(
             raise MinIOPayloadMissingError(
                 f"Deterministic replay: cannot fetch payload at {src.llm_payload_uri!r}: {exc}"
             ) from exc
+
+        # Verify cryptographic integrity of the fetched payload against the WORM-secured DB hash
+        if src.llm_payload_hash is not None:
+            computed_hash = hashlib.sha256(canonical_json(payload)).digest()
+            if computed_hash != src.llm_payload_hash:
+                raise ReplayChecksumError(
+                    f"LLM payload hash mismatch for event {src.event_id}. "
+                    f"Expected {src.llm_payload_hash.hex()}, got {computed_hash.hex()}"
+                )
+
         # Store copy under fork-scoped URI so it is independently addressable.
         fork_hash = await _put_llm_payload(fork_uri, payload)
         return payload, fork_uri, fork_hash

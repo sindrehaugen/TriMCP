@@ -12,14 +12,12 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from jsonschema import validate, ValidationError
-
+from jsonschema import validate
+from nce.causal.correlation import CausalGraph
 from nce.causal.synthesis import (
     PREDICTIVE_NODE_SCHEMA,
     PredictiveSynthesisEngine,
 )
-from nce.causal.correlation import CausalGraph
-
 
 NS = uuid.UUID("cccccccc-0000-0000-0000-000000000001")
 

@@ -15,7 +15,6 @@ import logging
 from unittest import mock
 
 import pytest
-
 from nce.background_task_manager import (
     create_tracked_task,
     get_active_background_tasks,

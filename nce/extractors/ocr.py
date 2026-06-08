@@ -11,12 +11,13 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     pass
 
+from nce.config import cfg
 from nce.extractors.core import Section
 
 log = logging.getLogger(__name__)
 
 # Guard against decompression bombs and runaway PDF OCR (configurable via env).
-_MAX_OCR_PAGES = int(os.environ.get("NCE_OCR_MAX_PAGES", "50"))
+_MAX_OCR_PAGES = cfg.NCE_MAX_OCR_PAGES
 _MAX_IMAGE_PIXELS = int(os.environ.get("NCE_OCR_MAX_IMAGE_PIXELS", "25000000"))
 
 

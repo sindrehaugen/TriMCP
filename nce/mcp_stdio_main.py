@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -88,12 +87,41 @@ async def run_stdio_server(*, app: Server | None = None, engine: NCEEngine | Non
     outbox_relay_task = create_tracked_task(_outbox_relay_loop(), name="outbox_relay_loop")
     log.info("Outbox relay background task started (interval=%ds).", interval_s)
 
+    import signal
+    main_task = asyncio.current_task()
+    
+    def _handle_signal(sig, frame):
+        log.info("Received signal %d; initiating graceful shutdown.", sig)
+        if main_task and not main_task.done():
+            main_task.get_loop().call_soon_threadsafe(main_task.cancel)
+
+    old_sigterm, old_sigint = None, None
+    try:
+        old_sigterm = signal.signal(signal.SIGTERM, _handle_signal)
+        old_sigint = signal.signal(signal.SIGINT, _handle_signal)
+    except ValueError:
+        log.warning("Could not register signal handlers (not in main thread).")
+
     stdio_app = app or create_stdio_app(engine=engine)
     try:
         async with stdio_server() as (read_stream, write_stream):
             log.info("MCP server listening on stdio.")
             await stdio_app.run(read_stream, write_stream, stdio_app.create_initialization_options())
+    except asyncio.CancelledError:
+        log.info("Server task cancelled (graceful shutdown triggered).")
     finally:
+        try:
+            if old_sigterm is not None:
+                signal.signal(signal.SIGTERM, old_sigterm)
+            if old_sigint is not None:
+                signal.signal(signal.SIGINT, old_sigint)
+        except ValueError:
+            pass
+
+        # Clean up child processes first to avoid resource leaks
+        from nce.subprocess_registry import terminate_all
+        terminate_all()
+
         for task in (gc_task, quota_flush_task, outbox_relay_task, re_embedder_task):
             task.cancel()
         for task in (gc_task, quota_flush_task, outbox_relay_task, re_embedder_task):

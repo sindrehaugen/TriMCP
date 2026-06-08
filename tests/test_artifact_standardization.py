@@ -1,5 +1,4 @@
 import pytest
-
 from nce import NCEEngine
 from nce.models import ArtifactPayload, MediaPayload
 

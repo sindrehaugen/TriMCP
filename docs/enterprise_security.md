@@ -1,293 +1,247 @@
 # NCE Enterprise Security Guide
 
-This document covers the advanced security posture of a production NCE deployment: **mTLS client certificates**, **JWT/SSO integration**, **HMAC API authentication**, **signing key management**, and **RLS enforcement**.
-
-For the basic signing and key-rotation mechanics, see [signing.md](signing.md).
-For all environment variables, see [configuration_reference.md](configuration_reference.md).
+This document details the security model, cryptographic controls, and access authorization boundaries implemented in the Neuro Cognitive Engine (NCE).
 
 ---
 
-## 1. Authentication Layers
+## 1. Authentication Architecture
 
-NCE has three server surfaces, each with independent auth middleware stacks:
+NCE exposes three distinct communication interfaces, each using an authentication mechanism tailored to its protocol and exposure surface:
 
-| Surface | File | Auth mechanisms |
-|---|---|---|
-| **MCP stdio** | `server.py` | `mcp_api_key` / `NCE_MCP_API_KEY` (required in production); admin tools via `admin_api_key` or `NCE_ADMIN_OVERRIDE` (dev only) |
-| **Admin REST API** | `admin_server.py` | HMAC-SHA256 + HTTP Basic (UI) + optional mTLS |
-| **A2A JSON-RPC** | `nce/a2a_server.py` | JWT Bearer + optional mTLS + cryptographic grant tokens |
+```
+                  ┌────────────────────────┐
+                  │   Client Applications  │
+                  └───────────┬────────────┘
+                              │
+         ┌────────────────────┼────────────────────┐
+         │ (Stdio Pipe)       │ (HTTP REST)        │ (JSON-RPC)
+         ▼                    ▼                    ▼
+┌──────────────────┐┌──────────────────┐┌──────────────────┐
+│    MCP Stdio     ││    Admin API     ││    A2A Server    │
+│  (server.py)     ││ (admin_server.py)││ (a2a_server.py)  │
+├──────────────────┤├──────────────────┤├──────────────────┤
+│ - NCE_MCP_API_KEY││ - HMAC-SHA256    ││ - Bearer JWT     │
+│ - Pin Namespace  ││ - HTTP Basic UI  ││ - A2A Grants     │
+│                  ││ - mTLS Option    ││ - mTLS Option    │
+└──────────────────┘└──────────────────┘└──────────────────┘
+```
+
+| Service Surface | Transport | Primary Security Protocol | Configuration Variables |
+| :--- | :--- | :--- | :--- |
+| **MCP Stdio Server** | Standard Process Pipes | Symmetric API Key Validation + Namespace Pinning | `NCE_MCP_API_KEY`, `NCE_MCP_NAMESPACE_ID` |
+| **Admin REST API & UI** | HTTP / HTTPS | HMAC-SHA256 Signature (API) / HTTP Basic (UI) + mTLS | `NCE_ADMIN_API_KEY`, `NCE_ADMIN_PASSWORD`, `NCE_ADMIN_MTLS_ENABLED` |
+| **A2A (Agent-to-Agent)** | HTTP / HTTPS | Asymmetric JWT Bearer Tokens + mTLS + Sharing Grants | `NCE_JWT_SECRET`, `NCE_JWT_PUBLIC_KEY`, `NCE_A2A_MTLS_ENABLED` |
 
 ---
 
-## 2. MCP stdio tenant authentication
+## 2. MCP Stdio Authentication & Namespace Pinning
 
-Production MCP clients must pass a tenant API key on every non-admin tool call:
+The MCP stdio server (`server.py`) operates as a child process of the client IDE (such as Cursor or Claude Desktop).
+
+### 2a. Configuration Envelope
+When running in production, the client environment must inject the security keys into the launch configuration:
 
 ```json
 {
   "mcpServers": {
-    "NCE": {
+    "nce-memory": {
       "command": "python",
-      "args": ["server.py"],
+      "args": ["/path/to/nce/server.py"],
       "env": {
-        "NCE_MCP_API_KEY": "<long-random-secret>",
-        "NCE_MASTER_KEY": "<32+ byte signing key>"
+        "NCE_MCP_API_KEY": "mcp_client_tenant_secret_key_string",
+        "NCE_MASTER_KEY": "aes_256_gcm_vault_master_key_material",
+        "NCE_MCP_NAMESPACE_ID": "673f8e91-654e-48bd-b7bb-ea392d4f8001"
       }
     }
   }
 }
 ```
 
-Each tool invocation should include `"mcp_api_key": "<same secret>"` in the arguments (tests inject this automatically via `tests/conftest.py`). `nce.config.validate()` fails closed in production when `NCE_MCP_API_KEY` is unset.
-
-Admin-scoped MCP tools (`start_migration`, `rotate_signing_key`, replay admin tools, etc.) require `"admin_api_key": "<NCE_ADMIN_API_KEY>"` instead. In production, set `NCE_DISABLE_MIGRATION_MCP=true` unless you are in an explicit migration window (`NCE_ALLOW_MIGRATION_MCP_IN_PROD=true`).
+### 2b. Namespace Pinning Constraint
+* **Tenant Isolation**: By specifying `NCE_MCP_NAMESPACE_ID`, the stdio server locks all incoming requests to that single namespace. Any payload specifying a different `namespace_id` is rejected at the entry dispatcher boundary.
+* **Key Validation**: Every incoming tool call must include the correct `mcp_api_key` matching the environment's `NCE_MCP_API_KEY`. If they do not match, the request fails with a JSON-RPC `-32602` error.
 
 ---
 
-## 3. HMAC API Authentication (Admin Server)
+## 3. HMAC-SHA256 API Authentication (Admin API)
 
-All `/api/` routes on `admin_server.py` require an HMAC-SHA256 `Authorization` header.
+All programmatically triggered HTTP routes exposed on the Admin API (`admin_server.py` on port `8003`) require HMAC-SHA256 request authentication to prevent payload tampering and replay attacks.
 
-### Request signing
+### 3a. Header Signature Structure
+Requests must supply an `Authorization` header formatted as follows:
 
-```
+```http
 Authorization: HMAC-SHA256 <timestamp>:<nonce>:<signature>
 ```
 
-Where `signature = HMAC-SHA256(NCE_API_KEY, "<timestamp>\n<nonce>\n<method>\n<path>\n<body_sha256>")`.
+* **Timestamp**: Epoch time in seconds.
+* **Nonce**: A single-use random string (minimum 16 characters).
+* **Signature**: Hex-encoded HMAC calculated using `NCE_ADMIN_API_KEY` over the canonical payload string.
 
-Key properties:
-- **Timestamp window**: ±`NCE_CLOCK_SKEW_TOLERANCE_S` seconds (default 300 s). Requests outside this window are rejected as stale.
-- **Nonce replay protection**: Each nonce is stored in Redis (or an in-process set) for the clock-skew window. The same nonce cannot be reused. Enable `NCE_DISTRIBUTED_REPLAY=true` to share the nonce store across multiple admin replicas.
-- **Body integrity**: The SHA-256 hash of the request body is included in the signed string, preventing body substitution attacks.
+### 3b. Signature Calculation Formula
+The signature is generated using SHA-256:
 
-### Enabling distributed replay protection
+$$\text{CanonicalString} = \text{timestamp} \mathbin{\Vert} \text{"\n"} \mathbin{\Vert} \text{nonce} \mathbin{\Vert} \text{"\n"} \mathbin{\Vert} \text{HTTP\_Method} \mathbin{\Vert} \text{"\n"} \mathbin{\Vert} \text{Path} \mathbin{\Vert} \text{"\n"} \mathbin{\Vert} \text{SHA256(Request\_Body)}$$
 
-For deployments with multiple `admin_server.py` replicas behind a load balancer:
+$$\text{Signature} = \text{HMAC-SHA256}(\text{NCE\_ADMIN\_API\_KEY}, \text{CanonicalString})$$
 
-```bash
-NCE_DISTRIBUTED_REPLAY=true
-REDIS_URL=redis://your-shared-redis:6379/0
-```
-
----
-
-## 4. JWT / Bearer Authentication (A2A Server)
-
-The A2A server and agent-facing routes use JWT Bearer tokens for identity.
-
-### HS256 (development / internal)
-
-```bash
-NCE_JWT_SECRET=your-32-byte-minimum-secret
-NCE_JWT_ALGORITHM=HS256
-```
-
-### RS256 / ES256 (production / enterprise SSO)
-
-Generate an RSA or EC key pair:
-
-```bash
-# RSA 4096
-openssl genrsa -out private.pem 4096
-openssl rsa -in private.pem -pubout -out public.pem
-
-# EC P-256
-openssl ecparam -name prime256v1 -genkey -noout -out ec_private.pem
-openssl ec -in ec_private.pem -pubout -out ec_public.pem
-```
-
-Set the environment:
-
-```bash
-NCE_JWT_PUBLIC_KEY="$(cat public.pem)"   # or: file:///path/to/public.pem
-NCE_JWT_ALGORITHM=RS256
-NCE_JWT_ISSUER=https://your-sso-provider.example.com
-NCE_JWT_AUDIENCE=nce-api
-```
-
-### Enterprise SSO Integration
-
-For OIDC-based SSO (Okta, Azure AD, Ping, etc.):
-
-1. Configure your IdP to issue RS256 JWTs with the `iss` and `aud` claims matching the values you set above.
-2. Export the IdP's public key or JWKS endpoint — NCE validates against the static public key only (no per-request JWKS fetch; the key is loaded once at startup).
-3. Set `NCE_JWT_PREFIX` to the route prefix that requires the token (default `/api/v1/`).
-
-### Per-service audience isolation
-
-To prevent tokens issued for one service from being replayed against another, each surface can require its own `aud` claim:
-
-```bash
-NCE_A2A_JWT_AUDIENCE=nce_a2a          # A2A server
-NCE_JWT_AUDIENCE=nce_mcp              # MCP / admin paths
-```
-
-Tokens accepted by the A2A server will be rejected by the admin server and vice versa.
+### 3c. Anti-Replay Mitigation
+The verification middleware enforces the following validation checks:
+1. **Clock Skew Tolerance**: The timestamp is checked against the server clock. If the skew exceeds `NCE_CLOCK_SKEW_TOLERANCE_S` (default: 300 seconds), the request is rejected.
+2. **Distributed Nonce Cache**: The nonce is stored in Redis with a TTL matching the clock skew window. If a nonce is presented a second time within this window, the request is rejected immediately.
 
 ---
 
-## 5. mTLS Client Certificate Enforcement
+## 4. JWT Bearer Token Authentication (A2A Server)
 
-`MTLSAuthMiddleware` (`nce/mtls.py`) can be applied to either the Admin server or the A2A server. It reads the client certificate from:
-- **Direct TLS** (uvicorn with `--ssl-certfile`/`--ssl-keyfile`): from the ASGI `scope["ssl_object"]`.
-- **Reverse proxy** (nginx / Caddy mTLS offload): from the `X-Forwarded-Client-Cert` header (controlled by `NCE_*_MTLS_TRUSTED_PROXY_HOP`).
+Autonomously operating agents communicating via the Agent-to-Agent (A2A) server on port `8004` present JWT Bearer tokens to assert identity.
 
-### Configuring server-side TLS
+### 4a. Cryptographic Verification Modes
+* **Symmetric (HS256)**: For deployments within a single trust boundary, the signature is verified using `NCE_JWT_SECRET` (minimum 32 bytes).
+* **Asymmetric (RS256 / ES256)**: For multi-organization agent federations, NCE validates signatures using a public certificate defined in `NCE_JWT_PUBLIC_KEY` (PEM string or local file path). The issuer is configured in `NCE_JWT_ISSUER`.
 
-For direct TLS, launch uvicorn with:
+### 4b. Audience Isolation Policy
+To prevent a token issued for one agent network from being reused against the administrative backend, NCE supports distinct audience (`aud`) verification rules:
 
 ```bash
-uvicorn admin_server:app \
-  --ssl-certfile /etc/tls/server.crt \
-  --ssl-keyfile  /etc/tls/server.key \
-  --ssl-ca-certs /etc/tls/ca.crt
+# Required in JWT payload for accessing A2A endpoints (/tasks/send)
+NCE_A2A_JWT_AUDIENCE=nce_a2a_network
+
+# Required in JWT payload for accessing Admin REST endpoints
+NCE_JWT_AUDIENCE=nce_admin_fleet
 ```
 
-Or use nginx/Caddy to terminate TLS and forward the client cert via `X-Forwarded-Client-Cert`.
+Tokens that present mismatching audiences are rejected with a `-32010` authorization exception.
 
-### Nginx mTLS termination example
+---
 
-```nginx
-server {
-    listen 443 ssl;
-    ssl_certificate     /etc/tls/server.crt;
-    ssl_certificate_key /etc/tls/server.key;
-    ssl_client_certificate /etc/tls/ca.crt;
-    ssl_verify_client optional;
+## 5. PostgreSQL Row-Level Security (RLS) Policies
 
-    location /api/ {
-        proxy_pass http://admin_server:8003;
-        proxy_set_header X-Forwarded-Client-Cert $ssl_client_cert;
+NCE implements tenant isolation directly at the database layer. This ensures that even if application logic fails to filter a query by tenant, PostgreSQL blocks access to unauthorized data.
+
+### 5a. The Fail-Safe Namespace Resolver
+Postgres resolves tenant identity using the session settings variable `nce.namespace_id`. This is wrapped by the stable PL/pgSQL function `get_nce_namespace()`:
+
+```sql
+CREATE OR REPLACE FUNCTION get_nce_namespace() RETURNS uuid AS $$
+DECLARE
+    val text;
+BEGIN
+    val := nullif(trim(current_setting('nce.namespace_id', true)), '');
+    IF val IS NULL THEN
+        RAISE EXCEPTION 'nce.namespace_id is not set for this transaction';
+    END IF;
+    BEGIN
+        RETURN val::uuid;
+    EXCEPTION
+        WHEN invalid_text_representation THEN
+            RAISE EXCEPTION 'nce.namespace_id is not a valid UUID: %', val;
+    END;
+END;
+$$ LANGUAGE plpgsql STABLE;
+```
+
+### 5b. Default Table Policy Pattern
+For all 15 tenant-scoped tables (such as `memories`, `kg_nodes`, `kg_edges`, `pii_redactions`, etc.), RLS is enabled and enforced:
+
+```sql
+ALTER TABLE memories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memories FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_policy ON memories
+    FOR ALL TO nce_app
+    USING (namespace_id IS NOT NULL AND namespace_id = get_nce_namespace())
+    WITH CHECK (namespace_id IS NOT NULL AND namespace_id = get_nce_namespace());
+```
+
+* **RLS Enforcement Rule**: All SELECT, INSERT, UPDATE, and DELETE operations executed under the standard application role `nce_app` are restricted to the UUID returned by `get_nce_namespace()`.
+* **Privileged Role Exception**: The garbage collection role `nce_gc` bypasses RLS using the database-level `BYPASSRLS` attribute. This role is not accessible to application threads.
+
+---
+
+## 6. PII Redaction & AES-256-GCM Vault
+
+To prevent Personal Data / PII leakage into vector databases and external LLM models, NCE executes a PII Redaction pipeline before writing data.
+
+```
+Incoming Text: "Contact Alice at alice@example.com"
+       │
+       ▼
+[ Presidio Analyzer / Regex Engine ]
+       │
+       ├─► Redacts Email -> "Contact Alice at <EMAIL_1>"
+       │
+       └─► Extracts PII: Value="alice@example.com", Type="EMAIL"
+             │
+             ▼
+       [ Encrypt with NCE_MASTER_KEY ]
+       (AES-256-GCM, unique 12-byte IV)
+             │
+             ▼
+       [ Write to pii_redactions ]
+       Columns: namespace_id, memory_id, token, encrypted_value
+```
+
+### 6a. Cryptographic Vault Storage
+* **Encryption standard**: PII entities are encrypted using AES-256-GCM.
+* **Key Derivation**: The encryption key is derived from the environment variable `NCE_MASTER_KEY` (minimum 32 random bytes).
+* **Storage Target**: The encrypted byte array, along with the replacement token (e.g. `<EMAIL_1>`), the entity type, and the referencing memory UUID are inserted into the `pii_redactions` table.
+
+### 6b. Reversible Unredaction
+Authorized administrative users can retrieve original values using the `unredact_memory` tool:
+1. The requester must supply the `admin_api_key`.
+2. The query is executed inside a `scoped_pg_session`, ensuring RLS limits lookup to the requester's namespace.
+3. The cipher text is retrieved and decrypted using `NCE_MASTER_KEY` before returning the plain text to the authenticated supervisor.
+
+---
+
+## 7. Agent-to-Agent (A2A) Scope Enforcement
+
+Cross-tenant data sharing is controlled through the `a2a_grants` table, which holds structured access rules.
+
+### 7a. Structuring A2A Grants
+An A2A grant specifies the owner namespace, target consumer namespace, validation timeframe, and resource scopes:
+
+```json
+{
+  "grant_id": "87f0b21e-d124-4bca-89a3-fa349d3c8003",
+  "owner_namespace_id": "673f8e91-654e-48bd-b7bb-ea392d4f8001",
+  "consumer_namespace_id": "921a4f02-98ab-4cc1-94ef-67efab109f02",
+  "scopes": [
+    {
+      "resource_type": "subgraph",
+      "resource_id": "alice_network",
+      "permissions": ["read"]
+    },
+    {
+      "resource_type": "memory",
+      "resource_id": "67f0b982-f12a-4cbd-b2bb-de882d9f8210",
+      "permissions": ["read"]
     }
+  ],
+  "expires_at": "2026-07-07T00:00:00Z"
 }
 ```
 
-Set `NCE_ADMIN_MTLS_TRUSTED_PROXY_HOP=1` so the middleware reads from the forwarded header.
-
-### Allowlist options
-
-You can restrict access by **Subject Alternative Name** or **certificate fingerprint** (or both):
-
-```bash
-# Allow by SAN (DNS names, lower-cased, comma-separated)
-NCE_A2A_MTLS_ALLOWED_SANS=agent-a.internal,agent-b.internal
-
-# Allow by SHA-256 fingerprint (colon-separated hex)
-NCE_A2A_MTLS_ALLOWED_FINGERPRINTS=AA:BB:CC:...:FF
-```
-
-When both are set, a certificate must match **either** list (OR logic).
-When neither is set and `strict=true`, any valid CA-signed client certificate is accepted.
-
-### Rolling deployment (non-strict mode)
-
-During a certificate rotation, set `strict=false` temporarily to allow connections without a client cert:
-
-```bash
-NCE_A2A_MTLS_STRICT=false   # accept missing certs during roll
-```
-
-Restore `strict=true` once all clients have updated certificates.
-
-### Authentication flow
-
-```mermaid
-sequenceDiagram
-  participant C as Client
-  participant NX as nginx (TLS termination)
-  participant M as MTLSAuthMiddleware
-  participant H as Route handler
-
-  C->>NX: TLS ClientHello + client cert
-  NX->>NX: Verify cert against CA
-  NX->>M: HTTPS + X-Forwarded-Client-Cert
-  M->>M: mtls_enforce(): parse cert, check SAN/fingerprint
-  alt cert valid & in allowlist
-    M->>H: pass through
-    H-->>C: 200 OK
-  else cert missing or rejected
-    M-->>C: 401 JSON-RPC error -32010
-  end
-```
+### 7b. Token Verification Mechanics
+1. **Creation**: When a sharing grant is created, the system generates a random token and stores its SHA-256 hash in `token_hash`. The raw token is returned once to the caller.
+2. **Access request**: When a consumer agent queries data via `/tasks/send` or `a2a_query_shared`, it supplies the raw token.
+3. **Validation**: NCE hashes the token using SHA-256 and queries `a2a_grants` for a matching hash:
+   * The status must be `'active'`.
+   * The current time must be prior to `expires_at`.
+   * The requested query parameters must match the permissions defined in the `scopes` JSONB array.
+4. **Enforcement**: If valid, the target resources are retrieved under the owner's namespace using the owner's session context before returning them to the consumer agent.
 
 ---
 
-## 6. Signing Key Management
+## 8. Cryptographic Keys & Secrets Security Checklist
 
-All memories and events are HMAC-SHA256 signed at write time. Keys are **AES-256-GCM encrypted at rest** using `NCE_MASTER_KEY`.
+This checklist defines the storage and rotation rules for system secrets:
 
-### Master key requirements
-
-- **Minimum**: 32 UTF-8 bytes of random material.
-- **Generation**: `openssl rand -base64 48` produces a compliant 48-byte base64 key.
-- **Storage**: Use a secrets manager (AWS Secrets Manager, HashiCorp Vault, Azure Key Vault) — never commit to source control.
-
-### Key rotation (zero downtime)
-
-1. Call the `rotate_signing_key` MCP tool (admin auth required) or the `/api/admin/rotate-key` endpoint.
-2. A new signing key is generated and encrypted with the current master key; the old key is marked `retired`.
-3. All **new** writes use the new key. All **historical** records retain their original key for verification — retired keys are never deleted.
-4. Verification of historical records always looks up the `signature_key_id` from the record, so old and new records verify correctly in parallel.
-
-### Master key rotation
-
-1. Decrypt all active + retired signing keys using the **current** master key.
-2. Re-encrypt them using the **new** master key.
-3. Update `NCE_MASTER_KEY` in your secrets manager and restart the server.
-
-There is no automated master-key rotation helper in v1.0 — do this offline using the `nce/signing.py` utilities.
-
----
-
-## 7. Row-Level Security (RLS) Enforcement
-
-RLS is enforced via a PostgreSQL session variable `nce.namespace_id` that must be set inside an explicit transaction before any query executes.
-
-### The scoped session pattern
-
-All user-facing paths use `scoped_pg_session()` from `nce/db_utils.py`:
-
-```python
-async with scoped_pg_session(pool, namespace_id=ns_id) as conn:
-    # All queries on `conn` are automatically filtered to ns_id
-    rows = await conn.fetch("SELECT * FROM memories")
-```
-
-This context manager:
-1. Checks out a connection from the pool (timeout: 10 s).
-2. Starts a `conn.transaction()`.
-3. Issues `SET LOCAL nce.namespace_id = '<uuid>'` inside the transaction.
-4. Resets the variable on exit via `_reset_rls_context`.
-
-`SET LOCAL` scopes the variable to the transaction, not the session — a leaked connection cannot carry another tenant's context.
-
-### Background workers and RLS bypass
-
-Background workers (`garbage_collector.py`, `reembedding_worker.py`) use system-level connections that bypass RLS — this is intentional and required for cross-namespace scans. See `architecture-v1.md` §6.1 for the threat model and mitigations.
-
----
-
-## 8. PII Redaction
-
-See [pii.md](pii.md) for the full pipeline. Security summary:
-- Presidio-based NER + regex fallback runs **before** payloads reach LLMs or external storage.
-- Redacted values are stored encrypted (AES-256-GCM) in the `pii_redactions` table.
-- The `unredact_memory` admin tool requires admin auth and uses `scoped_pg_session` (FIX-025 enforces RLS on this path).
-
----
-
-## 9. Security Checklist — Production Readiness
-
-| Item | Env var / action | Status |
-|---|---|---|
-| Master key set (≥ 32 bytes) | `NCE_MASTER_KEY` | Required — server fails to start if missing |
-| MinIO credentials from env | `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` | Required — no defaults (FIX-013) |
-| HMAC API key set | `NCE_API_KEY` | Warning if absent |
-| JWT configured for production | `NCE_JWT_PUBLIC_KEY` + `RS256` | Recommended (vs. HS256 shared secret) |
-| Admin override disabled | `NCE_ADMIN_OVERRIDE` unset | Enforced at startup when `ENVIRONMENT=prod` |
-| mTLS enabled on A2A | `NCE_A2A_MTLS_ENABLED=true` | Recommended for production agent networks |
-| mTLS enabled on Admin | `NCE_ADMIN_MTLS_ENABLED=true` | Recommended for production admin surfaces |
-| SMTP on port 587 with STARTTLS | `NCE_SMTP_FROM`, `NCE_SMTP_TO` | Enforced (FIX-052) |
-| RLS enforced on all user paths | `scoped_pg_session` in orchestrators | Enforced in code |
-| OpenVINO model pinned | `NCE_OPENVINO_MODEL_REVISION` | Warning logged if absent |
+| Secret Name | Purpose | Minimum Length | Storage Recommendation | Rotation Procedure |
+| :--- | :--- | :--- | :--- | :--- |
+| `NCE_MASTER_KEY` | Encrypts PII vault data and oauth bridge credentials at rest. | 32 bytes | Enterprise Key Management System (KMS) or vault. | Offline re-encryption script of `pii_redactions` and `bridge_subscriptions` tables. |
+| `NCE_MCP_API_KEY` | Authenticates incoming IDE tool calls in stdio transport. | 64 characters | Client user configuration file (encrypted at rest by OS). | Generate new token, update environment configuration, and restart client. |
+| `NCE_ADMIN_API_KEY` | Authenticates incoming Admin REST requests via HMAC. | 64 characters | Secrets management system (KMS). | Update environment variable on NCE and client, followed by rolling restart. |
+| `NCE_JWT_SECRET` | Signs HS256 tokens for A2A communication. | 32 bytes | Secrets management system (KMS). | Update environment configuration and restart NCE instances. |
+| `NCE_JWT_PUBLIC_KEY` | Verifies RS256/ES256 tokens from external SSO / OIDC. | 4096-bit RSA / P-256 EC | Stored as environment PEM string or local file path. | Update public key file, trigger rolling deployment without downtime. |

@@ -57,5 +57,3 @@ from nce.temporal import parse_as_of
 
 UTC = timezone.utc
 logger = logging.getLogger("nce-admin")
-
-

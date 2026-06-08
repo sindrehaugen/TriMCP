@@ -14,15 +14,14 @@ import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
+import nce.quotas as quotas
 import pytest
+from nce.auth import HMACAuthMiddleware
+from nce.quotas import QuotaExceededError
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Route
 from starlette.testclient import TestClient
-
-import nce.quotas as quotas
-from nce.auth import HMACAuthMiddleware
-from nce.quotas import QuotaExceededError
 
 
 def _register_mcp_stubs(monkeypatch: pytest.MonkeyPatch) -> None:

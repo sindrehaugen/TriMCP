@@ -9,7 +9,6 @@ from urllib.parse import urlparse, urlunparse
 
 import asyncpg
 import pytest
-
 from nce.config import cfg
 from nce.event_log import _WORM_TABLES
 

@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from bson import ObjectId
-
 from nce.embeddings import VECTOR_DIM
 from nce.semantic_search import (
     _MAX_RAW_DATA_CHARS,

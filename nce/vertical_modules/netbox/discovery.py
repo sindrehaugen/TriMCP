@@ -14,10 +14,9 @@ import logging
 from typing import Any
 
 import httpx
-from jsonschema import validate, ValidationError
-
-from nce.vertical_modules.netbox.graphql_activation import NetBoxGraphQLClient
+from jsonschema import validate
 from nce.config import cfg
+from nce.vertical_modules.netbox.graphql_activation import NetBoxGraphQLClient
 
 log = logging.getLogger("nce.vertical_modules.netbox.discovery")
 

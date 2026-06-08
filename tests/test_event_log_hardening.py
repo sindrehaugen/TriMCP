@@ -9,8 +9,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-
-from tests.fixtures.event_log_params import minimal_store_memory_params
 from nce.event_log import (
     _GENESIS_SENTINEL,
     EXPECTED_GLOBAL_TABLES,
@@ -23,6 +21,8 @@ from nce.event_log import (
     verify_merkle_chain,
 )
 from nce.event_types import VALID_EVENT_TYPES
+
+from tests.fixtures.event_log_params import minimal_store_memory_params
 
 # ---------------------------------------------------------------------------
 # Identifier validation (_validate_identifier)

@@ -7,7 +7,6 @@ import os
 
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
 from nce.signing import (
     _ENCRYPTED_KEY_BLOB_V2,
     _ENCRYPTED_KEY_BLOB_V3,

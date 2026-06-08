@@ -17,9 +17,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from jsonschema import validate, ValidationError
+from jsonschema import ValidationError, validate
 
-from nce.causal.correlation import CausalGraph, CausalNode, CausalEdge
+from nce.causal.correlation import CausalGraph
 
 log = logging.getLogger("nce.causal.synthesis")
 

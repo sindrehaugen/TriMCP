@@ -25,17 +25,14 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 import nce.mcp_stdio_dispatch as dispatch_mod
+import pytest
 from nce.auth import RateLimitError, ScopeError
-from nce.mcp_errors import McpError, MCP_METHOD_NOT_FOUND
+from nce.mcp_errors import MCP_METHOD_NOT_FOUND, McpError
 from nce.mcp_stdio_dispatch import execute_call_tool
 from nce.mcp_stdio_rpc import MCP_QUOTA_EXCEEDED_PREFIX
-
 
 # ---------------------------------------------------------------------------
 # Shared infrastructure
