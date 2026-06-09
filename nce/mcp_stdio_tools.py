@@ -1351,6 +1351,24 @@ TOOLS = [
             "required": ["namespace_id", "as_of_a", "as_of_b"],
         },
     ),
+    Tool(
+        name="import_snapshot",
+        description="Rebuild a namespace from an exported NDJSON snapshot via the Saga path.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "target_namespace_id": {
+                    "type": "string",
+                    "description": "The namespace UUID to restore the snapshot into (must exist).",
+                },
+                "snapshot_data": {
+                    "type": "string",
+                    "description": "The raw NDJSON snapshot data to import.",
+                },
+            },
+            "required": ["target_namespace_id", "snapshot_data"],
+        },
+    ),
     # ── Phase 1 Enterprise: Query Catalog ─────────────────────────────────────
     Tool(
         name="suggest_queries",

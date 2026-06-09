@@ -208,7 +208,7 @@ async def stream_snapshot_export(
 
             # Server-side cursor — never materialises full result set
             async with conn.transaction():
-                cursor = conn.cursor(
+                cursor = await conn.cursor(
                     """
                     SELECT
                         m.id AS memory_id,
@@ -241,7 +241,7 @@ async def stream_snapshot_export(
                 while True:
                     try:
                         batch = await asyncio.wait_for(
-                            cursor.fetchmany(_STREAM_BATCH_SIZE),
+                            cursor.fetch(_STREAM_BATCH_SIZE),
                             timeout=30.0,
                         )
                     except asyncio.TimeoutError:
@@ -335,3 +335,142 @@ def _serialize_memory_row(row: Any) -> dict[str, Any]:
         else:
             out[k] = v
     return out
+
+
+@mcp_handler
+async def handle_import_snapshot(engine: NCEEngine, arguments: dict[str, Any]) -> str:
+    """Rebuild a namespace from an exported NDJSON snapshot via the Saga path."""
+    target_ns = arguments["target_namespace_id"]
+    snapshot_data = arguments["snapshot_data"]
+    res = await restore_namespace(engine, target_ns, snapshot_data)
+    return json.dumps(res)
+
+
+async def restore_namespace(
+    engine: NCEEngine,
+    target_namespace_id: str,
+    snapshot_data: str,
+) -> dict[str, Any]:
+    """Rebuild a namespace from an exported NDJSON snapshot via the Saga path.
+
+    Note: Reusing deterministic remap once Phase H lands. Until then, this
+    performs a non-verifiable restore (new UUIDs and signature versions are
+    generated fresh).
+
+    Args:
+        engine: The NCEEngine with connected mongo_client.
+        target_namespace_id: Target namespace UUID as string.
+        snapshot_data: Raw NDJSON snapshot string containing metadata and memories.
+
+    Returns:
+        A dict with import status, count of imported records, and errors.
+    """
+    from bson import ObjectId
+
+    from nce.models import AssertionType, MemoryType, StoreMemoryRequest
+
+    if not engine.mongo_client:
+        return {"status": "error", "message": "MongoDB client not connected"}
+
+    try:
+        target_uuid = uuid.UUID(target_namespace_id)
+    except ValueError:
+        return {"status": "error", "message": "Invalid target_namespace_id"}
+
+    imported_count = 0
+    errors = []
+
+    db = engine.mongo_client.memory_archive
+    episodes_col = db.episodes
+
+    lines = snapshot_data.strip().split("\n")
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as e:
+            errors.append(f"Line {i + 1}: Invalid JSON: {str(e)}")
+            continue
+
+        rec_type = record.get("type")
+        if rec_type != "memory":
+            continue
+
+        memory_data = record.get("memory")
+        if not memory_data:
+            errors.append(f"Line {i + 1}: Missing memory details")
+            continue
+
+        payload_ref = memory_data.get("payload_ref")
+        if not payload_ref:
+            errors.append(f"Line {i + 1}: Missing payload_ref in memory details")
+            continue
+
+        try:
+            doc = await episodes_col.find_one({"_id": ObjectId(payload_ref)})
+        except Exception as e:
+            errors.append(
+                f"Line {i + 1}: MongoDB fetch failed for payload_ref {payload_ref}: {str(e)}"
+            )
+            continue
+
+        if not doc:
+            errors.append(f"Line {i + 1}: MongoDB document not found for payload_ref {payload_ref}")
+            continue
+
+        raw_data = doc.get("raw_data", "")
+
+        # Merge metadata with salience and bypass_quarantine
+        metadata = dict(memory_data.get("metadata") or {})
+        if "salience" in memory_data:
+            try:
+                metadata["salience"] = float(memory_data["salience"])
+            except (ValueError, TypeError):
+                pass
+        metadata["bypass_quarantine"] = True
+
+        derived_from_raw = memory_data.get("derived_from")
+        derived_from = None
+        if derived_from_raw:
+            if isinstance(derived_from_raw, list):
+                derived_from = [uuid.UUID(uid) for uid in derived_from_raw]
+            else:
+                try:
+                    derived_from = json.loads(derived_from_raw)
+                    derived_from = [uuid.UUID(uid) for uid in derived_from]
+                except Exception:
+                    pass
+
+        try:
+            req = StoreMemoryRequest(
+                namespace_id=target_uuid,
+                agent_id=memory_data.get("agent_id", "default"),
+                content=raw_data,
+                summary=raw_data[:8192],
+                heavy_payload=raw_data,
+                memory_type=MemoryType(memory_data.get("memory_type", "episodic")),
+                assertion_type=AssertionType(memory_data.get("assertion_type", "fact")),
+                metadata=metadata,
+                derived_from=derived_from,
+                check_contradictions=False,
+            )
+            await engine.store_memory(req)
+            imported_count += 1
+        except Exception as e:
+            errors.append(f"Line {i + 1}: Ingest failed: {str(e)}")
+
+    if errors and imported_count == 0:
+        return {
+            "status": "error",
+            "message": "All records failed to import",
+            "errors": errors,
+        }
+
+    return {
+        "status": "ok",
+        "imported": imported_count,
+        "errors": errors,
+    }

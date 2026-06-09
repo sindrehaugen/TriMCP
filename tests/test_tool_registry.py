@@ -25,10 +25,10 @@ from nce.tool_registry import (
 # Cardinality
 # ---------------------------------------------------------------------------
 
-_EXPECTED_TOTAL = 61
+_EXPECTED_TOTAL = 62
 
 
-def test_registry_has_61_entries():
+def test_registry_has_62_entries():
     assert len(TOOL_REGISTRY) == _EXPECTED_TOTAL, (
         f"Expected {_EXPECTED_TOTAL} tools, got {len(TOOL_REGISTRY)}. "
         f"Tools: {sorted(TOOL_REGISTRY)}"
@@ -93,6 +93,7 @@ _EXPECTED_MUTATION_TOOLS: frozenset[str] = frozenset(
         "abort_migration",
         # D365 mutations
         "d365_sync_now",
+        "import_snapshot",
     }
 )
 
@@ -105,7 +106,7 @@ def test_mutation_tools_exact_match():
 
 
 def test_mutation_tools_count():
-    assert len(MUTATION_TOOLS) == 28
+    assert len(MUTATION_TOOLS) == 29
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +337,10 @@ def test_toolspec_is_frozen():
         (
             "compare_states",
             {"mutation": False, "cacheable": False, "admin_only": False, "migration": False},
+        ),
+        (
+            "import_snapshot",
+            {"mutation": True, "cacheable": False, "admin_only": False, "migration": False},
         ),
         # catalog
         (

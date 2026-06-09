@@ -316,6 +316,10 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     "compare_states": ToolSpec(
         _h(snapshot_mcp_handlers, "handle_compare_states"),
     ),
+    "import_snapshot": ToolSpec(
+        _h(snapshot_mcp_handlers, "handle_import_snapshot"),
+        mutation=True,
+    ),
     # ------------------------------------------------------------------
     # Query catalog tools
     # ------------------------------------------------------------------

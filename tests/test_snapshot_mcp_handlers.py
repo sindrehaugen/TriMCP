@@ -25,7 +25,7 @@ def _parse_ndjson_line(line: str) -> dict:
     return json.loads(line.strip())
 
 
-async def _empty_fetchmany(_size: int) -> list:
+async def _empty_fetch(_size: int) -> list:
     return []
 
 
@@ -33,16 +33,16 @@ def _memory_row_dict() -> dict:
     return {"memory_id": uuid4(), "metadata": "{}"}
 
 
-def _fetchmany_from_batches(*batches: list) -> AsyncMock:
-    """Return an async fetchmany that yields each batch in order, then []."""
+def _fetch_from_batches(*batches: list) -> AsyncMock:
+    """Return an async fetch that yields each batch in order, then []."""
     queue = list(batches)
 
-    async def fetchmany(_size: int) -> list:
+    async def fetch(_size: int) -> list:
         if queue:
             return queue.pop(0)
         return []
 
-    return fetchmany
+    return fetch
 
 
 def _mock_pool_with_conn(
@@ -55,8 +55,8 @@ def _mock_pool_with_conn(
     conn.fetchrow = AsyncMock(return_value={"total": total})
 
     cursor = MagicMock()
-    cursor.fetchmany = fetchmany if fetchmany is not None else _empty_fetchmany
-    conn.cursor = MagicMock(return_value=cursor)
+    cursor.fetch = fetchmany if fetchmany is not None else _empty_fetch
+    conn.cursor = AsyncMock(return_value=cursor)
 
     tx = MagicMock()
     tx.__aenter__ = AsyncMock(return_value=None)
@@ -225,7 +225,7 @@ async def test_stream_snapshot_export_fetchmany_within_timeout_streams_rows(
     mock_engine_with_pool: NCEEngine,
 ) -> None:
     row = _memory_row_dict()
-    pool, _, _ = _mock_pool_with_conn(1, fetchmany=_fetchmany_from_batches([row], []))
+    pool, _, _ = _mock_pool_with_conn(1, fetchmany=_fetch_from_batches([row], []))
     mock_engine_with_pool.pg_pool = pool
 
     lines = await _collect(stream_snapshot_export(mock_engine_with_pool, str(uuid4())))
@@ -246,7 +246,7 @@ async def test_stream_snapshot_export_progress_at_every_1000th_row(
 ) -> None:
     assert _STREAM_PROGRESS_INTERVAL == 1000
     rows = [_memory_row_dict() for _ in range(2500)]
-    pool, _, _ = _mock_pool_with_conn(2500, fetchmany=_fetchmany_from_batches(rows))
+    pool, _, _ = _mock_pool_with_conn(2500, fetchmany=_fetch_from_batches(rows))
     mock_engine_with_pool.pg_pool = pool
 
     lines = await _collect(stream_snapshot_export(mock_engine_with_pool, str(uuid4())))
@@ -264,7 +264,7 @@ async def test_stream_snapshot_export_no_progress_when_under_interval(
     mock_engine_with_pool: NCEEngine,
 ) -> None:
     rows = [_memory_row_dict() for _ in range(500)]
-    pool, _, _ = _mock_pool_with_conn(500, fetchmany=_fetchmany_from_batches(rows))
+    pool, _, _ = _mock_pool_with_conn(500, fetchmany=_fetch_from_batches(rows))
     mock_engine_with_pool.pg_pool = pool
 
     lines = await _collect(stream_snapshot_export(mock_engine_with_pool, str(uuid4())))
@@ -291,3 +291,144 @@ def test_serialize_memory_row_valid_json_metadata_parses() -> None:
     row = {"memory_id": str(uuid4()), "metadata": '{"foo": 1}'}
     result = _serialize_memory_row(row)
     assert result["metadata"] == {"foo": 1}
+
+
+# ---------------------------------------------------------------------------
+# restore_namespace & handle_import_snapshot
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_restore_namespace_invalid_uuid(mock_engine_with_pool: NCEEngine) -> None:
+    from unittest.mock import MagicMock
+
+    from nce.snapshot_mcp_handlers import restore_namespace
+
+    mock_engine_with_pool.mongo_client = MagicMock()
+    res = await restore_namespace(mock_engine_with_pool, "invalid-uuid", "")
+    assert res["status"] == "error"
+    assert "Invalid target_namespace_id" in res["message"]
+
+
+@pytest.mark.asyncio
+async def test_restore_namespace_no_mongo() -> None:
+    from nce.snapshot_mcp_handlers import restore_namespace
+
+    engine = NCEEngine()
+    engine.mongo_client = None
+    res = await restore_namespace(engine, str(uuid4()), "")
+    assert res["status"] == "error"
+    assert "MongoDB client not connected" in res["message"]
+
+
+@pytest.mark.asyncio
+async def test_restore_namespace_happy_path() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from nce.snapshot_mcp_handlers import restore_namespace
+
+    engine = NCEEngine()
+    engine.mongo_client = MagicMock()
+    db = MagicMock()
+    episodes = AsyncMock()
+    db.episodes = episodes
+    engine.mongo_client.memory_archive = db
+
+    # Setup fake MongoDB doc
+    fake_doc = {"raw_data": "Ingested content", "metadata": {"foo": "bar"}}
+    episodes.find_one.return_value = fake_doc
+
+    # Mock engine.store_memory
+    engine.store_memory = AsyncMock(return_value={"quarantined": False, "payload_ref": "some_ref"})
+
+    target_ns = str(uuid4())
+    snapshot_lines = (
+        '{"type": "metadata", "namespace_id": "original-ns"}\n'
+        '{"type": "memory", "memory": {"payload_ref": "507f1f77bcf86cd799439011", "agent_id": "test-agent", "memory_type": "episodic", "assertion_type": "fact", "salience": 0.8, "metadata": {"foo": "bar"}}}\n'
+    )
+
+    res = await restore_namespace(engine, target_ns, snapshot_lines)
+    assert res["status"] == "ok"
+    assert res["imported"] == 1
+    assert not res["errors"]
+
+    engine.store_memory.assert_called_once()
+    req = engine.store_memory.call_args[0][0]
+    assert str(req.namespace_id) == target_ns
+    assert req.content == "Ingested content"
+    assert req.metadata["foo"] == "bar"
+    assert req.metadata["salience"] == 0.8
+    assert req.metadata["bypass_quarantine"] is True
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_snapshot_import_export_integration(pg_pool, make_namespace, monkeypatch) -> None:
+    # 1. Connect a real NCEEngine
+    engine = NCEEngine()
+    await engine.connect()
+
+    try:
+        # 2. Create namespaces A and B
+        ns_a = await make_namespace()
+        ns_b = await make_namespace()
+
+        # 3. Store a memory in namespace A via the engine
+        from nce.models import AssertionType, MemoryType, StoreMemoryRequest
+
+        payload = StoreMemoryRequest(
+            namespace_id=ns_a,
+            agent_id="test-agent",
+            content="This is integration test content for snapshot export and import.",
+            summary="Integration test summary",
+            heavy_payload="Heavy payload content for integration test",
+            memory_type=MemoryType.episodic,
+            assertion_type=AssertionType.fact,
+            metadata={"user_id": "user-a", "session_id": "sess-a"},
+            check_contradictions=False,
+        )
+        res_store = await engine.store_memory(payload)
+        payload_ref = res_store["payload_ref"]
+        assert payload_ref
+
+        # Verify pg count in A is 1
+        async with engine.pg_pool.acquire() as conn:
+            cnt_a = await conn.fetchval(
+                "SELECT count(*) FROM memories WHERE namespace_id = $1", ns_a
+            )
+            assert cnt_a == 1
+
+        # 4. Export from namespace A
+        lines = []
+        async for line in stream_snapshot_export(engine, str(ns_a)):
+            lines.append(line)
+        snapshot_data = "".join(lines)
+
+        # Verify the exported data contains a memory line with the correct payload_ref
+        assert "507f1f" not in snapshot_data
+        assert payload_ref in snapshot_data
+        assert "test-agent" in snapshot_data
+
+        # 5. Import into namespace B
+        from nce.snapshot_mcp_handlers import restore_namespace
+
+        res_import = await restore_namespace(engine, str(ns_b), snapshot_data)
+        assert res_import["status"] == "ok"
+        assert res_import["imported"] == 1
+        assert not res_import["errors"]
+
+        # 6. Verify row counts and types in namespace B match namespace A
+        async with engine.pg_pool.acquire() as conn:
+            cnt_b = await conn.fetchval(
+                "SELECT count(*) FROM memories WHERE namespace_id = $1", ns_b
+            )
+            assert cnt_b == 1
+
+            # Assert that the type matches
+            type_b = await conn.fetchval(
+                "SELECT memory_type FROM memories WHERE namespace_id = $1", ns_b
+            )
+            assert type_b == "episodic"
+
+    finally:
+        await engine.disconnect()
