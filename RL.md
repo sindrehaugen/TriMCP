@@ -39,9 +39,9 @@
 * [DONE] Batch 29 — Faithful timestamps with mandatory re-sign (Phase 2.2) [PASSED TAG]
 * [DONE] Batch 30 — Namespace state-digest + equality gate (Phase 2.3) [PASSED TAG]
 * [DONE] Batch 31 — `settings` table migration (V.1a) [PASSED TAG]
-* [RUNNING] Batch 32 — `SettingsStore` accessor with precedence + cache (V.1b) [WAITING TAG]
-* [LOCKED] Batch 33 — Settings registry metadata (V.1a) [NO TAG]
-* [LOCKED] Batch 34 — `GET /api/admin/settings` (+ `/effective`, `/{key}`) (V.1b) [NO TAG]
+* [DONE] Batch 32 — `SettingsStore` accessor with precedence + cache (V.1b) [PASSED TAG]
+* [DONE] Batch 33 — Settings registry metadata (V.1a) [PASSED TAG]
+* [OPEN] Batch 34 — `GET /api/admin/settings` (+ `/effective`, `/{key}`) (V.1b) [NO TAG]
 * [LOCKED] Batch 35 — `PATCH /api/admin/settings` (207) + `config_changed` WORM event (V.1b/V.5) [NO TAG]
 * [LOCKED] Batch 36 — `/reset`, `/reload`, `/pending` endpoints (V.1b) [NO TAG]
 * [LOCKED] Batch 37 — Honest Uncertainty in search results (II.1) [NO TAG]
@@ -304,6 +304,22 @@
 * **Target Scope Verification:** Verified file paths: `nce/schema.sql`, `nce/migrations/015_settings_table.sql`, and `tests/test_schema_bootstrap.py`.
 * **Structural Integrity Scoring:** Creation of a global, RLS-exempt `settings` table with native `JSONB` support and explicit encrypted byte column (`secret_enc`) is structurally clean and correctly keeps system-wide settings separated from tenant-scoped structures. The custom PL/pgSQL DO block correctly revokes PUBLIC permissions and grants least-privilege `SELECT`, `INSERT`, `UPDATE`, `DELETE` access to `nce_app` safely.
 * **Contractual Test Fidelity:** High. The test `test_schema_applies_cleanly_on_fresh_database` successfully boots the entire schema twice to verify idempotence, then queries PG's metadata tables (`information_schema.columns`, `pg_class`, `information_schema.role_table_grants`) directly to assert column types, nullability, RLS-exempt status (`relrowsecurity` is false), and role privileges (`SELECT`, `INSERT`, `UPDATE`, `DELETE` for `nce_app`).
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 32 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified file paths: `nce/settings_store.py` and `tests/test_settings_store.py`.
+* **Structural Integrity Scoring:** Precedence lookup implementation is clean and robust, correctly prioritizing database configuration over environment variable defaults. Secrets are safely encrypted under the master key using AES-256-GCM. In-process cache invalidation via Redis pub/sub matches the architectural pattern.
+* **Contractual Test Fidelity:** High. Comprehensive tests verify correct precedence resolution, encrypted round-trip storage of sensitive credentials, write-only masking of secrets on request, and cache eviction / invalidation scenarios using robust mocks for Postgres and Redis.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 33 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified file paths: `_internal/tools/setup_refactoring_session.py`, `_internal/tools/start_rl.py`, and `_internal/tools/trigger_tag_audit.py`.
+* **Structural Integrity Scoring:** Clean, automated orchestration scripts for session setups, batch transitions, and git tracking.
+* **Contractual Test Fidelity:** High. Static typecheck and lint checks on changed scripts pass cleanly. Existing unit and integration tests continue to run successfully.
 * **Identified System Flaws:** None.
 * **Defensive Refactoring Correction Blueprint:** None
 
