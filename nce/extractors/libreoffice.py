@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from nce.net_safety import _verify_binary_safety
+
 log = logging.getLogger(__name__)
 
 _SAFE_EXT = re.compile(r"^\.[a-zA-Z0-9]{1,8}$")
@@ -55,13 +57,21 @@ def libreoffice_convert(
         return None
     target = target_ext.lstrip(".")
     soffice = _resolve_soffice()
+    expected_hash = os.environ.get("NCE_SOFFICE_HASH", "").strip()
+    if not expected_hash:
+        log.warning("libreoffice_convert: NCE_SOFFICE_HASH environment variable is not set")
+        return None
+    verified_soffice = _verify_binary_safety(soffice, expected_hash)
+    if not verified_soffice:
+        log.warning("libreoffice_convert: binary safety check failed for %s", soffice)
+        return None
     try:
         with tempfile.TemporaryDirectory(prefix="nce_lo_") as d:
             td = Path(d)
             src = td / f"source{ext}"
             src.write_bytes(blob)
             cmd = [
-                soffice,
+                verified_soffice,
                 "--headless",
                 "--norestore",
                 "--nolockcheck",

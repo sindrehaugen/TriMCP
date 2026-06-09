@@ -1,10 +1,92 @@
 import asyncio
+import hashlib
 import ipaddress
 import logging
+import os
+import shutil
 import socket
+from typing import Any
 from urllib.parse import urlparse
 
 log = logging.getLogger("nce.net_safety")
+
+# Global registry for DNS-rebinding prevention pinning
+_PINNED_HOSTS: dict[str, str] = {}
+
+
+def _apply_transport_patch() -> None:
+    """
+    Hook httpcore AsyncNetworkBackend / SyncBackend connect_tcp to reuse resolved IPs,
+    effectively mitigating DNS rebinding (SSRF TOCTOU) by resolving hostnames once.
+    """
+
+    classes_to_patch: list[Any] = []
+    try:
+        from httpcore._backends.auto import AutoBackend
+
+        classes_to_patch.append(AutoBackend)
+    except ImportError:
+        pass
+
+    try:
+        from httpcore._backends.anyio import AnyIOBackend
+
+        classes_to_patch.append(AnyIOBackend)
+    except ImportError:
+        pass
+
+    try:
+        from httpcore._backends.trio import TrioBackend
+
+        classes_to_patch.append(TrioBackend)
+    except ImportError:
+        pass
+
+    try:
+        from httpcore._backends.sync import SyncBackend
+
+        classes_to_patch.append(SyncBackend)
+    except ImportError:
+        pass
+
+    def make_patched_connect_tcp(original_method: Any) -> Any:
+        async def patched_connect_tcp(
+            self: Any, host: str, port: int, *args: Any, **kwargs: Any
+        ) -> Any:
+            pinned_ip = _PINNED_HOSTS.get(host.lower().strip())
+            if pinned_ip:
+                return await original_method(self, pinned_ip, port, *args, **kwargs)
+            return await original_method(self, host, port, *args, **kwargs)
+
+        return patched_connect_tcp
+
+    def make_patched_connect_tcp_sync(original_method: Any) -> Any:
+        def patched_connect_tcp_sync(
+            self: Any, host: str, port: int, *args: Any, **kwargs: Any
+        ) -> Any:
+            pinned_ip = _PINNED_HOSTS.get(host.lower().strip())
+            if pinned_ip:
+                return original_method(self, pinned_ip, port, *args, **kwargs)
+            return original_method(self, host, port, *args, **kwargs)
+
+        return patched_connect_tcp_sync
+
+    for cls in classes_to_patch:
+        if hasattr(cls, "connect_tcp"):
+            orig = cls.connect_tcp
+            if not getattr(orig, "_is_patched", False):
+                import inspect
+
+                if inspect.iscoroutinefunction(orig):
+                    patched = make_patched_connect_tcp(orig)
+                else:
+                    patched = make_patched_connect_tcp_sync(orig)
+                patched._is_patched = True  # type: ignore[attr-defined]
+                cls.connect_tcp = patched
+
+
+_apply_transport_patch()
+
 
 _MAX_URL_LEN: int = 4_096
 
@@ -144,10 +226,13 @@ async def validate_bridge_webhook_base_url(raw: str) -> str:
             "BRIDGE_WEBHOOK_BASE_URL must use https for non-loopback hosts"
         )
 
+    _PINNED_HOSTS[host.lower().strip()] = str(ips[0])
     return base
 
 
-async def assert_url_allowed_prefix(url: str, allowed_prefixes: tuple[str, ...], *, what: str) -> None:
+async def assert_url_allowed_prefix(
+    url: str, allowed_prefixes: tuple[str, ...], *, what: str
+) -> None:
     """
     Ensure ``url`` is under one of ``allowed_prefixes`` (parsed scheme/host/port/path match).
     Used for delta / pagination links stored in Redis.
@@ -172,6 +257,7 @@ async def assert_url_allowed_prefix(url: str, allowed_prefixes: tuple[str, ...],
                 raise BridgeURLValidationError(
                     f"{what}: host {host!r} resolves to a non-public address"
                 )
+            _PINNED_HOSTS[host.lower().strip()] = str(ips[0])
         except BridgeURLValidationError:
             raise
         except Exception as e:
@@ -249,6 +335,7 @@ async def validate_extractor_url(url: str, *, what: str = "extractor") -> str:
             f"(private/link-local/reserved/multicast/loopback)"
         )
 
+    _PINNED_HOSTS[host.lower().strip()] = str(ips[0])
     return raw
 
 
@@ -336,6 +423,7 @@ async def validate_webhook_payload_url(
                 f"webhook {field_name}: host {host!r} resolves to a non-public "
                 f"address (private/link-local/reserved/multicast/loopback)"
             )
+        _PINNED_HOSTS[host.lower().strip()] = str(ips[0])
     except BridgeURLValidationError:
         raise
     except Exception as e:
@@ -351,4 +439,62 @@ async def validate_webhook_payload_url(
         raise BridgeURLValidationError(
             f"webhook {field_name}: URL not within allowed prefixes (got {raw[:120]!r}...)"
         )
+    _PINNED_HOSTS[host.lower().strip()] = str(ips[0])
     return raw
+
+
+def _verify_binary_safety(executable: str, expected_hash: str | None) -> str | None:
+    """
+    Verify that the executable is an absolute path (or resolves to one),
+    exists as a file, and matches the expected SHA-256 hash if configured.
+    Returns the absolute path on success, or None on failure/mismatch.
+    """
+    if not executable:
+        log.warning("binary_safety: empty executable")
+        return None
+
+    # Reject relative paths that contain directory separators
+    if ("/" in executable or "\\" in executable) and not os.path.isabs(executable):
+        log.warning(
+            "binary_safety: relative path containing separators is not allowed: %s", executable
+        )
+        return None
+
+    if os.path.isfile(executable):
+        resolved: str | None = executable
+    else:
+        resolved = shutil.which(executable)
+
+    if not resolved:
+        log.warning("binary_safety: executable not found: %s", executable)
+        return None
+
+    abs_path = os.path.abspath(resolved)
+    if not os.path.isabs(abs_path):
+        log.warning("binary_safety: path is not absolute: %s", abs_path)
+        return None
+
+    if not os.path.isfile(abs_path):
+        log.warning("binary_safety: path is not a file: %s", abs_path)
+        return None
+
+    if expected_hash:
+        expected_hash = expected_hash.strip().lower()
+        h = hashlib.sha256()
+        try:
+            with open(abs_path, "rb") as f:
+                while chunk := f.read(8192):
+                    h.update(chunk)
+            file_hash = h.hexdigest().lower()
+            if file_hash != expected_hash:
+                log.warning(
+                    "binary_safety: hash mismatch for %s: expected %s, got %s",
+                    abs_path,
+                    expected_hash,
+                    file_hash,
+                )
+                return None
+        except Exception as e:
+            log.warning("binary_safety: failed to hash %s: %s", abs_path, e)
+            return None
+    return abs_path

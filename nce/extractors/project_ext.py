@@ -15,6 +15,7 @@ from nce.extractors import pdf_ext
 from nce.extractors.core import ExtractionResult, Section, empty_skipped
 from nce.extractors.libreoffice import libreoffice_convert
 from nce.extractors.office_word import extract_docx
+from nce.net_safety import _verify_binary_safety
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ def _mpxj_allowed_binaries() -> frozenset[str]:
     if not raw:
         return _DEFAULT_MPXJ_BINARIES
     names = {part.strip().lower() for part in raw.split(",") if part.strip()}
-    return names or _DEFAULT_MPXJ_BINARIES
+    return frozenset(names) if names else _DEFAULT_MPXJ_BINARIES
 
 
 def _normalize_executable_name(path: str) -> str:
@@ -74,8 +75,26 @@ def _extract_mpp_sync(blob: bytes) -> ExtractionResult:
             return empty_skipped(
                 "mpp",
                 "mpp_bad_command",
-                warnings=["NCE_MPXJ_EXTRACTOR is not on the allowlist or contains shell metacharacters"],
+                warnings=[
+                    "NCE_MPXJ_EXTRACTOR is not on the allowlist or contains shell metacharacters"
+                ],
             )
+        expected_hash = os.environ.get("NCE_MPXJ_HASH", "").strip()
+        if not expected_hash:
+            return empty_skipped(
+                "mpp",
+                "mpp_binary_hash_not_configured",
+                warnings=["NCE_MPXJ_HASH environment variable is not set"],
+            )
+        verified_bin = _verify_binary_safety(argv[0], expected_hash)
+        if not verified_bin:
+            return empty_skipped(
+                "mpp",
+                "mpp_binary_safety_failed",
+                warnings=[f"MPXJ binary safety check failed for {argv[0]!r}"],
+            )
+        argv[0] = verified_bin
+
         from nce.subprocess_registry import tracked_process
 
         proc = subprocess.Popen(
@@ -91,7 +110,9 @@ def _extract_mpp_sync(blob: bytes) -> ExtractionResult:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.communicate()
-                return empty_skipped("mpp", "mpp_sidecar_timeout", warnings=["MPXJ extractor timed out"])
+                return empty_skipped(
+                    "mpp", "mpp_sidecar_timeout", warnings=["MPXJ extractor timed out"]
+                )
             except Exception as e:
                 proc.kill()
                 proc.communicate()
