@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 import re
+import subprocess
 import sys
 from pathlib import Path
-import subprocess
 
 # Script is at BASE/_internal/tools/ — root is two levels up
 ROOT = Path(__file__).resolve().parents[2]
@@ -11,20 +11,28 @@ TAG_TEMPLATE = ROOT / "_internal" / "templates" / "tag_audit.md"
 
 
 def find_running_batch_id(content: str) -> str | None:
-    registry_match = re.search(r"## State Registry\n(.*?)\n*---", content, re.DOTALL | re.IGNORECASE)
+    registry_match = re.search(
+        r"## State Registry\n(.*?)\n*---", content, re.DOTALL | re.IGNORECASE
+    )
     if not registry_match:
         return None
-    match = re.search(r"\[RUNNING\]\s+Batch\s+([a-zA-Z0-9_-]+)", registry_match.group(1), re.IGNORECASE)
+    match = re.search(
+        r"\[RUNNING\]\s+Batch\s+([a-zA-Z0-9_-]+)", registry_match.group(1), re.IGNORECASE
+    )
     return match.group(1) if match else None
 
 
 def find_passed_batch_id(content: str) -> str | None:
-    """Return the id of the first batch whose TAG audit has reached [PASSED] / [PASSED TAG]."""
-    registry_match = re.search(r"## State Registry\n(.*?)\n*---", content, re.DOTALL | re.IGNORECASE)
+    """Return the id of the first batch whose TAG audit has reached [PASSED] / [PASSED TAG] but is not DONE."""
+    registry_match = re.search(
+        r"## State Registry\n(.*?)\n*---", content, re.DOTALL | re.IGNORECASE
+    )
     if not registry_match:
         return None
     for line in registry_match.group(1).splitlines():
-        if re.search(r"\[PASSED(?:\s+TAG)?\]", line, re.IGNORECASE):
+        if re.search(r"\[PASSED(?:\s+TAG)?\]", line, re.IGNORECASE) and not re.search(
+            r"\[DONE\]", line, re.IGNORECASE
+        ):
             batch_match = re.search(r"\bBatch\s+([a-zA-Z0-9_-]+)\b", line, re.IGNORECASE)
             if batch_match:
                 return batch_match.group(1)
@@ -59,12 +67,14 @@ def commit_passed_batch(batch_id: str) -> None:
         print(f"[ERROR] 'git commit' feilet: {e}")
 
 
-def update_tag_status(ledger_path: Path, batch_id: str, old_status_pattern: str, new_status: str) -> bool:
+def update_tag_status(
+    ledger_path: Path, batch_id: str, old_status_pattern: str, new_status: str
+) -> bool:
     if not ledger_path.exists():
         return False
     content = ledger_path.read_text(encoding="utf-8")
     content_normalized = content.replace("\r\n", "\n")
-    
+
     pattern = r"(## State Registry\n)(.*?)(\n*---)"
     match = re.search(pattern, content_normalized, re.DOTALL | re.IGNORECASE)
     if not match:
@@ -83,7 +93,9 @@ def update_tag_status(ledger_path: Path, batch_id: str, old_status_pattern: str,
     if updated:
         new_registry_text = "\n".join(lines)
         new_block = f"{header}{new_registry_text}{footer}"
-        updated_content = content_normalized[:match.start()] + new_block + content_normalized[match.end():]
+        updated_content = (
+            content_normalized[: match.start()] + new_block + content_normalized[match.end() :]
+        )
         newline = "\r\n" if "\r\n" in content else "\n"
         ledger_path.write_text(updated_content.replace("\n", newline), encoding="utf-8")
         return True
@@ -101,7 +113,9 @@ def trigger_tag_protocol() -> bool:
     # If a batch has already reached [PASSED], commit its work before triggering anything else.
     passed_batch_id = find_passed_batch_id(content)
     if passed_batch_id:
-        print(f"[ORCHESTRATOR] Batch {passed_batch_id} har status [PASSED]. Committer arbeid før triggering...")
+        print(
+            f"[ORCHESTRATOR] Batch {passed_batch_id} har status [PASSED]. Committer arbeid før triggering..."
+        )
         commit_passed_batch(passed_batch_id)
 
     batch_id = find_running_batch_id(content)
@@ -118,7 +132,7 @@ def trigger_tag_protocol() -> bool:
     # 1. Update tag status in RL.md to [RUNNING TAG]
     print(f"[ORCHESTRATOR] Oppdaterer status for Batch {batch_id} til [RUNNING TAG]...")
     if not update_tag_status(LEDGER_PATH, batch_id, r"\[Waiting TAG\]", "[RUNNING TAG]"):
-        print(f"[WARNING] Kunne ikke oppdatere status fra [Waiting TAG] til [RUNNING TAG].")
+        print("[WARNING] Kunne ikke oppdatere status fra [Waiting TAG] til [RUNNING TAG].")
 
     print(f"[ORCHESTRATOR] Batch {batch_id} klar. Starter TAG-sesjon...")
 
@@ -135,17 +149,30 @@ def trigger_tag_protocol() -> bool:
         print(f"[ERROR] Kunne ikke kopiere til utklippstavlen: {e}")
         return False
 
-    print("[WARNING] The script is about to simulate keyboard shortcuts (Ctrl+Shift+L) in Cursor.")
-    try:
-        user_input = input("Please type 'ok' and press ENTER to authorize and send keystrokes, or any other key to copy to clipboard only: ")
-        if user_input.strip().lower() != "ok":
-            print("[INFO] Keystroke simulation skipped. Prompt has been copied to clipboard; paste it manually.")
-            return False
-    except KeyboardInterrupt:
-        print("\n[INFO] Cancelled by user. Prompt has been copied to clipboard; paste it manually.")
-        return False
+    non_interactive = (
+        "--non-interactive" in sys.argv or "--automated" in sys.argv or not sys.stdin.isatty()
+    )
 
-    print(f"[ORCHESTRATOR] Sender Ctrl+Shift+L for å åpne ny chat i Antigravity IDE...")
+    if not non_interactive:
+        print(
+            "[WARNING] The script is about to simulate keyboard shortcuts (Ctrl+Shift+L) in Cursor."
+        )
+        try:
+            user_input = input(
+                "Please type 'ok' and press ENTER to authorize and send keystrokes, or any other key to copy to clipboard only: "
+            )
+            if user_input.strip().lower() != "ok":
+                print(
+                    "[INFO] Keystroke simulation skipped. Prompt has been copied to clipboard; paste it manually."
+                )
+                return False
+        except KeyboardInterrupt:
+            print(
+                "\n[INFO] Cancelled by user. Prompt has been copied to clipboard; paste it manually."
+            )
+            return False
+
+    print("[ORCHESTRATOR] Sender Ctrl+Shift+L for å åpne ny chat i Antigravity IDE...")
     try:
         ps_command = """
         $wshell = New-Object -ComObject Wscript.Shell;
