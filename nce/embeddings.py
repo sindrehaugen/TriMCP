@@ -26,10 +26,10 @@ import threading
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from nce.config import cfg
-from nce.observability import EMBEDDING_COUNT
+from nce.observability import EMBEDDING_COUNT, EMBEDDING_FALLBACKS
 
 if TYPE_CHECKING:
     pass
@@ -297,6 +297,17 @@ class EmbeddingBackend(ABC):
         vectors, degraded = await loop.run_in_executor(_executor, self._sync_embed_batch, texts)
         # Set the flag in the async task context — NOT inside the executor thread.
         degraded_embedding_flag.set(degraded)
+        if degraded:
+            EMBEDDING_FALLBACKS.inc()
+            try:
+                from nce.notifications import dispatcher
+
+                await dispatcher.dispatch_alert(
+                    "Embedding Fallback Active",
+                    "The primary embedding backend failed and degraded operation (hash-stub fallback) was triggered.",
+                )
+            except Exception:
+                log.exception("Failed to dispatch alert for embedding fallback")
         return vectors
 
 
@@ -458,7 +469,7 @@ class OpenVINONPUBackend(EmbeddingBackend):
                 e,
             )
 
-        return _validate_batch(texts, vectors, backend_name="OpenVINONPU")
+        return _validate_batch(texts, cast(list[list[float]], vectors), backend_name="OpenVINONPU")
 
 
 # ---------------------------------------------------------------------------
@@ -524,10 +535,18 @@ class CognitiveRemoteBackend(EmbeddingBackend):
         if self._model:
             payload["model"] = self._model
 
+        from nce.http_resilience import request_with_retry_sync
+
         try:
             with httpx.Client(timeout=120.0) as client:
-                r = client.post(url, json=payload, headers=headers)
-                r.raise_for_status()
+                r = request_with_retry_sync(
+                    client,
+                    "POST",
+                    url,
+                    json=payload,
+                    headers=headers,
+                    operation_name="embedding_sidecar:primary",
+                )
                 data = r.json()
         except Exception as e:
             # Classify the error so we can decide whether to try the fallback model.
@@ -557,8 +576,14 @@ class CognitiveRemoteBackend(EmbeddingBackend):
 
                 try:
                     with httpx.Client(timeout=60.0) as client:
-                        r = client.post(url, json=payload_fallback, headers=headers)
-                        r.raise_for_status()
+                        r = request_with_retry_sync(
+                            client,
+                            "POST",
+                            url,
+                            json=payload_fallback,
+                            headers=headers,
+                            operation_name="embedding_sidecar:fallback",
+                        )
                         data = r.json()
                 except Exception as fe:
                     return _fallback_with_error(

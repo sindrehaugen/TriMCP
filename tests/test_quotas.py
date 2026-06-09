@@ -1243,3 +1243,146 @@ async def test_flush_greatest_prevents_regressing_higher_pg_used(
     await quotas.flush_quota_counters_to_postgres(redis, MagicMock())
 
     assert bound_used == [stale_redis_used]
+
+
+# ---------------------------------------------------------------------------
+# Quota and Embedding Degradation Observability (Batch 19)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_quota_metrics_updated_on_consume(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nce.observability import QUOTA_CONSUMED, QUOTA_REMAINING
+
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
+
+    ns_id = uuid.uuid4()
+    qrow_ns = uuid.uuid4()
+
+    conn = AsyncMock()
+    conn.fetch.return_value = [{"id": qrow_ns, "agent_id": None}]
+    conn.fetchrow.return_value = {"id": qrow_ns, "used_amount": 15, "limit_amount": 100}
+
+    tx = AsyncMock()
+    conn.transaction = MagicMock(return_value=tx)
+    tx.__aenter__.return_value = None
+    tx.__aexit__.return_value = None
+
+    pool = MagicMock()
+    acq = AsyncMock()
+    acq.__aenter__.return_value = conn
+    acq.__aexit__.return_value = None
+    pool.acquire = MagicMock(return_value=acq)
+
+    mock_consumed_set = MagicMock()
+    mock_remaining_set = MagicMock()
+
+    monkeypatch.setattr(
+        QUOTA_CONSUMED, "labels", MagicMock(return_value=MagicMock(set=mock_consumed_set))
+    )
+    monkeypatch.setattr(
+        QUOTA_REMAINING, "labels", MagicMock(return_value=MagicMock(set=mock_remaining_set))
+    )
+
+    await quotas.consume_resources(
+        pool,
+        namespace_id=ns_id,
+        agent_id="agent-x",
+        amounts={quotas.RESOURCE_LLM_TOKENS: 10},
+    )
+
+    QUOTA_CONSUMED.labels.assert_called_once_with(
+        namespace_id=str(ns_id),
+        resource_type=quotas.RESOURCE_LLM_TOKENS,
+        agent_id="global",
+    )
+    QUOTA_REMAINING.labels.assert_called_once_with(
+        namespace_id=str(ns_id),
+        resource_type=quotas.RESOURCE_LLM_TOKENS,
+        agent_id="global",
+    )
+    mock_consumed_set.assert_called_once_with(15)
+    mock_remaining_set.assert_called_once_with(85)
+
+
+@pytest.mark.asyncio
+async def test_quota_metrics_updated_on_consume_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nce.observability import QUOTA_CONSUMED, QUOTA_REMAINING
+
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTAS_ENABLED", True)
+
+    ns_id = uuid.uuid4()
+    qrow_ns = uuid.uuid4()
+
+    conn = AsyncMock()
+    conn.fetch.return_value = [
+        {"id": qrow_ns, "agent_id": None, "used_amount": 5, "limit_amount": 100}
+    ]
+
+    redis_client = AsyncMock()
+    redis_client.eval.return_value = 15
+
+    pool = MagicMock()
+    acq = AsyncMock()
+    acq.__aenter__.return_value = conn
+    acq.__aexit__.return_value = None
+    pool.acquire = MagicMock(return_value=acq)
+
+    mock_consumed_set = MagicMock()
+    mock_remaining_set = MagicMock()
+
+    monkeypatch.setattr(
+        QUOTA_CONSUMED, "labels", MagicMock(return_value=MagicMock(set=mock_consumed_set))
+    )
+    monkeypatch.setattr(
+        QUOTA_REMAINING, "labels", MagicMock(return_value=MagicMock(set=mock_remaining_set))
+    )
+
+    monkeypatch.setattr("nce.quotas.cfg.NCE_QUOTA_REDIS_COUNTERS", True)
+
+    await quotas.consume_resources(
+        pool,
+        namespace_id=ns_id,
+        agent_id="agent-x",
+        amounts={quotas.RESOURCE_LLM_TOKENS: 10},
+        redis_client=redis_client,
+    )
+
+    QUOTA_CONSUMED.labels.assert_called_once_with(
+        namespace_id=str(ns_id),
+        resource_type=quotas.RESOURCE_LLM_TOKENS,
+        agent_id="global",
+    )
+    QUOTA_REMAINING.labels.assert_called_once_with(
+        namespace_id=str(ns_id),
+        resource_type=quotas.RESOURCE_LLM_TOKENS,
+        agent_id="global",
+    )
+    mock_consumed_set.assert_called_once_with(15)
+    mock_remaining_set.assert_called_once_with(85)
+
+
+@pytest.mark.asyncio
+async def test_embedding_fallback_increments_counter_and_alerts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nce.embeddings import CPUBackend
+    from nce.observability import EMBEDDING_FALLBACKS
+
+    mock_dispatch_alert = AsyncMock()
+    monkeypatch.setattr("nce.notifications.dispatcher.dispatch_alert", mock_dispatch_alert)
+
+    mock_inc = MagicMock()
+    monkeypatch.setattr(EMBEDDING_FALLBACKS, "inc", mock_inc)
+
+    backend = CPUBackend()
+    monkeypatch.setattr(backend, "_sync_embed_batch", MagicMock(return_value=([[0.0] * 768], True)))
+
+    res = await backend.embed(["test text"])
+
+    assert len(res) == 1
+    mock_inc.assert_called_once()
+    mock_dispatch_alert.assert_called_once()
+    title, msg = mock_dispatch_alert.call_args[0]
+    assert "Embedding Fallback Active" in title
+    assert "hash-stub fallback" in msg

@@ -21,6 +21,7 @@ import asyncpg
 from asyncpg.exceptions import IntegrityConstraintViolationError
 
 from nce.config import cfg
+from nce.observability import QUOTA_CONSUMED, QUOTA_REMAINING
 
 log = logging.getLogger("nce.quotas")
 
@@ -234,6 +235,22 @@ async def _consume_resources_redis(
                         )
                     applied.append((qid, delta))
                     reservation.steps.append((qid, delta))
+
+                    # Update gauges (Batch 19)
+                    used = int(res)
+                    remaining = max(0, lim - used)
+                    ns_str = str(namespace_id)
+                    aid_str = str(row["agent_id"] or "global")
+                    QUOTA_CONSUMED.labels(
+                        namespace_id=ns_str,
+                        resource_type=resource_type,
+                        agent_id=aid_str,
+                    ).set(used)
+                    QUOTA_REMAINING.labels(
+                        namespace_id=ns_str,
+                        resource_type=resource_type,
+                        agent_id=aid_str,
+                    ).set(remaining)
     except QuotaExceededError:
         raise
     except Exception:
@@ -316,7 +333,7 @@ async def consume_resources(
                                 updated_at = now()
                             WHERE id = $2
                               AND used_amount + $1 <= limit_amount
-                            RETURNING id
+                            RETURNING id, used_amount, limit_amount
                             """,
                             delta,
                             row["id"],
@@ -328,6 +345,24 @@ async def consume_resources(
                                 f"resource={resource_type!r} ({scope} limit)"
                             )
                         reservation.steps.append((row["id"], delta))
+
+                        # Update gauges (Batch 19)
+                        if "used_amount" in upd and "limit_amount" in upd:
+                            used = int(upd["used_amount"])
+                            lim = int(upd["limit_amount"])
+                            remaining = max(0, lim - used)
+                            ns_str = str(namespace_id)
+                            aid_str = str(row["agent_id"] or "global")
+                            QUOTA_CONSUMED.labels(
+                                namespace_id=ns_str,
+                                resource_type=resource_type,
+                                agent_id=aid_str,
+                            ).set(used)
+                            QUOTA_REMAINING.labels(
+                                namespace_id=ns_str,
+                                resource_type=resource_type,
+                                agent_id=aid_str,
+                            ).set(remaining)
             except IntegrityConstraintViolationError as e:
                 raise QuotaExceededError(
                     f"Quota integrity constraint violated for namespace={namespace_id}: {e}"
@@ -384,11 +419,7 @@ async def quota_redis_flush_loop(redis_client: Any, pool: asyncpg.Pool) -> None:
     while True:
         try:
             await asyncio.sleep(cfg.NCE_QUOTA_REDIS_FLUSH_INTERVAL_S)
-            if (
-                cfg.NCE_QUOTAS_ENABLED
-                and cfg.NCE_QUOTA_REDIS_COUNTERS
-                and redis_client is not None
-            ):
+            if cfg.NCE_QUOTAS_ENABLED and cfg.NCE_QUOTA_REDIS_COUNTERS and redis_client is not None:
                 await flush_quota_counters_to_postgres(redis_client, pool)
         except asyncio.CancelledError:
             break

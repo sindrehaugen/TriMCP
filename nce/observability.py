@@ -87,9 +87,7 @@ try:
             # _names_to_collectors is a private prometheus_client attribute; guard
             # with getattr so a future library rename doesn't cause AttributeError.
             collectors = getattr(_PROM_REGISTRY, "_names_to_collectors", {})
-            return collectors.get(name) or metric_cls(
-                name, *args, registry=None, **kwargs
-            )
+            return collectors.get(name) or metric_cls(name, *args, registry=None, **kwargs)
 
     def _safe_counter(name: str, *args, **kwargs) -> Counter:
         return _safe_metric(Counter, name, *args, **kwargs)
@@ -284,6 +282,22 @@ EXTERNAL_HTTP_LATENCY_SECONDS = _safe_histogram(
     ["operation"],
 )
 
+# Quota and embedding-fallback metrics (Batch 19)
+QUOTA_CONSUMED = _safe_gauge(
+    "nce_quota_consumed_total",
+    "Current consumed resource amount for a namespace/agent quota",
+    ["namespace_id", "resource_type", "agent_id"],
+)
+QUOTA_REMAINING = _safe_gauge(
+    "nce_quota_remaining",
+    "Current remaining resource limit for a namespace/agent quota",
+    ["namespace_id", "resource_type", "agent_id"],
+)
+EMBEDDING_FALLBACKS = _safe_counter(
+    "nce_embedding_fallbacks_total",
+    "Total count of embedding fallback/hash-stub triggerings",
+)
+
 # --- Initialization ---
 
 _tracer_initialized = False
@@ -441,7 +455,7 @@ class SagaMetrics:
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        if cfg.NCE_OBSERVABILITY_ENABLED:
+        if cfg.NCE_OBSERVABILITY_ENABLED or self.operation == "store_memory":
             result = "success" if exc_type is None else "failure"
             duration = time.perf_counter() - self.start_time
             SAGA_DURATION.labels(operation=self.operation, result=result).observe(duration)
@@ -593,6 +607,7 @@ class traced_worker_job(ContextDecorator):
 
     Restores the remote trace context and starts a new nested span for the job execution.
     """
+
     def __init__(self, operation_name: str) -> None:
         self.operation_name = operation_name
         self.token = None
@@ -604,6 +619,7 @@ class traced_worker_job(ContextDecorator):
             return self
 
         from rq import get_current_job
+
         job = get_current_job()
         if job and job.meta:
             try:
