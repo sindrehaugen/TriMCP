@@ -213,4 +213,97 @@ class CognitiveOrchestrator(OrchestratorBase):
                     result_summary={"status": "success"},
                 )
 
+                # Nested SAVEPOINT block to prevent ATMS failure from aborting the resolution
+                try:
+                    async with conn.transaction():
+                        loser_id = None
+                        if resolution == "accepted_a":
+                            loser_id = str(row["memory_b_id"])
+                        elif resolution == "accepted_b":
+                            loser_id = str(row["memory_a_id"])
+                        elif resolution in ("superseded", "rejected"):
+                            # Fetch memories to compare creation times
+                            mems = await conn.fetch(
+                                """
+                                SELECT id, created_at FROM memories
+                                WHERE id IN ($1::uuid, $2::uuid)
+                                """,
+                                row["memory_a_id"],
+                                row["memory_b_id"],
+                            )
+                            if len(mems) == 2:
+                                sorted_mems = sorted(mems, key=lambda m: m["created_at"])
+                                older_id = str(sorted_mems[0]["id"])
+                                newer_id = str(sorted_mems[1]["id"])
+                            else:
+                                older_id = str(row["memory_a_id"])
+                                newer_id = str(row["memory_b_id"])
+
+                            if resolution == "superseded":
+                                loser_id = older_id
+                            else:
+                                loser_id = newer_id
+
+                        if loser_id:
+                            from nce.atms import (
+                                evaluate_atms_intervention,
+                                persist_atms_invalidation,
+                            )
+
+                            cascade_set = {loser_id}
+
+                            # 1. Topology/infrastructure cascade
+                            topo_cascade = await evaluate_atms_intervention(conn, ns_uuid, loser_id)
+                            cascade_set.update(topo_cascade)
+
+                            # 2. Memory dependents recursively via derived_from
+                            max_cascade = 100
+                            todo = [loser_id]
+                            visited = {loser_id}
+
+                            while todo and len(visited) < max_cascade:
+                                current = todo.pop()
+                                dep_rows = await conn.fetch(
+                                    """
+                                    SELECT id FROM memories
+                                    WHERE namespace_id = $1::uuid
+                                      AND (derived_from @> jsonb_build_array($2::text)
+                                           OR derived_from @> jsonb_build_array($2::uuid))
+                                      AND valid_to IS NULL
+                                    """,
+                                    ns_uuid,
+                                    current,
+                                )
+                                for r in dep_rows:
+                                    dep_id = str(r["id"])
+                                    if dep_id not in visited:
+                                        visited.add(dep_id)
+                                        todo.append(dep_id)
+                                        if len(visited) >= max_cascade:
+                                            break
+
+                            cascade_set.update(visited)
+
+                            # 3. Persist soft-deletions
+                            await persist_atms_invalidation(conn, ns_uuid, cascade_set)
+
+                            # 4. Log the atms_cascade event
+                            await append_event(
+                                conn=conn,
+                                namespace_id=ns_uuid,
+                                agent_id=resolved_by,
+                                event_type="atms_cascade",
+                                params={
+                                    "contradiction_id": contradiction_id,
+                                    "invalidated_memory_id": loser_id,
+                                    "invalidated_ids": sorted(list(cascade_set)),
+                                },
+                                result_summary={
+                                    "status": "success",
+                                    "cascade_count": len(cascade_set),
+                                },
+                            )
+                except Exception:
+                    log.exception("ATMS cascade failed during contradiction resolution")
+
                 return dict(row)

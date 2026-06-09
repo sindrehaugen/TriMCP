@@ -881,6 +881,7 @@ _additional_fork_provenance_types: tuple[str, ...] = (
     "a2a_shared_query",
     "signing_key_rotated",
     "chain_verification_failed",
+    "atms_cascade",
 )
 for _fork_et in _additional_fork_provenance_types:
     assert _fork_et not in _HANDLER_REGISTRY, (

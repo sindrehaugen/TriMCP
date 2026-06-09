@@ -196,3 +196,158 @@ async def test_decay_job_scheduled(pg_pool, make_namespace, monkeypatch) -> None
 
         assert fresh_row is not None
         assert fresh_row["valid_to"] is None  # Should not be soft-deleted
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_resolve_contradiction_atms_cascade(pg_pool, make_namespace) -> None:
+    """Verify that resolving a contradiction with accepted_a soft-deletes the losing memory (B)
+    and recursively invalidates consolidated memories that derive from it.
+    """
+    ns_id = await make_namespace()
+    memory_a_id = uuid.uuid4()
+    memory_b_id = uuid.uuid4()
+    memory_c_id = uuid.uuid4()  # Consolidated memory derived from B
+    contradiction_id = uuid.uuid4()
+    embedding = [0.1] * 768
+
+    async with scoped_pg_session(pg_pool, ns_id) as conn:
+        # 1. Insert memories A and B
+        await conn.execute(
+            """
+            INSERT INTO memories (id, namespace_id, agent_id, embedding, assertion_type, memory_type, payload_ref, metadata)
+            VALUES ($1, $2, 'test-agent', $3::vector, 'fact', 'episodic', '000000000000000000000001', '{}'::jsonb),
+                   ($4, $2, 'test-agent', $3::vector, 'fact', 'episodic', '000000000000000000000002', '{}'::jsonb)
+            """,
+            memory_a_id,
+            ns_id,
+            json.dumps(embedding),
+            memory_b_id,
+        )
+
+        # 2. Insert consolidated memory C derived from B
+        await conn.execute(
+            """
+            INSERT INTO memories (id, namespace_id, agent_id, embedding, assertion_type, memory_type, payload_ref, metadata, derived_from)
+            VALUES ($1, $2, 'test-agent', $3::vector, 'fact', 'consolidated', '000000000000000000000003', '{}'::jsonb, $4::jsonb)
+            """,
+            memory_c_id,
+            ns_id,
+            json.dumps(embedding),
+            json.dumps([str(memory_b_id)]),
+        )
+
+        # 3. Insert contradiction row
+        await conn.execute(
+            """
+            INSERT INTO contradictions (id, namespace_id, memory_a_id, memory_b_id, agent_id, detection_path, signals, confidence, resolution)
+            VALUES ($1, $2, $3, $4, 'system', 'sync', '{}'::jsonb, 0.9, NULL)
+            """,
+            contradiction_id,
+            ns_id,
+            memory_a_id,
+            memory_b_id,
+        )
+
+    # 4. Resolve contradiction (accepted_a -> b is loser)
+    from nce.orchestrators.cognitive import CognitiveOrchestrator
+
+    orchestrator = CognitiveOrchestrator(pg_pool)
+    await orchestrator.resolve_contradiction(
+        contradiction_id=str(contradiction_id),
+        namespace_id=str(ns_id),
+        resolution="accepted_a",
+        resolved_by="test-admin",
+    )
+
+    # 5. Verify results
+    async with scoped_pg_session(pg_pool, ns_id) as conn:
+        row_a = await conn.fetchrow("SELECT valid_to FROM memories WHERE id = $1", memory_a_id)
+        row_b = await conn.fetchrow("SELECT valid_to FROM memories WHERE id = $1", memory_b_id)
+        row_c = await conn.fetchrow("SELECT valid_to FROM memories WHERE id = $1", memory_c_id)
+
+        assert row_a is not None and row_a["valid_to"] is None
+        assert row_b is not None and row_b["valid_to"] is not None
+        assert row_c is not None and row_c["valid_to"] is not None
+
+        # Verify event log has atms_cascade
+        evt = await conn.fetchrow(
+            "SELECT * FROM event_log WHERE namespace_id = $1 AND event_type = 'atms_cascade'",
+            ns_id,
+        )
+        assert evt is not None
+        evt_params = json.loads(evt["params"]) if isinstance(evt["params"], str) else evt["params"]
+        assert evt_params["contradiction_id"] == str(contradiction_id)
+        assert evt_params["invalidated_memory_id"] == str(memory_b_id)
+        assert str(memory_c_id) in evt_params["invalidated_ids"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_resolve_contradiction_superseded_cascade(pg_pool, make_namespace) -> None:
+    """Verify that resolving a contradiction with superseded soft-deletes the older memory."""
+    ns_id = await make_namespace()
+    memory_a_id = uuid.uuid4()
+    memory_b_id = uuid.uuid4()
+    contradiction_id = uuid.uuid4()
+    embedding = [0.1] * 768
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    older_time = now - datetime.timedelta(hours=2)
+    newer_time = now - datetime.timedelta(hours=1)
+
+    async with scoped_pg_session(pg_pool, ns_id) as conn:
+        # Insert memory A (older)
+        await conn.execute(
+            """
+            INSERT INTO memories (id, namespace_id, agent_id, embedding, assertion_type, memory_type, payload_ref, metadata, created_at)
+            VALUES ($1, $2, 'test-agent', $3::vector, 'fact', 'episodic', '000000000000000000000001', '{}'::jsonb, $4)
+            """,
+            memory_a_id,
+            ns_id,
+            json.dumps(embedding),
+            older_time,
+        )
+
+        # Insert memory B (newer)
+        await conn.execute(
+            """
+            INSERT INTO memories (id, namespace_id, agent_id, embedding, assertion_type, memory_type, payload_ref, metadata, created_at)
+            VALUES ($1, $2, 'test-agent', $3::vector, 'fact', 'episodic', '000000000000000000000002', '{}'::jsonb, $4)
+            """,
+            memory_b_id,
+            ns_id,
+            json.dumps(embedding),
+            newer_time,
+        )
+
+        # Insert contradiction
+        await conn.execute(
+            """
+            INSERT INTO contradictions (id, namespace_id, memory_a_id, memory_b_id, agent_id, detection_path, signals, confidence, resolution)
+            VALUES ($1, $2, $3, $4, 'system', 'sync', '{}'::jsonb, 0.9, NULL)
+            """,
+            contradiction_id,
+            ns_id,
+            memory_a_id,
+            memory_b_id,
+        )
+
+    # Resolve with superseded (so older_id = memory_a_id is loser)
+    from nce.orchestrators.cognitive import CognitiveOrchestrator
+
+    orchestrator = CognitiveOrchestrator(pg_pool)
+    await orchestrator.resolve_contradiction(
+        contradiction_id=str(contradiction_id),
+        namespace_id=str(ns_id),
+        resolution="superseded",
+        resolved_by="test-admin",
+    )
+
+    # Verify memory A is soft-deleted and memory B is still valid
+    async with scoped_pg_session(pg_pool, ns_id) as conn:
+        row_a = await conn.fetchrow("SELECT valid_to FROM memories WHERE id = $1", memory_a_id)
+        row_b = await conn.fetchrow("SELECT valid_to FROM memories WHERE id = $1", memory_b_id)
+
+        assert row_a is not None and row_a["valid_to"] is not None
+        assert row_b is not None and row_b["valid_to"] is None

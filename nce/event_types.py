@@ -54,6 +54,7 @@ EventType = Literal[
     # SAGA_EVENTS
     "saga_recovered",  # cron saga recovery: pg_committed saga finalized, not rolled back
     "chain_verification_failed",
+    "atms_cascade",
 ]
 
 VALID_EVENT_TYPES: Final[frozenset[str]] = frozenset(get_args(EventType))
@@ -112,6 +113,7 @@ EVENT_REQUIRED_PARAM_KEYS: Final[dict[str, frozenset[str]]] = {
     "a2a_grant_revoked": frozenset({"grant_id"}),
     "saga_recovered": frozenset({"memory_id", "saga_id", "recovery_action", "reason"}),
     "chain_verification_failed": frozenset({"first_break", "reason"}),
+    "atms_cascade": frozenset({"contradiction_id", "invalidated_memory_id", "invalidated_ids"}),
 }
 
 EVENT_FORBIDDEN_PARAM_KEYS: Final[dict[str, frozenset[str]]] = {
