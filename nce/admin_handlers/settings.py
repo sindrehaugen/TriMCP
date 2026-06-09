@@ -3,19 +3,18 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
+
 from starlette.responses import JSONResponse
 
 from nce import admin_state
-from nce.config import cfg
-from nce.admin_handlers import _shared
 from nce.admin_handlers._shared import UTC, logger
+from nce.config import cfg
 from nce.settings_registry import (
     REGISTRY,
     SettingMetadata,
     validate_bool,
     validate_str_list,
 )
-from nce.settings_store import get
 
 
 def get_validation_metadata(metadata: SettingMetadata) -> dict[str, Any]:
@@ -125,9 +124,7 @@ async def api_admin_settings_list(request: Any) -> JSONResponse:
             sections_list.append(metadata.section)
             section_to_keys[metadata.section] = []
 
-        effective_value, source, store_value_set = get_effective_value(
-            key, metadata, db_overrides
-        )
+        effective_value, source, store_value_set = get_effective_value(key, metadata, db_overrides)
         validation_dict = get_validation_metadata(metadata)
 
         key_detail = {
@@ -214,9 +211,7 @@ async def api_admin_settings_get(request: Any) -> JSONResponse:
             logger.error("Failed to fetch settings key '%s' from Postgres: %s", key, e)
 
     db_overrides = {key: db_row} if db_row else {}
-    effective_value, source, store_value_set = get_effective_value(
-        key, metadata, db_overrides
-    )
+    effective_value, source, store_value_set = get_effective_value(key, metadata, db_overrides)
 
     key_detail = {
         "key": key,

@@ -160,6 +160,17 @@ def build_admin_routes() -> list[Route]:
             methods=["POST"],
         ),
         Route("/api/admin/quotas", endpoint=h.api_admin_quotas, methods=["GET"]),
+        Route("/api/admin/settings", endpoint=h.api_admin_settings_list, methods=["GET"]),
+        Route(
+            "/api/admin/settings/effective",
+            endpoint=h.api_admin_settings_effective,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/settings/{key}",
+            endpoint=h.api_admin_settings_get,
+            methods=["GET"],
+        ),
         Route(
             "/api/admin/signing/status",
             endpoint=h.api_admin_signing_status,

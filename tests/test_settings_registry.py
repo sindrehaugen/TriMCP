@@ -74,3 +74,50 @@ def test_validators(key, valid_val, invalid_val):
     assert meta.validator(invalid_val) is False, (
         f"Validator for {key} accepted invalid value: {invalid_val}"
     )
+
+
+def test_validate_env():
+    """Verify validate_env checks and reports malformed environment settings correctly."""
+    from nce.settings_registry import validate_env
+
+    # Valid scenario
+    valid_env = {
+        "PG_MIN_POOL": "5",
+        "MINIO_SECURE": "true",
+        "MONGO_URI": "mongodb://test",
+    }
+    errors = validate_env(valid_env)
+    assert not errors
+
+    # Invalid scenario
+    invalid_env = {
+        "PG_MIN_POOL": "not_an_int",
+        "MINIO_SECURE": "invalid_bool",
+        "MONGO_URI": "",  # Empty is forbidden by allow_empty=False
+    }
+    errors = validate_env(invalid_env)
+    assert "PG_MIN_POOL" in errors
+    assert "MINIO_SECURE" in errors
+    assert "MONGO_URI" in errors
+
+
+def test_auto_load_defaults():
+    """Verify auto_load_defaults populates missing keys in target dictionary."""
+    from nce.settings_registry import auto_load_defaults
+
+    # Empty env dict should receive defaults
+    mock_env = {}
+    auto_load_defaults(mock_env)
+    assert mock_env["PG_MIN_POOL"] == "1"
+    assert mock_env["PG_MAX_POOL"] == "10"
+
+    # Pre-existing values should NOT be overwritten by default
+    mock_env = {"PG_MIN_POOL": "42"}
+    auto_load_defaults(mock_env)
+    assert mock_env["PG_MIN_POOL"] == "42"
+    assert mock_env["PG_MAX_POOL"] == "10"
+
+    # Pre-existing values SHOULD be overwritten if overwrite=True
+    mock_env = {"PG_MIN_POOL": "42"}
+    auto_load_defaults(mock_env, overwrite=True)
+    assert mock_env["PG_MIN_POOL"] == "1"

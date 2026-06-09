@@ -41,8 +41,8 @@
 * [DONE] Batch 31 — `settings` table migration (V.1a) [PASSED TAG]
 * [DONE] Batch 32 — `SettingsStore` accessor with precedence + cache (V.1b) [PASSED TAG]
 * [DONE] Batch 33 — Settings registry metadata (V.1a) [PASSED TAG]
-* [RUNNING] Batch 34 — `GET /api/admin/settings` (+ `/effective`, `/{key}`) (V.1b) [NO TAG]
-* [LOCKED] Batch 35 — `PATCH /api/admin/settings` (207) + `config_changed` WORM event (V.1b/V.5) [NO TAG]
+* [DONE] Batch 34 — `GET /api/admin/settings` (+ `/effective`, `/{key}`) (V.1b) [PASSED TAG]
+* [OPEN] Batch 35 — `PATCH /api/admin/settings` (207) + `config_changed` WORM event (V.1b/V.5) [NO TAG]
 * [LOCKED] Batch 36 — `/reset`, `/reload`, `/pending` endpoints (V.1b) [NO TAG]
 * [LOCKED] Batch 37 — Honest Uncertainty in search results (II.1) [NO TAG]
 * [LOCKED] Batch 38 — Epistemic Receipts (II.2) [NO TAG]
@@ -320,6 +320,14 @@
 * **Target Scope Verification:** Verified file paths: `_internal/tools/setup_refactoring_session.py`, `_internal/tools/start_rl.py`, and `_internal/tools/trigger_tag_audit.py`.
 * **Structural Integrity Scoring:** Clean, automated orchestration scripts for session setups, batch transitions, and git tracking.
 * **Contractual Test Fidelity:** High. Static typecheck and lint checks on changed scripts pass cleanly. Existing unit and integration tests continue to run successfully.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 34 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified file paths: `nce/admin_app.py`, `nce/admin_handlers/settings.py`, `nce/settings_registry.py`, and `tests/test_settings_registry.py` on disk.
+* **Structural Integrity Scoring:** High. Global settings table schema integration is robust. Clean precedence lookup and masking of secrets (like `NCE_MASTER_KEY` and other credentials) are enforced correctly.
+* **Contractual Test Fidelity:** High. Tests verify correct schema types, environment validations, and defaults loading, and verify the administrative settings routes via TestClient, including authentication check, listing, and single key detail retrieve operations. All tests pass successfully.
 * **Identified System Flaws:** None.
 * **Defensive Refactoring Correction Blueprint:** None
 

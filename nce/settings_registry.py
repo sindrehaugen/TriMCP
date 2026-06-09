@@ -10,7 +10,8 @@ and production-locking statuses.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import os
+from collections.abc import Callable, MutableMapping
 from typing import Any, NamedTuple
 
 
@@ -23,6 +24,7 @@ class SettingMetadata(NamedTuple):
     prod_locked: bool
     validator: Callable[[Any], bool]
     description: str
+    default: Any = None
 
 
 # --- Validator Factories ---
@@ -77,6 +79,82 @@ def validate_str_list(val: Any) -> bool:
     if not isinstance(val, list):
         return False
     return all(isinstance(item, str) for item in val)
+
+
+# --- Environment Schema Validation & Defaults Auto-Loading ---
+
+
+def _coerce_env_value(val_str: str, target_type: str) -> Any:
+    """Coerce string environment variable value to the registry's target type."""
+    if target_type == "int":
+        try:
+            return int(val_str)
+        except ValueError:
+            raise TypeError(f"Value '{val_str}' is not a valid integer")
+    elif target_type == "float":
+        try:
+            return float(val_str)
+        except ValueError:
+            raise TypeError(f"Value '{val_str}' is not a valid float")
+    elif target_type == "bool":
+        clean = val_str.strip().lower()
+        if clean in {"1", "true", "yes", "on"}:
+            return True
+        elif clean in {"0", "false", "no", "off"}:
+            return False
+        else:
+            raise TypeError(f"Value '{val_str}' is not a valid boolean")
+    elif target_type == "list":
+        clean = val_str.strip()
+        if clean.startswith("[") and clean.endswith("]"):
+            try:
+                import json
+
+                parsed = json.loads(clean)
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        return [item.strip() for item in clean.split(",") if item.strip()]
+    return val_str
+
+
+def validate_env(env_dict: MutableMapping[str, str] | None = None) -> dict[str, str]:
+    """Validate environment variables against the registry schema.
+
+    Returns a mapping of key to error message for all failed validations.
+    """
+    target_env: MutableMapping[str, str] = os.environ if env_dict is None else env_dict
+
+    errors = {}
+    for key, meta in REGISTRY.items():
+        if key in target_env:
+            val_str = target_env[key]
+            try:
+                coerced = _coerce_env_value(val_str, meta.type)
+                if not meta.validator(coerced):
+                    errors[key] = f"Validation failed for key '{key}' with value '{val_str}'"
+            except (TypeError, ValueError) as e:
+                errors[key] = f"Type coercion failed for key '{key}': {e}"
+    return errors
+
+
+def auto_load_defaults(
+    env_dict: MutableMapping[str, str] | None = None, overwrite: bool = False
+) -> None:
+    """Auto-load defaults from registry into the environment mapping if unset."""
+    target_env: MutableMapping[str, str] = os.environ if env_dict is None else env_dict
+
+    for key, meta in REGISTRY.items():
+        if meta.default is not None:
+            if overwrite or key not in target_env or not target_env[key].strip():
+                val = meta.default
+                if isinstance(val, bool):
+                    target_env[key] = "true" if val else "false"
+                elif isinstance(val, list):
+                    target_env[key] = ",".join(str(item) for item in val)
+                else:
+                    target_env[key] = str(val)
 
 
 # --- Settings Registry Mapping ---
@@ -203,6 +281,7 @@ REGISTRY: dict[str, SettingMetadata] = {
         prod_locked=False,
         validator=validate_int(minimum=1),
         description="Minimum size of PostgreSQL pool.",
+        default=1,
     ),
     "PG_MAX_POOL": SettingMetadata(
         key="PG_MAX_POOL",
@@ -213,6 +292,7 @@ REGISTRY: dict[str, SettingMetadata] = {
         prod_locked=False,
         validator=validate_int(minimum=1),
         description="Maximum size of PostgreSQL pool.",
+        default=10,
     ),
     "REDIS_MAX_CONNECTIONS": SettingMetadata(
         key="REDIS_MAX_CONNECTIONS",
