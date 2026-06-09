@@ -858,3 +858,284 @@ async def test_replay_deterministic_timestamp_preservation(
 
         mem_valid_from = replayed_memory["valid_from"].astimezone(timezone.utc)
         assert mem_valid_from == past_time
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_reconstructive_replay_digest_match(pg_pool, make_namespace, monkeypatch) -> None:
+    import os
+    from datetime import datetime, timedelta, timezone
+
+    from bson import ObjectId
+    from motor.motor_asyncio import AsyncIOMotorClient
+    from nce.replay import ReconstructiveReplay, get_run_status
+
+    pool_proxy = PoolProxy(pg_pool)
+
+    # 1. Create source and target namespaces
+    source_ns = await make_namespace()
+    target_ns = await make_namespace()
+
+    agent_id = "test-agent"
+    src_memory_id = uuid.uuid4()
+
+    # Generate and insert document in MongoDB
+    src_oid = ObjectId()
+    src_payload_ref = str(src_oid)
+    mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017"))
+    db = mongo_client.memory_archive
+    await db.episodes.insert_many(
+        [
+            {
+                "_id": src_oid,
+                "raw_data": "State digest verification content",
+                "source": "test_reconstructive_replay_digest_match",
+            },
+            {
+                "_id": ObjectId("000000000000000000000002"),
+                "raw_data": "This is a consolidated abstraction",
+                "source": "test_reconstructive_replay_digest_match",
+            },
+        ]
+    )
+
+    embedding = [0.1] * 768
+    assertion_type = "fact"
+    memory_type = "episodic"
+    metadata = {"source_text": "Digest validation episodic memory"}
+
+    # Define past timestamps
+    past_time = datetime.now(timezone.utc) - timedelta(days=2)
+    past_time = past_time.replace(microsecond=0)
+
+    # 2. Seed source memory and event log
+    async with scoped_pg_session(pool_proxy, source_ns) as conn:
+        await conn.execute(
+            """
+            INSERT INTO memories (id, namespace_id, agent_id, embedding, assertion_type, memory_type, payload_ref, metadata, valid_from, created_at)
+            VALUES ($1, $2, $3, $4::vector, $5, $6, $7, $8::jsonb, $9, $9)
+            """,
+            src_memory_id,
+            source_ns,
+            agent_id,
+            json.dumps(embedding),
+            assertion_type,
+            memory_type,
+            src_payload_ref,
+            metadata,
+            past_time,
+        )
+        await conn.execute(
+            """
+            INSERT INTO memory_salience (memory_id, agent_id, namespace_id, salience_score)
+            VALUES ($1, $2, $3, $4)
+            """,
+            src_memory_id,
+            agent_id,
+            source_ns,
+            0.5,
+        )
+
+        await append_event(
+            conn=conn,
+            namespace_id=source_ns,
+            agent_id=agent_id,
+            event_type="store_memory",
+            params={
+                "saga_id": str(uuid.uuid4()),
+                "memory_id": str(src_memory_id),
+                "payload_ref": src_payload_ref,
+                "assertion_type": assertion_type,
+                "entities": [],
+                "triplets": [],
+                "source_namespace_id": str(source_ns),
+            },
+        )
+
+        # Let's seed a consolidation run with KG edges as well
+        consolidated_memory_id = uuid.uuid4()
+        consolidation_payload_ref = "000000000000000000000002"
+
+        await conn.execute(
+            """
+            INSERT INTO kg_nodes (label, entity_type, namespace_id)
+            VALUES ($1, 'Entity', $2)
+            """,
+            "TargetEntity",
+            source_ns,
+        )
+        await conn.execute(
+            """
+            INSERT INTO kg_edges (subject_label, predicate, object_label, confidence, namespace_id)
+            VALUES ($1, $2, $3, $4, $5)
+            """,
+            "TargetEntity",
+            "linked_to",
+            "AnotherEntity",
+            0.9,
+            source_ns,
+        )
+
+        consol_res = await append_event(
+            conn=conn,
+            namespace_id=source_ns,
+            agent_id=agent_id,
+            event_type="consolidation_run",
+            params={
+                "abstraction": "This is a consolidated abstraction",
+                "key_entities": ["TargetEntity"],
+                "key_relations": [
+                    {"subject": "TargetEntity", "predicate": "linked_to", "object": "AnotherEntity"}
+                ],
+                "supporting_memory_ids": [str(src_memory_id)],
+                "contradicting_memory_ids": [],
+                "confidence": 0.9,
+                "source_memories": [str(src_memory_id)],
+                "consolidated_memory_id": str(consolidated_memory_id),
+                "payload_ref": consolidation_payload_ref,
+                "source_namespace_id": str(source_ns),
+            },
+        )
+
+        from nce import embeddings as _emb
+
+        consol_vector = await _emb.embed("This is a consolidated abstraction")
+
+        await conn.execute(
+            """
+            INSERT INTO memories (
+                id, namespace_id, agent_id,
+                embedding, assertion_type, memory_type,
+                payload_ref, metadata,
+                valid_from, created_at
+            ) VALUES (
+                $1, $2, $3,
+                $4::vector, 'fact', 'consolidated',
+                $5, $6::jsonb,
+                $7, $8
+            )
+            """,
+            consolidated_memory_id,
+            source_ns,
+            agent_id,
+            json.dumps(consol_vector),
+            consolidation_payload_ref,
+            json.dumps({}),
+            consol_res.occurred_at,
+            consol_res.occurred_at,
+        )
+
+    # 3. Setup replay monkeypatching to support type conversions and JSON parsing if needed
+    import nce.replay as replay_mod
+
+    class ConnectionProxy:
+        def __init__(self, c):
+            self._conn = c
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        async def execute(self, query, *args, **kwargs):
+            new_args = list(args)
+            new_query = query
+            if "INSERT INTO memories" in query:
+                if len(new_args) >= 4 and isinstance(new_args[3], list):
+                    new_args[3] = json.dumps(new_args[3])
+                new_query = new_query.replace("$4,", "$4::vector,")
+                for i, val in enumerate(new_args):
+                    if i == 3:
+                        continue
+                    if isinstance(val, str) and (val.startswith("{") or val.startswith("[")):
+                        try:
+                            new_args[i] = json.loads(val)
+                        except Exception:
+                            pass
+            return await self._conn.execute(new_query, *new_args, **kwargs)
+
+    original_dispatch = replay_mod._dispatch_and_apply_event
+
+    async def mock_dispatch(
+        write_conn,
+        src,
+        target_namespace_id,
+        llm_payload,
+        config_overrides,
+        run_id,
+        source_namespace_id,
+        **kwargs,
+    ):
+        if src.event_type == "consolidation_run" and llm_payload is None:
+            llm_payload = {
+                "prompt": "fake prompt",
+                "response": {
+                    "abstraction": src.params.get("abstraction", "Consolidated memory abstraction"),
+                    "confidence": src.params.get("confidence", 0.9),
+                    "supporting_memory_ids": src.params.get("supporting_memory_ids", []),
+                    "key_entities": src.params.get("key_entities", []),
+                    "key_relations": src.params.get("key_relations", []),
+                },
+            }
+        proxy = ConnectionProxy(write_conn)
+        return await original_dispatch(
+            proxy,
+            src=src,
+            target_namespace_id=target_namespace_id,
+            llm_payload=llm_payload,
+            config_overrides=config_overrides,
+            run_id=run_id,
+            source_namespace_id=source_namespace_id,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(replay_mod, "_dispatch_and_apply_event", mock_dispatch)
+
+    original_build_query = replay_mod._build_event_query
+
+    def mock_build_query(**kwargs):
+        sql, args = original_build_query(**kwargs)
+        sql = sql.replace("SELECT\n            id,", "SELECT\n            id, namespace_id,")
+        return sql, args
+
+    monkeypatch.setattr(replay_mod, "_build_event_query", mock_build_query)
+
+    original_to_event_row = replay_mod._record_to_event_row
+
+    def mock_to_event_row(record):
+        rec_dict = dict(record)
+        params = rec_dict.get("params")
+        if isinstance(params, str):
+            rec_dict["params"] = json.loads(params)
+        result_summary = rec_dict.get("result_summary")
+        if isinstance(result_summary, str):
+            rec_dict["result_summary"] = json.loads(result_summary)
+        return original_to_event_row(rec_dict)
+
+    monkeypatch.setattr(replay_mod, "_record_to_event_row", mock_to_event_row)
+
+    # 4. Run ReconstructiveReplay
+    replay = ReconstructiveReplay(pool_proxy)
+    events_applied = []
+    async for item in replay.execute(
+        source_namespace_id=source_ns,
+        target_namespace_id=target_ns,
+        end_seq=2,
+        start_seq=1,
+    ):
+        events_applied.append(item)
+
+    # Verify complete event exists
+    complete_event = next(item for item in events_applied if item.get("type") == "complete")
+    run_id = uuid.UUID(complete_event["run_id"])
+
+    # 5. Check run status details
+    status = await get_run_status(pool_proxy, run_id)
+    assert status["digest_match"] is True, (
+        f"Digest mismatch! Source: {status['source_state_digest']}, Target: {status['target_state_digest']}"
+    )
+    assert status["source_state_digest"] is not None
+    assert status["target_state_digest"] is not None
+    assert status["source_state_digest"] == status["target_state_digest"]
+
+    # Let's clean up MongoDB
+    await db.episodes.delete_many({"_id": {"$in": [src_oid, ObjectId("000000000000000000000002")]}})
+    mongo_client.close()

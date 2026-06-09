@@ -598,7 +598,10 @@ CREATE TABLE IF NOT EXISTS replay_runs (
     events_applied       BIGINT NOT NULL DEFAULT 0,
     started_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at          TIMESTAMPTZ,
-    error                TEXT
+    error                TEXT,
+    source_state_digest  TEXT,
+    target_state_digest  TEXT,
+    digest_match         BOOLEAN
 );
 
 DO $$

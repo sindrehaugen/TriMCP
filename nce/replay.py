@@ -260,7 +260,8 @@ async def get_run_status(
             SELECT id, source_namespace_id, target_namespace_id,
                    mode, replay_mode, start_seq, end_seq, divergence_seq,
                    config_overrides, status, events_applied,
-                   started_at, finished_at, error
+                   started_at, finished_at, error,
+                   source_state_digest, target_state_digest, digest_match
             FROM replay_runs WHERE id = $1
             """,
             run_id,
@@ -284,6 +285,9 @@ async def get_run_status(
         "started_at": row["started_at"].isoformat() if row["started_at"] else None,
         "finished_at": row["finished_at"].isoformat() if row["finished_at"] else None,
         "error": row["error"],
+        "source_state_digest": row["source_state_digest"],
+        "target_state_digest": row["target_state_digest"],
+        "digest_match": row["digest_match"],
     }
 
 
@@ -586,7 +590,7 @@ async def _handle_store_memory(
 
         src_row = await conn.fetchrow(
             """
-            SELECT embedding, assertion_type, memory_type, metadata, valid_from
+            SELECT embedding, assertion_type, memory_type, metadata, valid_from, created_at
             FROM memories
             WHERE id = $1 AND namespace_id = $2
               AND valid_to IS NULL
@@ -618,12 +622,12 @@ async def _handle_store_memory(
                 id, namespace_id, agent_id,
                 embedding, assertion_type, memory_type,
                 payload_ref, metadata,
-                valid_from
+                valid_from, created_at
             ) VALUES (
                 $1, $2, $3,
                 $4, $5, $6,
                 $7, $8::jsonb,
-                $9
+                $9, $10
             )
             ON CONFLICT DO NOTHING
             """,
@@ -636,6 +640,7 @@ async def _handle_store_memory(
             target_payload_ref,
             json.dumps(meta),
             src_row["valid_from"],
+            src_row["created_at"],
         )
 
         # Carry over salience score if it exists in the source namespace
@@ -701,7 +706,7 @@ async def _handle_forget_memory(
     result = await conn.execute(
         """
         UPDATE memories
-        SET valid_to = now()
+        SET valid_to = $4
         WHERE namespace_id = $1
           AND agent_id = $2
           AND valid_to IS NULL
@@ -710,6 +715,7 @@ async def _handle_forget_memory(
         ctx.target_namespace_id,
         src.agent_id,
         src_memory_id,
+        src.occurred_at,
     )
     return {"rows_expired": int(result.split()[-1])}
 
@@ -838,22 +844,28 @@ async def _handle_consolidation_run(
         else:
             new_memory_id = uuid.uuid4()
 
-        # Fetch valid_from from source memories table if it exists
+        # Fetch valid_from and created_at from source memories table if it exists
         raw_src_ns = src.params.get("source_namespace_id")
         src_ns_id = uuid.UUID(raw_src_ns) if raw_src_ns else None
         src_valid_from = None
+        src_created_at = None
         if consolidated_memory_id_str and src_ns_id:
             try:
-                src_valid_from = await conn.fetchval(
-                    "SELECT valid_from FROM memories WHERE id = $1 AND namespace_id = $2",
+                row = await conn.fetchrow(
+                    "SELECT valid_from, created_at FROM memories WHERE id = $1 AND namespace_id = $2",
                     uuid.UUID(consolidated_memory_id_str),
                     src_ns_id,
                 )
+                if row:
+                    src_valid_from = row["valid_from"]
+                    src_created_at = row["created_at"]
             except Exception:
                 pass
 
         if src_valid_from is None:
             src_valid_from = src.occurred_at
+        if src_created_at is None:
+            src_created_at = src.occurred_at
 
         # Embed the abstraction (reuse the existing embedding infrastructure
         # via a direct import; avoids circular deps since we don't import engine).
@@ -861,18 +873,27 @@ async def _handle_consolidation_run(
 
         vector = await _emb.embed(abstraction)
 
+        meta = {
+            "source_memory_ids": response.get("supporting_memory_ids", []),
+            "key_entities": response.get("key_entities", []),
+            "key_relations": response.get("key_relations", []),
+            "replay_fork": True,
+        }
+        if consolidated_memory_id_str:
+            meta["source_memory_id"] = consolidated_memory_id_str
+
         await conn.execute(
             """
             INSERT INTO memories (
                 id, namespace_id, agent_id,
                 embedding, assertion_type, memory_type,
                 payload_ref, metadata,
-                valid_from
+                valid_from, created_at
             ) VALUES (
                 $1, $2, $3,
                 $4, 'fact', 'consolidated',
                 $5, $6::jsonb,
-                $7
+                $7, $8
             )
             ON CONFLICT DO NOTHING
             """,
@@ -881,16 +902,40 @@ async def _handle_consolidation_run(
             src.agent_id,
             vector,
             target_payload_ref,
-            json.dumps(
-                {
-                    "source_memory_ids": response.get("supporting_memory_ids", []),
-                    "key_entities": response.get("key_entities", []),
-                    "key_relations": response.get("key_relations", []),
-                    "replay_fork": True,
-                }
-            ),
+            json.dumps(meta),
             src_valid_from,
+            src_created_at,
         )
+
+        # Populate target namespace KG nodes and edges
+        for entity in response.get("key_entities", []):
+            await conn.execute(
+                """
+                INSERT INTO kg_nodes (label, entity_type, namespace_id)
+                VALUES ($1, 'Entity', $2)
+                ON CONFLICT (label, namespace_id) DO NOTHING
+                """,
+                entity,
+                ctx.target_namespace_id,
+            )
+
+        for rel in response.get("key_relations", []):
+            subj = rel.get("subject")
+            pred = rel.get("predicate")
+            obj = rel.get("object")
+            if subj and pred and obj:
+                await conn.execute(
+                    """
+                    INSERT INTO kg_edges (subject_label, predicate, object_label, confidence, namespace_id)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (subject_label, predicate, object_label, namespace_id) DO NOTHING
+                    """,
+                    subj,
+                    pred,
+                    obj,
+                    confidence,
+                    ctx.target_namespace_id,
+                )
 
         # Route salience into memory_salience.salience_score
         salience_score = float(response.get("confidence", 0.0))
@@ -1738,6 +1783,46 @@ class ReconstructiveReplay:
                                 "run_id": str(run_id),
                                 "events_applied": events_applied,
                             }
+
+            # Calculate state digests
+            from nce.state_digest import compute_namespace_state_digest
+
+            source_digest = None
+            target_digest = None
+            digest_match = None
+
+            try:
+                async with self.pool.acquire(timeout=10.0) as digest_conn:
+                    as_of_dt = await digest_conn.fetchval(
+                        "SELECT occurred_at FROM event_log WHERE namespace_id = $1 AND event_seq = $2",
+                        source_namespace_id,
+                        end_seq,
+                    )
+                    source_digest = await compute_namespace_state_digest(
+                        digest_conn, source_namespace_id, as_of=as_of_dt
+                    )
+                    target_digest = await compute_namespace_state_digest(
+                        digest_conn, target_namespace_id, as_of=as_of_dt
+                    )
+                    digest_match = source_digest == target_digest
+            except Exception as e:
+                log.warning("Failed to compute namespace state digests: %s", e)
+
+            # Store digests in replay_runs
+            async with self.pool.acquire(timeout=10.0) as store_conn:
+                await store_conn.execute(
+                    """
+                    UPDATE replay_runs
+                    SET source_state_digest = $1,
+                        target_state_digest = $2,
+                        digest_match = $3
+                    WHERE id = $4
+                    """,
+                    source_digest,
+                    target_digest,
+                    digest_match,
+                    run_id,
+                )
 
             async with self.pool.acquire(timeout=10.0) as finish_conn:
                 await _finish_run(

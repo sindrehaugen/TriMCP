@@ -36,8 +36,8 @@
 * [DONE] Batch 26 — Snapshot import / restore (III.2) [PASSED TAG]
 * [DONE] Batch 27 — Deterministic identity remap (uuid5) in replay (Phase 2.1) [PASSED TAG]
 * [DONE] Batch 28 — Payload copy strategy (Phase 2.1b) [PASSED TAG]
-* [RUNNING] Batch 29 — Faithful timestamps with mandatory re-sign (Phase 2.2) [RUNNING TAG]
-* [LOCKED] Batch 30 — Namespace state-digest + equality gate (Phase 2.3) [NO TAG]
+* [DONE] Batch 29 — Faithful timestamps with mandatory re-sign (Phase 2.2) [PASSED TAG]
+* [RUNNING] Batch 30 — Namespace state-digest + equality gate (Phase 2.3) [WAITING TAG]
 * [LOCKED] Batch 31 — `settings` table migration (V.1a) [NO TAG]
 * [LOCKED] Batch 32 — `SettingsStore` accessor with precedence + cache (V.1b) [NO TAG]
 * [LOCKED] Batch 33 — Settings registry metadata (V.1a) [NO TAG]
@@ -281,6 +281,14 @@
 * **Structural Integrity Scoring:** Remapping UUIDs deterministically using `uuid.uuid5` keyed on the target namespace is robust and prevents duplicate constraint violations during reconstruction and replay executions. Decoupled, type-safe structures cleanly separate replayed event/memory logging from generation pathways.
 * **Contractual Test Fidelity:** High contract fidelity. The integration test suite runs end-to-end replay, asserting that remapped memories and event IDs are 100% identical and repeatable across multiple reconstruction executions.
 * **Identified System Flaws:** None. The changes preserve RLS and WORM properties and do not expose credentials.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 29 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_29.md`, and modified files: `nce/event_log.py`, `nce/replay.py`, `tests/test_replay_engine.py`, and `tests/test_replay_handlers_integration.py`.
+* **Structural Integrity Scoring:** Decoupling of timestamp preservation and sequence logic is structurally clean. Setting the valid_from timestamp and carrying it over during store_memory/consolidation replay runs matches the expected schema contracts.
+* **Contractual Test Fidelity:** High. The unit test `test_handle_store_memory_handler` in `tests/test_replay_engine.py` has been updated to include `valid_from` mocks and fully verify target insert parameters. The integration test `test_replay_deterministic_timestamp_preservation` verifies deterministic timestamp preservation and signature validity under real database constraints. All 12 tests pass successfully.
+* **Identified System Flaws:** None.
 * **Defensive Refactoring Correction Blueprint:** None
 
 [EOF: END OF REFACTORING LEDGER]

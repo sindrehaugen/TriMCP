@@ -148,20 +148,23 @@ async def test_replay_checksum_success_on_correct_hash(monkeypatch: pytest.Monke
 
 @pytest.mark.asyncio
 async def test_handle_store_memory_handler() -> None:
+    import json
     from unittest.mock import AsyncMock
 
     from bson import ObjectId
     from nce.replay import _handle_store_memory
 
     mock_conn = AsyncMock()
+    mock_valid_from = datetime.now(timezone.utc)
     # Mock conn.fetchrow for the source memories SELECT query and memory_salience SELECT query
     mock_conn.fetchrow.side_effect = [
-        # First query: SELECT embedding, assertion_type, memory_type, metadata FROM memories
+        # First query: SELECT embedding, assertion_type, memory_type, metadata, valid_from FROM memories
         {
             "embedding": [0.1] * 768,
             "assertion_type": "fact",
             "memory_type": "episodic",
             "metadata": {"some_key": "some_val"},
+            "valid_from": mock_valid_from,
         },
         # Second query: SELECT salience_score FROM memory_salience
         {
@@ -234,6 +237,8 @@ async def test_handle_store_memory_handler() -> None:
     assert args_memories[4] == "fact"
     assert args_memories[5] == "episodic"
     assert args_memories[6] == expected_target_ref
+    assert args_memories[7] == json.dumps({"some_key": "some_val", "source_memory_id": str(src_mem_id)})
+    assert args_memories[8] == mock_valid_from
 
     # Verify the arguments to INSERT INTO memory_salience
     salience_insert_call = mock_conn.execute.call_args_list[1]
@@ -245,6 +250,7 @@ async def test_handle_store_memory_handler() -> None:
     assert args_salience[1] == "agent-1"
     assert args_salience[2] == target_ns
     assert args_salience[3] == 0.85
+
 
 
 @pytest.mark.asyncio
