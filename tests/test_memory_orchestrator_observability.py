@@ -77,7 +77,6 @@ class TestSagaMetricsWrapsRealWork:
             f"non-trivial work — the context manager is wrapping nothing"
         )
 
-
     @pytest.mark.asyncio
     async def test_duration_non_zero_with_async_work(self, monkeypatch) -> None:
         """Same as above but with async work inside the context."""
@@ -214,7 +213,9 @@ class TestSagaMetricsSuccessFailureRecording:
         with SagaMetrics("store_memory"):
             pass
 
-        assert "success" in results, f"Expected 'success' result even with observability disabled, got {results}"
+        assert "success" in results, (
+            f"Expected 'success' result even with observability disabled, got {results}"
+        )
 
     def test_store_memory_non_opt_in_failure_emits_always(self, monkeypatch) -> None:
         """SagaMetrics for operation='store_memory' must emit failure metrics even when NCE_OBSERVABILITY_ENABLED is False."""
@@ -236,8 +237,9 @@ class TestSagaMetricsSuccessFailureRecording:
             with SagaMetrics("store_memory"):
                 raise ValueError("failed saga")
 
-        assert "failure" in results, f"Expected 'failure' result even with observability disabled, got {results}"
-
+        assert "failure" in results, (
+            f"Expected 'failure' result even with observability disabled, got {results}"
+        )
 
 
 # ===========================================================================
@@ -778,6 +780,7 @@ class TestMemoryOrchestratorObservabilityContract:
 # ===========================================================================
 # 5. RQ Trace Context Propagation Tests
 # ===========================================================================
+
 
 def test_rq_trace_context_propagation(monkeypatch) -> None:
     """Verify that enqueue_traced injects OpenTelemetry trace context and
