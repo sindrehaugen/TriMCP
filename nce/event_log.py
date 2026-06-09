@@ -952,6 +952,7 @@ async def append_event(
     llm_payload_uri: str | None = None,
     llm_payload_hash: bytes | None = None,
     correlation_id: uuid.UUID | None = None,
+    event_id: uuid.UUID | None = None,
 ) -> AppendResult:
     """
     Append one entry to the tamper-resistant ``event_log`` table.
@@ -1025,8 +1026,9 @@ async def append_event(
             f"Unexpected error allocating event_seq for namespace {namespace_id}: {exc}"
         ) from exc
 
-    # 6. Generate event UUID
-    event_id = uuid.uuid4()
+    # 6. Generate event UUID if not provided
+    if event_id is None:
+        event_id = uuid.uuid4()
 
     # Fetch previous chain hash (moved before signing so it can be bound into HMAC version 2)
     previous_chain_hash: bytes = await _fetch_previous_chain_hash(conn, namespace_id)
