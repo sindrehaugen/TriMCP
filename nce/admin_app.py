@@ -168,6 +168,21 @@ def build_admin_routes() -> list[Route]:
             methods=["GET"],
         ),
         Route(
+            "/api/admin/settings/pending",
+            endpoint=h.api_admin_settings_pending,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/settings/reset",
+            endpoint=h.api_admin_settings_reset,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/admin/settings/reload",
+            endpoint=h.api_admin_settings_reload,
+            methods=["POST"],
+        ),
+        Route(
             "/api/admin/settings/{key}",
             endpoint=h.api_admin_settings_get,
             methods=["GET"],

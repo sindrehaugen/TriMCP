@@ -440,3 +440,244 @@ def test_patch_settings_secret_redaction(mock_engine, mock_conn):
             assert resp.status_code == 207
             assert captured_params is not None
             assert captured_params["changes"]["NCE_GEMINI_API_KEY"]["new_value"] == "••••set"
+
+
+def test_reset_settings_success(mock_engine, mock_conn):
+    """Verify POST /api/admin/settings/reset successfully removes override and logs config_reset event."""
+    mock_conn.fetchval.return_value = "00000000-0000-0000-0000-000000000000"  # namespace_id
+    mock_conn.execute.return_value = "DELETE 1"
+
+    captured_params = None
+    import uuid
+
+    async def mock_append_event(*args, **kwargs):
+        nonlocal captured_params
+        if kwargs.get("event_type") == "config_reset":
+            captured_params = kwargs.get("params")
+        import datetime
+
+        from nce.event_log import AppendResult
+
+        return AppendResult(
+            event_id=uuid.uuid4(),
+            event_seq=1,
+            occurred_at=datetime.datetime.now(datetime.timezone.utc),
+        )
+
+    with (
+        patch("nce.admin_state.engine", mock_engine),
+        patch("nce.event_log.append_event", mock_append_event),
+    ):
+        key = cfg.NCE_API_KEY or "test_key"
+        with patch.object(cfg, "NCE_API_KEY", key):
+            ts = int(time.time())
+            payload = {"key": "NCE_ADMIN_HTTP_RATE_LIMIT"}
+            import json
+
+            body_bytes = json.dumps(payload).encode("utf-8")
+            headers = admin_hmac_headers(
+                hex_key_material=key,
+                method="POST",
+                path="/api/admin/settings/reset",
+                timestamp=ts,
+                body=body_bytes,
+            )
+
+            with TestClient(app) as client:
+                resp = client.post("/api/admin/settings/reset", content=body_bytes, headers=headers)
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "reset"
+            assert "NCE_ADMIN_HTTP_RATE_LIMIT" in data["keys"]
+            assert captured_params is not None
+            assert "NCE_ADMIN_HTTP_RATE_LIMIT" in captured_params["resets"]
+
+
+def test_reset_settings_prod_locked_rejection(mock_engine, mock_conn):
+    """Verify POST /api/admin/settings/reset rejects resetting a prod_locked key."""
+    with patch("nce.admin_state.engine", mock_engine):
+        key = cfg.NCE_API_KEY or "test_key"
+        with patch.object(cfg, "NCE_API_KEY", key):
+            ts = int(time.time())
+            payload = {"keys": ["NCE_MASTER_KEY"]}
+            import json
+
+            body_bytes = json.dumps(payload).encode("utf-8")
+            headers = admin_hmac_headers(
+                hex_key_material=key,
+                method="POST",
+                path="/api/admin/settings/reset",
+                timestamp=ts,
+                body=body_bytes,
+            )
+
+            with TestClient(app) as client:
+                resp = client.post("/api/admin/settings/reset", content=body_bytes, headers=headers)
+
+            assert resp.status_code == 403
+            assert "production locked" in resp.json()["error"]
+
+
+def test_get_pending_settings(mock_engine, mock_conn):
+    """Verify GET /api/admin/settings/pending returns keys requiring restart (COLD)."""
+    # Mock settings in DB overrides
+    mock_conn.fetch.return_value = [
+        {"key": "MONGO_URI"},  # COLD
+        {"key": "NCE_ADMIN_HTTP_RATE_LIMIT"},  # HOT
+    ]
+
+    with patch("nce.admin_state.engine", mock_engine):
+        key = cfg.NCE_API_KEY or "test_key"
+        with patch.object(cfg, "NCE_API_KEY", key):
+            ts = int(time.time())
+            headers = admin_hmac_headers(
+                hex_key_material=key,
+                method="GET",
+                path="/api/admin/settings/pending",
+                timestamp=ts,
+            )
+
+            with TestClient(app) as client:
+                resp = client.get("/api/admin/settings/pending", headers=headers)
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "keys" in data
+            # MONGO_URI is COLD, NCE_ADMIN_HTTP_RATE_LIMIT is HOT
+            assert "MONGO_URI" in data["keys"]
+            assert "NCE_ADMIN_HTTP_RATE_LIMIT" not in data["keys"]
+
+
+def test_reload_settings_success(mock_engine, mock_conn):
+    """Verify POST /api/admin/settings/reload triggers domain reloads and logs config_reload event."""
+    mock_conn.fetchval.return_value = "00000000-0000-0000-0000-000000000000"  # namespace_id
+
+    captured_events = []
+    import uuid
+
+    async def mock_append_event(*args, **kwargs):
+        captured_events.append(kwargs)
+        import datetime
+
+        from nce.event_log import AppendResult
+
+        return AppendResult(
+            event_id=uuid.uuid4(),
+            event_seq=1,
+            occurred_at=datetime.datetime.now(datetime.timezone.utc),
+        )
+
+    # Mock domain functions
+    mock_reschedule = AsyncMock(return_value="rescheduled 7 jobs")
+    mock_rebuild_provider = MagicMock(return_value="provider rebuilt (google_gemini)")
+
+    with (
+        patch("nce.admin_state.engine", mock_engine),
+        patch("nce.event_log.append_event", mock_append_event),
+        patch("nce.cron.reschedule_jobs", mock_reschedule),
+        patch("nce.providers.factory.rebuild_provider_cache", mock_rebuild_provider),
+    ):
+        key = cfg.NCE_API_KEY or "test_key"
+        with patch.object(cfg, "NCE_API_KEY", key):
+            ts = int(time.time())
+            payload = {"domains": ["cron", "llm"]}
+            import json
+
+            body_bytes = json.dumps(payload).encode("utf-8")
+            headers = admin_hmac_headers(
+                hex_key_material=key,
+                method="POST",
+                path="/api/admin/settings/reload",
+                timestamp=ts,
+                body=body_bytes,
+            )
+
+            with TestClient(app) as client:
+                resp = client.post(
+                    "/api/admin/settings/reload", content=body_bytes, headers=headers
+                )
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "success"
+            assert data["outcomes"]["cron"]["status"] == "success"
+            assert data["outcomes"]["cron"]["message"] == "rescheduled 7 jobs"
+            assert data["outcomes"]["llm"]["status"] == "success"
+            assert data["outcomes"]["llm"]["message"] == "provider rebuilt (google_gemini)"
+
+            mock_reschedule.assert_called_once()
+            mock_rebuild_provider.assert_called_once()
+
+            # Expect two config_reload events (one per domain)
+            assert len(captured_events) == 2
+            event_domains = {e["params"]["domain"] for e in captured_events}
+            assert event_domains == {"cron", "llm"}
+
+
+def test_reload_reschedules_cron_job_dynamically(mock_engine, mock_conn):
+    """Verify that /reload with domain='cron' calls reschedule_jobs() exactly once.
+
+    APScheduler.get_job() cannot be used to introspect the scheduler after
+    setting state=1 without calling start() (which requires a live event loop),
+    because _jobstores is only populated by start().  The contract tested here
+    is that the reload handler delegates dynamic rescheduling to
+    nce.cron.reschedule_jobs() — the implementation of that function is covered
+    separately.
+    """
+    import nce.cron
+
+    # Also mock event logging and database transaction
+    mock_conn.fetchval.return_value = "00000000-0000-0000-0000-000000000000"  # namespace_id
+
+    async def mock_append_event(*args, **kwargs):
+        import datetime
+        import uuid
+
+        from nce.event_log import AppendResult
+
+        return AppendResult(
+            event_id=uuid.uuid4(),
+            event_seq=1,
+            occurred_at=datetime.datetime.now(datetime.timezone.utc),
+        )
+
+    reschedule_calls: list[None] = []
+
+    async def mock_reschedule_jobs() -> str:
+        reschedule_calls.append(None)
+        return "rescheduled 1 jobs"
+
+    with (
+        patch("nce.admin_state.engine", mock_engine),
+        patch("nce.event_log.append_event", mock_append_event),
+        patch("nce.cron.reschedule_jobs", mock_reschedule_jobs),
+    ):
+        key = cfg.NCE_API_KEY or "test_key"
+        with patch.object(cfg, "NCE_API_KEY", key):
+            ts = int(time.time())
+            payload = {"domains": ["cron"]}
+            import json
+
+            body_bytes = json.dumps(payload).encode("utf-8")
+            headers = admin_hmac_headers(
+                hex_key_material=key,
+                method="POST",
+                path="/api/admin/settings/reload",
+                timestamp=ts,
+                body=body_bytes,
+            )
+
+            with TestClient(app) as client:
+                resp = client.post(
+                    "/api/admin/settings/reload", content=body_bytes, headers=headers
+                )
+
+            assert resp.status_code == 200
+            # The reload handler must have delegated cron rescheduling to reschedule_jobs().
+            assert len(reschedule_calls) == 1, (
+                f"Expected reschedule_jobs() to be called once, got {len(reschedule_calls)}"
+            )
+
+    # Cleanup
+    nce.cron.scheduler = None

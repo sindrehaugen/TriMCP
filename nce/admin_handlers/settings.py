@@ -174,7 +174,9 @@ async def api_admin_settings_effective(request: Any) -> JSONResponse:
     if admin_state.engine.pg_pool:
         try:
             async with admin_state.engine.pg_pool.acquire(timeout=10.0) as conn:
-                rows = await conn.fetch("SELECT key, value, (secret_enc IS NOT NULL) AS has_secret, is_secret FROM settings")
+                rows = await conn.fetch(
+                    "SELECT key, value, (secret_enc IS NOT NULL) AS has_secret, is_secret FROM settings"
+                )
                 for row in rows:
                     db_overrides[row["key"]] = row
         except Exception as e:
@@ -533,3 +535,329 @@ async def api_admin_settings_patch(request: Any) -> JSONResponse:
         settings_store._local_cache.pop(key, None)
 
     return JSONResponse({"settings": results}, status_code=207)
+
+
+async def api_admin_settings_reset(request: Any) -> JSONResponse:
+    """POST /api/admin/settings/reset
+
+    Reverts specified configuration settings to their environment or registry defaults by
+    deleting database overrides. Logs signed config_reset events.
+    """
+    if not admin_state.engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    keys: list[str] = []
+    if isinstance(body, dict):
+        if "key" in body:
+            if isinstance(body["key"], str):
+                keys = [body["key"]]
+            else:
+                return JSONResponse({"error": "Field 'key' must be a string"}, status_code=422)
+        elif "keys" in body:
+            if isinstance(body["keys"], list) and all(isinstance(k, str) for k in body["keys"]):
+                keys = list(body["keys"])
+            else:
+                return JSONResponse(
+                    {"error": "Field 'keys' must be a list of strings"}, status_code=422
+                )
+        else:
+            return JSONResponse(
+                {"error": "Payload must contain either 'key' or 'keys'"}, status_code=422
+            )
+    else:
+        return JSONResponse({"error": "Payload must be a dictionary"}, status_code=422)
+
+    for key in keys:
+        if key not in REGISTRY:
+            return JSONResponse(
+                {"error": f"Setting key '{key}' not found in registry"}, status_code=404
+            )
+        metadata = REGISTRY[key]
+        if metadata.prod_locked:
+            return JSONResponse(
+                {"error": f"Setting '{key}' is production locked and cannot be reset"},
+                status_code=403,
+            )
+
+    # Extract actor (agent_id)
+    agent_id = "admin"
+    ns_ctx = getattr(request.state, "namespace_ctx", None)
+    if ns_ctx and ns_ctx.agent_id:
+        agent_id = ns_ctx.agent_id
+    else:
+        agent_id = request.headers.get("x-nce-agent-id") or "admin"
+
+    # For each key, resolve what value it will revert to (env or registry default)
+    resets: dict[str, Any] = {}
+    for key in keys:
+        metadata = REGISTRY[key]
+        if key in os.environ:
+            new_val = getattr(cfg, key, None)
+            source = "env"
+        else:
+            new_val = getattr(cfg, key, None)
+            source = "default"
+
+        redacted_val: Any = None
+        if metadata.is_secret:
+            redacted_val = "••••set" if new_val is not None else "••••unset"
+        else:
+            redacted_val = new_val
+
+        resets[key] = {
+            "source": source,
+            "new_value": redacted_val,
+        }
+
+    import uuid
+
+    from nce import settings_store
+
+    try:
+        async with admin_state.engine.pg_pool.acquire(timeout=10.0) as conn:
+            async with conn.transaction():
+                # Perform DELETE
+                await conn.execute("DELETE FROM settings WHERE key = ANY($1)", keys)
+
+                # Fetch ns_id
+                ns_id = None
+                if ns_ctx and ns_ctx.namespace_id:
+                    ns_id = ns_ctx.namespace_id
+
+                if not ns_id:
+                    ns_id_raw = await conn.fetchval(
+                        "SELECT id FROM namespaces WHERE slug = '_global_legacy'"
+                    )
+                    if not ns_id_raw:
+                        ns_id_raw = await conn.fetchval(
+                            "SELECT id FROM namespaces ORDER BY created_at ASC LIMIT 1"
+                        )
+                    if ns_id_raw:
+                        ns_id = (
+                            uuid.UUID(str(ns_id_raw))
+                            if not isinstance(ns_id_raw, uuid.UUID)
+                            else ns_id_raw
+                        )
+
+                if not ns_id:
+                    raise RuntimeError("No namespace found to log config_reset event")
+
+                from nce.event_log import append_event
+
+                await append_event(
+                    conn=conn,
+                    namespace_id=ns_id,
+                    agent_id=agent_id,
+                    event_type="config_reset",
+                    params={
+                        "actor": agent_id,
+                        "resets": resets,
+                    },
+                )
+    except Exception as exc:
+        logger.exception("Failed to reset settings transactionally: %s", exc)
+        return JSONResponse({"error": f"Database transaction failed: {exc}"}, status_code=500)
+
+    # Post-commit cache invalidation
+    active_redis = admin_state.engine.redis_client
+    if active_redis:
+        try:
+            for key in keys:
+                await active_redis.hdel("nce:settings:overrides", key)
+                await active_redis.publish("nce:settings:invalidate", key)
+        except Exception as e:
+            logger.warning("Failed to invalidate Redis cache post-commit: %s", e)
+
+    for key in keys:
+        settings_store._local_cache.pop(key, None)
+
+    return JSONResponse({"status": "reset", "keys": keys})
+
+
+async def api_admin_settings_pending(request: Any) -> JSONResponse:
+    """GET /api/admin/settings/pending
+
+    Returns a list of overridden settings keys that have reload_class="COLD",
+    meaning they require a system restart to take effect.
+    """
+    if not admin_state.engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    db_keys: list[str] = []
+    if admin_state.engine.pg_pool:
+        try:
+            async with admin_state.engine.pg_pool.acquire(timeout=10.0) as conn:
+                rows = await conn.fetch("SELECT key FROM settings")
+                db_keys = [r["key"] for r in rows]
+        except Exception as e:
+            logger.error("Failed to fetch settings overrides for pending: %s", e)
+            return JSONResponse({"error": f"Database query failed: {e}"}, status_code=500)
+
+    cold_keys = []
+    for key in db_keys:
+        if key in REGISTRY:
+            metadata = REGISTRY[key]
+            if metadata.reload_class == "COLD":
+                cold_keys.append(key)
+
+    return JSONResponse({"keys": cold_keys})
+
+
+async def api_admin_settings_reload(request: Any) -> JSONResponse:
+    """POST /api/admin/settings/reload
+
+    Triggers WARM reloads for selected domains (cron, llm, observability, a2a) and logs
+    signed config_reload events.
+    """
+    if not admin_state.engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    if not isinstance(body, dict) or "domains" not in body:
+        return JSONResponse({"error": "Payload must contain a 'domains' list"}, status_code=422)
+
+    domains = body["domains"]
+    if not isinstance(domains, list) or not all(isinstance(d, str) for d in domains):
+        return JSONResponse({"error": "Field 'domains' must be a list of strings"}, status_code=422)
+
+    VALID_DOMAINS = {"cron", "llm", "observability", "a2a"}
+    for d in domains:
+        if d not in VALID_DOMAINS:
+            return JSONResponse(
+                {
+                    "error": f"Invalid domain '{d}'. Valid domains are: cron, llm, observability, a2a"
+                },
+                status_code=422,
+            )
+
+    from nce import settings_store
+
+    settings_store._local_cache.clear()
+
+    outcomes: dict[str, dict[str, Any]] = {}
+    successful_domains: list[str] = []
+
+    for domain in domains:
+        if domain == "cron":
+            try:
+                from nce.cron import reschedule_jobs
+
+                msg = await reschedule_jobs()
+                outcomes["cron"] = {"status": "success", "message": msg}
+                successful_domains.append("cron")
+            except Exception as e:
+                logger.exception("Failed to reload domain 'cron'")
+                outcomes["cron"] = {"status": "error", "message": str(e)}
+
+        elif domain == "llm":
+            try:
+                from nce.providers.factory import rebuild_provider_cache
+
+                msg = rebuild_provider_cache()
+                outcomes["llm"] = {"status": "success", "message": msg}
+                successful_domains.append("llm")
+            except Exception as e:
+                logger.exception("Failed to reload domain 'llm'")
+                outcomes["llm"] = {"status": "error", "message": str(e)}
+
+        elif domain == "observability":
+            try:
+                import nce.observability
+
+                nce.observability._tracer_initialized = False
+                nce.observability.init_observability()
+                outcomes["observability"] = {
+                    "status": "success",
+                    "message": "observability initialized",
+                }
+                successful_domains.append("observability")
+            except Exception as e:
+                logger.exception("Failed to reload domain 'observability'")
+                outcomes["observability"] = {"status": "error", "message": str(e)}
+
+        elif domain == "a2a":
+            try:
+                from nce.jwt_auth import _load_public_key
+
+                _load_public_key.cache_clear()
+                outcomes["a2a"] = {"status": "success", "message": "jwt public key cache cleared"}
+                successful_domains.append("a2a")
+            except Exception as e:
+                logger.exception("Failed to reload domain 'a2a'")
+                outcomes["a2a"] = {"status": "error", "message": str(e)}
+
+    last_event_id = None
+    if successful_domains:
+        # Extract actor (agent_id)
+        agent_id = "admin"
+        ns_ctx = getattr(request.state, "namespace_ctx", None)
+        if ns_ctx and ns_ctx.agent_id:
+            agent_id = ns_ctx.agent_id
+        else:
+            agent_id = request.headers.get("x-nce-agent-id") or "admin"
+
+        import uuid
+
+        try:
+            async with admin_state.engine.pg_pool.acquire(timeout=10.0) as conn:
+                async with conn.transaction():
+                    # Fetch ns_id
+                    ns_id = None
+                    if ns_ctx and ns_ctx.namespace_id:
+                        ns_id = ns_ctx.namespace_id
+
+                    if not ns_id:
+                        ns_id_raw = await conn.fetchval(
+                            "SELECT id FROM namespaces WHERE slug = '_global_legacy'"
+                        )
+                        if not ns_id_raw:
+                            ns_id_raw = await conn.fetchval(
+                                "SELECT id FROM namespaces ORDER BY created_at ASC LIMIT 1"
+                            )
+                        if ns_id_raw:
+                            ns_id = (
+                                uuid.UUID(str(ns_id_raw))
+                                if not isinstance(ns_id_raw, uuid.UUID)
+                                else ns_id_raw
+                            )
+
+                    if not ns_id:
+                        raise RuntimeError("No namespace found to log config_reload event")
+
+                    from nce.event_log import append_event
+
+                    for dom in successful_domains:
+                        res = await append_event(
+                            conn=conn,
+                            namespace_id=ns_id,
+                            agent_id=agent_id,
+                            event_type="config_reload",
+                            params={
+                                "actor": agent_id,
+                                "domain": dom,
+                                "message": outcomes[dom]["message"],
+                            },
+                        )
+                        if res and getattr(res, "event_id", None):
+                            last_event_id = str(res.event_id)
+        except Exception as exc:
+            logger.exception("Failed to write config_reload events transactionally: %s", exc)
+            return JSONResponse({"error": f"Database transaction failed: {exc}"}, status_code=500)
+
+    response_payload: dict[str, Any] = {
+        "status": "success",
+        "outcomes": outcomes,
+    }
+    if last_event_id:
+        response_payload["last_event_id"] = last_event_id
+
+    return JSONResponse(response_payload)

@@ -644,7 +644,104 @@ async def _chain_verification_tick(pool: asyncpg.Pool) -> None:
         await release_cron_lock(lock)
 
 
+scheduler: AsyncIOScheduler | None = None
+
+
+async def reschedule_jobs() -> str:
+    """Reschedule active jobs with the latest configuration values from SettingsStore."""
+    global scheduler
+    if not scheduler or not scheduler.running:
+        return "scheduler not active"
+
+    from nce.settings_store import get as store_get
+
+    rescheduled = []
+
+    # 1. bridge_subscription_renewal
+    try:
+        renewal_min = await store_get("BRIDGE_CRON_INTERVAL_MINUTES", cfg.BRIDGE_CRON_INTERVAL_MINUTES)
+        scheduler.reschedule_job(
+            "bridge_subscription_renewal",
+            trigger=IntervalTrigger(minutes=max(1, int(renewal_min)))
+        )
+        rescheduled.append("bridge_subscription_renewal")
+    except Exception:
+        pass
+
+    # 2. phase_2_1_reembedding
+    try:
+        reembed_min = await store_get("REEMBED_CRON_INTERVAL_MINUTES", cfg.REEMBED_CRON_INTERVAL_MINUTES)
+        scheduler.reschedule_job(
+            "phase_2_1_reembedding",
+            trigger=IntervalTrigger(minutes=max(1, int(reembed_min)))
+        )
+        rescheduled.append("phase_2_1_reembedding")
+    except Exception:
+        pass
+
+    # 3. sleep_consolidation
+    try:
+        consolidation_min = await store_get("CONSOLIDATION_CRON_INTERVAL_MINUTES", cfg.CONSOLIDATION_CRON_INTERVAL_MINUTES)
+        scheduler.reschedule_job(
+            "sleep_consolidation",
+            trigger=IntervalTrigger(minutes=max(1, int(consolidation_min)))
+        )
+        rescheduled.append("sleep_consolidation")
+    except Exception:
+        pass
+
+    # 4. outbox_relay
+    try:
+        outbox_sec = await store_get("OUTBOX_RELAY_INTERVAL_SECONDS", cfg.OUTBOX_RELAY_INTERVAL_SECONDS)
+        scheduler.reschedule_job(
+            "outbox_relay",
+            trigger=IntervalTrigger(seconds=max(1, int(outbox_sec)))
+        )
+        rescheduled.append("outbox_relay")
+    except Exception:
+        pass
+
+    # 5. d365_entity_sync
+    if cfg.NCE_D365_ENABLED:
+        try:
+            d365_min = await store_get("NCE_D365_SYNC_INTERVAL_MINUTES", cfg.NCE_D365_SYNC_INTERVAL_MINUTES)
+            scheduler.reschedule_job(
+                "d365_entity_sync",
+                trigger=IntervalTrigger(minutes=max(5, int(d365_min)))
+            )
+            rescheduled.append("d365_entity_sync")
+        except Exception:
+            pass
+
+    # 6. d365_netbox_bridge
+    if cfg.NCE_D365_NETBOX_BRIDGE_ENABLED:
+        try:
+            netbox_min = await store_get("NCE_D365_NETBOX_BRIDGE_INTERVAL_MINUTES", cfg.NCE_D365_NETBOX_BRIDGE_INTERVAL_MINUTES)
+            scheduler.reschedule_job(
+                "d365_netbox_bridge",
+                trigger=IntervalTrigger(minutes=max(10, int(netbox_min)))
+            )
+            rescheduled.append("d365_netbox_bridge")
+        except Exception:
+            pass
+
+    # 7. chain_verification
+    try:
+        verify_min = await store_get("NCE_CHAIN_VERIFY_INTERVAL_MINUTES", cfg.NCE_CHAIN_VERIFY_INTERVAL_MINUTES)
+        scheduler.reschedule_job(
+            "chain_verification",
+            trigger=IntervalTrigger(minutes=max(5, int(verify_min)))
+        )
+        rescheduled.append("chain_verification")
+    except Exception:
+        pass
+
+    return f"rescheduled {len(rescheduled)} jobs"
+
+
 async def async_main() -> None:
+    global scheduler
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [nce.cron] %(levelname)s %(message)s",

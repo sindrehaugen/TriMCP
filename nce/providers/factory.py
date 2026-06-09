@@ -285,3 +285,12 @@ def _global_provider_label() -> str:
     from nce.config import cfg
 
     return cfg.NCE_LLM_PROVIDER or "local-cognitive-model"
+
+
+def rebuild_provider_cache() -> str:
+    """Clear the LRU cache of build provider instances, forcing them to rebuild with new config."""
+    _cached_build_provider.cache_clear()
+    label = _global_provider_label()
+    log.info("Cleared LLM provider factory cache. Next resolution will use provider: %s", label)
+    return f"provider rebuilt ({label})"
+
