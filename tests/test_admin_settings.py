@@ -29,6 +29,10 @@ def bypass_lifespan():
 @pytest.fixture
 def mock_conn():
     c = AsyncMock()
+    tx = MagicMock()
+    tx.__aenter__ = AsyncMock()
+    tx.__aexit__ = AsyncMock()
+    c.transaction = MagicMock(return_value=tx)
     return c
 
 
@@ -228,3 +232,211 @@ def test_get_single_setting_not_found(mock_engine, mock_conn):
             with TestClient(app) as client:
                 resp = client.get("/api/admin/settings/NON_EXISTENT_KEY", headers=headers)
             assert resp.status_code == 404
+
+
+def test_patch_settings_success(mock_engine, mock_conn):
+    """Verify PATCH /api/admin/settings successfully updates HOT settings and logs config_changed event."""
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchrow.return_value = None
+    mock_conn.fetchval.return_value = "00000000-0000-0000-0000-000000000000"  # namespace_id
+    mock_conn.execute.return_value = "UPDATE 1"
+
+    with patch("nce.admin_state.engine", mock_engine):
+        key = cfg.NCE_API_KEY or "test_key"
+        with patch.object(cfg, "NCE_API_KEY", key):
+            ts = int(time.time())
+
+            payload = {
+                "settings": {
+                    "NCE_ADMIN_HTTP_RATE_LIMIT": {"value": 50, "expected_updated_at": None}
+                },
+                "reason": "Test patch",
+            }
+
+            import json
+
+            body_bytes = json.dumps(payload).encode("utf-8")
+            headers = admin_hmac_headers(
+                hex_key_material=key,
+                method="PATCH",
+                path="/api/admin/settings",
+                timestamp=ts,
+                body=body_bytes,
+            )
+
+            with TestClient(app) as client:
+                resp = client.patch("/api/admin/settings", content=body_bytes, headers=headers)
+
+            assert resp.status_code == 207
+            data = resp.json()
+            assert "settings" in data
+            assert "NCE_ADMIN_HTTP_RATE_LIMIT" in data["settings"]
+            assert data["settings"]["NCE_ADMIN_HTTP_RATE_LIMIT"]["status"] == "applied"
+
+
+def test_patch_settings_prod_locked_rejection(mock_engine, mock_conn):
+    """Verify PATCH /api/admin/settings rejects prod_locked settings with 403-class response in Multi-Status."""
+    mock_conn.fetch.return_value = []
+
+    with patch("nce.admin_state.engine", mock_engine):
+        key = cfg.NCE_API_KEY or "test_key"
+        with patch.object(cfg, "NCE_API_KEY", key):
+            ts = int(time.time())
+
+            payload = {"settings": {"NCE_MASTER_KEY": {"value": "new_master_key"}}}
+
+            import json
+
+            body_bytes = json.dumps(payload).encode("utf-8")
+            headers = admin_hmac_headers(
+                hex_key_material=key,
+                method="PATCH",
+                path="/api/admin/settings",
+                timestamp=ts,
+                body=body_bytes,
+            )
+
+            with TestClient(app) as client:
+                resp = client.patch("/api/admin/settings", content=body_bytes, headers=headers)
+
+            assert resp.status_code == 207
+            data = resp.json()
+            assert "settings" in data
+            assert "NCE_MASTER_KEY" in data["settings"]
+            assert data["settings"]["NCE_MASTER_KEY"]["status"] == "rejected"
+            assert data["settings"]["NCE_MASTER_KEY"]["status_code"] == 403
+
+
+def test_patch_settings_optimistic_lock_rejection(mock_engine, mock_conn):
+    """Verify PATCH /api/admin/settings rejects stale expected_updated_at with 409-class response."""
+    import datetime
+
+    db_time = datetime.datetime.now(datetime.timezone.utc)
+
+    # Mock DB to return an existing override with different updated_at
+    mock_conn.fetch.return_value = [
+        {
+            "key": "NCE_ADMIN_HTTP_RATE_LIMIT",
+            "value": "100",
+            "secret_enc": None,
+            "is_secret": False,
+            "updated_by": "someone",
+            "updated_at": db_time,
+        }
+    ]
+
+    with patch("nce.admin_state.engine", mock_engine):
+        key = cfg.NCE_API_KEY or "test_key"
+        with patch.object(cfg, "NCE_API_KEY", key):
+            ts = int(time.time())
+
+            # Client expects updated_at to be db_time minus 1 hour (stale)
+            stale_time = (db_time - datetime.timedelta(hours=1)).isoformat()
+            payload = {
+                "settings": {
+                    "NCE_ADMIN_HTTP_RATE_LIMIT": {"value": 50, "expected_updated_at": stale_time}
+                }
+            }
+
+            import json
+
+            body_bytes = json.dumps(payload).encode("utf-8")
+            headers = admin_hmac_headers(
+                hex_key_material=key,
+                method="PATCH",
+                path="/api/admin/settings",
+                timestamp=ts,
+                body=body_bytes,
+            )
+
+            with TestClient(app) as client:
+                resp = client.patch("/api/admin/settings", content=body_bytes, headers=headers)
+
+            assert resp.status_code == 207
+            data = resp.json()
+            assert data["settings"]["NCE_ADMIN_HTTP_RATE_LIMIT"]["status"] == "rejected"
+            assert data["settings"]["NCE_ADMIN_HTTP_RATE_LIMIT"]["status_code"] == 409
+
+
+def test_patch_settings_validation_failure(mock_engine, mock_conn):
+    """Verify PATCH /api/admin/settings rejects invalid values with 422-class response."""
+    mock_conn.fetch.return_value = []
+
+    with patch("nce.admin_state.engine", mock_engine):
+        key = cfg.NCE_API_KEY or "test_key"
+        with patch.object(cfg, "NCE_API_KEY", key):
+            ts = int(time.time())
+
+            # NCE_ADMIN_HTTP_RATE_LIMIT expects an integer, pass a string
+            payload = {"settings": {"NCE_ADMIN_HTTP_RATE_LIMIT": {"value": "not_an_int"}}}
+
+            import json
+
+            body_bytes = json.dumps(payload).encode("utf-8")
+            headers = admin_hmac_headers(
+                hex_key_material=key,
+                method="PATCH",
+                path="/api/admin/settings",
+                timestamp=ts,
+                body=body_bytes,
+            )
+
+            with TestClient(app) as client:
+                resp = client.patch("/api/admin/settings", content=body_bytes, headers=headers)
+
+            assert resp.status_code == 207
+            data = resp.json()
+            assert data["settings"]["NCE_ADMIN_HTTP_RATE_LIMIT"]["status"] == "rejected"
+            assert data["settings"]["NCE_ADMIN_HTTP_RATE_LIMIT"]["status_code"] == 422
+
+
+def test_patch_settings_secret_redaction(mock_engine, mock_conn):
+    """Verify PATCH /api/admin/settings masks secret inputs to '••••set' in config_changed log."""
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchrow.return_value = None
+    mock_conn.fetchval.return_value = "00000000-0000-0000-0000-000000000000"
+
+    captured_params = None
+    import uuid
+
+    async def mock_append_event(*args, **kwargs):
+        nonlocal captured_params
+        if kwargs.get("event_type") == "config_changed":
+            captured_params = kwargs.get("params")
+        import datetime
+
+        from nce.event_log import AppendResult
+
+        return AppendResult(
+            event_id=uuid.uuid4(),
+            event_seq=1,
+            occurred_at=datetime.datetime.now(datetime.timezone.utc),
+        )
+
+    with (
+        patch("nce.admin_state.engine", mock_engine),
+        patch("nce.event_log.append_event", mock_append_event),
+    ):
+        key = cfg.NCE_API_KEY or "test_key"
+        with patch.object(cfg, "NCE_API_KEY", key):
+            ts = int(time.time())
+
+            payload = {"settings": {"NCE_GEMINI_API_KEY": {"value": "secret_gemini_key"}}}
+
+            import json
+
+            body_bytes = json.dumps(payload).encode("utf-8")
+            headers = admin_hmac_headers(
+                hex_key_material=key,
+                method="PATCH",
+                path="/api/admin/settings",
+                timestamp=ts,
+                body=body_bytes,
+            )
+
+            with TestClient(app) as client:
+                resp = client.patch("/api/admin/settings", content=body_bytes, headers=headers)
+
+            assert resp.status_code == 207
+            assert captured_params is not None
+            assert captured_params["changes"]["NCE_GEMINI_API_KEY"]["new_value"] == "••••set"

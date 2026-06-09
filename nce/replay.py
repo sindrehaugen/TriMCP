@@ -1057,6 +1057,7 @@ _additional_fork_provenance_types: tuple[str, ...] = (
     "signing_key_rotated",
     "chain_verification_failed",
     "atms_cascade",
+    "config_changed",
 )
 for _fork_et in _additional_fork_provenance_types:
     assert _fork_et not in _HANDLER_REGISTRY, (

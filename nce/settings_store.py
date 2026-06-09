@@ -214,6 +214,7 @@ async def set(
     *,
     pool: Any = None,
     redis_client: Any = None,
+    conn: Any = None,
 ) -> None:
     """
     Set a configuration override in the database.
@@ -234,9 +235,29 @@ async def set(
         secret_enc = None
         db_value = json.dumps(value)
 
-    if active_pool:
-        async with active_pool.acquire(timeout=10.0) as conn:
-            await conn.execute(
+    if conn:
+        await conn.execute(
+            """
+            INSERT INTO settings (key, value, secret_enc, is_secret, section, updated_by, updated_at)
+            VALUES ($1, $2::jsonb, $3, $4, $5, $6, NOW())
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value,
+                secret_enc = EXCLUDED.secret_enc,
+                is_secret = EXCLUDED.is_secret,
+                section = COALESCE(EXCLUDED.section, settings.section),
+                updated_by = EXCLUDED.updated_by,
+                updated_at = NOW()
+            """,
+            key,
+            db_value,
+            secret_enc,
+            is_secret,
+            section,
+            updated_by,
+        )
+    elif active_pool:
+        async with active_pool.acquire(timeout=10.0) as conn_to_use:
+            await conn_to_use.execute(
                 """
                 INSERT INTO settings (key, value, secret_enc, is_secret, section, updated_by, updated_at)
                 VALUES ($1, $2::jsonb, $3, $4, $5, $6, NOW())
@@ -258,21 +279,22 @@ async def set(
     else:
         raise RuntimeError("No database pool available to save setting.")
 
-    # Invalidate and populate Redis
-    if active_redis:
-        try:
-            cache_payload = {
-                "is_secret": is_secret,
-                "secret_enc_hex": secret_enc.hex() if secret_enc else None,
-                "value": value if not is_secret else None,
-            }
-            await active_redis.hset("nce:settings:overrides", key, json.dumps(cache_payload))
-            await active_redis.publish("nce:settings:invalidate", key)
-        except Exception as e:
-            logger.warning("Failed to update Redis cache for setting %s: %s", key, e)
+    # Invalidate and populate Redis if not inside a connection transaction
+    if not conn:
+        if active_redis:
+            try:
+                cache_payload = {
+                    "is_secret": is_secret,
+                    "secret_enc_hex": secret_enc.hex() if secret_enc else None,
+                    "value": value if not is_secret else None,
+                }
+                await active_redis.hset("nce:settings:overrides", key, json.dumps(cache_payload))
+                await active_redis.publish("nce:settings:invalidate", key)
+            except Exception as e:
+                logger.warning("Failed to update Redis cache for setting %s: %s", key, e)
 
-    # Invalidate local cache
-    _local_cache.pop(key, None)
+        # Invalidate local cache
+        _local_cache.pop(key, None)
 
 
 async def reset(key: str, *, pool: Any = None, redis_client: Any = None) -> None:

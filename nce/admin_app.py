@@ -161,6 +161,7 @@ def build_admin_routes() -> list[Route]:
         ),
         Route("/api/admin/quotas", endpoint=h.api_admin_quotas, methods=["GET"]),
         Route("/api/admin/settings", endpoint=h.api_admin_settings_list, methods=["GET"]),
+        Route("/api/admin/settings", endpoint=h.api_admin_settings_patch, methods=["PATCH"]),
         Route(
             "/api/admin/settings/effective",
             endpoint=h.api_admin_settings_effective,
