@@ -156,15 +156,17 @@ async def test_handle_store_memory_handler() -> None:
 
     mock_conn = AsyncMock()
     mock_valid_from = datetime.now(timezone.utc)
+    mock_created_at = datetime.now(timezone.utc)
     # Mock conn.fetchrow for the source memories SELECT query and memory_salience SELECT query
     mock_conn.fetchrow.side_effect = [
-        # First query: SELECT embedding, assertion_type, memory_type, metadata, valid_from FROM memories
+        # First query: SELECT embedding, assertion_type, memory_type, metadata, valid_from, created_at FROM memories
         {
             "embedding": [0.1] * 768,
             "assertion_type": "fact",
             "memory_type": "episodic",
             "metadata": {"some_key": "some_val"},
             "valid_from": mock_valid_from,
+            "created_at": mock_created_at,
         },
         # Second query: SELECT salience_score FROM memory_salience
         {
@@ -239,6 +241,7 @@ async def test_handle_store_memory_handler() -> None:
     assert args_memories[6] == expected_target_ref
     assert args_memories[7] == json.dumps({"some_key": "some_val", "source_memory_id": str(src_mem_id)})
     assert args_memories[8] == mock_valid_from
+    assert args_memories[9] == mock_created_at
 
     # Verify the arguments to INSERT INTO memory_salience
     salience_insert_call = mock_conn.execute.call_args_list[1]

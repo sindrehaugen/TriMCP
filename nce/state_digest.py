@@ -151,6 +151,8 @@ async def compute_namespace_state_digest(
                 content_str = code_contents.get(str(ref), "")
             else:
                 content_str = episode_contents.get(str(ref), "")
+        # Normalise line endings to ensure OS-independent hashes
+        content_str = content_str.replace("\r\n", "\n")
         payload_hash = hashlib.sha256(content_str.encode("utf-8")).hexdigest()
 
         # Format timestamps
