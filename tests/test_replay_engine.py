@@ -150,6 +150,7 @@ async def test_replay_checksum_success_on_correct_hash(monkeypatch: pytest.Monke
 async def test_handle_store_memory_handler() -> None:
     from unittest.mock import AsyncMock
 
+    from bson import ObjectId
     from nce.replay import _handle_store_memory
 
     mock_conn = AsyncMock()
@@ -218,6 +219,10 @@ async def test_handle_store_memory_handler() -> None:
     sql_query_memories = memories_insert_call[0][0]
     args_memories = memories_insert_call[0][1:]
 
+    # Under the payload copy strategy, target_payload_ref is derived deterministically using uuid5
+    derived_uuid = uuid.uuid5(target_ns, f"payload_ref:{payload_ref}")
+    expected_target_ref = str(ObjectId(derived_uuid.bytes[:12]))
+
     assert "INSERT INTO memories" in sql_query_memories
     assert "summary" not in sql_query_memories
     assert "salience" not in sql_query_memories
@@ -228,7 +233,7 @@ async def test_handle_store_memory_handler() -> None:
     assert args_memories[3] == [0.1] * 768
     assert args_memories[4] == "fact"
     assert args_memories[5] == "episodic"
-    assert args_memories[6] == payload_ref
+    assert args_memories[6] == expected_target_ref
 
     # Verify the arguments to INSERT INTO memory_salience
     salience_insert_call = mock_conn.execute.call_args_list[1]

@@ -953,6 +953,7 @@ async def append_event(
     llm_payload_hash: bytes | None = None,
     correlation_id: uuid.UUID | None = None,
     event_id: uuid.UUID | None = None,
+    replay_occurred_at: datetime | None = None,
 ) -> AppendResult:
     """
     Append one entry to the tamper-resistant ``event_log`` table.
@@ -1012,6 +1013,21 @@ async def append_event(
 
     # 4. Fetch DB clock (used in signature so it matches stored occurred_at)
     occurred_at: datetime = await _fetch_db_clock(conn)
+    if replay_occurred_at is not None:
+        replay_run_id = params.get("replay_run_id")
+        if replay_run_id:
+            try:
+                run_id_uuid = (
+                    uuid.UUID(replay_run_id) if isinstance(replay_run_id, str) else replay_run_id
+                )
+                run_mode = await conn.fetchval(
+                    "SELECT replay_mode FROM replay_runs WHERE id = $1",
+                    run_id_uuid,
+                )
+                if run_mode == "deterministic":
+                    occurred_at = replay_occurred_at.astimezone(timezone.utc)
+            except Exception as exc:
+                log.warning("Failed to verify replay mode for run %s: %s", replay_run_id, exc)
     occurred_at_iso: str = occurred_at.isoformat()
 
     # 5. Allocate event_seq (atomic event_sequences upsert)

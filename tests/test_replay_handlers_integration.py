@@ -636,3 +636,225 @@ async def test_replay_payload_copy_strategy(pg_pool, make_namespace, monkeypatch
         assert target_doc["source"] == src_doc["source"], "Metadata details should also match"
 
     mongo_client.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_replay_deterministic_timestamp_preservation(
+    pg_pool, make_namespace, monkeypatch
+) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from nce.event_log import verify_event_signature
+
+    pool_proxy = PoolProxy(pg_pool)
+
+    # 1. Create source and target namespaces
+    source_ns = await make_namespace()
+    target_ns = await make_namespace()
+
+    agent_id = "test-agent"
+    src_memory_id = uuid.uuid4()
+    payload_ref = "000000000000000000000001"
+    embedding = [0.1] * 768
+    assertion_type = "fact"
+    memory_type = "episodic"
+    metadata = {"source_text": "Timestamp preservation integration test"}
+
+    # Define past timestamps to assert deterministic preservation
+    # Backdate both occurred_at and valid_from by 1 day
+    past_time = datetime.now(timezone.utc) - timedelta(days=1)
+    past_time = past_time.replace(microsecond=0)
+
+    # 2. Seed source memory and event log with the specific past timestamps
+    async with scoped_pg_session(pool_proxy, source_ns) as conn:
+        await conn.execute(
+            """
+            INSERT INTO memories (id, namespace_id, agent_id, embedding, assertion_type, memory_type, payload_ref, metadata, valid_from)
+            VALUES ($1, $2, $3, $4::vector, $5, $6, $7, $8::jsonb, $9)
+            """,
+            src_memory_id,
+            source_ns,
+            agent_id,
+            json.dumps(embedding),
+            assertion_type,
+            memory_type,
+            payload_ref,
+            metadata,
+            past_time,
+        )
+
+        await conn.execute("ALTER TABLE event_log DISABLE TRIGGER trg_event_log_worm")
+        try:
+            # Append normally
+            res = await append_event(
+                conn=conn,
+                namespace_id=source_ns,
+                agent_id=agent_id,
+                event_type="store_memory",
+                params={
+                    "saga_id": str(uuid.uuid4()),
+                    "memory_id": str(src_memory_id),
+                    "payload_ref": payload_ref,
+                    "assertion_type": assertion_type,
+                    "entities": [],
+                    "triplets": [],
+                    "source_namespace_id": str(source_ns),
+                },
+            )
+            # Recompute signature and update event_log to match past_time
+            from nce.signing import get_active_key, sign_fields
+
+            key_id, raw_key = await get_active_key(conn)
+
+            row = await conn.fetchrow("SELECT * FROM event_log WHERE id = $1", res.event_id)
+            params = (
+                json.loads(row["params"]) if isinstance(row["params"], str) else dict(row["params"])
+            )
+
+            from nce.event_log import (
+                _GENESIS_SENTINEL,
+                _build_signing_fields,
+                _compute_chain_hash,
+                _compute_content_hash,
+            )
+
+            signing_fields = _build_signing_fields(
+                event_id=row["id"],
+                namespace_id=row["namespace_id"],
+                agent_id=row["agent_id"],
+                event_type=row["event_type"],
+                event_seq=row["event_seq"],
+                occurred_at_iso=past_time.isoformat(),
+                params=params,
+                parent_event_id=row["parent_event_id"],
+                prev_chain_hash_hex=_GENESIS_SENTINEL.hex(),
+            )
+            sig = sign_fields(signing_fields, raw_key)
+            c_hash = _compute_content_hash(signing_fields=signing_fields)
+            ch_hash = _compute_chain_hash(
+                content_hash=c_hash, previous_chain_hash=_GENESIS_SENTINEL
+            )
+
+            await conn.execute(
+                """
+                UPDATE event_log
+                SET occurred_at = $1, signature = $2, chain_hash = $3
+                WHERE id = $4
+                """,
+                past_time,
+                sig,
+                ch_hash,
+                row["id"],
+            )
+        finally:
+            await conn.execute("ALTER TABLE event_log ENABLE TRIGGER trg_event_log_worm")
+
+    # 3. Setup replay monkeypatching
+    import nce.replay as replay_mod
+
+    class ConnectionProxy:
+        def __init__(self, c):
+            self._conn = c
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        async def execute(self, query, *args, **kwargs):
+            new_args = list(args)
+            new_query = query
+            if "INSERT INTO memories" in query:
+                if len(new_args) >= 4 and isinstance(new_args[3], list):
+                    new_args[3] = json.dumps(new_args[3])
+                new_query = new_query.replace("$4,", "$4::vector,")
+                for i, val in enumerate(new_args):
+                    if i == 3:
+                        continue
+                    if isinstance(val, str) and (val.startswith("{") or val.startswith("[")):
+                        try:
+                            new_args[i] = json.loads(val)
+                        except Exception:
+                            pass
+            return await self._conn.execute(new_query, *new_args, **kwargs)
+
+    original_dispatch = replay_mod._dispatch_and_apply_event
+
+    async def mock_dispatch(
+        write_conn,
+        src,
+        target_namespace_id,
+        llm_payload,
+        config_overrides,
+        run_id,
+        source_namespace_id,
+        **kwargs,
+    ):
+        proxy = ConnectionProxy(write_conn)
+        return await original_dispatch(
+            proxy,
+            src=src,
+            target_namespace_id=target_namespace_id,
+            llm_payload=llm_payload,
+            config_overrides=config_overrides,
+            run_id=run_id,
+            source_namespace_id=source_namespace_id,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(replay_mod, "_dispatch_and_apply_event", mock_dispatch)
+
+    original_build_query = replay_mod._build_event_query
+
+    def mock_build_query(**kwargs):
+        sql, args = original_build_query(**kwargs)
+        sql = sql.replace("SELECT\n            id,", "SELECT\n            id, namespace_id,")
+        return sql, args
+
+    monkeypatch.setattr(replay_mod, "_build_event_query", mock_build_query)
+
+    original_to_event_row = replay_mod._record_to_event_row
+
+    def mock_to_event_row(record):
+        rec_dict = dict(record)
+        params = rec_dict.get("params")
+        if isinstance(params, str):
+            rec_dict["params"] = json.loads(params)
+        result_summary = rec_dict.get("result_summary")
+        if isinstance(result_summary, str):
+            rec_dict["result_summary"] = json.loads(result_summary)
+        return original_to_event_row(rec_dict)
+
+    monkeypatch.setattr(replay_mod, "_record_to_event_row", mock_to_event_row)
+
+    # 4. Run ReconstructiveReplay
+    replay = ReconstructiveReplay(pool_proxy)
+    events_applied = []
+    async for item in replay.execute(
+        source_namespace_id=source_ns,
+        target_namespace_id=target_ns,
+        end_seq=1,
+        start_seq=1,
+    ):
+        events_applied.append(item)
+
+    assert any(item.get("type") == "complete" for item in events_applied)
+
+    # 5. Verify Target occurred_at, valid_from, and event signature validity
+    async with scoped_pg_session(pool_proxy, target_ns) as conn:
+        events = await conn.fetch("SELECT * FROM event_log WHERE namespace_id = $1", target_ns)
+        assert len(events) == 1
+        replayed_event = events[0]
+
+        ev_occurred_at = replayed_event["occurred_at"].astimezone(timezone.utc)
+        assert ev_occurred_at == past_time
+
+        await verify_event_signature(conn, replayed_event)
+
+        memories = await conn.fetch(
+            "SELECT id, valid_from FROM memories WHERE namespace_id = $1", target_ns
+        )
+        assert len(memories) == 1
+        replayed_memory = memories[0]
+
+        mem_valid_from = replayed_memory["valid_from"].astimezone(timezone.utc)
+        assert mem_valid_from == past_time

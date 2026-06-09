@@ -586,7 +586,7 @@ async def _handle_store_memory(
 
         src_row = await conn.fetchrow(
             """
-            SELECT embedding, assertion_type, memory_type, metadata
+            SELECT embedding, assertion_type, memory_type, metadata, valid_from
             FROM memories
             WHERE id = $1 AND namespace_id = $2
               AND valid_to IS NULL
@@ -623,7 +623,7 @@ async def _handle_store_memory(
                 $1, $2, $3,
                 $4, $5, $6,
                 $7, $8::jsonb,
-                now()
+                $9
             )
             ON CONFLICT DO NOTHING
             """,
@@ -635,6 +635,7 @@ async def _handle_store_memory(
             src_row["memory_type"],
             target_payload_ref,
             json.dumps(meta),
+            src_row["valid_from"],
         )
 
         # Carry over salience score if it exists in the source namespace
@@ -837,6 +838,23 @@ async def _handle_consolidation_run(
         else:
             new_memory_id = uuid.uuid4()
 
+        # Fetch valid_from from source memories table if it exists
+        raw_src_ns = src.params.get("source_namespace_id")
+        src_ns_id = uuid.UUID(raw_src_ns) if raw_src_ns else None
+        src_valid_from = None
+        if consolidated_memory_id_str and src_ns_id:
+            try:
+                src_valid_from = await conn.fetchval(
+                    "SELECT valid_from FROM memories WHERE id = $1 AND namespace_id = $2",
+                    uuid.UUID(consolidated_memory_id_str),
+                    src_ns_id,
+                )
+            except Exception:
+                pass
+
+        if src_valid_from is None:
+            src_valid_from = src.occurred_at
+
         # Embed the abstraction (reuse the existing embedding infrastructure
         # via a direct import; avoids circular deps since we don't import engine).
         from nce import embeddings as _emb  # local import to avoid module-level circular
@@ -854,7 +872,7 @@ async def _handle_consolidation_run(
                 $1, $2, $3,
                 $4, 'fact', 'consolidated',
                 $5, $6::jsonb,
-                now()
+                $7
             )
             ON CONFLICT DO NOTHING
             """,
@@ -871,6 +889,7 @@ async def _handle_consolidation_run(
                     "replay_fork": True,
                 }
             ),
+            src_valid_from,
         )
 
         # Route salience into memory_salience.salience_score
@@ -1337,6 +1356,7 @@ async def _dispatch_and_apply_event(
         llm_payload_uri=fork_uri,
         llm_payload_hash=fork_hash,
         event_id=det_event_id,
+        replay_occurred_at=src.occurred_at,
     )
 
     return result_summary, fork_event
