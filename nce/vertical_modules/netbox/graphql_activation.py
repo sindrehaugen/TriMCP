@@ -121,7 +121,9 @@ class NetBoxGraphQLClient:
         }
         self._client = client
 
-    async def execute_query(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def execute_query(
+        self, query: str, variables: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """
         Executes a GraphQL query payload. Logs and raises on GraphQL-level errors.
         """
@@ -132,10 +134,12 @@ class NetBoxGraphQLClient:
         if self._client is not None:
             return await self._send_request(self._client, payload)
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
             return await self._send_request(client, payload)
 
-    async def _send_request(self, client: httpx.AsyncClient, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _send_request(
+        self, client: httpx.AsyncClient, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         resp = await client.post(self.url, json=payload, headers=self.headers, timeout=10.0)
         resp.raise_for_status()
         data = resp.json()
@@ -152,7 +156,12 @@ def parse_cable(cable: dict[str, Any], add_edge_fn: Callable[[str, str, float], 
     status = cable.get("status") or ""
     # Set weight based on status
     weight = 1.0
-    if isinstance(status, str) and status.upper() in ("PLANNED", "DEPRECATED", "FAILED", "DISCONNECTED"):
+    if isinstance(status, str) and status.upper() in (
+        "PLANNED",
+        "DEPRECATED",
+        "FAILED",
+        "DISCONNECTED",
+    ):
         weight = 0.0
 
     a_terms = cable.get("a_terminations") or []
@@ -319,6 +328,7 @@ class GraphQLSpikingActivator:
             if conn is not None:
                 # Set local namespace context
                 from nce.auth import set_namespace_context
+
                 await set_namespace_context(conn, ns_uuid)
 
                 # Fetch check if anchor_label is authorized (exists in kg_nodes or topology_graph)

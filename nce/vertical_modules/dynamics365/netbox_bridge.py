@@ -96,9 +96,17 @@ class NetBoxBridgeClient:
         next_url: str | None = f"{url}?limit={self._page_size}&offset=0"
         headers = {**self._HEADERS, **self._auth}
 
+        from nce.http_resilience import request_with_retry
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             while next_url:
-                resp = await client.get(next_url, headers=headers)
+                resp = await request_with_retry(
+                    client,
+                    "GET",
+                    next_url,
+                    headers=headers,
+                    operation_name="netbox:paginate",
+                )
                 resp.raise_for_status()
                 body = resp.json()
                 results.extend(body.get("results") or [])
@@ -321,8 +329,8 @@ class D365NetBoxBridge:
 
         site_by_norm: dict[str, dict] = {_normalize(s["name"]): s for s in nb_sites}
         site_by_slug: dict[str, dict] = {s.get("slug", ""): s for s in nb_sites}
-        loc_by_norm: dict[str, dict] = {_normalize(l["name"]): l for l in nb_locs}
-        loc_by_slug: dict[str, dict] = {l.get("slug", ""): l for l in nb_locs}
+        loc_by_norm: dict[str, dict] = {_normalize(loc["name"]): loc for loc in nb_locs}
+        loc_by_slug: dict[str, dict] = {loc.get("slug", ""): loc for loc in nb_locs}
 
         stats: dict[str, int] = {"exact": 0, "slug": 0, "fuzzy": 0, "unmatched": 0}
         edges: list[tuple[str, str, str, float]] = []

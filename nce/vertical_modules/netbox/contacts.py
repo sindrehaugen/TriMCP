@@ -40,7 +40,7 @@ class NetBoxClient:
         if self._client is not None:
             return await self._send_get(self._client, url)
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
             return await self._send_get(client, url)
 
     async def fetch_contact_assignments(self) -> list[dict[str, Any]]:
@@ -49,7 +49,7 @@ class NetBoxClient:
         if self._client is not None:
             return await self._send_get(self._client, url)
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
             return await self._send_get(client, url)
 
     async def _send_get(self, client: httpx.AsyncClient, url: str) -> list[dict[str, Any]]:
@@ -148,10 +148,14 @@ class NetBoxContactSync:
                 tensor.append(0.0)
             tensor = tensor[:6]
 
-            records.append({
-                "empathic_tensor": tensor,
-                "created_at": r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else str(r["created_at"]),
-            })
+            records.append(
+                {
+                    "empathic_tensor": tensor,
+                    "created_at": r["created_at"].isoformat()
+                    if hasattr(r["created_at"], "isoformat")
+                    else str(r["created_at"]),
+                }
+            )
         return records
 
     async def evaluate_contact_stress_report(
@@ -166,7 +170,9 @@ class NetBoxContactSync:
         Build, encrypt, and decrypt a contact's stress report to verify the data
         payload alignment and field parsing against NCE cryptoprimitives.
         """
-        records = await self.fetch_stress_records_for_operator(conn, namespace_id, operator_id, email)
+        records = await self.fetch_stress_records_for_operator(
+            conn, namespace_id, operator_id, email
+        )
         if not records:
             return {
                 "burnout_alert": False,
@@ -229,7 +235,9 @@ class NetBoxContactSync:
         async with conn.transaction():
             # 1. Evaluate individual stress and update database
             for contact in contacts:
-                username = contact.get("username") or contact.get("name", "").lower().replace(" ", "_")
+                username = contact.get("username") or contact.get("name", "").lower().replace(
+                    " ", "_"
+                )
                 email = contact.get("email") or f"{username}@example.com"
 
                 # Parse frustration metric from encrypted tensor pipeline
@@ -265,14 +273,16 @@ class NetBoxContactSync:
                     status,
                 )
 
-                contact_details.append({
-                    "username": username,
-                    "email": email,
-                    "is_active": is_active,
-                    "status": status,
-                    "frustration": last_frustration,
-                    "weight": weight,
-                })
+                contact_details.append(
+                    {
+                        "username": username,
+                        "email": email,
+                        "is_active": is_active,
+                        "status": status,
+                        "frustration": last_frustration,
+                        "weight": weight,
+                    }
+                )
 
             # 2. Redistribute load weights among active contacts
             active_contacts = [c for c in contact_details if c["is_active"]]

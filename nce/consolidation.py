@@ -16,7 +16,6 @@ from nce.event_log import append_event
 from nce.mongo_bulk import fetch_episodes_raw_by_ref, normalize_payload_ref
 from nce.providers import LLMProvider, Message
 from nce.sanitize import sanitize_llm_payload
-from nce.signing import get_active_key, sign_fields
 
 log = logging.getLogger(__name__)
 

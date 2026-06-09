@@ -176,9 +176,6 @@ def patch_signing(monkeypatch: pytest.MonkeyPatch):
     # append_event in event_log.py is where signing actually happens
     monkeypatch.setattr("nce.event_log.get_active_key", _gk)
     monkeypatch.setattr("nce.event_log.sign_fields", lambda fields, key: b"signed-by-test")
-    # Also patch on consolidation module for forward-compatibility
-    monkeypatch.setattr("nce.consolidation.get_active_key", _gk)
-    monkeypatch.setattr("nce.consolidation.sign_fields", lambda fields, key: b"signed-by-test")
 
 
 def test_consolidation_no_memories_completes(patch_signing, monkeypatch: pytest.MonkeyPatch):

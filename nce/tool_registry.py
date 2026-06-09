@@ -36,6 +36,7 @@ from nce import (
     snapshot_mcp_handlers,
 )
 from nce.vertical_modules.dynamics365 import mcp_handlers as d365_mcp_handlers
+from nce.vertical_modules.netbox import circuits as netbox_circuits
 
 
 def _h(module: types.ModuleType, attr: str) -> Callable[..., Any]:
@@ -142,6 +143,10 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     # ------------------------------------------------------------------
     "graph_search": ToolSpec(
         _h(graph_mcp_handlers, "handle_graph_search"),
+        cacheable=True,
+    ),
+    "neuromorphic_search": ToolSpec(
+        _h(graph_mcp_handlers, "handle_neuromorphic_search"),
         cacheable=True,
     ),
     # ------------------------------------------------------------------
@@ -346,6 +351,10 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     "d365_netbox_mappings": ToolSpec(
         _h(d365_mcp_handlers, "handle_d365_netbox_mappings"),
         cacheable=True,
+    ),
+    "evaluate_circuit_impact": ToolSpec(
+        _h(netbox_circuits, "handle_evaluate_circuit_impact"),
+        cacheable=False,
     ),
 }
 

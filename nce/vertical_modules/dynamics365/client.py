@@ -170,14 +170,24 @@ class DataverseClient:
         params: dict[str, str] | None,
         json_body: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        resp = await client.request(
-            method,
-            url,
-            headers=headers,
-            params=params,
-            json=json_body,
-            follow_redirects=True,
-        )
+        from nce.http_resilience import ExternalAPIClientError, request_with_retry
+
+        try:
+            resp = await request_with_retry(
+                client,
+                method,
+                url,
+                headers=headers,
+                params=params,
+                json=json_body,
+                follow_redirects=True,
+                operation_name="dynamics365:odata",
+            )
+        except ExternalAPIClientError as exc:
+            if exc.status_code == 404:
+                return {}
+            raise
+
         if resp.status_code == 404:
             return {}
         resp.raise_for_status()

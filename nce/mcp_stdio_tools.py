@@ -358,6 +358,93 @@ TOOLS = [
         },
     ),
     Tool(
+        name="neuromorphic_search",
+        description=(
+            "GraphRAG spreading activation traversal over the Knowledge Graph. "
+            "Uses a spiking neural model to search and traverse the knowledge graph "
+            "instead of legacy BFS, returning a structured subgraph with nodes, relations, "
+            "and source document excerpts."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language query to anchor the graph search",
+                },
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Namespace ID to search within.",
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "default": 2,
+                    "description": "Maximum BFS hop depth for traversal",
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "Optional. When supplied, restricts hydrated sources to this user.",
+                },
+                "private": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "When true, only hydrate sources owned by user_id.",
+                },
+                "as_of": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": (
+                        "Optional ISO 8601 UTC timestamp (e.g. '2026-01-15T10:00:00Z'). "
+                        "Traverses the knowledge graph as it existed at or before this instant."
+                    ),
+                },
+                "max_edges_per_node": {
+                    "type": "integer",
+                    "default": 512,
+                    "minimum": 1,
+                    "maximum": 2048,
+                    "description": "Max incident edges loaded per hop.",
+                },
+                "edge_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5000,
+                    "description": "Optional page size on the deduplicated edge list.",
+                },
+                "edge_offset": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Offset into deduplicated edges when using edge_limit.",
+                },
+                "telemetry_severity": {
+                    "type": "number",
+                    "description": "Optional system telemetry severity score to dynamically tune spreading thresholds.",
+                },
+                "theta": {
+                    "type": "number",
+                    "default": 0.5,
+                    "description": "Spiking threshold potential.",
+                },
+                "decay": {
+                    "type": "number",
+                    "default": 0.85,
+                    "description": "Spiking potential decay factor.",
+                },
+                "alpha": {
+                    "type": "number",
+                    "default": 1.0,
+                    "description": "Transfer weight coefficient for signal propagation.",
+                },
+                "ticks": {
+                    "type": "integer",
+                    "description": "Number of propagation steps (defaults to max_depth).",
+                },
+            },
+            "required": ["query"],
+        },
+    ),
+    Tool(
         name="get_recent_context",
         description=(
             "Retrieve the N most recent episodic memories for an agent. "
@@ -1484,6 +1571,36 @@ if cfg.NCE_D365_ENABLED:
                     },
                 },
                 "required": ["namespace_id"],
+            },
+        ),
+        Tool(
+            name="evaluate_circuit_impact",
+            description=(
+                "Evaluate downstream circuit impact from telemetry degradations "
+                "using do-calculus causal graphs. Identifies which NetBox circuits "
+                "are causally linked to active degradations."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "namespace_id": {"type": "string", "description": "Caller namespace UUID."},
+                    "telemetry_degradations": {
+                        "type": "object",
+                        "additionalProperties": {"type": "number"},
+                        "description": "Mapping of telemetry node IDs to their degradation severity scores (0.0 to 1.0).",
+                    },
+                    "degradation_threshold": {
+                        "type": "number",
+                        "default": 0.5,
+                        "description": "Minimum telemetry degradation score to evaluate.",
+                    },
+                    "causal_threshold": {
+                        "type": "number",
+                        "default": 0.5,
+                        "description": "Minimum do-calculus causal probability to link degradation to a circuit.",
+                    },
+                },
+                "required": ["namespace_id", "telemetry_degradations"],
             },
         ),
     ]

@@ -29,9 +29,9 @@ DEVICE_WRITE_SCHEMA = {
         "role": {"type": ["integer", "string"]},
         "site": {"type": ["integer", "string"]},
         "serial": {"type": ["string", "null"]},
-        "custom_fields": {"type": "object"}
+        "custom_fields": {"type": "object"},
     },
-    "required": ["name", "device_type", "role", "site"]
+    "required": ["name", "device_type", "role", "site"],
 }
 
 INTERFACE_WRITE_SCHEMA = {
@@ -39,9 +39,9 @@ INTERFACE_WRITE_SCHEMA = {
     "properties": {
         "device": {"type": ["integer", "string"]},
         "name": {"type": "string", "minLength": 1},
-        "type": {"type": "string", "minLength": 1}
+        "type": {"type": "string", "minLength": 1},
     },
-    "required": ["device", "name", "type"]
+    "required": ["device", "name", "type"],
 }
 
 CABLE_WRITE_SCHEMA = {
@@ -53,11 +53,11 @@ CABLE_WRITE_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "object_type": {"type": "string"},
-                    "object_id": {"type": ["integer", "string"]}
+                    "object_id": {"type": ["integer", "string"]},
                 },
-                "required": ["object_type", "object_id"]
+                "required": ["object_type", "object_id"],
             },
-            "minItems": 1
+            "minItems": 1,
         },
         "b_terminations": {
             "type": "array",
@@ -65,15 +65,15 @@ CABLE_WRITE_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "object_type": {"type": "string"},
-                    "object_id": {"type": ["integer", "string"]}
+                    "object_id": {"type": ["integer", "string"]},
                 },
-                "required": ["object_type", "object_id"]
+                "required": ["object_type", "object_id"],
             },
-            "minItems": 1
+            "minItems": 1,
         },
-        "status": {"type": "string"}
+        "status": {"type": "string"},
     },
-    "required": ["a_terminations", "b_terminations"]
+    "required": ["a_terminations", "b_terminations"],
 }
 
 
@@ -83,19 +83,29 @@ class NetBoxDiscoveryReconciler:
     Saves new detections as staging change proposals using the NetBox Branching API.
     """
 
-    def __init__(self, netbox_client: NetBoxGraphQLClient, rest_client: httpx.AsyncClient | None = None):
+    def __init__(
+        self, netbox_client: NetBoxGraphQLClient, rest_client: httpx.AsyncClient | None = None
+    ):
         self.netbox_client = netbox_client
         self.base_url = netbox_client.base_url
         self.headers = netbox_client.headers.copy()
         self._rest_client = rest_client
 
-    async def _send_get(self, client: httpx.AsyncClient, url: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    async def _send_get(
+        self, client: httpx.AsyncClient, url: str, headers: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         h = headers if headers is not None else self.headers
         resp = await client.get(url, headers=h, timeout=10.0)
         resp.raise_for_status()
         return resp.json()
 
-    async def _send_post(self, client: httpx.AsyncClient, url: str, json_data: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
+    async def _send_post(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        json_data: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         h = headers if headers is not None else self.headers
         resp = await client.post(url, json=json_data, headers=h, timeout=10.0)
         resp.raise_for_status()
@@ -124,7 +134,7 @@ class NetBoxDiscoveryReconciler:
         if self._rest_client is not None:
             return await execute_ops(self._rest_client)
         else:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
                 return await execute_ops(client)
 
     async def reconcile(self, live_topology: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
@@ -133,6 +143,7 @@ class NetBoxDiscoveryReconciler:
         Pinpoints unregistered devices, interfaces, and connections.
         """
         from nce.vertical_modules.netbox.graphql_activation import UNIFIED_TOPOLOGY_QUERY
+
         response = await self.netbox_client.execute_query(UNIFIED_TOPOLOGY_QUERY)
 
         cached_devices: dict[str, Any] = {}
@@ -199,24 +210,28 @@ class NetBoxDiscoveryReconciler:
 
             if dev_name not in cached_devices:
                 cached_devices[dev_name] = None
-                unregistered_devices.append({
-                    "name": dev_name,
-                    "serial": dev.get("serial") or "UNKNOWN",
-                    "device_type": dev.get("device_type") or 1,
-                    "role": dev.get("role") or 1,
-                    "site": dev.get("site") or 1,
-                    "custom_fields": dev.get("custom_fields") or {}
-                })
+                unregistered_devices.append(
+                    {
+                        "name": dev_name,
+                        "serial": dev.get("serial") or "UNKNOWN",
+                        "device_type": dev.get("device_type") or 1,
+                        "role": dev.get("role") or 1,
+                        "site": dev.get("site") or 1,
+                        "custom_fields": dev.get("custom_fields") or {},
+                    }
+                )
 
             interfaces = dev.get("interfaces") or []
             for int_name in interfaces:
                 if (dev_name, int_name) not in cached_interfaces:
                     cached_interfaces.add((dev_name, int_name))
-                    unregistered_interfaces.append({
-                        "device": dev_name,
-                        "name": int_name,
-                        "type": cfg.NCE_NETBOX_DEFAULT_INTERFACE_TYPE
-                    })
+                    unregistered_interfaces.append(
+                        {
+                            "device": dev_name,
+                            "name": int_name,
+                            "type": cfg.NCE_NETBOX_DEFAULT_INTERFACE_TYPE,
+                        }
+                    )
 
         # 2. Reconcile cables/connections
         live_cables = live_topology.get("cables") or []
@@ -231,20 +246,22 @@ class NetBoxDiscoveryReconciler:
             conn_key = tuple(sorted([(a_dev, a_int), (b_dev, b_int)]))
             if conn_key not in cached_connections:  # type: ignore
                 cached_connections.add(conn_key)  # type: ignore
-                unregistered_cables.append({
-                    "a_terminations": [
-                        {"object_type": "dcim.interface", "object_id": f"{a_dev}:{a_int}"}
-                    ],
-                    "b_terminations": [
-                        {"object_type": "dcim.interface", "object_id": f"{b_dev}:{b_int}"}
-                    ],
-                    "status": "connected"
-                })
+                unregistered_cables.append(
+                    {
+                        "a_terminations": [
+                            {"object_type": "dcim.interface", "object_id": f"{a_dev}:{a_int}"}
+                        ],
+                        "b_terminations": [
+                            {"object_type": "dcim.interface", "object_id": f"{b_dev}:{b_int}"}
+                        ],
+                        "status": "connected",
+                    }
+                )
 
         return {
             "devices": unregistered_devices,
             "interfaces": unregistered_interfaces,
-            "cables": unregistered_cables
+            "cables": unregistered_cables,
         }
 
     async def stage_discovery(
@@ -268,12 +285,14 @@ class NetBoxDiscoveryReconciler:
                 validate(instance=dev, schema=DEVICE_WRITE_SCHEMA)
                 url = f"{self.base_url}/api/dcim/devices/"
                 res = await self._send_post(client, url, dev, headers=branch_headers)
-                proposals.append({
-                    "object_type": "device",
-                    "name": dev["name"],
-                    "netbox_id": res.get("id"),
-                    "status": "staged"
-                })
+                proposals.append(
+                    {
+                        "object_type": "device",
+                        "name": dev["name"],
+                        "netbox_id": res.get("id"),
+                        "status": "staged",
+                    }
+                )
 
             # 2. Stage Interfaces
             interfaces = unregistered_assets.get("interfaces") or []
@@ -281,12 +300,14 @@ class NetBoxDiscoveryReconciler:
                 validate(instance=interface, schema=INTERFACE_WRITE_SCHEMA)
                 url = f"{self.base_url}/api/dcim/interfaces/"
                 res = await self._send_post(client, url, interface, headers=branch_headers)
-                proposals.append({
-                    "object_type": "interface",
-                    "name": f"{interface['device']}:{interface['name']}",
-                    "netbox_id": res.get("id"),
-                    "status": "staged"
-                })
+                proposals.append(
+                    {
+                        "object_type": "interface",
+                        "name": f"{interface['device']}:{interface['name']}",
+                        "netbox_id": res.get("id"),
+                        "status": "staged",
+                    }
+                )
 
             # 3. Stage Cables
             cables = unregistered_assets.get("cables") or []
@@ -294,16 +315,14 @@ class NetBoxDiscoveryReconciler:
                 validate(instance=cable, schema=CABLE_WRITE_SCHEMA)
                 url = f"{self.base_url}/api/dcim/cables/"
                 res = await self._send_post(client, url, cable, headers=branch_headers)
-                proposals.append({
-                    "object_type": "cable",
-                    "netbox_id": res.get("id"),
-                    "status": "staged"
-                })
+                proposals.append(
+                    {"object_type": "cable", "netbox_id": res.get("id"), "status": "staged"}
+                )
 
             return proposals
 
         if self._rest_client is not None:
             return await run_staging(self._rest_client)
         else:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
                 return await run_staging(client)

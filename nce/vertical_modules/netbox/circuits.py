@@ -11,13 +11,17 @@ degradation is causally linked to circuit nodes.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from nce.causal.correlation import CausalGraph, DoCalculusEngine
+
+if TYPE_CHECKING:
+    from nce.orchestrator import NCEEngine
 
 log = logging.getLogger("nce.vertical_modules.netbox.circuits")
 
@@ -41,7 +45,7 @@ class NetBoxCircuitsClient:
         if self._client is not None:
             return await self._send_get(self._client, url)
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
             return await self._send_get(client, url)
 
     async def _send_get(self, client: httpx.AsyncClient, url: str) -> list[dict[str, Any]]:
@@ -144,7 +148,7 @@ class NetBoxCircuitEscalator:
                 provider = circuit.get("provider") or {}
                 provider_id = provider.get("id") or circuit.get("provider_id")
                 provider_name = provider.get("name") or "Unknown Provider"
-                
+
                 custom_fields = circuit.get("custom_fields") or {}
                 account_string = (
                     custom_fields.get("account_string")
@@ -152,12 +156,8 @@ class NetBoxCircuitEscalator:
                     or circuit.get("account")
                     or f"ACCT-{provider_name.upper()}"
                 )
-                
-                commit_rate = (
-                    circuit.get("commit_rate")
-                    or custom_fields.get("commit_rate")
-                    or 0
-                )
+
+                commit_rate = circuit.get("commit_rate") or custom_fields.get("commit_rate") or 0
 
                 # Auto-generate structured upstream escalation ticket targeting external provider
                 ticket = {
@@ -169,7 +169,9 @@ class NetBoxCircuitEscalator:
                     "account_string": account_string,
                     "commit_rate_kbps": int(commit_rate) if commit_rate else None,
                     "causally_linked_degradations": causally_linked,
-                    "severity": "CRITICAL" if any(v["degradation_severity"] >= 0.8 for v in causally_linked.values()) else "WARNING",
+                    "severity": "CRITICAL"
+                    if any(v["degradation_severity"] >= 0.8 for v in causally_linked.values())
+                    else "WARNING",
                     "description": (
                         f"Automated NetBox Circuit Escalation for Account {account_string}. "
                         f"Circuit {circuit_id} provided by {provider_name} has been causally linked to telemetry degradation "
@@ -185,3 +187,49 @@ class NetBoxCircuitEscalator:
                 )
 
         return tickets
+
+
+async def handle_evaluate_circuit_impact(engine: NCEEngine, arguments: dict[str, Any]) -> str:
+    """
+    On-demand do-calculus circuit impact evaluation tool.
+
+    Arguments
+    ---------
+    namespace_id           : str
+    telemetry_degradations : dict[str, float]
+    degradation_threshold  : float (optional, default 0.5)
+    causal_threshold       : float (optional, default 0.5)
+    """
+    namespace_id = arguments.get("namespace_id", "")
+    telemetry_degradations = arguments.get("telemetry_degradations", {})
+    degradation_threshold = float(arguments.get("degradation_threshold", 0.5))
+    causal_threshold = float(arguments.get("causal_threshold", 0.5))
+
+    if not namespace_id:
+        return json.dumps({"error": "namespace_id is required"})
+
+    from nce.config import cfg
+
+    if not cfg.NCE_NETBOX_URL or not cfg.NCE_NETBOX_TOKEN:
+        return json.dumps({"error": "NetBox is not configured (NCE_NETBOX_URL/TOKEN unset)"})
+
+    import uuid as _uuid
+
+    from nce.db_utils import scoped_pg_session
+
+    try:
+        ns_uuid = _uuid.UUID(namespace_id)
+        async with scoped_pg_session(engine.pg_pool, namespace_id) as conn:
+            client = NetBoxCircuitsClient(cfg.NCE_NETBOX_URL, cfg.NCE_NETBOX_TOKEN)
+            escalator = NetBoxCircuitEscalator(client)
+            tickets = await escalator.evaluate_and_escalate(
+                conn=conn,
+                namespace_id=ns_uuid,
+                telemetry_degradations=telemetry_degradations,
+                degradation_threshold=degradation_threshold,
+                causal_threshold=causal_threshold,
+            )
+        return json.dumps({"status": "success", "tickets": tickets})
+    except Exception as exc:
+        log.exception("handle_evaluate_circuit_impact failed")
+        return json.dumps({"error": str(exc)})

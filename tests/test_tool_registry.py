@@ -25,10 +25,10 @@ from nce.tool_registry import (
 # Cardinality
 # ---------------------------------------------------------------------------
 
-_EXPECTED_TOTAL = 59
+_EXPECTED_TOTAL = 61
 
 
-def test_registry_has_59_entries():
+def test_registry_has_61_entries():
     assert len(TOOL_REGISTRY) == _EXPECTED_TOTAL, (
         f"Expected {_EXPECTED_TOTAL} tools, got {len(TOOL_REGISTRY)}. "
         f"Tools: {sorted(TOOL_REGISTRY)}"
@@ -117,6 +117,7 @@ _EXPECTED_CACHEABLE: frozenset[str] = frozenset(
         "semantic_search",
         "search_codebase",
         "graph_search",
+        "neuromorphic_search",
         "d365_query_case",
         "d365_case_stress_report",
         "d365_netbox_mappings",
@@ -132,7 +133,7 @@ def test_cacheable_tools_exact_match():
 
 
 def test_cacheable_tools_count():
-    assert len(CACHEABLE_TOOLS) == 6
+    assert len(CACHEABLE_TOOLS) == 7
 
 
 # ---------------------------------------------------------------------------
@@ -213,9 +214,7 @@ def test_migration_tools_subset_of_registry():
 def test_migration_mutations_are_in_mutation_tools():
     """All migration tools marked mutation=True must appear in MUTATION_TOOLS."""
     migration_mutations = {
-        name
-        for name, spec in TOOL_REGISTRY.items()
-        if spec.migration and spec.mutation
+        name for name, spec in TOOL_REGISTRY.items() if spec.migration and spec.mutation
     }
     assert migration_mutations <= MUTATION_TOOLS
 
@@ -246,47 +245,182 @@ def test_toolspec_is_frozen():
     "tool_name,expected_flags",
     [
         # memory
-        ("store_memory", {"mutation": True, "cacheable": False, "admin_only": False, "migration": False}),
-        ("semantic_search", {"mutation": False, "cacheable": True, "admin_only": False, "migration": False}),
-        ("unredact_memory", {"mutation": True, "cacheable": False, "admin_only": True, "migration": False}),
+        (
+            "store_memory",
+            {"mutation": True, "cacheable": False, "admin_only": False, "migration": False},
+        ),
+        (
+            "semantic_search",
+            {"mutation": False, "cacheable": True, "admin_only": False, "migration": False},
+        ),
+        (
+            "unredact_memory",
+            {"mutation": True, "cacheable": False, "admin_only": True, "migration": False},
+        ),
         # code
-        ("index_code_file", {"mutation": True, "cacheable": False, "admin_only": False, "migration": False}),
-        ("search_codebase", {"mutation": False, "cacheable": True, "admin_only": False, "migration": False}),
+        (
+            "index_code_file",
+            {"mutation": True, "cacheable": False, "admin_only": False, "migration": False},
+        ),
+        (
+            "search_codebase",
+            {"mutation": False, "cacheable": True, "admin_only": False, "migration": False},
+        ),
         # graph
-        ("graph_search", {"mutation": False, "cacheable": True, "admin_only": False, "migration": False}),
+        (
+            "graph_search",
+            {"mutation": False, "cacheable": True, "admin_only": False, "migration": False},
+        ),
+        (
+            "neuromorphic_search",
+            {"mutation": False, "cacheable": True, "admin_only": False, "migration": False},
+        ),
         # bridges
-        ("connect_bridge", {"mutation": True, "cacheable": False, "admin_only": False, "migration": False}),
-        ("list_bridges", {"mutation": False, "cacheable": False, "admin_only": False, "migration": False}),
+        (
+            "connect_bridge",
+            {"mutation": True, "cacheable": False, "admin_only": False, "migration": False},
+        ),
+        (
+            "list_bridges",
+            {"mutation": False, "cacheable": False, "admin_only": False, "migration": False},
+        ),
         # migration
-        ("start_migration", {"mutation": True, "cacheable": False, "admin_only": False, "migration": True}),
-        ("migration_status", {"mutation": False, "cacheable": False, "admin_only": False, "migration": True}),
-        ("commit_migration", {"mutation": True, "cacheable": False, "admin_only": False, "migration": True}),
+        (
+            "start_migration",
+            {"mutation": True, "cacheable": False, "admin_only": False, "migration": True},
+        ),
+        (
+            "migration_status",
+            {"mutation": False, "cacheable": False, "admin_only": False, "migration": True},
+        ),
+        (
+            "commit_migration",
+            {"mutation": True, "cacheable": False, "admin_only": False, "migration": True},
+        ),
         # replay
-        ("replay_observe", {"mutation": False, "cacheable": False, "admin_only": True, "migration": False}),
-        ("replay_reconstruct", {"mutation": True, "cacheable": False, "admin_only": True, "migration": False}),
-        ("get_event_provenance", {"mutation": False, "cacheable": False, "admin_only": False, "migration": False}),
+        (
+            "replay_observe",
+            {"mutation": False, "cacheable": False, "admin_only": True, "migration": False},
+        ),
+        (
+            "replay_reconstruct",
+            {"mutation": True, "cacheable": False, "admin_only": True, "migration": False},
+        ),
+        (
+            "get_event_provenance",
+            {"mutation": False, "cacheable": False, "admin_only": False, "migration": False},
+        ),
         # a2a
-        ("a2a_create_grant", {"mutation": True, "cacheable": False, "admin_only": False, "migration": False}),
-        ("a2a_list_grants", {"mutation": False, "cacheable": False, "admin_only": False, "migration": False}),
+        (
+            "a2a_create_grant",
+            {"mutation": True, "cacheable": False, "admin_only": False, "migration": False},
+        ),
+        (
+            "a2a_list_grants",
+            {"mutation": False, "cacheable": False, "admin_only": False, "migration": False},
+        ),
         # admin
-        ("manage_namespace", {"mutation": True, "cacheable": False, "admin_only": False, "migration": False}),
-        ("get_health", {"mutation": False, "cacheable": False, "admin_only": False, "migration": False}),
+        (
+            "manage_namespace",
+            {"mutation": True, "cacheable": False, "admin_only": False, "migration": False},
+        ),
+        (
+            "get_health",
+            {"mutation": False, "cacheable": False, "admin_only": False, "migration": False},
+        ),
         # snapshots
-        ("create_snapshot", {"mutation": True, "cacheable": False, "admin_only": False, "migration": False}),
-        ("compare_states", {"mutation": False, "cacheable": False, "admin_only": False, "migration": False}),
+        (
+            "create_snapshot",
+            {"mutation": True, "cacheable": False, "admin_only": False, "migration": False},
+        ),
+        (
+            "compare_states",
+            {"mutation": False, "cacheable": False, "admin_only": False, "migration": False},
+        ),
         # catalog
-        ("suggest_queries", {"mutation": False, "cacheable": False, "admin_only": False, "migration": False}),
+        (
+            "suggest_queries",
+            {"mutation": False, "cacheable": False, "admin_only": False, "migration": False},
+        ),
         # d365
-        ("d365_query_case", {"mutation": False, "cacheable": True, "admin_only": False, "migration": False}),
-        ("d365_sync_now", {"mutation": True, "cacheable": False, "admin_only": True, "migration": False}),
-        ("d365_case_stress_report", {"mutation": False, "cacheable": True, "admin_only": False, "migration": False}),
-        ("d365_list_sla_breaches", {"mutation": False, "cacheable": False, "admin_only": True, "migration": False}),
+        (
+            "d365_query_case",
+            {"mutation": False, "cacheable": True, "admin_only": False, "migration": False},
+        ),
+        (
+            "d365_sync_now",
+            {"mutation": True, "cacheable": False, "admin_only": True, "migration": False},
+        ),
+        (
+            "d365_case_stress_report",
+            {"mutation": False, "cacheable": True, "admin_only": False, "migration": False},
+        ),
+        (
+            "d365_list_sla_breaches",
+            {"mutation": False, "cacheable": False, "admin_only": True, "migration": False},
+        ),
+        (
+            "evaluate_circuit_impact",
+            {"mutation": False, "cacheable": False, "admin_only": False, "migration": False},
+        ),
     ],
 )
 def test_tool_flags(tool_name: str, expected_flags: dict):
     spec = TOOL_REGISTRY[tool_name]
     for flag, expected in expected_flags.items():
         actual = getattr(spec, flag)
-        assert actual == expected, (
-            f"{tool_name}.{flag}: expected {expected!r}, got {actual!r}"
-        )
+        assert actual == expected, f"{tool_name}.{flag}: expected {expected!r}, got {actual!r}"
+
+
+@pytest.mark.asyncio
+async def test_handle_neuromorphic_search_success():
+    import json
+    from unittest.mock import AsyncMock, MagicMock
+
+    from nce.graph_mcp_handlers import handle_neuromorphic_search
+    from nce.graph_query import Subgraph
+
+    # Mock engine and traverser
+    mock_engine = MagicMock()
+    mock_traverser = AsyncMock()
+    mock_engine._graph_traverser = mock_traverser
+
+    # Mock subgraph result
+    dummy_subgraph = Subgraph(anchor="mock_anchor")
+    mock_traverser.neuromorphic_search.return_value = dummy_subgraph
+
+    # Valid arguments
+    args = {
+        "namespace_id": "00000000-0000-4000-8000-000000000001",
+        "query": "test query",
+        "telemetry_severity": 0.8,
+        "theta": 0.6,
+        "decay": 0.9,
+        "alpha": 1.1,
+        "ticks": 3,
+        "max_depth": 3,
+        "anchor_top_k": 2,
+    }
+
+    # Call handler
+    resp = await handle_neuromorphic_search(mock_engine, args)
+    resp_dict = json.loads(resp)
+
+    assert resp_dict["anchor"] == "mock_anchor"
+    mock_traverser.neuromorphic_search.assert_called_once_with(
+        query="test query",
+        namespace_id="00000000-0000-4000-8000-000000000001",
+        max_depth=3,
+        anchor_top_k=2,
+        user_id=None,
+        private=False,
+        as_of=None,
+        max_edges_per_node=512,
+        edge_limit=None,
+        edge_offset=0,
+        telemetry_severity=0.8,
+        theta=0.6,
+        decay=0.9,
+        alpha=1.1,
+        ticks=3,
+    )

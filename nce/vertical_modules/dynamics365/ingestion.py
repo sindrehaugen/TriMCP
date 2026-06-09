@@ -220,6 +220,7 @@ class DataverseIngestionWorker:
         breach_type: str,
         account_name: str,
         agent_id: str = "d365-bridge",
+        impacted_services: list[str] | dict[str, float] | None = None,
     ) -> dict[str, Any]:
         """
         Ingest an SLA breach as a WORM event_log entry + memories row.
@@ -293,7 +294,40 @@ class DataverseIngestionWorker:
             breach_type,
             memory_id,
         )
-        return {"memory_id": str(memory_id), "mongo_id": mongo_id}
+
+        tickets = []
+        if cfg.NCE_NETBOX_URL and cfg.NCE_NETBOX_TOKEN:
+            degradations: dict[str, float] = {}
+            if isinstance(impacted_services, dict):
+                degradations = {str(k): float(v) for k, v in impacted_services.items()}
+            elif isinstance(impacted_services, list):
+                degradations = {str(srv): 1.0 for srv in impacted_services}
+
+            if degradations:
+                from nce.db_utils import scoped_pg_session
+                from nce.vertical_modules.netbox.circuits import (
+                    NetBoxCircuitEscalator,
+                    NetBoxCircuitsClient,
+                )
+
+                async with scoped_pg_session(self._pg_pool, str(self._ns)) as esc_conn:
+                    netbox_client = NetBoxCircuitsClient(cfg.NCE_NETBOX_URL, cfg.NCE_NETBOX_TOKEN)
+                    escalator = NetBoxCircuitEscalator(netbox_client)
+                    tickets = await escalator.evaluate_and_escalate(
+                        conn=esc_conn,
+                        namespace_id=self._ns,
+                        telemetry_degradations=degradations,
+                    )
+                    for ticket in tickets:
+                        await append_event(
+                            conn=esc_conn,
+                            namespace_id=self._ns,
+                            agent_id=agent_id,
+                            event_type="circuit_escalation_generated",
+                            params=ticket,
+                        )
+
+        return {"memory_id": str(memory_id), "mongo_id": mongo_id, "tickets": tickets}
 
     # ------------------------------------------------------------------
     # Empathic Tensor extraction

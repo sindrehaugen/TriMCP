@@ -384,3 +384,101 @@ class TestPostJsonWithRetry:
         hdrs = mock_client.post.call_args.kwargs["headers"]
         assert hdrs["Content-Type"] == "application/json"
 
+
+class TestRequestWithRetry:
+    @pytest.mark.asyncio
+    async def test_transient_503_retries_and_succeeds(self):
+        calls = 0
+
+        async def mock_request(method, url, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                return _response(503)
+            return _response(200, content=b"success")
+
+        client = AsyncMock()
+        client.request = mock_request
+
+        resp = await hr.request_with_retry(
+            client,
+            "GET",
+            "https://example.com/api",
+            operation_name="test_transient",
+            base_delay_ms=1,
+            max_delay_ms=5,
+            max_total_ms=1000,
+        )
+        assert resp.status_code == 200
+        assert resp.content == b"success"
+        assert calls == 3
+
+    @pytest.mark.asyncio
+    async def test_sustained_outage_fails(self):
+        async def mock_request(method, url, **kwargs):
+            return _response(503)
+
+        client = AsyncMock()
+        client.request = mock_request
+
+        with pytest.raises(hr.ExternalAPIRetriesExhaustedError):
+            await hr.request_with_retry(
+                client,
+                "GET",
+                "https://example.com/api",
+                operation_name="test_sustained",
+                max_retries=2,
+                base_delay_ms=1,
+                max_delay_ms=5,
+                max_total_ms=1000,
+            )
+
+
+class TestRequestWithRetrySync:
+    def test_transient_503_retries_and_succeeds_sync(self):
+        calls = 0
+        from unittest.mock import MagicMock
+
+        def mock_request(method, url, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                return _response(503)
+            return _response(200, content=b"success")
+
+        client = MagicMock()
+        client.request = mock_request
+
+        resp = hr.request_with_retry_sync(
+            client,
+            "GET",
+            "https://example.com/api",
+            operation_name="test_transient_sync",
+            base_delay_ms=1,
+            max_delay_ms=5,
+            max_total_ms=1000,
+        )
+        assert resp.status_code == 200
+        assert resp.content == b"success"
+        assert calls == 3
+
+    def test_sustained_outage_fails_sync(self):
+        from unittest.mock import MagicMock
+
+        def mock_request(method, url, **kwargs):
+            return _response(503)
+
+        client = MagicMock()
+        client.request = mock_request
+
+        with pytest.raises(hr.ExternalAPIRetriesExhaustedError):
+            hr.request_with_retry_sync(
+                client,
+                "GET",
+                "https://example.com/api",
+                operation_name="test_sustained_sync",
+                max_retries=2,
+                base_delay_ms=1,
+                max_delay_ms=5,
+                max_total_ms=1000,
+            )

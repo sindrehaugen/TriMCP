@@ -23,6 +23,7 @@ import httpx
 from tenacity import (
     AsyncRetrying,
     RetryError,
+    Retrying,
     retry_if_exception,
     stop_after_attempt,
     stop_after_delay,
@@ -316,6 +317,153 @@ def classify_httpx_response(
         )
 
 
+async def request_with_retry(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    operation_name: str,
+    max_retries: int = 3,
+    base_delay_ms: int = 1_000,
+    max_delay_ms: int = 30_000,
+    max_total_ms: int = 60_000,
+    backoff_factor: float = 2.0,
+    **kwargs: Any,
+) -> httpx.Response:
+    """Send an HTTP request using AsyncClient with retries on transient errors."""
+
+    async def once() -> httpx.Response:
+        try:
+            resp = await client.request(method, url, **kwargs)
+        except httpx.TimeoutException as exc:
+            raise ExternalAPITransientError(
+                f"{operation_name}: request timed out",
+                operation=operation_name,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise ExternalAPITransientError(
+                f"{operation_name}: transport error: {redact_secrets_in_text(str(exc))}",
+                operation=operation_name,
+            ) from exc
+        classify_httpx_response(resp, operation=operation_name)
+        return resp
+
+    return await execute_http_with_retry(
+        once,
+        operation_name=operation_name,
+        max_retries=max_retries,
+        base_delay_ms=base_delay_ms,
+        max_delay_ms=max_delay_ms,
+        max_total_ms=max_total_ms,
+        backoff_factor=backoff_factor,
+    )
+
+
+def request_with_retry_sync(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    operation_name: str,
+    max_retries: int = 3,
+    base_delay_ms: int = 1_000,
+    max_delay_ms: int = 30_000,
+    max_total_ms: int = 60_000,
+    backoff_factor: float = 2.0,
+    **kwargs: Any,
+) -> httpx.Response:
+    """Send an HTTP request using httpx.Client with retries on transient errors (sync)."""
+    if max_retries < 0:
+        raise ValueError("max_retries must be >= 0")
+    if base_delay_ms < 1:
+        raise ValueError("base_delay_ms must be >= 1")
+    if max_delay_ms < base_delay_ms:
+        raise ValueError("max_delay_ms must be >= base_delay_ms")
+    if max_total_ms < 1:
+        raise ValueError("max_total_ms must be >= 1")
+    if backoff_factor < 1.0:
+        raise ValueError("backoff_factor must be >= 1.0")
+    if len(operation_name) > 128:
+        raise ValueError("operation_name must be <= 128 characters")
+
+    stop = stop_after_attempt(max_retries + 1) | stop_after_delay(max_total_ms / 1000.0)
+    retry_predicate = retry_if_exception(lambda exc: isinstance(exc, ExternalAPITransientError))
+
+    def once() -> httpx.Response:
+        EXTERNAL_HTTP_ATTEMPTS_TOTAL.labels(operation=operation_name).inc()
+        try:
+            resp = client.request(method, url, **kwargs)
+        except httpx.TimeoutException as exc:
+            raise ExternalAPITransientError(
+                f"{operation_name}: request timed out",
+                operation=operation_name,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise ExternalAPITransientError(
+                f"{operation_name}: transport error: {redact_secrets_in_text(str(exc))}",
+                operation=operation_name,
+            ) from exc
+        classify_httpx_response(resp, operation=operation_name)
+        return resp
+
+    _t0 = time.perf_counter()
+    try:
+        result = Retrying(
+            stop=stop,
+            wait=_wait_seconds_policy(
+                base_delay_ms=base_delay_ms,
+                max_delay_ms=max_delay_ms,
+                backoff_factor=backoff_factor,
+            ),
+            retry=retry_predicate,
+            before_sleep=_make_before_sleep_safe(operation_name),
+            reraise=False,
+        )(once)
+        EXTERNAL_HTTP_LATENCY_SECONDS.labels(operation=operation_name).observe(
+            time.perf_counter() - _t0
+        )
+        return result
+    except RetryError as re:
+        EXTERNAL_HTTP_LATENCY_SECONDS.labels(operation=operation_name).observe(
+            time.perf_counter() - _t0
+        )
+        last_exc = re.last_attempt.exception()
+        attempts = re.last_attempt.attempt_number
+        if last_exc is None:
+            EXTERNAL_HTTP_FAILURES_TOTAL.labels(
+                operation=operation_name, error_type="no_exception"
+            ).inc()
+            raise ExternalAPIRetriesExhaustedError(
+                f"{operation_name}: retries exhausted after {attempts} attempt(s) (no exception)",
+                operation=operation_name,
+                last_error=RuntimeError("retry exhausted without captured exception"),
+                attempts=attempts,
+            ) from None
+        if isinstance(last_exc, ExternalAPIClientError):
+            EXTERNAL_HTTP_FAILURES_TOTAL.labels(
+                operation=operation_name, error_type="client_error"
+            ).inc()
+            raise last_exc
+        if isinstance(last_exc, ExternalAPIRetriesExhaustedError):
+            raise last_exc
+        safe_error = redact_secrets_in_text(str(last_exc))
+        EXTERNAL_HTTP_FAILURES_TOTAL.labels(
+            operation=operation_name, error_type=type(last_exc).__name__
+        ).inc()
+        log.warning(
+            "%s: HTTP retries exhausted after %d attempt(s) — last error: %s",
+            operation_name,
+            attempts,
+            safe_error,
+        )
+        raise ExternalAPIRetriesExhaustedError(
+            f"{operation_name}: retries exhausted after {attempts} attempt(s): {safe_error}",
+            operation=operation_name,
+            last_error=last_exc if isinstance(last_exc, Exception) else RuntimeError(str(last_exc)),
+            attempts=attempts,
+        ) from last_exc
+
+
 async def oauth_token_post_form(
     url: str,
     data: dict[str, str],
@@ -403,4 +551,3 @@ async def post_json_with_retry(
                 ) from exc
 
         return await execute_http_with_retry(once, operation_name=operation)
-
