@@ -37,8 +37,8 @@
 * [DONE] Batch 27 — Deterministic identity remap (uuid5) in replay (Phase 2.1) [PASSED TAG]
 * [DONE] Batch 28 — Payload copy strategy (Phase 2.1b) [PASSED TAG]
 * [DONE] Batch 29 — Faithful timestamps with mandatory re-sign (Phase 2.2) [PASSED TAG]
-* [RUNNING] Batch 30 — Namespace state-digest + equality gate (Phase 2.3) [REJECTED TAG]
-* [LOCKED] Batch 31 — `settings` table migration (V.1a) [NO TAG]
+* [DONE] Batch 30 — Namespace state-digest + equality gate (Phase 2.3) [PASSED TAG]
+* [RUNNING] Batch 31 — `settings` table migration (V.1a) [WAITING TAG]
 * [LOCKED] Batch 32 — `SettingsStore` accessor with precedence + cache (V.1b) [NO TAG]
 * [LOCKED] Batch 33 — Settings registry metadata (V.1a) [NO TAG]
 * [LOCKED] Batch 34 — `GET /api/admin/settings` (+ `/effective`, `/{key}`) (V.1b) [NO TAG]
@@ -288,6 +288,14 @@
 * **Target Scope Verification:** Read `RL.md`, `diff_batch_29.md`, and modified files: `nce/event_log.py`, `nce/replay.py`, `tests/test_replay_engine.py`, and `tests/test_replay_handlers_integration.py`.
 * **Structural Integrity Scoring:** Decoupling of timestamp preservation and sequence logic is structurally clean. Setting the valid_from timestamp and carrying it over during store_memory/consolidation replay runs matches the expected schema contracts.
 * **Contractual Test Fidelity:** High. The unit test `test_handle_store_memory_handler` in `tests/test_replay_engine.py` has been updated to include `valid_from` mocks and fully verify target insert parameters. The integration test `test_replay_deterministic_timestamp_preservation` verifies deterministic timestamp preservation and signature validity under real database constraints. All 12 tests pass successfully.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 30 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified file paths: `nce/replay.py`, `nce/schema.sql`, `tests/test_replay_engine.py`, and `tests/test_replay_handlers_integration.py`.
+* **Structural Integrity Scoring:** Integration of state digest calculations and equality gates inside reconstructive replay execution is structurally clean and properly decoupled. Carrying over `created_at` timestamps alongside bitemporal `valid_from` columns ensures deterministic, OS-independent verification.
+* **Contractual Test Fidelity:** High. The unit test `test_handle_store_memory_handler` asserts that memory creation timestamps are correctly replayed. The integration test `test_reconstructive_replay_digest_match` validates end-to-end replay, populates memories and KG edges, and asserts that the computed digests are non-null and equal between source and target namespaces.
 * **Identified System Flaws:** None.
 * **Defensive Refactoring Correction Blueprint:** None
 

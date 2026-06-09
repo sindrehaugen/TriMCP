@@ -1090,6 +1090,27 @@ CREATE INDEX IF NOT EXISTS idx_d365_netbox_mappings_confirmed
     ON d365_netbox_mappings (namespace_id, confirmed)
     WHERE confirmed = TRUE;
 
+-- --- Phase 5: DB-backed runtime settings (V.1a) ---
+CREATE TABLE IF NOT EXISTS settings (
+    key         TEXT PRIMARY KEY,
+    value       JSONB,
+    secret_enc  BYTEA,
+    is_secret   BOOLEAN NOT NULL DEFAULT false,
+    section     TEXT,
+    updated_by  TEXT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+DO $$
+BEGIN
+    REVOKE ALL ON settings FROM PUBLIC;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nce_app') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON settings TO nce_app;
+    ELSE
+        RAISE NOTICE 'nce_app role not found — settings GRANTs skipped';
+    END IF;
+END $$;
+
 -- --- Row Level Security (Phase 0.1 Hardening) ---
 -- Applied after all tenant tables exist. Policies use get_nce_namespace() (fail-fast).
 -- kg_node_embeddings remain global (no namespace_id). kg_nodes/kg_edges are tenant-scoped.
