@@ -36,7 +36,7 @@
 * [DONE] Batch 26 — Snapshot import / restore (III.2) [PASSED TAG]
 * [DONE] Batch 27 — Deterministic identity remap (uuid5) in replay (Phase 2.1) [PASSED TAG]
 * [DONE] Batch 28 — Payload copy strategy (Phase 2.1b) [PASSED TAG]
-* [RUNNING] Batch 29 — Faithful timestamps with mandatory re-sign (Phase 2.2) [WAITING TAG]
+* [RUNNING] Batch 29 — Faithful timestamps with mandatory re-sign (Phase 2.2) [RUNNING TAG]
 * [LOCKED] Batch 30 — Namespace state-digest + equality gate (Phase 2.3) [NO TAG]
 * [LOCKED] Batch 31 — `settings` table migration (V.1a) [NO TAG]
 * [LOCKED] Batch 32 — `SettingsStore` accessor with precedence + cache (V.1b) [NO TAG]
