@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Generator
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -73,6 +74,7 @@ def _verified_grant(
     *,
     owner_namespace_id: uuid.UUID | None = None,
     scopes: list[A2AScope] | None = None,
+    can_delegate: bool = False,
 ) -> VerifiedGrant:
     owner_ns = owner_namespace_id or uuid.UUID(OWNER_NS)
     return VerifiedGrant(
@@ -81,6 +83,7 @@ def _verified_grant(
         owner_agent_id="owner-agent",
         scopes=scopes or [_namespace_scope(str(owner_ns))],
         expires_at=datetime.now(timezone.utc),
+        can_delegate=can_delegate,
     )
 
 
@@ -96,6 +99,12 @@ def engine() -> MagicMock:
 @pytest.fixture
 def scopes() -> list[A2AScope]:
     return [_namespace_scope(OWNER_NS)]
+
+
+@pytest.fixture(autouse=True)
+def mock_append_a2a_event() -> Generator[AsyncMock, None, None]:
+    with patch("nce.a2a._append_a2a_event", new_callable=AsyncMock) as m:
+        yield m
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +302,7 @@ async def test_query_shared_results_datetime_json_default_str(
 ) -> None:
     verified = _verified_grant(scopes=scopes)
     ts = datetime.now(timezone.utc)
-    engine.semantic_search = AsyncMock(return_value=[{"created_at": ts}])
+    engine.semantic_search = AsyncMock(return_value=[{"memory_id": uuid.uuid4(), "created_at": ts}])
     with (
         patch("nce.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
         patch("nce.a2a_mcp_handlers.enforce_scope"),
@@ -404,3 +413,25 @@ async def test_create_grant_returns_json(engine: MagicMock) -> None:
     data = json.loads(out)
     assert data["sharing_token"] == "tok-create"
     assert data["grant_id"]
+
+
+@pytest.mark.asyncio
+async def test_query_shared_writes_a2a_shared_query_event(
+    engine: MagicMock, scopes: list[A2AScope], mock_append_a2a_event: AsyncMock
+) -> None:
+    verified = _verified_grant(scopes=scopes)
+    with (
+        patch("nce.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as verify,
+        patch("nce.a2a_mcp_handlers.enforce_scope"),
+    ):
+        verify.return_value = verified
+        await a2a_mcp_handlers.handle_a2a_query_shared(engine, _query_shared_base())
+
+    mock_append_a2a_event.assert_called_once()
+    call_args = mock_append_a2a_event.call_args[1]
+    assert call_args["event_type"] == "a2a_shared_query"
+    params = call_args["params"]
+    assert params["consumer_namespace_id"] == CONSUMER_NS
+    assert params["consumer_agent_id"] == "consumer-agent"
+    assert params["grant_id"] == str(verified.grant_id)
+    assert params["query"] == "hello world"

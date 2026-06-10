@@ -26,7 +26,7 @@ try:
 except ImportError:  # pragma: no cover
     _CRYPTOGRAPHY_AVAILABLE = False
 
-import asyncpg
+import asyncpg  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
 from nce.auth import NamespaceContext, set_namespace_context
@@ -41,6 +41,7 @@ async def _append_a2a_event(
     params: dict,
 ) -> None:
     """Helper to set namespace context and append a2a audit event cleanly."""
+    assert owner_ctx.namespace_id is not None, "Namespace ID cannot be None when writing an A2A event"
     await set_namespace_context(conn, owner_ctx.namespace_id)
     from nce.event_log import append_event
 
@@ -51,6 +52,7 @@ async def _append_a2a_event(
         event_type=event_type,
         params=params,
     )
+
 
 # ---------------------------------------------------------------------------
 # JSON-RPC 2.0 error codes
@@ -96,6 +98,9 @@ class A2AGrantRequest(BaseModel):
     expires_in_seconds: int = Field(
         3600, ge=60, le=86400 * 30, description="Token validity duration (max 30 days)"
     )
+    can_delegate: bool = Field(
+        False, description="Whether the token can be delegated/re-granted downstream"
+    )
 
 
 class A2AGrantResponse(BaseModel):
@@ -118,6 +123,7 @@ class VerifiedGrant(BaseModel):
     owner_agent_id: str
     scopes: list[A2AScope]
     expires_at: datetime
+    can_delegate: bool = False
 
 
 class A2AAuthorizationError(Exception):
@@ -576,6 +582,57 @@ def _jsonrpc_error(code: int, message: str, reason: str) -> dict[str, Any]:
     }
 
 
+async def _resolve_scope_namespaces(conn: asyncpg.Connection, scope: A2AScope) -> list[UUID]:
+    """Resolve all potential namespace IDs that the resource in scope might belong to."""
+    if scope.resource_type in ("namespace", "subgraph"):
+        try:
+            return [UUID(scope.resource_id)]
+        except ValueError:
+            raise A2AScopeViolationError(
+                f"Invalid UUID string for namespace/subgraph resource: {scope.resource_id!r}"
+            )
+
+    if scope.resource_type == "memory":
+        try:
+            mem_uuid = UUID(scope.resource_id)
+        except ValueError:
+            raise A2AScopeViolationError(
+                f"Invalid UUID string for memory resource: {scope.resource_id!r}"
+            )
+        ns_val = await conn.fetchval(
+            "SELECT namespace_id FROM memories WHERE id = $1 LIMIT 1",
+            mem_uuid,
+        )
+        if ns_val is None:
+            raise A2AScopeViolationError(f"Memory with ID {scope.resource_id} not found.")
+        return [ns_val]
+
+    if scope.resource_type == "kg_node":
+        # Check if resource_id is a UUID
+        try:
+            node_uuid = UUID(scope.resource_id)
+            ns_val = await conn.fetchval(
+                "SELECT namespace_id FROM kg_nodes WHERE id = $1 LIMIT 1",
+                node_uuid,
+            )
+            if ns_val is None:
+                raise A2AScopeViolationError(f"KG Node with ID {scope.resource_id} not found.")
+            return [ns_val]
+        except ValueError:
+            # It's a label, not a UUID. Find all namespaces where this node label exists.
+            rows = await conn.fetch(
+                "SELECT DISTINCT namespace_id FROM kg_nodes WHERE label = $1",
+                scope.resource_id,
+            )
+            if not rows:
+                return []
+            return [row["namespace_id"] for row in rows]
+
+    raise A2AScopeViolationError(
+        f"Unsupported resource type for delegation: {scope.resource_type!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Core grant lifecycle (raw asyncpg — no ORM)
 # ---------------------------------------------------------------------------
@@ -593,6 +650,31 @@ async def create_grant(
     and returns the raw token to the caller (Agent A) to share out-of-band.
     The raw token is *never* stored — only the hash is persisted.
     """
+    # Scope validation for delegation (transitive re-grant prevention)
+    for scope in request.scopes:
+        ns_ids = await _resolve_scope_namespaces(conn, scope)
+        for ns_id in ns_ids:
+            if ns_id != owner_ctx.namespace_id:
+                has_delegate_grant = await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM a2a_grants
+                        WHERE owner_namespace_id = $1
+                          AND (target_namespace_id = $2 OR target_namespace_id IS NULL)
+                          AND can_delegate = true
+                          AND status = 'active'
+                          AND expires_at > now()
+                    )
+                    """,
+                    ns_id,
+                    owner_ctx.namespace_id,
+                )
+                if not has_delegate_grant:
+                    raise A2AScopeViolationError(
+                        f"Caller namespace {owner_ctx.namespace_id} does not have delegable access "
+                        f"to target namespace {ns_id}."
+                    )
+
     token = f"nce_a2a_{secrets.token_urlsafe(32)}"
     token_hash = _hash_token(token)
     grant_id = uuid4()
@@ -605,8 +687,8 @@ async def create_grant(
             INSERT INTO a2a_grants (
                 id, owner_namespace_id, owner_agent_id,
                 target_namespace_id, target_agent_id,
-                scopes, token_hash, status, expires_at
-            ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'active', $8)
+                scopes, token_hash, status, expires_at, can_delegate
+            ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'active', $8, $9)
             """,
             grant_id,
             owner_ctx.namespace_id,
@@ -616,6 +698,7 @@ async def create_grant(
             scopes_json,
             token_hash,
             expires_at,
+            request.can_delegate,
         )
 
         await _append_a2a_event(
@@ -630,16 +713,18 @@ async def create_grant(
                 "target_agent_id": request.target_agent_id,
                 "scope_count": len(request.scopes),
                 "expires_at": expires_at.isoformat(),
+                "can_delegate": request.can_delegate,
             },
         )
 
     log.info(
-        "A2A grant created: grant_id=%s owner_ns=%s target_ns=%s scopes=%d expires=%s",
+        "A2A grant created: grant_id=%s owner_ns=%s target_ns=%s scopes=%d expires=%s can_delegate=%s",
         grant_id,
         owner_ctx.namespace_id,
         request.target_namespace_id,
         len(request.scopes),
         expires_at.isoformat(),
+        request.can_delegate,
     )
     return A2AGrantResponse(grant_id=grant_id, sharing_token=token, expires_at=expires_at)
 
@@ -664,7 +749,7 @@ async def verify_token(
         """
         SELECT id, owner_namespace_id, owner_agent_id,
                target_namespace_id, target_agent_id,
-               scopes, expires_at, status
+               scopes, expires_at, status, can_delegate
         FROM a2a_grants
         WHERE token_hash = $1 AND status = 'active'
         """,
@@ -719,6 +804,7 @@ async def verify_token(
         owner_agent_id=row["owner_agent_id"],
         scopes=scopes,
         expires_at=expires_at,
+        can_delegate=row["can_delegate"],
     )
 
 
@@ -785,7 +871,7 @@ async def list_grants(
         rows = await conn.fetch(
             """
             SELECT id, owner_agent_id, target_namespace_id, target_agent_id,
-                   scopes, status, expires_at, created_at
+                   scopes, status, expires_at, created_at, can_delegate
             FROM a2a_grants
             WHERE owner_namespace_id = $1
             ORDER BY created_at DESC
@@ -797,7 +883,7 @@ async def list_grants(
         rows = await conn.fetch(
             """
             SELECT id, owner_agent_id, target_namespace_id, target_agent_id,
-                   scopes, status, expires_at, created_at
+                   scopes, status, expires_at, created_at, can_delegate
             FROM a2a_grants
             WHERE owner_namespace_id = $1
               AND status = 'active'
@@ -819,6 +905,7 @@ async def list_grants(
             "scopes": json.loads(row["scopes"]),
             "status": row["status"],
             "expires_at": row["expires_at"].isoformat(),
+            "can_delegate": row["can_delegate"],
             "created_at": row["created_at"].isoformat(),
         }
         for row in rows
@@ -898,7 +985,7 @@ async def verify_grant_status(
             """
             SELECT id, owner_namespace_id, owner_agent_id,
                    target_namespace_id, target_agent_id,
-                   scopes, expires_at, status, created_at
+                   scopes, expires_at, status, created_at, can_delegate
             FROM a2a_grants
             WHERE token_hash = $1
             """,
@@ -909,7 +996,7 @@ async def verify_grant_status(
             """
             SELECT id, owner_namespace_id, owner_agent_id,
                    target_namespace_id, target_agent_id,
-                   scopes, expires_at, status, created_at
+                   scopes, expires_at, status, created_at, can_delegate
             FROM a2a_grants
             WHERE id = $1
             """,
@@ -967,6 +1054,7 @@ async def verify_grant_status(
         "scopes": json.loads(row["scopes"]),
         "status": status,
         "expires_at": expires_at.isoformat(),
+        "can_delegate": row["can_delegate"],
         "created_at": row["created_at"].isoformat(),
     }
 
@@ -1008,7 +1096,7 @@ async def update_grant_scopes(
     if mode == "append":
         existing_data = json.loads(row["scopes"])
         merged_scopes = [A2AScope.model_validate(s) for s in existing_data]
-        
+
         # Merge input scopes, filtering out exact duplicates
         for ns in scopes:
             if ns not in merged_scopes:
@@ -1069,7 +1157,7 @@ async def inspect_grant(
         """
         SELECT id, owner_namespace_id, owner_agent_id,
                target_namespace_id, target_agent_id,
-               scopes, status, expires_at, created_at
+               scopes, status, expires_at, created_at, can_delegate
         FROM a2a_grants
         WHERE id = $1 AND owner_namespace_id = $2
         """,
@@ -1089,11 +1177,13 @@ async def inspect_grant(
         "grant_id": str(row["id"]),
         "owner_namespace_id": str(row["owner_namespace_id"]),
         "owner_agent_id": row["owner_agent_id"],
-        "target_namespace_id": str(row["target_namespace_id"]) if row["target_namespace_id"] else None,
+        "target_namespace_id": str(row["target_namespace_id"])
+        if row["target_namespace_id"]
+        else None,
         "target_agent_id": row["target_agent_id"],
         "scopes": json.loads(row["scopes"]),
         "status": row["status"],
         "expires_at": expires_at.isoformat(),
+        "can_delegate": row["can_delegate"],
         "created_at": row["created_at"].isoformat(),
     }
-

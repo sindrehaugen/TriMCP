@@ -12,6 +12,8 @@
 | TD-4 | LOW (gate) | Verification | open |
 | TD-5 | LOW | Working-tree entanglement | informational |
 | TD-6 | MED | Batch 21 (embedding sidecar resilience) | open — partial |
+| TD-7 | LOW | requirements/Docker optimizations | open (for the new version — not applied) |
+
 
 ---
 
@@ -79,6 +81,90 @@ These were confirmed OPEN in the Wave 0 re-audit and are scheduled in later batc
 - **R-A / Mongo write durability** — saga Mongo write uses default `w:1, j:false`; power-loss window can orphan a committed PG row. (Batch 57.)
 - **R-B / reverse-orphan sweep** — GC is forward-only; no detection of PG memories with a missing Mongo doc. (Batch 58.)
 
+## TD-7 — requirements/Docker optimizations (Drop-in rewrite for the new version — not applied)
+
+### requirements.txt
+Remove torch from here (install it separately for CPU), and move test deps out:
+```diff
+- spacy>=3.7.0
++ spacy>=3.7.0
+  ...
+- # Phase 5: Jina Embeddings
+  sentence-transformers>=2.3.1
+  transformers>=4.36.2,<5.9
+- torch>=2.1.2
++ # torch installed separately from the CPU index in the Dockerfile (no CUDA)
+  ...
+- # Testing
+- pytest>=8.0.0
+- pytest-asyncio>=0.23.0
+- pytest-mock>=3.12.0
+```
+(Add the three pytest* lines to the existing requirements-dev.txt.)
+
+### deploy/multiuser/Dockerfile
+CPU torch + bind-mounted wheels:
+```dockerfile
+# syntax=docker/dockerfile:1.7
+FROM python:3.12-slim-bookworm AS builder
+WORKDIR /build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential git \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+# CPU-only torch (no nvidia/cuda/triton) — saves ~3.6 GB
+RUN pip wheel --no-cache-dir -w /wheels \
+        --index-url https://download.pytorch.org/whl/cpu "torch>=2.1.2" \
+    && pip wheel --no-cache-dir -w /wheels -r requirements.txt
+
+FROM python:3.12-slim-bookworm AS runtime
+WORKDIR /app
+COPY requirements.txt .
+# Bind-mount wheels: install without ever persisting them as a layer (saves ~3 GB)
+RUN --mount=type=bind,from=builder,source=/wheels,target=/wheels \
+    pip install --no-cache-dir --no-index --find-links=/wheels \
+        "torch>=2.1.2" -r requirements.txt \
+    && python -m spacy download en_core_web_sm \
+    && useradd --system --uid 10001 --create-home trimcp
+
+COPY trimcp ./trimcp
+COPY bravo_hr ./bravo_hr
+COPY bravo_agreement ./bravo_agreement
+COPY start_worker.py health_probe.py ./
+COPY admin_server.py server.py ./
+COPY admin ./admin
+RUN chown -R trimcp:trimcp /app
+USER trimcp
+ENV XDG_CACHE_HOME=/tmp PYTHONUNBUFFERED=1 PYTHONPATH=/app
+HEALTHCHECK --interval=60s --timeout=15s --start-period=90s --retries=3 \
+    CMD python health_probe.py
+CMD ["python", "start_worker.py"]
+```
+
+### docker-compose.yml
+Collapse 7 builds into 1 shared image (use the same Dockerfile+context for all backend services; just build once and override command):
+```yaml
+x-backend: &backend
+  image: backend-app:latest      # one shared image
+  build:
+    context: .
+    dockerfile: deploy/multiuser/Dockerfile
+
+services:
+  bff:     { <<: *backend, command: ["python", "run_steps_bff.py"] }
+  product: { <<: *backend, command: ["python", "-m", "steps_product"] }
+  d365:    { <<: *backend, command: ["python", "-m", "steps_d365"] }
+  cron:    { <<: *backend, command: ["python", "-m", "trimcp.cron"] }
+  # a2a, admin, webhook-receiver likewise
+```
+Only the first service builds; the rest reuse backend-app:latest. 7×15 GB of churn → one ~8 GB image.
+
+### Recommended sequence when you push the new version
+1. Update the three files above; rebuild with BuildKit (DOCKER_BUILDKIT=1, default in your Docker 29.5).
+2. `docker compose up -d` to recreate containers onto the new shared image.
+3. `docker image prune -af` — reclaims the old backend-* images (the 5 in-use 4-day/21h ones + the 2 unused) once nothing references them.
+4. Pin dependencies (generate a lock / freeze to ==) so layers stay cache-stable going forward.
+
 ---
 
-*Last updated: Batches 18–25 committed (`5fc6494` B18, `fad62b2` B19, `2272398` B23, `55e1da3` B22, `4e10a9e` B20+21+24+25) on branch `batch-23-atms-cascade`. Open debt: TD-1 (commit hygiene), TD-3 (replay silent-skip), TD-4 (run cumulative gate), TD-6 (embedding-sidecar retry). Owner: NCE team. Revisit after the full prompt sequence completes.*
+*Last updated: Batches 18–25 committed (`5fc6494` B18, `fad62b2` B19, `2272398` B23, `55e1da3` B22, `4e10a9e` B20+21+24+25) on branch `batch-23-atms-cascade`. Open debt: TD-1 (commit hygiene), TD-3 (replay silent-skip), TD-4 (run cumulative gate), TD-6 (embedding-sidecar retry), TD-7 (requirements/Docker optimizations). Owner: NCE team. Revisit after the full prompt sequence completes.*

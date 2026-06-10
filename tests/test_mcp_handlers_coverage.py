@@ -177,11 +177,13 @@ async def test_a2a_helpers_and_handlers() -> None:
         owner_agent_id="owner",
         scopes=scopes,
         expires_at=exp,
+        can_delegate=False,
     )
-    engine.semantic_search = AsyncMock(return_value=[{"hit": 1}])
+    engine.semantic_search = AsyncMock(return_value=[{"memory_id": uuid.uuid4(), "hit": 1}])
     with (
         patch("nce.a2a_mcp_handlers.verify_token", new_callable=AsyncMock) as vt,
         patch("nce.a2a_mcp_handlers.enforce_scope"),
+        patch("nce.a2a._append_a2a_event", new_callable=AsyncMock),
     ):
         vt.return_value = verified
         out = await a2a_mcp_handlers.handle_a2a_query_shared(
@@ -193,7 +195,10 @@ async def test_a2a_helpers_and_handlers() -> None:
                 "top_k": 3,
             },
         )
-    assert json.loads(out)["results"] == [{"hit": 1}]
+    results = json.loads(out)["results"]
+    assert len(results) == 1
+    assert results[0]["hit"] == 1
+    assert "memory_id" in results[0]
 
 
 @pytest.mark.asyncio

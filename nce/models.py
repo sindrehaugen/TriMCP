@@ -1172,6 +1172,7 @@ class A2AGrantRequest(BaseModel):
     target_agent_id: str | None = None
     scopes: list[A2AScope] = Field(..., min_length=1)
     expires_in_seconds: int = Field(3600, ge=60, le=86400 * 30)
+    can_delegate: bool = Field(default=False)
 
     @field_validator("target_agent_id")
     @classmethod
@@ -1197,6 +1198,7 @@ class VerifiedGrant(BaseModel):
     owner_agent_id: str
     scopes: list[A2AScope]
     expires_at: datetime
+    can_delegate: bool = False
 
 
 class A2AQuerySharedRequest(BaseModel):

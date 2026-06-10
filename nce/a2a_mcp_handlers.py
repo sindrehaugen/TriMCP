@@ -51,6 +51,7 @@ def _build_grant_request(arguments: dict[str, Any]) -> A2AGrantRequest:
         target_agent_id=arguments.get("target_agent_id"),
         scopes=_parse_scopes(arguments.get("scopes", [])),
         expires_in_seconds=int(arguments.get("expires_in_seconds", 3600)),
+        can_delegate=bool(arguments.get("can_delegate", False)),
     )
 
 
@@ -122,16 +123,35 @@ async def handle_a2a_query_shared(engine: NCEEngine, arguments: dict[str, Any]) 
     async with engine.pg_pool.acquire(timeout=10.0) as conn:
         verified = await verify_token(conn, req.sharing_token, consumer_ctx)
 
-    resource_id = req.resource_id or str(verified.owner_namespace_id)
-    if req.resource_type != "namespace" and not req.resource_id:
-        raise ValueError(f"resource_id is required when resource_type={req.resource_type!r}")
+        resource_id = req.resource_id or str(verified.owner_namespace_id)
+        if req.resource_type != "namespace" and not req.resource_id:
+            raise ValueError(f"resource_id is required when resource_type={req.resource_type!r}")
 
-    enforce_scope(
-        verified.scopes,
-        req.resource_type,
-        resource_id,
-        str(verified.owner_namespace_id),
-    )
+        enforce_scope(
+            verified.scopes,
+            req.resource_type,
+            resource_id,
+            str(verified.owner_namespace_id),
+        )
+
+        # Append signed event on the owner's log
+        owner_ctx = NamespaceContext(
+            namespace_id=verified.owner_namespace_id,
+            agent_id=verified.owner_agent_id,
+        )
+        from nce.a2a import _append_a2a_event
+
+        await _append_a2a_event(
+            conn,
+            owner_ctx=owner_ctx,
+            event_type="a2a_shared_query",
+            params={
+                "consumer_namespace_id": str(consumer_ctx.namespace_id),
+                "consumer_agent_id": consumer_ctx.agent_id,
+                "grant_id": str(verified.grant_id),
+                "query": req.query,
+            },
+        )
 
     if verified.owner_namespace_id == consumer_ctx.namespace_id:
         log.warning(
@@ -148,6 +168,31 @@ async def handle_a2a_query_shared(engine: NCEEngine, arguments: dict[str, Any]) 
         limit=req.top_k,
         offset=0,
     )
+
+    # Hydrate owner's original signature + key ID alongside shared memories
+    if results:
+        memory_ids = [res["memory_id"] for res in results]
+        async with engine.pg_pool.acquire(timeout=10.0) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, signature, signature_key_id
+                FROM memories
+                WHERE id = ANY($1) AND namespace_id = $2
+                """,
+                memory_ids,
+                verified.owner_namespace_id,
+            )
+            sig_map = {
+                row["id"]: {
+                    "signature": row["signature"].hex() if row["signature"] else None,
+                    "signature_key_id": row["signature_key_id"],
+                }
+                for row in rows
+            }
+            for res in results:
+                info = sig_map.get(res["memory_id"], {})
+                res["signature"] = info.get("signature")
+                res["signature_key_id"] = info.get("signature_key_id")
 
     return json.dumps({"results": results}, default=str)
 

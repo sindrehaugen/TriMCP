@@ -805,6 +805,7 @@ CREATE TABLE IF NOT EXISTS a2a_grants (
     status               TEXT        NOT NULL DEFAULT 'active'
                                      CHECK (status IN ('active', 'revoked', 'expired')),
     expires_at           TIMESTAMPTZ NOT NULL,
+    can_delegate         BOOLEAN     NOT NULL DEFAULT false,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

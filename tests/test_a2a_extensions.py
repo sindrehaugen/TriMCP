@@ -51,6 +51,7 @@ def _grant_row_dict(
     status: str = "active",
     expires_at: datetime | None = None,
     created_at: datetime | None = None,
+    can_delegate: bool = False,
 ) -> dict:
     return {
         "id": grant_id or uuid.uuid4(),
@@ -58,16 +59,27 @@ def _grant_row_dict(
         "owner_agent_id": owner_agent,
         "target_namespace_id": consumer_ns,
         "target_agent_id": consumer_agent,
-        "scopes": json.dumps(scopes or [{"resource_type": "namespace", "resource_id": str(uuid.uuid4()), "permissions": ["read"]}]),
+        "scopes": json.dumps(
+            scopes
+            or [
+                {
+                    "resource_type": "namespace",
+                    "resource_id": str(uuid.uuid4()),
+                    "permissions": ["read"],
+                }
+            ]
+        ),
         "status": status,
         "expires_at": expires_at or (datetime.now(timezone.utc) + timedelta(hours=1)),
         "created_at": created_at or datetime.now(timezone.utc),
+        "can_delegate": can_delegate,
     }
 
 
 # ============================================================================
 # 1. Domain Operations Tests (verify_grant_status)
 # ============================================================================
+
 
 @pytest.mark.asyncio
 async def test_verify_grant_status_parameter_bounds() -> None:
@@ -100,7 +112,9 @@ async def test_verify_grant_status_auto_expires() -> None:
     grant_id = uuid.uuid4()
     owner_ns = uuid.uuid4()
     past_expiry = datetime.now(timezone.utc) - timedelta(minutes=5)
-    row = _grant_row_dict(grant_id=grant_id, owner_ns=owner_ns, expires_at=past_expiry, status="active")
+    row = _grant_row_dict(
+        grant_id=grant_id, owner_ns=owner_ns, expires_at=past_expiry, status="active"
+    )
     conn.fetchrow = AsyncMock(return_value=row)
 
     ctx = NamespaceContext(namespace_id=owner_ns, agent_id="agent-caller")
@@ -121,7 +135,9 @@ async def test_verify_grant_status_security_boundaries() -> None:
     owner_ns = uuid.uuid4()
     target_ns = uuid.uuid4()
 
-    row = _grant_row_dict(grant_id=grant_id, owner_ns=owner_ns, consumer_ns=target_ns, consumer_agent="bot-a")
+    row = _grant_row_dict(
+        grant_id=grant_id, owner_ns=owner_ns, consumer_ns=target_ns, consumer_agent="bot-a"
+    )
     conn.fetchrow = AsyncMock(return_value=row)
 
     # 1. Unauthorized caller (different namespace) raises error
@@ -145,7 +161,9 @@ async def test_verify_grant_status_security_boundaries() -> None:
     assert res_target["grant_id"] == str(grant_id)
 
     # 5. Target caller in unrestricted target namespace (target_ns = None) is authorized
-    row_unrestricted = _grant_row_dict(grant_id=grant_id, owner_ns=owner_ns, consumer_ns=None, consumer_agent=None)
+    row_unrestricted = _grant_row_dict(
+        grant_id=grant_id, owner_ns=owner_ns, consumer_ns=None, consumer_agent=None
+    )
     conn.fetchrow = AsyncMock(return_value=row_unrestricted)
     any_ctx = NamespaceContext(namespace_id=uuid.uuid4(), agent_id="any-agent")
     res_any = await verify_grant_status(conn, any_ctx, grant_id=grant_id)
@@ -156,6 +174,7 @@ async def test_verify_grant_status_security_boundaries() -> None:
 # 2. Domain Operations Tests (update_grant_scopes)
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_update_grant_scopes_not_found_or_unauthorized() -> None:
     """update_grant_scopes raises error if grant does not exist or caller is not owner."""
@@ -164,7 +183,16 @@ async def test_update_grant_scopes_not_found_or_unauthorized() -> None:
     owner_ctx = NamespaceContext(namespace_id=uuid.uuid4(), agent_id="owner-agent")
 
     with pytest.raises(A2AAuthorizationError, match="Grant not found or unauthorized."):
-        await update_grant_scopes(conn, owner_ctx, uuid.uuid4(), [A2AScope(resource_type="namespace", resource_id=str(uuid.uuid4()), permissions=["read"])])
+        await update_grant_scopes(
+            conn,
+            owner_ctx,
+            uuid.uuid4(),
+            [
+                A2AScope(
+                    resource_type="namespace", resource_id=str(uuid.uuid4()), permissions=["read"]
+                )
+            ],
+        )
 
 
 @pytest.mark.asyncio
@@ -179,14 +207,34 @@ async def test_update_grant_scopes_inactive_or_expired() -> None:
     row_inactive = _grant_row_dict(grant_id=grant_id, owner_ns=owner_ns, status="revoked")
     conn.fetchrow = AsyncMock(return_value=row_inactive)
     with pytest.raises(A2AAuthorizationError, match="Cannot update scopes of an inactive grant."):
-        await update_grant_scopes(conn, owner_ctx, grant_id, [A2AScope(resource_type="namespace", resource_id=str(uuid.uuid4()), permissions=["read"])])
+        await update_grant_scopes(
+            conn,
+            owner_ctx,
+            grant_id,
+            [
+                A2AScope(
+                    resource_type="namespace", resource_id=str(uuid.uuid4()), permissions=["read"]
+                )
+            ],
+        )
 
     # 2. Expired grant
     past_expiry = datetime.now(timezone.utc) - timedelta(minutes=5)
-    row_expired = _grant_row_dict(grant_id=grant_id, owner_ns=owner_ns, status="active", expires_at=past_expiry)
+    row_expired = _grant_row_dict(
+        grant_id=grant_id, owner_ns=owner_ns, status="active", expires_at=past_expiry
+    )
     conn.fetchrow = AsyncMock(return_value=row_expired)
     with pytest.raises(A2AAuthorizationError, match="Cannot update scopes of an expired grant."):
-        await update_grant_scopes(conn, owner_ctx, grant_id, [A2AScope(resource_type="namespace", resource_id=str(uuid.uuid4()), permissions=["read"])])
+        await update_grant_scopes(
+            conn,
+            owner_ctx,
+            grant_id,
+            [
+                A2AScope(
+                    resource_type="namespace", resource_id=str(uuid.uuid4()), permissions=["read"]
+                )
+            ],
+        )
 
 
 @pytest.mark.asyncio
@@ -203,9 +251,13 @@ async def test_update_grant_scopes_success_strategies() -> None:
     conn.transaction = MagicMock(return_value=tx)
 
     existing_scope_id = str(uuid.uuid4())
-    existing_scopes = [{"resource_type": "namespace", "resource_id": existing_scope_id, "permissions": ["read"]}]
-    row = _grant_row_dict(grant_id=grant_id, owner_ns=owner_ns, scopes=existing_scopes, status="active")
-    
+    existing_scopes = [
+        {"resource_type": "namespace", "resource_id": existing_scope_id, "permissions": ["read"]}
+    ]
+    row = _grant_row_dict(
+        grant_id=grant_id, owner_ns=owner_ns, scopes=existing_scopes, status="active"
+    )
+
     new_scope_id = str(uuid.uuid4())
     new_scopes = [
         A2AScope(resource_type="namespace", resource_id=new_scope_id, permissions=["read"])
@@ -215,12 +267,12 @@ async def test_update_grant_scopes_success_strategies() -> None:
     conn.fetchrow = AsyncMock(return_value=row)
 
     # 1. Replace mode
-    with patch("nce.a2a.set_namespace_context", AsyncMock()) as mock_set_ctx:
+    with patch("nce.a2a.set_namespace_context", AsyncMock()):
         with patch("nce.event_log.append_event", AsyncMock()) as mock_append:
             res = await update_grant_scopes(conn, owner_ctx, grant_id, new_scopes, mode="replace")
             assert len(res["scopes"]) == 1
             assert res["scopes"][0]["resource_id"] == new_scope_id
-            
+
             # Check UPDATE SQL execution
             assert conn.execute.called
             mock_append.assert_called_once()
@@ -238,7 +290,7 @@ async def test_update_grant_scopes_success_strategies() -> None:
             ids = {s["resource_id"] for s in res["scopes"]}
             assert existing_scope_id in ids
             assert new_scope_id in ids
-            
+
             assert conn.execute.called
             mock_append.assert_called_once()
             assert mock_append.call_args[1]["params"]["mode"] == "append"
@@ -255,6 +307,7 @@ async def test_update_grant_scopes_success_strategies() -> None:
 # ============================================================================
 # 3. Domain Operations Tests (inspect_grant)
 # ============================================================================
+
 
 @pytest.mark.asyncio
 async def test_inspect_grant_not_found_or_unauthorized() -> None:
@@ -288,6 +341,7 @@ async def test_inspect_grant_success() -> None:
 # 4. MCP Handlers Tests
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_handle_a2a_verify_grant_status_mcp() -> None:
     """Verify MCP integration for handle_a2a_verify_grant_status."""
@@ -299,13 +353,11 @@ async def test_handle_a2a_verify_grant_status_mcp() -> None:
         "sharing_token": "bearer-token-abc",
     }
 
-    mock_res = {
-        "grant_id": str(uuid.uuid4()),
-        "status": "active",
-        "scopes": []
-    }
+    mock_res = {"grant_id": str(uuid.uuid4()), "status": "active", "scopes": []}
 
-    with patch("nce.a2a_mcp_handlers.verify_grant_status", AsyncMock(return_value=mock_res)) as mock_domain:
+    with patch(
+        "nce.a2a_mcp_handlers.verify_grant_status", AsyncMock(return_value=mock_res)
+    ) as mock_domain:
         res_str = await a2a_mcp_handlers.handle_a2a_verify_grant_status(engine, args)
         res = json.loads(res_str)
         assert res["status"] == "active"
@@ -327,18 +379,20 @@ async def test_handle_a2a_update_grant_scopes_mcp() -> None:
         "agent_id": "owner-agent",
         "grant_id": str(grant_id),
         "scopes": [
-            {"resource_type": "namespace", "resource_id": str(uuid.uuid4()), "permissions": ["read"]}
+            {
+                "resource_type": "namespace",
+                "resource_id": str(uuid.uuid4()),
+                "permissions": ["read"],
+            }
         ],
         "mode": "append",
     }
 
-    mock_res = {
-        "grant_id": str(grant_id),
-        "status": "updated",
-        "scopes": []
-    }
+    mock_res = {"grant_id": str(grant_id), "status": "updated", "scopes": []}
 
-    with patch("nce.a2a_mcp_handlers.update_grant_scopes", AsyncMock(return_value=mock_res)) as mock_domain:
+    with patch(
+        "nce.a2a_mcp_handlers.update_grant_scopes", AsyncMock(return_value=mock_res)
+    ) as mock_domain:
         res_str = await a2a_mcp_handlers.handle_a2a_update_grant_scopes(engine, args)
         res = json.loads(res_str)
         assert res["status"] == "updated"
@@ -359,13 +413,11 @@ async def test_handle_a2a_inspect_grant_mcp() -> None:
         "grant_id": str(grant_id),
     }
 
-    mock_res = {
-        "grant_id": str(grant_id),
-        "owner_namespace_id": str(owner_ns),
-        "status": "active"
-    }
+    mock_res = {"grant_id": str(grant_id), "owner_namespace_id": str(owner_ns), "status": "active"}
 
-    with patch("nce.a2a_mcp_handlers.inspect_grant", AsyncMock(return_value=mock_res)) as mock_domain:
+    with patch(
+        "nce.a2a_mcp_handlers.inspect_grant", AsyncMock(return_value=mock_res)
+    ) as mock_domain:
         res_str = await a2a_mcp_handlers.handle_a2a_inspect_grant(engine, args)
         res = json.loads(res_str)
         assert res["grant_id"] == str(grant_id)

@@ -46,6 +46,7 @@ def _grant_row(
     consumer_ns: uuid.UUID | None,
     consumer_agent: str | None,
     scopes: list[dict],
+    can_delegate: bool = False,
 ) -> dict:
     return {
         "id": uuid.uuid4(),
@@ -56,6 +57,7 @@ def _grant_row(
         "scopes": json.dumps(scopes),
         "expires_at": _future_expiry(),
         "status": "active",
+        "can_delegate": can_delegate,
     }
 
 
@@ -234,6 +236,69 @@ class TestCreateGrantSqlShape:
                 A2AScope(
                     resource_type="namespace",
                     resource_id=str(owner.namespace_id),
+                    permissions=["read"],
+                )
+            ],
+            expires_in_seconds=120,
+        )
+        with (
+            patch("nce.a2a.set_namespace_context", new_callable=AsyncMock),
+            patch("nce.event_log.append_event", new_callable=AsyncMock),
+        ):
+            resp = await create_grant(conn, owner, req)
+        assert resp.sharing_token.startswith("nce_a2a_")
+        conn.execute.assert_awaited_once()
+
+
+class TestCreateGrantDelegation:
+    """Tests for the can_delegate validation rules inside create_grant."""
+
+    @pytest.mark.asyncio
+    async def test_create_grant_other_namespace_without_delegable_grant_raises(self) -> None:
+        conn = AsyncMock()
+        # Mock database returning False for EXISTS check (no delegable grant exists)
+        conn.fetchval = AsyncMock(return_value=False)
+        tx = AsyncMock()
+        tx.__aenter__ = AsyncMock(return_value=None)
+        tx.__aexit__ = AsyncMock(return_value=None)
+        conn.transaction = MagicMock(return_value=tx)
+
+        owner = NamespaceContext(namespace_id=uuid.uuid4(), agent_id="owner-agent")
+        other_ns = uuid.uuid4()
+        req = A2AGrantRequest(
+            target_namespace_id=uuid.uuid4(),
+            target_agent_id="visitor",
+            scopes=[
+                A2AScope(
+                    resource_type="namespace",
+                    resource_id=str(other_ns),
+                    permissions=["read"],
+                )
+            ],
+            expires_in_seconds=120,
+        )
+        with pytest.raises(A2AScopeViolationError, match="does not have delegable access"):
+            await create_grant(conn, owner, req)
+
+    @pytest.mark.asyncio
+    async def test_create_grant_other_namespace_with_delegable_grant_succeeds(self) -> None:
+        conn = AsyncMock()
+        # Mock database returning True for EXISTS check (delegable grant exists)
+        conn.fetchval = AsyncMock(return_value=True)
+        tx = AsyncMock()
+        tx.__aenter__ = AsyncMock(return_value=None)
+        tx.__aexit__ = AsyncMock(return_value=None)
+        conn.transaction = MagicMock(return_value=tx)
+
+        owner = NamespaceContext(namespace_id=uuid.uuid4(), agent_id="owner-agent")
+        other_ns = uuid.uuid4()
+        req = A2AGrantRequest(
+            target_namespace_id=uuid.uuid4(),
+            target_agent_id="visitor",
+            scopes=[
+                A2AScope(
+                    resource_type="namespace",
+                    resource_id=str(other_ns),
                     permissions=["read"],
                 )
             ],
