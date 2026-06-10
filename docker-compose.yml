@@ -91,7 +91,10 @@ services:
     build:
       context: .
       dockerfile: deploy/multiuser/Dockerfile
-    container_name: nce-worker
+    # Multicore (VI.5a): scale background indexing/sync across N RQ worker
+    # replicas. Lanes (high_priority -> batch_processing -> default) stay as-is;
+    # each replica is an independent forking Worker. No container_name so
+    # replicas > 1 is allowed (Compose names them nce-worker-1, -2, ...).
     profiles:
       - gpu
     env_file:
@@ -101,8 +104,14 @@ services:
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
-    # GPU access for re-embedding CUDA operations (Item 49)
+      # CPU-thread tuning (VI.5a / M2): pin native thread pools to the CPU quota.
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-2}
+      MKL_NUM_THREADS: ${MKL_NUM_THREADS:-2}
+      TOKENIZERS_PARALLELISM: ${TOKENIZERS_PARALLELISM:-false}
     deploy:
+      # N replicas process N RQ jobs concurrently (default 2).
+      replicas: ${WORKER_REPLICAS:-2}
+      # GPU access for re-embedding CUDA operations (Item 49)
       resources:
         reservations:
           devices:
@@ -134,6 +143,14 @@ services:
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
+      # CPU-thread tuning (VI.5a / M2): pin native thread pools to the CPU quota.
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-2}
+      MKL_NUM_THREADS: ${MKL_NUM_THREADS:-2}
+      TOKENIZERS_PARALLELISM: ${TOKENIZERS_PARALLELISM:-false}
+    # Multicore (VI.5a): cron MUST stay a singleton — CronLock is the only
+    # split-brain guard. NEVER scale this above 1 replica.
+    deploy:
+      replicas: 1
     depends_on:
       postgres:
         condition: service_healthy
@@ -149,6 +166,8 @@ services:
     build:
       context: .
       dockerfile: deploy/multiuser/Dockerfile
+    # Multicore (VI.5a): stateless HTTP service — run N uvicorn worker processes.
+    # NOT a background-loop process, so --workers is safe (no GC/outbox/re-embed here).
     command:
       [
         "uvicorn",
@@ -157,6 +176,8 @@ services:
         "0.0.0.0",
         "--port",
         "8003",
+        "--workers",
+        "${ADMIN_WORKERS:-2}",
       ]
     container_name: nce-admin
     env_file:
@@ -166,6 +187,10 @@ services:
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
+      # CPU-thread tuning (VI.5a / M2): pin native thread pools to the CPU quota.
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-2}
+      MKL_NUM_THREADS: ${MKL_NUM_THREADS:-2}
+      TOKENIZERS_PARALLELISM: ${TOKENIZERS_PARALLELISM:-false}
     ports:
       - "${ADMIN_PORT:-8003}:8003"
     depends_on:
@@ -197,6 +222,8 @@ services:
     build:
       context: .
       dockerfile: deploy/multiuser/Dockerfile
+    # Multicore (VI.5a): stateless HTTP service — run N uvicorn worker processes.
+    # NOT a background-loop process, so --workers is safe.
     command:
       [
         "uvicorn",
@@ -205,6 +232,8 @@ services:
         "0.0.0.0",
         "--port",
         "8004",
+        "--workers",
+        "${A2A_WORKERS:-2}",
       ]
     container_name: nce-a2a
     stop_grace_period: 35s
@@ -215,6 +244,10 @@ services:
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
+      # CPU-thread tuning (VI.5a / M2): pin native thread pools to the CPU quota.
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-2}
+      MKL_NUM_THREADS: ${MKL_NUM_THREADS:-2}
+      TOKENIZERS_PARALLELISM: ${TOKENIZERS_PARALLELISM:-false}
     ports:
       - "${A2A_PORT:-8004}:8004"
     depends_on:
@@ -244,6 +277,8 @@ services:
     build:
       context: .
       dockerfile: deploy/multiuser/Dockerfile
+    # Multicore (VI.5a): stateless HTTP service — run N uvicorn worker processes.
+    # NOT a background-loop process, so --workers is safe.
     command:
       [
         "uvicorn",
@@ -252,6 +287,8 @@ services:
         "0.0.0.0",
         "--port",
         "8080",
+        "--workers",
+        "${WEBHOOK_WORKERS:-2}",
       ]
     container_name: nce-webhook-receiver
     env_file:
@@ -262,6 +299,10 @@ services:
       PG_DSN: postgresql://mcp_user:${POSTGRES_PASSWORD:-mcp_password}@postgres:5432/memory_meta
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mcp_admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-super_secure_minio_password}
+      # CPU-thread tuning (VI.5a / M2): pin native thread pools to the CPU quota.
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-2}
+      MKL_NUM_THREADS: ${MKL_NUM_THREADS:-2}
+      TOKENIZERS_PARALLELISM: ${TOKENIZERS_PARALLELISM:-false}
     ports:
       - "${WEBHOOK_PORT:-8080}:8080"
     depends_on:

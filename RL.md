@@ -67,7 +67,7 @@
 * [LOCKED] Batch 57 — Mongo write durability for the saga (R-A / VI.6a) [NO TAG]
 * [LOCKED] Batch 58 — Reverse-orphan reconciliation sweep (R-B / VI.6a) [NO TAG]
 * [DONE] Batch 59 — RQ in-flight job recovery (R-C / VI.6a) [PASSED TAG]
-* [RUNNING] Batch 60 — Multicore: HTTP workers + RQ replicas + thread pinning (VI.5a) [NO TAG]
+* [DONE] Batch 60 — Multicore: HTTP workers + RQ replicas + thread pinning (VI.5a) [PASSED TAG]
 * [LOCKED] Batch 61 — RAM: offload spaCy + NLI to a sidecar; container mem limits (VI.5b) [NO TAG]
 * [LOCKED] Batch 62 — Disk: datastore tuning + halfvec + tmpfs temp (VI.5c) [NO TAG]
 * [LOCKED] Batch 63 — Cross-encoder reranking (IV.1) [NO TAG]
@@ -357,5 +357,14 @@
 * **Identified System Flaws:** None affecting correctness. `RESULT_TTL`/`FAILURE_TTL` constants are defined but never wired (dead config; cosmetic).
 * **Defensive Refactoring Correction Blueprint:** None.
 * **Kaizen:** Wire `RESULT_TTL`/`FAILURE_TTL` through the enqueue sites (or the Worker) so the documented Redis-retention bound is actually enforced, or drop the constants.
+
+### TAG Batch 60 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_60.md`, `docker-compose.yml`, `tests/test_compose_multicore.py`. Exactly the two in-scope files modified; no `nce/` source, MCP stdio, or `RL.md` touched; mypy baseline unaffected.
+* **Structural Integrity:** All CRITICAL invariants hold. `--workers` appears ONLY on the three stateless HTTP services (`admin`/`a2a`/`webhook-receiver`, env-overridable, default 2). `worker` carries NO `--workers`, got `deploy.replicas` (default 2), and its `container_name` was correctly removed (fixed names forbid replicas>1). `cron` is a strict singleton (`deploy.replicas: 1`, no `--workers`) — CronLock split-brain guard preserved. Thread env vars `OMP_NUM_THREADS`/`MKL_NUM_THREADS`/`TOKENIZERS_PARALLELISM` pinned on all five compute services. `docker compose config --quiet` exits 0 (only pre-existing unrelated `$`-interpolation warnings from `deploy/compose.stack.env*`).
+* **Contractual Test Fidelity:** No Trivial Test Trap. PyYAML suite parses the real compose file and asserts: HTTP services carry `--workers` default >1; `worker` declares scaled replicas and no `container_name`; `cron` is exactly `replicas==1` with no `--workers`; background-loop services guarded against `--workers`; thread env vars present. `6 passed`.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** The `has_scaled_replicas` branch in `test_http_services_declare_n_worker_processes` is currently dead; apply the same `>1` default check there for symmetry if a service ever scales HTTP via replicas.
 
 [EOF: END OF REFACTORING LEDGER]
