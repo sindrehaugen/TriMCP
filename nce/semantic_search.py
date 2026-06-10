@@ -270,6 +270,8 @@ async def semantic_search(
                     f"* nce_decayed_score(COALESCE(v.raw_salience, f.raw_salience), "
                     f"COALESCE(v.last_updated, f.last_updated), {p_half_life}::double precision))"
                 ).as_("final_score"),
+                RawExpression("COALESCE(v.raw_salience, f.raw_salience)").as_("raw_salience"),
+                RawExpression("COALESCE(v.last_updated, f.last_updated)").as_("last_updated"),
             )
             .orderby(Field("final_score"), order=Order.desc)
             .orderby(RawExpression("COALESCE(v.memory_id, f.memory_id)"))
@@ -283,6 +285,8 @@ async def semantic_search(
                 "payload_ref": row["payload_ref"],
                 "memory_id": row["memory_id"],
                 "score": row["final_score"],
+                "salience_score": float(row.get("raw_salience", 1.0)),
+                "last_reinforced_at": row.get("last_updated"),
             }
             for row in rows
         ]
@@ -315,11 +319,37 @@ async def semantic_search(
         ):
             docs[str(doc["_id"])] = doc
 
+    from datetime import datetime, timezone
+
+    from nce.temporal_decay import retention
+
     results = []
     for res in top_results:
         ref = str(res.get("payload_ref") or "")
         doc = docs.get(ref)
         raw = (doc.get("raw_data") or "") if doc else ""
+
+        salience_score = res.get("salience_score", 1.0)
+        last_reinforced_at = res.get("last_reinforced_at")
+
+        confidence = min(1.0, max(0.0, salience_score))
+        stale = False
+        if last_reinforced_at is not None:
+            try:
+                if isinstance(last_reinforced_at, str):
+                    ts = datetime.fromisoformat(last_reinforced_at.replace("Z", "+00:00"))
+                else:
+                    ts = last_reinforced_at
+
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+
+                retention_result = retention(ts, "episodic")
+                stale = retention_result.prune_eligible
+                confidence = min(1.0, max(0.0, salience_score * retention_result.retention))
+            except Exception:
+                pass
+
         results.append(
             {
                 "memory_id": res["memory_id"],
@@ -328,6 +358,12 @@ async def semantic_search(
                 "raw_data": (raw[:_MAX_RAW_DATA_CHARS] if isinstance(raw, str) else raw)
                 if doc
                 else None,
+                "salience_score": salience_score,
+                "last_reinforced_at": last_reinforced_at.isoformat()
+                if last_reinforced_at and hasattr(last_reinforced_at, 'isoformat')
+                else last_reinforced_at,
+                "confidence": confidence,
+                "stale": stale,
             }
         )
     return results

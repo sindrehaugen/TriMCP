@@ -452,3 +452,50 @@ class TestBatch3BackgroundReinforcement:
                 await asyncio.wait_for(done.wait(), timeout=1.0)
 
         assert set(reinforced) == {str(mid_a), str(mid_b)}
+
+
+class TestBatch37DecayConfidence:
+    @pytest.mark.asyncio
+    async def test_three_month_unreinforced_memory_returns_low_confidence_and_stale(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        oid = str(ObjectId())
+        mid = uuid.uuid4()
+        three_months_ago = datetime.now(timezone.utc) - timedelta(days=90)
+
+        mock_row = {
+            "payload_ref": oid,
+            "memory_id": mid,
+            "final_score": 0.8,
+            "raw_salience": 1.0,
+            "last_updated": three_months_ago,
+        }
+
+        async def embed(_query: str):
+            return [0.0] * VECTOR_DIM
+
+        mock_conn = _base_pg_conn([mock_row])
+        pool = MagicMock()
+        mongo = _mongo_client(episode_docs={oid: {"_id": ObjectId(oid), "raw_data": "some memory"}})
+
+        with patch("nce.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
+            with patch(
+                "nce.semantic_search.asyncio.create_task",
+                side_effect=lambda coro: (coro.close(), MagicMock())[1],
+            ):
+                results = await semantic_search(
+                    pg_pool=pool,
+                    mongo_client=mongo,
+                    embedding_fn=embed,
+                    query="test",
+                    namespace_id=NS,
+                    agent_id=AGENT,
+                )
+
+        assert len(results) == 1
+        res = results[0]
+        assert res["stale"] is True
+        assert res["confidence"] < 0.15
+        assert res["confidence"] > 0.04
+        assert res["salience_score"] == 1.0
+        assert res["last_reinforced_at"] == three_months_ago.isoformat()
