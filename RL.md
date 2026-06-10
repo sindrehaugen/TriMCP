@@ -66,7 +66,7 @@
 * [LOCKED] Batch 56 — Resolve `nce_gc` least-privilege (R4 / VI.4) [NO TAG]
 * [LOCKED] Batch 57 — Mongo write durability for the saga (R-A / VI.6a) [NO TAG]
 * [LOCKED] Batch 58 — Reverse-orphan reconciliation sweep (R-B / VI.6a) [NO TAG]
-* [RUNNING] Batch 59 — RQ in-flight job recovery (R-C / VI.6a) [NO TAG]
+* [DONE] Batch 59 — RQ in-flight job recovery (R-C / VI.6a) [PASSED TAG]
 * [RUNNING] Batch 60 — Multicore: HTTP workers + RQ replicas + thread pinning (VI.5a) [NO TAG]
 * [LOCKED] Batch 61 — RAM: offload spaCy + NLI to a sidecar; container mem limits (VI.5b) [NO TAG]
 * [LOCKED] Batch 62 — Disk: datastore tuning + halfvec + tmpfs temp (VI.5c) [NO TAG]
@@ -348,5 +348,14 @@
 * **Identified System Flaws:** None. (Minor non-blocking: redundant `except DEKDecryptionError: raise` in `decrypt_with_dek`; harmless.)
 * **Defensive Refactoring Correction Blueprint:** None.
 * **Kaizen:** Batch 46 should add an integration test that persists/reads `wrapped_dek`+`dek_key_id` through `scoped_pg_session` to confirm the new columns honor RLS once the read path is wired.
+
+### TAG Batch 59 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** `start_worker.py` and `tests/test_worker_inflight_recovery.py` read in full; `diff_batch_59.md` matches source byte-for-byte. No files outside scope modified; `cron` not referenced in `start_worker.py` (separate launcher, singleton preserved).
+* **Structural Integrity:** Sound. Recovery decomposed cleanly: `requeue_abandoned_jobs` (per-lane) → `maintain_started_registries` (fan-out) → `RecoveringWorker.run_maintenance_tasks` hook, wrapped in try/except so recovery can't crash the worker loop. Lane order (`high_priority`→`batch_processing`→`default`) preserved; `with_scheduler=True` added; a pre-start sweep recovers jobs orphaned by a prior crash. Verified against RQ 2.8.0: `StartedJobRegistry.remove()` raises `NotImplementedError` (so the `zrem` workaround is correct), and `Queue.enqueue_job` restores `origin` so the lane is preserved (no migration to `default`); exactly one copy re-enqueued (no drop/duplicate). Live started jobs correctly skipped by `get_expired_job_ids`.
+* **Contractual Test Fidelity:** No Trivial Test Trap. Both tests run against live Redis and assert the real requeue contract: abandoned job lands in `queue.get_job_ids()`, removed from `StartedJobRegistry`, status `QUEUED`, `origin` lane preserved; a live started job is left untouched. `2 passed`; regression `20 passed`.
+* **Identified System Flaws:** None affecting correctness. `RESULT_TTL`/`FAILURE_TTL` constants are defined but never wired (dead config; cosmetic).
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** Wire `RESULT_TTL`/`FAILURE_TTL` through the enqueue sites (or the Worker) so the documented Redis-retention bound is actually enforced, or drop the constants.
 
 [EOF: END OF REFACTORING LEDGER]
