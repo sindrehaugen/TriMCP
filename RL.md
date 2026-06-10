@@ -52,7 +52,7 @@
 * [DONE] Batch 42 — A2A security hardening (III.5) [PASSED TAG]
 * [DONE] Batch 43 — Bi-temporal "explain my past decision" (II.5) [PASSED TAG]
 * [RUNNING] Batch 44 — DECISION + content-free WORM log fork (R2 / VII.5) [NO TAG]
-* [RUNNING] Batch 45 — Envelope-encryption subsystem (II.4a) [NO TAG]
+* [DONE] Batch 45 — Envelope-encryption subsystem (II.4a) [PASSED TAG]
 * [LOCKED] Batch 46 — Encrypt `episodes.raw_data` under the DEK + teach read paths (II.4b) [NO TAG]
 * [LOCKED] Batch 47 — `shred_memory` / `forget_subject` + deletion receipt (II.4c) [NO TAG]
 * [LOCKED] Batch 48 — DSAR capstone (VII.7) [NO TAG]
@@ -339,5 +339,14 @@
 * **Identified System Flaws:** None blocking. `ForkedReplay` does not populate `replay_runs.digest_match` (only `ReconstructiveReplay` does), so the handler recomputes the digest comparison itself via `compute_namespace_state_digest(as_of=fork_point_ts)` against source and target — a legitimate verification, not a faked check.
 * **Defensive Refactoring Correction Blueprint:** None.
 * **Kaizen:** Consider normalizing the receipt at-or-before-T comparison to `datetime` objects rather than ISO-string compare, to harden against any future non-UTC `occurred_at` persistence.
+
+### TAG Batch 45 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_45.md`, `nce/envelope.py`, `nce/migrations/018_memories_envelope_dek.sql`, `nce/schema.sql`, `tests/test_envelope_dek.py`, plus `nce/signing.py` (read-only). Exactly the four batch-scoped files created/modified; `signing.py` not modified; `episodes.raw_data` encryption and read paths NOT wired (Batch 46 scope preserved).
+* **Structural Integrity:** Crypto reuse is correct and non-duplicative. `wrap_dek` delegates to `signing.encrypt_signing_key`; `unwrap_dek` to `signing.decrypt_signing_key` (AES-256-GCM, Argon2id/PBKDF2 envelope). No bespoke KDF/key-wrapping rolled — only a thin payload layer (`encrypt_with_dek`/`decrypt_with_dek`) using `AESGCM` with a distinct `TCDEK\x01` prefix. Transient DEKs held in `SecureKeyBuffer` (zeroed on exit). `NCE_MASTER_KEY` only reached via `signing.require_master_key`; never DB/settings. Migration `018` is next free; columns nullable; `schema.sql` mirror idempotent (`ADD COLUMN IF NOT EXISTS`); no existing migration edited.
+* **Contractual Test Fidelity:** No Trivial Test Trap. Asserts real crypto contracts: generate→wrap→unwrap round-trip; wrong-master-key raises `SigningKeyDecryptionError`; non-deterministic wrapping; payload encrypt/decrypt under DEK with `plaintext not in blob`; wrong-DEK raises `DEKDecryptionError`; provable-forgetting property (destroyed DEK → undecryptable). `10 passed`; schema bootstrap integration `1 passed`.
+* **Identified System Flaws:** None. (Minor non-blocking: redundant `except DEKDecryptionError: raise` in `decrypt_with_dek`; harmless.)
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** Batch 46 should add an integration test that persists/reads `wrapped_dek`+`dek_key_id` through `scoped_pg_session` to confirm the new columns honor RLS once the read path is wired.
 
 [EOF: END OF REFACTORING LEDGER]

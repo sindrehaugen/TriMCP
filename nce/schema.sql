@@ -88,6 +88,14 @@ CREATE TABLE IF NOT EXISTS memories_default PARTITION OF memories DEFAULT;
 
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+-- Migration 018 (Part II.4 Provable Forgetting): envelope-encryption DEK columns.
+-- wrapped_dek holds the AES-256-GCM-wrapped Data Encryption Key (envelope-encrypted
+-- under NCE_MASTER_KEY via nce.envelope.wrap_dek); dek_key_id is an opaque, key-free
+-- identifier used in deletion receipts/audit events.  Zeroing wrapped_dek crypto-shreds
+-- the corresponding episodes.raw_data ciphertext.  Read-path wiring lands in Batch 46.
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS wrapped_dek BYTEA;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS dek_key_id TEXT;
+
 -- Data Migration from legacy tables
 DO $$
 DECLARE
