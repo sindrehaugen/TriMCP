@@ -63,6 +63,33 @@ The multiuser compose file publishes MinIO on host **9000** (API) and **9001** (
 
 ---
 
+## Secrets management (production) — VI.1
+
+`scripts/bootstrap-compose-secrets.py` is the **development / single-host** path: it generates strong values into `deploy/compose.stack.env.generated`. **Do not commit that file, and do not use it as the production source of truth.**
+
+In production, source secrets from a real **secret manager** — HashiCorp Vault, AWS Secrets Manager, or Azure Key Vault — and have your orchestrator inject them into each container's environment. Plaintext secrets must never live in a committed compose/`.env` file.
+
+NCE exposes a thin **secrets-provider seam** (`nce/config.py`) so this is a drop-in:
+
+| Piece | Purpose |
+|-------|---------|
+| `SecretsProvider` | Abstract seam — `get_secret(name) -> str | None`. |
+| `EnvSecretsProvider` (default) | Reads from the process environment. The orchestrator feeds the env from your secret manager. |
+| `resolve_secret(name, default=...)` | Resolves through the active provider, then falls back to env. |
+| `set_secrets_provider(...)` | Installs a concrete manager-backed provider at startup. |
+| `NCE_SECRETS_PROVIDER` | Selects the backend (`env` by default). |
+
+**`NCE_MASTER_KEY` is environment / secret-manager only (R3).** `resolve_secret` refuses to route the master key through any non-environment provider, and `nce.config` reads it straight from the environment — it is never stored in or returned from a database / SettingsStore.
+
+**Production guardrails** (enforced by `cfg.validate()` and at import):
+
+- `NCE_LOAD_DOTENV` must be `false` — no `.env` is loaded at runtime.
+- `NCE_ALLOW_ADMIN_DOTENV_PERSIST` must be `false` — the admin UI cannot persist connector/datastore secrets to a local `.env`. `cfg.validate()` raises if it is true under `NCE_ENV=prod`.
+
+> Default-path stacks that still rely on `bootstrap-compose-secrets.py` are acceptable for dev and air-gapped single-host installs; for managed/cloud production, prefer the secret-manager injection above and leave `compose.stack.env.generated` unused.
+
+---
+
 ## D2 / D7 — Cognitive model
 
 - Image **`ghcr.io/sindrehaugen/nce-cognitive:v1`** on **11435**.

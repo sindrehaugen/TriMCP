@@ -6,6 +6,14 @@ Writes deploy/compose.stack.env.generated (loaded after deploy/compose.stack.env
 so production values override weak defaults without editing the tracked base file.
 
 Idempotent: only replaces keys that still look weak compared to compose.stack.env.
+
+Scope (VI.1): this is the **development / single-host** secrets path. Production
+deployments should source secrets from a real manager (HashiCorp Vault, AWS
+Secrets Manager, Azure Key Vault) injected into the container environment via
+the secrets-provider seam (NCE_SECRETS_PROVIDER / nce.config.resolve_secret),
+rather than generating them into a local env file. NCE_MASTER_KEY is always
+environment / secret-manager only and is never read from a database or
+SettingsStore (R3). See deploy/README.md "Secrets management (production)".
 """
 
 from __future__ import annotations
@@ -26,38 +34,48 @@ HEADER = """# AUTO-GENERATED — do not commit real secrets. Added by scripts/bo
 KEY_SPECS: list[tuple[str, Callable[[str], bool]]] = [
     (
         "NCE_MASTER_KEY",
-        lambda v: _weak(v, min_len=32)
-        or "dev" in v.lower()
-        or "change" in v.lower()
-        or "replace_me" in v.lower(),
+        lambda v: (
+            _weak(v, min_len=32)
+            or "dev" in v.lower()
+            or "change" in v.lower()
+            or "replace_me" in v.lower()
+        ),
     ),
     (
         "NCE_API_KEY",
-        lambda v: _weak(v, min_len=16)
-        or "change" in v.lower()
-        or v.lower().startswith("dev-")
-        or "replace_me" in v.lower(),
+        lambda v: (
+            _weak(v, min_len=16)
+            or "change" in v.lower()
+            or v.lower().startswith("dev-")
+            or "replace_me" in v.lower()
+        ),
     ),
     (
         "NCE_ADMIN_API_KEY",
-        lambda v: _weak(v, min_len=16)
-        or "change" in v.lower()
-        or v.lower().startswith("dev-")
-        or "replace_me" in v.lower(),
+        lambda v: (
+            _weak(v, min_len=16)
+            or "change" in v.lower()
+            or v.lower().startswith("dev-")
+            or "replace_me" in v.lower()
+        ),
     ),
     (
         "NCE_MCP_API_KEY",
-        lambda v: _weak(v, min_len=16)
-        or "change" in v.lower()
-        or v.lower().startswith("dev-")
-        or "replace_me" in v.lower(),
+        lambda v: (
+            _weak(v, min_len=16)
+            or "change" in v.lower()
+            or v.lower().startswith("dev-")
+            or "replace_me" in v.lower()
+        ),
     ),
     (
         "NCE_APP_PASSWORD",
-        lambda v: _weak(v, min_len=8)
-        or "change" in v.lower()
-        or "replace_me" in v.lower()
-        or v == "nce_app_secret",
+        lambda v: (
+            _weak(v, min_len=8)
+            or "change" in v.lower()
+            or "replace_me" in v.lower()
+            or v == "nce_app_secret"
+        ),
     ),
     (
         "NCE_JWT_SECRET",
@@ -65,10 +83,12 @@ KEY_SPECS: list[tuple[str, Callable[[str], bool]]] = [
     ),
     (
         "NCE_ADMIN_PASSWORD",
-        lambda v: _weak(v, min_len=8)
-        or v.lower() in ("changeme", "admin", "password")
-        or "replace_me" in v.lower()
-        or not v.startswith("$pbkdf2$"),
+        lambda v: (
+            _weak(v, min_len=8)
+            or v.lower() in ("changeme", "admin", "password")
+            or "replace_me" in v.lower()
+            or not v.startswith("$pbkdf2$")
+        ),
     ),
     (
         "DROPBOX_APP_SECRET",
@@ -109,6 +129,7 @@ def _parse_env_text(text: str) -> dict[str, str]:
 def _hash_pbkdf2(password: str) -> str:
     import hashlib
     import os
+
     iters = 600000
     salt = os.urandom(16)
     dk = hashlib.pbkdf2_hmac(

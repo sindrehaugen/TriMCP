@@ -170,6 +170,99 @@ def _float_env(name: str, default: float, *, minimum: float | None = None) -> fl
     return value
 
 
+# ---------------------------------------------------------------------------
+# Secrets-provider seam (VI.1 / R3)
+# ---------------------------------------------------------------------------
+#
+# Production should source secrets from a real manager (HashiCorp Vault, AWS
+# Secrets Manager, Azure Key Vault) rather than committed compose/.env files.
+# ``scripts/bootstrap-compose-secrets.py`` remains the *dev* path.
+#
+# This is a thin abstraction only: a ``SecretsProvider`` protocol plus an
+# env-backed default provider. Real-manager providers are out of scope here
+# (no Vault/AWS/Azure SDK dependency is added) — the seam exists so a concrete
+# provider can be slotted in without touching every call site.
+#
+# Invariant (R3): ``NCE_MASTER_KEY`` is **secret-manager / environment only**.
+# It must never be read from a database or SettingsStore. ``resolve_secret``
+# therefore refuses to route the master key through any non-environment
+# provider, regardless of which provider is configured.
+
+
+class SecretsProvider:
+    """Abstract seam for resolving named secrets at runtime.
+
+    Implementations return the secret value for *name* or ``None`` when the
+    secret is not managed by this provider (the caller then falls back to its
+    configured default).
+    """
+
+    name: str = "abstract"
+
+    def get_secret(self, name: str) -> str | None:  # pragma: no cover - interface
+        raise NotImplementedError
+
+
+class EnvSecretsProvider(SecretsProvider):
+    """Default provider — reads secrets from the process environment.
+
+    This is the dev path and the safe production fallback: secrets are injected
+    into the environment by the orchestrator (which may itself be fed by a real
+    secret manager) rather than read from a committed file at runtime.
+    """
+
+    name = "env"
+
+    def get_secret(self, name: str) -> str | None:
+        raw = os.environ.get(name)
+        if raw is None:
+            return None
+        stripped = raw.strip()
+        return stripped or None
+
+
+# Names that must only ever come from the environment / secret manager and are
+# never permitted to flow through a database- or file-backed provider (R3).
+_ENV_ONLY_SECRETS: frozenset[str] = frozenset({"NCE_MASTER_KEY"})
+
+_DEFAULT_SECRETS_PROVIDER = EnvSecretsProvider()
+_SECRETS_PROVIDER: SecretsProvider = _DEFAULT_SECRETS_PROVIDER
+
+
+def get_secrets_provider() -> SecretsProvider:
+    """Return the active secrets provider (env-backed by default)."""
+    return _SECRETS_PROVIDER
+
+
+def set_secrets_provider(provider: SecretsProvider | None) -> None:
+    """Install a secrets provider (pass ``None`` to restore the env default).
+
+    The seam keeps provider wiring in one place; production deployments can
+    install a Vault / AWS / Azure provider at startup without changing call
+    sites. The env-only invariant in :func:`resolve_secret` still applies.
+    """
+    global _SECRETS_PROVIDER
+    _SECRETS_PROVIDER = provider or _DEFAULT_SECRETS_PROVIDER
+
+
+def resolve_secret(name: str, *, default: str | None = None) -> str | None:
+    """Resolve *name* via the active secrets provider, then fall back to env.
+
+    ``NCE_MASTER_KEY`` (and any other env-only secret) is always read straight
+    from the environment, bypassing the provider entirely so it can never be
+    sourced from a database / SettingsStore (R3).
+    """
+    if name in _ENV_ONLY_SECRETS:
+        raw = os.environ.get(name)
+        value = raw.strip() if raw is not None else None
+        return value or default
+
+    value = _SECRETS_PROVIDER.get_secret(name)
+    if value is None:
+        return default
+    return value
+
+
 class _EmbeddingConfig:
     """
     Embedding / pgvector dimension. Must stay aligned with ``memories.embedding`` and
@@ -391,6 +484,11 @@ class _Config:
     NCE_ADMIN_USERNAME: str = os.getenv("NCE_ADMIN_USERNAME", "")
     NCE_ADMIN_PASSWORD: str = os.getenv("NCE_ADMIN_PASSWORD", "")
     NCE_MASTER_KEY: str = os.getenv("NCE_MASTER_KEY", "")
+    # Selects the secrets-provider backend (VI.1). "env" (default) reads secrets
+    # from the process environment — the orchestrator may feed those from a real
+    # manager (Vault / AWS Secrets Manager / Azure Key Vault). See resolve_secret;
+    # NCE_MASTER_KEY is always environment-only regardless of this setting (R3).
+    NCE_SECRETS_PROVIDER: str = (os.getenv("NCE_SECRETS_PROVIDER") or "env").strip().lower()
     # When true, HTTP admin ``HMACAuthMiddleware`` uses ``NonceStore(cfg.REDIS_URL)``
     # for replay protection across multiple admin replicas (see nce.auth).
     NCE_DISTRIBUTED_REPLAY: bool = _bool_env("NCE_DISTRIBUTED_REPLAY", False)
@@ -800,6 +898,38 @@ class _Config:
 
         # P1: D365 module — require secrets when enabled in production
         cls.validate_d365_config()
+
+        # P1: Secrets-provider seam — reject the dev dotenv-persist path in prod
+        cls.validate_secrets_provider()
+
+    @classmethod
+    def validate_secrets_provider(cls) -> None:
+        """Enforce the production secrets-provider posture (VI.1 / R3).
+
+        In production:
+          * the dev ``NCE_ALLOW_ADMIN_DOTENV_PERSIST`` path (admin UI writing
+            connector/datastore secrets to a local ``.env``) is rejected —
+            production must source secrets from a real manager, never a
+            committed/written file; and
+          * ``NCE_MASTER_KEY`` must resolve from the environment / secret
+            manager only — never through a database- or file-backed provider.
+        """
+        if not cls.IS_PROD:
+            return
+        if cls.NCE_ALLOW_ADMIN_DOTENV_PERSIST:
+            raise RuntimeError(
+                "CRITICAL CONFIGURATION FAILURE: NCE_ALLOW_ADMIN_DOTENV_PERSIST must be "
+                "false in production. Production secrets must come from a secret manager "
+                "(Vault / AWS Secrets Manager / Azure Key Vault) injected into the "
+                "environment, not written to a local .env file."
+            )
+        # R3: the master key is env-only; it must never be sourced from a store.
+        if "NCE_MASTER_KEY" not in _ENV_ONLY_SECRETS:
+            raise RuntimeError(
+                "CRITICAL CONFIGURATION FAILURE: NCE_MASTER_KEY is no longer pinned to "
+                "environment-only resolution. It must never be sourced from a database "
+                "or SettingsStore (R3)."
+            )
 
     @classmethod
     def validate_d365_config(cls) -> None:

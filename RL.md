@@ -62,7 +62,7 @@
 * [LOCKED] Batch 52 — Auto-generated Settings panel (V.3) [NO TAG]
 * [LOCKED] Batch 53 — Settings interaction design (V.3a) [NO TAG]
 * [LOCKED] Batch 54 — `config_changed` time-travel + rollback (V.6) [NO TAG]
-* [RUNNING] Batch 55 — Secrets-manager seam + remove dev dotenv-persist in prod (VI.1) [NO TAG]
+* [DONE] Batch 55 — Secrets-manager seam + remove dev dotenv-persist in prod (VI.1) [PASSED TAG]
 * [LOCKED] Batch 56 — Resolve `nce_gc` least-privilege (R4 / VI.4) [NO TAG]
 * [LOCKED] Batch 57 — Mongo write durability for the saga (R-A / VI.6a) [NO TAG]
 * [LOCKED] Batch 58 — Reverse-orphan reconciliation sweep (R-B / VI.6a) [NO TAG]
@@ -366,5 +366,13 @@
 * **Identified System Flaws:** None.
 * **Defensive Refactoring Correction Blueprint:** None.
 * **Kaizen:** The `has_scaled_replicas` branch in `test_http_services_declare_n_worker_processes` is currently dead; apply the same `>1` default check there for symmetry if a service ever scales HTTP via replicas.
+
+### TAG Batch 55 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_55.md`, `nce/config.py` (seam + `NCE_SECRETS_PROVIDER` field + `validate_secrets_provider()` wired from `validate()`), `scripts/bootstrap-compose-secrets.py` (docstring scoping), `tests/test_secrets_provider_seam.py` (new), `deploy/README.md`. Exactly the four declared files modified — no out-of-scope changes, no dependency additions.
+* **Structural Integrity:** Clean, minimal seam — `SecretsProvider` abstract base + `EnvSecretsProvider` default + get/set/resolve helpers; NO new SDK deps (no boto3/hvac/azure). Secret-handling (R3) correct by code: `resolve_secret()` checks `name in _ENV_ONLY_SECRETS` FIRST and reads straight from `os.environ` with an early return BEFORE the provider is touched — so `NCE_MASTER_KEY` physically cannot route through a DB/store. `validate_secrets_provider()` complements (does not weaken) the import-time guard. Bootstrap-script diff is cosmetic only (lambda parenthesization; one blank line) — no logic change.
+* **Contractual Test Fidelity:** No Trivial Test Trap. A non-env recording provider proves resolution routes through the seam; fallback-to-default when the provider misses; env value wins and the provider is NOT consulted for the master key; prod rejection of dotenv-persist verified in a fresh interpreter (subprocess `NCE_ENV=prod`), covering both the import-time path and `validate_secrets_provider()` directly, plus a positive prod-posture pass. `9 passed` (seam) + `6 passed` (regression); mypy at baseline.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
 
 [EOF: END OF REFACTORING LEDGER]
