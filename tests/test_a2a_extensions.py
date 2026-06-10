@@ -73,6 +73,8 @@ def _grant_row_dict(
         "expires_at": expires_at or (datetime.now(timezone.utc) + timedelta(hours=1)),
         "created_at": created_at or datetime.now(timezone.utc),
         "can_delegate": can_delegate,
+        "one_time": False,
+        "usage_count": 0,
     }
 
 

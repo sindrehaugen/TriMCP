@@ -31,6 +31,7 @@ def _prod_env() -> dict[str, str]:
             "MINIO_ACCESS_KEY": "minio-access-key",
             "MINIO_SECRET_KEY": "minio-secret-key-value",
             "NCE_JWT_SECRET": "jwt-secret-for-prod-config-tests!!",
+            "NCE_A2A_JWT_AUDIENCE": "prod-jwt-audience-for-tests!!",
         }
     )
     return env

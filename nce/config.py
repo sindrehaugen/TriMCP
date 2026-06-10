@@ -433,8 +433,10 @@ class _Config:
     # If unset, the default is ``f"nce_{service}"`` per server.
     NCE_A2A_JWT_AUDIENCE: str = os.getenv(
         "NCE_A2A_JWT_AUDIENCE",
-        "nce_a2a",
-    )
+        "nce_a2a"
+        if os.getenv("NCE_ENV", "dev").strip().lower() not in {"prod", "production"}
+        else "",
+    ).strip()
 
     # --- Phase 3.1: A2A mTLS — client certificate enforcement ---
     # When enabled, the A2A server requires a valid client TLS certificate
@@ -468,6 +470,10 @@ class _Config:
     ]
     NCE_A2A_MTLS_STRICT: bool = _bool_env("NCE_A2A_MTLS_STRICT", True)
     NCE_A2A_MTLS_TRUSTED_PROXY_HOP: int = int(os.getenv("NCE_A2A_MTLS_TRUSTED_PROXY_HOP", "1"))
+
+    # A2A tasks/send HTTP rate limits
+    NCE_A2A_HTTP_RATE_LIMIT: int = _int_env("NCE_A2A_HTTP_RATE_LIMIT", 60, minimum=1)
+    NCE_A2A_HTTP_RATE_PERIOD: int = _int_env("NCE_A2A_HTTP_RATE_PERIOD", 60, minimum=1)
 
     # --- Admin server mTLS (B6) ---
     # Mirror of the A2A mTLS block but scoped to the admin surface.
@@ -735,6 +741,12 @@ class _Config:
             log.warning(
                 "SECURITY WARNING: HS256 JWT is configured in production. "
                 "Prefer RS256/ES256 with NCE_JWT_PUBLIC_KEY."
+            )
+
+        if cls.IS_PROD and not cls.NCE_A2A_JWT_AUDIENCE:
+            raise RuntimeError(
+                "CRITICAL CONFIGURATION FAILURE: NCE_A2A_JWT_AUDIENCE is required "
+                "in production to prevent token replay across system boundaries."
             )
 
     @classmethod

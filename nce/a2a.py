@@ -41,7 +41,9 @@ async def _append_a2a_event(
     params: dict,
 ) -> None:
     """Helper to set namespace context and append a2a audit event cleanly."""
-    assert owner_ctx.namespace_id is not None, "Namespace ID cannot be None when writing an A2A event"
+    assert owner_ctx.namespace_id is not None, (
+        "Namespace ID cannot be None when writing an A2A event"
+    )
     await set_namespace_context(conn, owner_ctx.namespace_id)
     from nce.event_log import append_event
 
@@ -101,6 +103,7 @@ class A2AGrantRequest(BaseModel):
     can_delegate: bool = Field(
         False, description="Whether the token can be delegated/re-granted downstream"
     )
+    one_time: bool = Field(False, description="Restrict token to a single successful usage")
 
 
 class A2AGrantResponse(BaseModel):
@@ -124,6 +127,7 @@ class VerifiedGrant(BaseModel):
     scopes: list[A2AScope]
     expires_at: datetime
     can_delegate: bool = False
+    one_time: bool = False
 
 
 class A2AAuthorizationError(Exception):
@@ -687,8 +691,9 @@ async def create_grant(
             INSERT INTO a2a_grants (
                 id, owner_namespace_id, owner_agent_id,
                 target_namespace_id, target_agent_id,
-                scopes, token_hash, status, expires_at, can_delegate
-            ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'active', $8, $9)
+                scopes, token_hash, status, expires_at, can_delegate,
+                one_time, usage_count
+            ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'active', $8, $9, $10, 0)
             """,
             grant_id,
             owner_ctx.namespace_id,
@@ -699,6 +704,7 @@ async def create_grant(
             token_hash,
             expires_at,
             request.can_delegate,
+            request.one_time,
         )
 
         await _append_a2a_event(
@@ -714,6 +720,7 @@ async def create_grant(
                 "scope_count": len(request.scopes),
                 "expires_at": expires_at.isoformat(),
                 "can_delegate": request.can_delegate,
+                "one_time": request.one_time,
             },
         )
 
@@ -749,7 +756,8 @@ async def verify_token(
         """
         SELECT id, owner_namespace_id, owner_agent_id,
                target_namespace_id, target_agent_id,
-               scopes, expires_at, status, can_delegate
+               scopes, expires_at, status, can_delegate,
+               one_time, usage_count
         FROM a2a_grants
         WHERE token_hash = $1 AND status = 'active'
         """,
@@ -773,6 +781,13 @@ async def verify_token(
         log.info("A2A token auto-expired: grant_id=%s", row["id"])
         raise A2AAuthorizationError("Sharing token has expired.")
 
+    # One-time usage check
+    one_time = row["one_time"] if "one_time" in row else False
+    usage_count = row["usage_count"] if "usage_count" in row else 0
+    if one_time and usage_count >= 1:
+        log.warning("A2A token reuse rejected: grant_id=%s", row["id"])
+        raise A2AAuthorizationError("One-time sharing token has already been used.")
+
     # Namespace binding check
     if row["target_namespace_id"] is not None:
         if row["target_namespace_id"] != consumer_ctx.namespace_id:
@@ -795,6 +810,17 @@ async def verify_token(
             )
             raise A2AAuthorizationError("Token is not valid for this agent.")
 
+    # Successful verification - increment usage count and deactivate if one_time
+    await conn.execute(
+        """
+        UPDATE a2a_grants
+        SET usage_count = usage_count + 1,
+            status = CASE WHEN one_time = true THEN 'expired' ELSE status END
+        WHERE id = $1
+        """,
+        row["id"],
+    )
+
     scopes_data = json.loads(row["scopes"])
     scopes = [A2AScope.model_validate(s) for s in scopes_data]
 
@@ -805,6 +831,7 @@ async def verify_token(
         scopes=scopes,
         expires_at=expires_at,
         can_delegate=row["can_delegate"],
+        one_time=row["one_time"] if "one_time" in row else False,
     )
 
 
@@ -871,7 +898,8 @@ async def list_grants(
         rows = await conn.fetch(
             """
             SELECT id, owner_agent_id, target_namespace_id, target_agent_id,
-                   scopes, status, expires_at, created_at, can_delegate
+                   scopes, status, expires_at, created_at, can_delegate,
+                   one_time, usage_count
             FROM a2a_grants
             WHERE owner_namespace_id = $1
             ORDER BY created_at DESC
@@ -883,7 +911,8 @@ async def list_grants(
         rows = await conn.fetch(
             """
             SELECT id, owner_agent_id, target_namespace_id, target_agent_id,
-                   scopes, status, expires_at, created_at, can_delegate
+                   scopes, status, expires_at, created_at, can_delegate,
+                   one_time, usage_count
             FROM a2a_grants
             WHERE owner_namespace_id = $1
               AND status = 'active'
@@ -906,6 +935,8 @@ async def list_grants(
             "status": row["status"],
             "expires_at": row["expires_at"].isoformat(),
             "can_delegate": row["can_delegate"],
+            "one_time": row["one_time"],
+            "usage_count": row["usage_count"],
             "created_at": row["created_at"].isoformat(),
         }
         for row in rows
@@ -985,7 +1016,8 @@ async def verify_grant_status(
             """
             SELECT id, owner_namespace_id, owner_agent_id,
                    target_namespace_id, target_agent_id,
-                   scopes, expires_at, status, created_at, can_delegate
+                   scopes, expires_at, status, created_at, can_delegate,
+                   one_time, usage_count
             FROM a2a_grants
             WHERE token_hash = $1
             """,
@@ -996,7 +1028,8 @@ async def verify_grant_status(
             """
             SELECT id, owner_namespace_id, owner_agent_id,
                    target_namespace_id, target_agent_id,
-                   scopes, expires_at, status, created_at, can_delegate
+                   scopes, expires_at, status, created_at, can_delegate,
+                   one_time, usage_count
             FROM a2a_grants
             WHERE id = $1
             """,
@@ -1055,6 +1088,8 @@ async def verify_grant_status(
         "status": status,
         "expires_at": expires_at.isoformat(),
         "can_delegate": row["can_delegate"],
+        "one_time": row["one_time"] if "one_time" in row else False,
+        "usage_count": row["usage_count"] if "usage_count" in row else 0,
         "created_at": row["created_at"].isoformat(),
     }
 
@@ -1157,7 +1192,8 @@ async def inspect_grant(
         """
         SELECT id, owner_namespace_id, owner_agent_id,
                target_namespace_id, target_agent_id,
-               scopes, status, expires_at, created_at, can_delegate
+               scopes, status, expires_at, created_at, can_delegate,
+               one_time, usage_count
         FROM a2a_grants
         WHERE id = $1 AND owner_namespace_id = $2
         """,
@@ -1185,5 +1221,7 @@ async def inspect_grant(
         "status": row["status"],
         "expires_at": expires_at.isoformat(),
         "can_delegate": row["can_delegate"],
+        "one_time": row["one_time"] if "one_time" in row else False,
+        "usage_count": row["usage_count"] if "usage_count" in row else 0,
         "created_at": row["created_at"].isoformat(),
     }

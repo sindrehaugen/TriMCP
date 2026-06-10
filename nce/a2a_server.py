@@ -198,6 +198,7 @@ async def _get_task(task_id: str) -> dict[str, Any] | None:
             log.warning("Failed to get task from Redis: %s", exc)
     return _tasks.get(task_id)
 
+
 # ---------------------------------------------------------------------------
 # Engine reference (injected via lifespan)
 # ---------------------------------------------------------------------------
@@ -381,13 +382,36 @@ async def tasks_send(request: Request) -> JSONResponse:
     if _engine is None:
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
 
+    # Sliding-window rate limit check
+    client_ip = request.client.host if request.client else "unknown"
+    key = f"nce:ratelimit:a2a:tasks_send:{client_ip}"
+    redis_client = _engine.redis_client if _engine else None
+    from nce.auth import _check_admin_http_rate_limit
+
+    allowed = await _check_admin_http_rate_limit(
+        redis_client,
+        key,
+        cfg.NCE_A2A_HTTP_RATE_LIMIT,
+        cfg.NCE_A2A_HTTP_RATE_PERIOD,
+    )
+    if not allowed:
+        log.warning("A2A tasks/send rate limit exceeded for IP %s", client_ip)
+        return JSONResponse(
+            _jsonrpc_err(-32013, "Rate limit exceeded", "too_many_requests"),
+            status_code=429,
+        )
+
     # Check Uvicorn process memory usage to prevent OOM degradation
     mem_mb = _get_process_memory_mb()
     mem_limit = getattr(cfg, "NCE_A2A_MEMORY_LIMIT_MB", 2048.0)
     if mem_mb is not None and mem_mb > mem_limit:
         log.warning("Uvicorn memory threshold exceeded: %.1f MB > %.1f MB", mem_mb, mem_limit)
         return JSONResponse(
-            _jsonrpc_err(-32017, "Resource exhaustion: memory threshold exceeded", f"Memory usage: {mem_mb:.1f} MB"),
+            _jsonrpc_err(
+                -32017,
+                "Resource exhaustion: memory threshold exceeded",
+                f"Memory usage: {mem_mb:.1f} MB",
+            ),
             status_code=503,
         )
 
@@ -491,7 +515,9 @@ async def tasks_send(request: Request) -> JSONResponse:
             task = _make_task(task_id, "failed", message=str(exc))
             await _store_task(task_id, task)
             return JSONResponse(
-                _jsonrpc_err(-32016, "Service temporarily degraded (circuit breaker open)", str(exc)),
+                _jsonrpc_err(
+                    -32016, "Service temporarily degraded (circuit breaker open)", str(exc)
+                ),
                 status_code=503,
             )
         except ValueError as exc:
@@ -508,8 +534,13 @@ async def tasks_send(request: Request) -> JSONResponse:
             return JSONResponse({"error": "Internal error"}, status_code=500)
         except BaseException as exc:
             import asyncio
+
             state = "canceled" if isinstance(exc, asyncio.CancelledError) else "failed"
-            msg = "Task cancelled (client disconnected or timed out)" if state == "canceled" else f"Task failed: {type(exc).__name__}"
+            msg = (
+                "Task cancelled (client disconnected or timed out)"
+                if state == "canceled"
+                else f"Task failed: {type(exc).__name__}"
+            )
             task = _make_task(task_id, state, message=msg)
             await asyncio.shield(_store_task(task_id, task))
             raise
