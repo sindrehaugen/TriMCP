@@ -98,9 +98,7 @@ def _patch_httpx_async_client(
 
 def _admin_arguments(extra: dict) -> dict:
     return {
-        "admin_api_key": os.environ.get(
-            "NCE_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests"
-        ),
+        "admin_api_key": os.environ.get("NCE_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests"),
         **extra,
     }
 
@@ -109,9 +107,7 @@ def _admin_arguments(extra: dict) -> dict:
 def admin_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
     from nce import auth as auth_mod
 
-    admin_key = os.environ.get(
-        "NCE_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests"
-    )
+    admin_key = os.environ.get("NCE_ADMIN_API_KEY", "test-admin-api-key-for-unit-tests")
     monkeypatch.setenv("NCE_ADMIN_API_KEY", admin_key)
     monkeypatch.setattr(auth_mod.cfg, "NCE_ADMIN_API_KEY", admin_key)
     monkeypatch.setattr(auth_mod.cfg, "NCE_ADMIN_OVERRIDE", False)
@@ -596,6 +592,12 @@ async def test_replay_handlers_smoke() -> None:
             {"memory_id": str(uuid.uuid4())},
         )
         assert json.loads(out)["chain"] == []
+
+        out_explain = await replay_mcp_handlers.handle_explain_memory(
+            engine,
+            {"memory_id": str(uuid.uuid4())},
+        )
+        assert json.loads(out_explain)["error"] == "Memory provenance not found"
 
 
 @pytest.mark.asyncio
@@ -1124,7 +1126,6 @@ async def test_setup_sharepoint_and_gdrive_webhooks() -> None:
                 bridge_client_state="cs",
                 resource_id="folder1",
             )
-
 
 
 @pytest.mark.asyncio

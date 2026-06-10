@@ -887,6 +887,23 @@ TOOLS = [
         },
     ),
     Tool(
+        name="explain_memory",
+        description=(
+            "Return the signed epistemic receipt for a memory (remembered event seq, "
+            "agent_id, occurred_at timestamp, and cryptographic signature verification status)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "UUID of the memory to explain.",
+                },
+            },
+            "required": ["memory_id"],
+        },
+    ),
+    Tool(
         name="a2a_create_grant",
         description=(
             "[Phase 3.1] Create an A2A sharing grant — generates a secure token "

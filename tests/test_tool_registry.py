@@ -25,10 +25,10 @@ from nce.tool_registry import (
 # Cardinality
 # ---------------------------------------------------------------------------
 
-_EXPECTED_TOTAL = 62
+_EXPECTED_TOTAL = 63
 
 
-def test_registry_has_62_entries():
+def test_registry_has_63_entries():
     assert len(TOOL_REGISTRY) == _EXPECTED_TOTAL, (
         f"Expected {_EXPECTED_TOTAL} tools, got {len(TOOL_REGISTRY)}. "
         f"Tools: {sorted(TOOL_REGISTRY)}"
@@ -309,6 +309,10 @@ def test_toolspec_is_frozen():
         ),
         (
             "get_event_provenance",
+            {"mutation": False, "cacheable": False, "admin_only": False, "migration": False},
+        ),
+        (
+            "explain_memory",
             {"mutation": False, "cacheable": False, "admin_only": False, "migration": False},
         ),
         # a2a

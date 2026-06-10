@@ -160,3 +160,27 @@ async def handle_get_event_provenance(engine: NCEEngine, arguments: dict[str, An
 
     provenance = await get_event_provenance(engine.pg_pool, uuid.UUID(arguments["memory_id"]))
     return json.dumps(provenance)
+
+
+@mcp_handler
+async def handle_explain_memory(engine: NCEEngine, arguments: dict[str, Any]) -> str:
+    """Client-facing tool returning the signed receipt for a memory."""
+    from nce.replay import get_event_provenance
+
+    provenance = await get_event_provenance(engine.pg_pool, uuid.UUID(arguments["memory_id"]))
+    chain = provenance.get("chain", [])
+    if not chain:
+        return json.dumps(
+            {"memory_id": str(arguments["memory_id"]), "error": "Memory provenance not found"}
+        )
+
+    evt = chain[-1]
+    receipt = {
+        "memory_id": str(arguments["memory_id"]),
+        "event_seq": evt["event_seq"],
+        "agent_id": evt["agent_id"],
+        "occurred_at": evt["occurred_at"],
+        "signature": evt["signature"],
+        "verified": evt["verified"],
+    }
+    return json.dumps(receipt)

@@ -1886,7 +1886,8 @@ async def get_event_provenance(
         root = await conn.fetchrow(
             """
             SELECT id, namespace_id, agent_id, event_type, event_seq,
-                   occurred_at, params, result_summary, parent_event_id
+                   occurred_at, params, result_summary, parent_event_id,
+                   signature, signature_key_id, signature_version, chain_hash
             FROM event_log
             WHERE params->>'memory_id' = $1
             ORDER BY event_seq ASC
@@ -1909,13 +1910,46 @@ async def get_event_provenance(
             row = await conn.fetchrow(
                 """
                 SELECT id, namespace_id, agent_id, event_type, event_seq,
-                       occurred_at, params, result_summary, parent_event_id
+                       occurred_at, params, result_summary, parent_event_id,
+                       signature, signature_key_id, signature_version, chain_hash
                 FROM event_log WHERE id = $1
                 """,
                 current_id,
             )
             if row is None:
                 break
+
+            verified = True
+            try:
+                await verify_event_signature(conn, row)
+            except DataIntegrityError:
+                verified = False
+            except Exception:
+                verified = False
+
+            sig_val = row["signature"]
+            if isinstance(sig_val, memoryview):
+                sig_val = bytes(sig_val)
+            sig_hex = sig_val.hex() if sig_val else ""
+
+            # Robust JSON decoding of params
+            params_val = row["params"]
+            if isinstance(params_val, str):
+                params_dict = json.loads(params_val)
+            elif params_val is not None:
+                params_dict = dict(params_val)
+            else:
+                params_dict = {}
+
+            # Robust JSON decoding of result_summary
+            res_val = row["result_summary"]
+            if isinstance(res_val, str):
+                res_dict = json.loads(res_val)
+            elif res_val is not None:
+                res_dict = dict(res_val)
+            else:
+                res_dict = None
+
             chain.append(
                 {
                     "event_id": str(row["id"]),
@@ -1924,13 +1958,13 @@ async def get_event_provenance(
                     "event_type": row["event_type"],
                     "event_seq": row["event_seq"],
                     "occurred_at": row["occurred_at"].isoformat(),
-                    "params": dict(row["params"]) if row["params"] else {},
-                    "result_summary": (
-                        dict(row["result_summary"]) if row["result_summary"] else None
-                    ),
+                    "params": params_dict,
+                    "result_summary": res_dict,
                     "parent_event_id": (
                         str(row["parent_event_id"]) if row["parent_event_id"] else None
                     ),
+                    "signature": sig_hex,
+                    "verified": verified,
                 }
             )
             current_id = row["parent_event_id"]

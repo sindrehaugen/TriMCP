@@ -233,6 +233,9 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     "get_event_provenance": ToolSpec(
         _h(replay_mcp_handlers, "handle_get_event_provenance"),
     ),
+    "explain_memory": ToolSpec(
+        _h(replay_mcp_handlers, "handle_explain_memory"),
+    ),
     # ------------------------------------------------------------------
     # Agent-to-Agent (A2A) grant tools
     # ------------------------------------------------------------------
