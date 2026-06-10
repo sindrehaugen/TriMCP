@@ -904,6 +904,82 @@ TOOLS = [
         },
     ),
     Tool(
+        name="explain_past_decision",
+        description=(
+            "[Phase II.5] Bi-temporal accountability — reconstruct the agent's belief "
+            "state as it stood at a past timestamp ('as_of'): the set of memories valid "
+            "at T, each annotated with the signed epistemic receipt (provenance event) "
+            "that was valid then.  Optionally run a *verified* counterfactual forked "
+            "replay (supply source_namespace_id, target_namespace_id, fork_seq and "
+            "expected_sha256) whose digest_match outcome proves the reconstruction is "
+            "byte-identically faithful."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace_id": {
+                    "type": "string",
+                    "description": "Namespace whose past belief state to reconstruct.",
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": (
+                        "ISO 8601 timestamp (e.g. '2026-01-15T10:00:00Z').  Omit to "
+                        "reconstruct the current belief set."
+                    ),
+                },
+                "agent_id_filter": {
+                    "type": "string",
+                    "description": "Optional: restrict beliefs/receipts to this agent_id.",
+                },
+                "max_beliefs": {
+                    "type": "integer",
+                    "default": 200,
+                    "description": "Hard cap on the number of beliefs returned (default: 200).",
+                },
+                "source_namespace_id": {
+                    "type": "string",
+                    "description": "Counterfactual: namespace to replay events FROM.",
+                },
+                "target_namespace_id": {
+                    "type": "string",
+                    "description": "Counterfactual: empty namespace to replay events INTO.",
+                },
+                "fork_seq": {
+                    "type": "integer",
+                    "description": "Counterfactual: replay events with event_seq <= fork_seq.",
+                },
+                "start_seq": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Counterfactual: inclusive lower bound on event_seq.",
+                },
+                "replay_mode": {
+                    "type": "string",
+                    "enum": ["deterministic", "re-execute"],
+                    "default": "deterministic",
+                    "description": "Counterfactual replay mode (default: deterministic).",
+                },
+                "config_overrides": {
+                    "type": "object",
+                    "description": "Counterfactual: optional re-execute config overrides.",
+                },
+                "expected_sha256": {
+                    "type": "string",
+                    "description": (
+                        "Counterfactual: 64-char hex checksum over the canonical fork "
+                        "request (required when a fork is requested)."
+                    ),
+                },
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
+            },
+            "required": ["namespace_id", "admin_api_key"],
+        },
+    ),
+    Tool(
         name="a2a_create_grant",
         description=(
             "[Phase 3.1] Create an A2A sharing grant — generates a secure token "

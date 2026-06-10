@@ -236,6 +236,11 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
     "explain_memory": ToolSpec(
         _h(replay_mcp_handlers, "handle_explain_memory"),
     ),
+    "explain_past_decision": ToolSpec(
+        _h(replay_mcp_handlers, "handle_explain_past_decision"),
+        admin_only=True,
+        mutation=True,
+    ),
     # ------------------------------------------------------------------
     # Agent-to-Agent (A2A) grant tools
     # ------------------------------------------------------------------

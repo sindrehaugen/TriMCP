@@ -184,3 +184,146 @@ async def handle_explain_memory(engine: NCEEngine, arguments: dict[str, Any]) ->
         "verified": evt["verified"],
     }
     return json.dumps(receipt)
+
+
+@mcp_handler
+async def handle_explain_past_decision(engine: NCEEngine, arguments: dict[str, Any]) -> str:
+    """[Phase II.5] Bi-temporal "explain-my-past-advice".
+
+    Reconstructs the agent's belief state *as it stood* at ``as_of`` (the memories
+    valid at T) and attaches the signed epistemic receipt — the provenance event
+    valid at T — to each belief.  When a counterfactual fork is requested
+    (``source_namespace_id`` + ``target_namespace_id`` + ``fork_seq``), a *verified*
+    forked replay is run and its ``digest_match`` outcome is returned so the
+    reconstruction is provably faithful rather than hand-waved.
+    """
+    from nce.db_utils import scoped_pg_session
+    from nce.models import FrozenForkConfig, ReplayForkRequest
+    from nce.replay import ForkedReplay, _create_run, get_event_provenance, get_run_status
+    from nce.state_digest import compute_namespace_state_digest
+    from nce.temporal import as_of_query, parse_as_of
+
+    namespace_id = uuid.UUID(arguments["namespace_id"])
+    as_of_dt = parse_as_of(arguments.get("as_of"))
+    agent_filter = arguments.get("agent_id_filter")
+    max_beliefs = int(arguments.get("max_beliefs", 200))
+
+    # ── 1. Reconstruct the belief set valid at T (bi-temporal as_of read) ──
+    clause, as_of_params = as_of_query("", as_of_dt, start_index=2)
+    agent_clause = ""
+    params: list[Any] = [namespace_id, *as_of_params]
+    if agent_filter:
+        agent_clause = f"AND agent_id = ${len(params) + 1}"
+        params.append(agent_filter)
+
+    sql = f"""
+        SELECT id, agent_id, memory_type, assertion_type,
+               valid_from, valid_to, created_at
+        FROM memories
+        WHERE namespace_id = $1 {clause} {agent_clause}
+        ORDER BY valid_from ASC, id ASC
+        LIMIT {max_beliefs}
+    """
+    async with scoped_pg_session(engine.pg_pool, namespace_id) as conn:
+        belief_rows = await conn.fetch(sql, *params)
+
+    # ── 2. Attach the signed receipt valid at T to each belief ──
+    beliefs: list[dict[str, Any]] = []
+    for row in belief_rows:
+        memory_id = row["id"]
+        provenance = await get_event_provenance(engine.pg_pool, memory_id)
+        # Only receipts that existed *at or before* T were knowable then.
+        valid_chain = [
+            evt
+            for evt in provenance.get("chain", [])
+            if as_of_dt is None or evt["occurred_at"] <= as_of_dt.isoformat()
+        ]
+        receipt = valid_chain[-1] if valid_chain else None
+        beliefs.append(
+            {
+                "memory_id": str(memory_id),
+                "agent_id": row["agent_id"],
+                "memory_type": row["memory_type"],
+                "assertion_type": row["assertion_type"],
+                "valid_from": row["valid_from"].isoformat() if row["valid_from"] else None,
+                "valid_to": row["valid_to"].isoformat() if row["valid_to"] else None,
+                "receipt": (
+                    {
+                        "event_seq": receipt["event_seq"],
+                        "occurred_at": receipt["occurred_at"],
+                        "signature": receipt["signature"],
+                        "verified": receipt["verified"],
+                    }
+                    if receipt
+                    else None
+                ),
+            }
+        )
+
+    response: dict[str, Any] = {
+        "namespace_id": str(namespace_id),
+        "as_of": as_of_dt.isoformat() if as_of_dt else None,
+        "belief_count": len(beliefs),
+        "beliefs": beliefs,
+    }
+
+    # ── 3. Optional counterfactual: a VERIFIED forked replay (digest_match) ──
+    if all(k in arguments for k in ("source_namespace_id", "target_namespace_id", "fork_seq")):
+        fork_req = ReplayForkRequest.model_validate(
+            {
+                "source_namespace_id": arguments["source_namespace_id"],
+                "target_namespace_id": arguments["target_namespace_id"],
+                "fork_seq": int(arguments["fork_seq"]),
+                "start_seq": int(arguments.get("start_seq", 1)),
+                "replay_mode": arguments.get("replay_mode", "deterministic"),
+                "config_overrides": arguments.get("config_overrides"),
+                "agent_id_filter": agent_filter,
+                "expected_sha256": arguments["expected_sha256"],
+            }
+        )
+        frozen_config = FrozenForkConfig.from_request(fork_req)
+
+        async with engine.pg_pool.acquire(timeout=10.0) as pre_conn:
+            fork_run_id = await _create_run(
+                pre_conn,
+                source_namespace_id=frozen_config.source_namespace_id,
+                target_namespace_id=frozen_config.target_namespace_id,
+                mode="forked",
+                replay_mode=frozen_config.replay_mode,
+                start_seq=frozen_config.start_seq,
+                end_seq=frozen_config.fork_seq,
+                divergence_seq=frozen_config.fork_seq,
+                config_overrides=frozen_config.overrides_dict,
+            )
+
+        replay = ForkedReplay(pool=engine.pg_pool)
+        async for _ in replay.execute(frozen_config=frozen_config, _existing_run_id=fork_run_id):
+            pass
+
+        # ForkedReplay does not compute state digests itself (only ReconstructiveReplay
+        # does).  Verify the fork is byte-identically faithful by comparing the canonical
+        # state digest of source vs. target *as of the fork point* — the same mechanism
+        # ReconstructiveReplay uses.  This is what makes the counterfactual provable.
+        async with engine.pg_pool.acquire(timeout=10.0) as digest_conn:
+            fork_point_ts = await digest_conn.fetchval(
+                "SELECT occurred_at FROM event_log WHERE namespace_id = $1 AND event_seq = $2",
+                frozen_config.source_namespace_id,
+                frozen_config.fork_seq,
+            )
+            source_digest = await compute_namespace_state_digest(
+                digest_conn, frozen_config.source_namespace_id, as_of=fork_point_ts
+            )
+            target_digest = await compute_namespace_state_digest(
+                digest_conn, frozen_config.target_namespace_id, as_of=fork_point_ts
+            )
+
+        status = await get_run_status(engine.pg_pool, fork_run_id)
+        response["counterfactual"] = {
+            "run_id": str(fork_run_id),
+            "status": status["status"],
+            "digest_match": source_digest == target_digest,
+            "source_state_digest": source_digest,
+            "target_state_digest": target_digest,
+        }
+
+    return json.dumps(response, default=str)

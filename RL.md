@@ -50,9 +50,9 @@
 * [DONE] Batch 40 — Glass Profile endpoint + retract→ATMS (II.3) [PASSED TAG]
 * [DONE] Batch 41 — Accountable Federation: write `a2a_shared_query` + signed provenance (II.6) [PASSED TAG]
 * [DONE] Batch 42 — A2A security hardening (III.5) [PASSED TAG]
-* [OPEN] Batch 43 — Bi-temporal "explain my past decision" (II.5) [NO TAG]
-* [LOCKED] Batch 44 — DECISION + content-free WORM log fork (R2 / VII.5) [NO TAG]
-* [LOCKED] Batch 45 — Envelope-encryption subsystem (II.4a) [NO TAG]
+* [DONE] Batch 43 — Bi-temporal "explain my past decision" (II.5) [PASSED TAG]
+* [RUNNING] Batch 44 — DECISION + content-free WORM log fork (R2 / VII.5) [NO TAG]
+* [RUNNING] Batch 45 — Envelope-encryption subsystem (II.4a) [NO TAG]
 * [LOCKED] Batch 46 — Encrypt `episodes.raw_data` under the DEK + teach read paths (II.4b) [NO TAG]
 * [LOCKED] Batch 47 — `shred_memory` / `forget_subject` + deletion receipt (II.4c) [NO TAG]
 * [LOCKED] Batch 48 — DSAR capstone (VII.7) [NO TAG]
@@ -62,12 +62,12 @@
 * [LOCKED] Batch 52 — Auto-generated Settings panel (V.3) [NO TAG]
 * [LOCKED] Batch 53 — Settings interaction design (V.3a) [NO TAG]
 * [LOCKED] Batch 54 — `config_changed` time-travel + rollback (V.6) [NO TAG]
-* [LOCKED] Batch 55 — Secrets-manager seam + remove dev dotenv-persist in prod (VI.1) [NO TAG]
+* [RUNNING] Batch 55 — Secrets-manager seam + remove dev dotenv-persist in prod (VI.1) [NO TAG]
 * [LOCKED] Batch 56 — Resolve `nce_gc` least-privilege (R4 / VI.4) [NO TAG]
 * [LOCKED] Batch 57 — Mongo write durability for the saga (R-A / VI.6a) [NO TAG]
 * [LOCKED] Batch 58 — Reverse-orphan reconciliation sweep (R-B / VI.6a) [NO TAG]
-* [LOCKED] Batch 59 — RQ in-flight job recovery (R-C / VI.6a) [NO TAG]
-* [LOCKED] Batch 60 — Multicore: HTTP workers + RQ replicas + thread pinning (VI.5a) [NO TAG]
+* [RUNNING] Batch 59 — RQ in-flight job recovery (R-C / VI.6a) [NO TAG]
+* [RUNNING] Batch 60 — Multicore: HTTP workers + RQ replicas + thread pinning (VI.5a) [NO TAG]
 * [LOCKED] Batch 61 — RAM: offload spaCy + NLI to a sidecar; container mem limits (VI.5b) [NO TAG]
 * [LOCKED] Batch 62 — Disk: datastore tuning + halfvec + tmpfs temp (VI.5c) [NO TAG]
 * [LOCKED] Batch 63 — Cross-encoder reranking (IV.1) [NO TAG]
@@ -330,5 +330,14 @@
 * **Contractual Test Fidelity:** High. Tests verify correct schema types, environment validations, and defaults loading, and verify the administrative settings routes via TestClient, including authentication check, listing, and single key detail retrieve operations. All tests pass successfully.
 * **Identified System Flaws:** None.
 * **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 43 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read on disk and verified against `diff_batch_43.md`: `nce/replay_mcp_handlers.py` (new `handle_explain_past_decision`), `nce/tool_registry.py` (new `explain_past_decision` ToolSpec, admin_only+mutation), `nce/mcp_stdio_tools.py` (Tool schema), `tests/test_tool_registry.py` (count bumps 63→64, MUTATION 29→30, ADMIN_ONLY 7→8), `tests/test_explain_past_decision.py`, `admin/index.html` (glass-profile timeline tab + Alpine `glassProfileTimeline`). No files outside batch scope modified.
+* **Structural Integrity:** Clean. The handler reuses existing primitives (`as_of_query`/`parse_as_of`, `get_event_provenance`, `ForkedReplay`, `compute_namespace_state_digest`) — no DRY violation. The belief read runs inside `scoped_pg_session` (RLS-scoped). No `UPDATE`/`DELETE` against `event_log`; no `NCE_MASTER_KEY` exposure.
+* **Contractual Test Fidelity:** No Trivial Test Trap. `test_explain_past_decision_belief_set_and_verified_fork` exercises the real handler against live Postgres/Mongo: the belief valid before T is included while a future memory is excluded (`belief_count == 1`); the receipt carries `verified is True`; the counterfactual fork returns `digest_match is True` with `source_state_digest == target_state_digest`. `1 passed`; registry suite `48 passed`.
+* **Identified System Flaws:** None blocking. `ForkedReplay` does not populate `replay_runs.digest_match` (only `ReconstructiveReplay` does), so the handler recomputes the digest comparison itself via `compute_namespace_state_digest(as_of=fork_point_ts)` against source and target — a legitimate verification, not a faked check.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** Consider normalizing the receipt at-or-before-T comparison to `datetime` objects rather than ISO-string compare, to harden against any future non-UTC `occurred_at` persistence.
 
 [EOF: END OF REFACTORING LEDGER]

@@ -25,10 +25,10 @@ from nce.tool_registry import (
 # Cardinality
 # ---------------------------------------------------------------------------
 
-_EXPECTED_TOTAL = 63
+_EXPECTED_TOTAL = 64
 
 
-def test_registry_has_63_entries():
+def test_registry_has_expected_entries():
     assert len(TOOL_REGISTRY) == _EXPECTED_TOTAL, (
         f"Expected {_EXPECTED_TOTAL} tools, got {len(TOOL_REGISTRY)}. "
         f"Tools: {sorted(TOOL_REGISTRY)}"
@@ -83,6 +83,9 @@ _EXPECTED_MUTATION_TOOLS: frozenset[str] = frozenset(
         "a2a_update_grant_scopes",
         "unredact_memory",
         "replay_reconstruct",
+        # Batch 43 — bi-temporal accountability; optional counterfactual fork writes
+        # events into the target namespace, so the tool is a mutation.
+        "explain_past_decision",
         # DLQ mutations (2) — pre-existing omission corrected in code review
         "replay_dlq",
         "purge_dlq",
@@ -106,7 +109,7 @@ def test_mutation_tools_exact_match():
 
 
 def test_mutation_tools_count():
-    assert len(MUTATION_TOOLS) == 29
+    assert len(MUTATION_TOOLS) == 30
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +151,7 @@ _EXPECTED_ADMIN_ONLY: frozenset[str] = frozenset(
         "replay_reconstruct",
         "replay_fork",
         "replay_status",
+        "explain_past_decision",
         "d365_sync_now",
         "d365_list_sla_breaches",
     }
@@ -162,7 +166,7 @@ def test_admin_only_tools_exact_match():
 
 
 def test_admin_only_tools_count():
-    assert len(ADMIN_ONLY_TOOLS) == 7
+    assert len(ADMIN_ONLY_TOOLS) == 8
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +318,10 @@ def test_toolspec_is_frozen():
         (
             "explain_memory",
             {"mutation": False, "cacheable": False, "admin_only": False, "migration": False},
+        ),
+        (
+            "explain_past_decision",
+            {"mutation": True, "cacheable": False, "admin_only": True, "migration": False},
         ),
         # a2a
         (
