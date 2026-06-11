@@ -792,6 +792,7 @@ class GraphRAGTraverser:
         self,
         mongo_ref_ids: set[str],
         restrict_user_id: str | None = None,
+        namespace_id: str | None = None,
     ) -> list[dict]:
         """
         Hydrate source documents from MongoDB using batch ``$in`` queries.
@@ -819,25 +820,43 @@ class GraphRAGTraverser:
         if not oids:
             return []
 
-        db = self.mongo_client.memory_archive
+        from nce.db_utils import scoped_mongo_session
 
         # Two batch queries — always exactly 2 round-trips, never N.
         ep_docs: dict[str, dict] = {}
         code_docs: dict[str, dict] = {}
 
-        try:
-            cursor = db.episodes.find({"_id": {"$in": oids}})
-            async for doc in cursor:
-                ep_docs[str(doc["_id"])] = doc
-        except Exception as e:
-            log.warning("Batch episodes hydration failed: %s", e)
+        if namespace_id:
+            try:
+                async with scoped_mongo_session(self.mongo_client, namespace_id) as s_db:
+                    cursor = s_db.episodes.find({"_id": {"$in": oids}})
+                    async for doc in cursor:
+                        ep_docs[str(doc["_id"])] = doc
+            except Exception as e:
+                log.warning("Batch episodes hydration failed: %s", e)
 
-        try:
-            cursor = db.code_files.find({"_id": {"$in": oids}})
-            async for doc in cursor:
-                code_docs[str(doc["_id"])] = doc
-        except Exception as e:
-            log.warning("Batch code_files hydration failed: %s", e)
+            try:
+                async with scoped_mongo_session(self.mongo_client, namespace_id) as s_db:
+                    cursor = s_db.code_files.find({"_id": {"$in": oids}})
+                    async for doc in cursor:
+                        code_docs[str(doc["_id"])] = doc
+            except Exception as e:
+                log.warning("Batch code_files hydration failed: %s", e)
+        else:
+            db = self.mongo_client.memory_archive
+            try:
+                cursor = db.episodes.find({"_id": {"$in": oids}})
+                async for doc in cursor:
+                    ep_docs[str(doc["_id"])] = doc
+            except Exception as e:
+                log.warning("Batch episodes hydration failed: %s", e)
+
+            try:
+                cursor = db.code_files.find({"_id": {"$in": oids}})
+                async for doc in cursor:
+                    code_docs[str(doc["_id"])] = doc
+            except Exception as e:
+                log.warning("Batch code_files hydration failed: %s", e)
 
         # Part II.4: fetch the wrapped DEK for each episode payload_ref so an
         # encrypted raw_data excerpt can be decrypted; legacy rows → NULL →
@@ -1075,6 +1094,7 @@ class GraphRAGTraverser:
         per_node: int,
         private: bool,
         user_id: str | None,
+        namespace_id: str | None = None,
     ) -> Subgraph:
         """Helper to deduplicate, page, and format BFS/neuromorphic traversal results into a Subgraph."""
         # Deduplicate edges (BFS can traverse same edge from both directions)
@@ -1103,7 +1123,9 @@ class GraphRAGTraverser:
         all_refs = {n.payload_ref for n in nodes_for_page if n.payload_ref}
         all_refs |= {e.payload_ref for e in page_edges if e.payload_ref}
         restrict = user_id if private else None
-        sources = await self._hydrate_sources(all_refs, restrict_user_id=restrict)
+        sources = await self._hydrate_sources(
+            all_refs, restrict_user_id=restrict, namespace_id=namespace_id
+        )
 
         return Subgraph(
             anchor=anchor.label,
@@ -1205,6 +1227,7 @@ class GraphRAGTraverser:
                 per_node=per_node,
                 private=private,
                 user_id=user_id,
+                namespace_id=namespace_id,
             )
 
     async def neuromorphic_search(
@@ -1357,6 +1380,7 @@ class GraphRAGTraverser:
                 per_node=per_node,
                 private=private,
                 user_id=user_id,
+                namespace_id=namespace_id,
             )
 
     async def get_subgraph(self, *args, **kwargs) -> Subgraph:

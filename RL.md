@@ -57,7 +57,7 @@
 * [DONE] Batch 47 — `shred_memory` / `forget_subject` + deletion receipt (II.4c) [PASSED TAG]
 * [DONE] Batch 48 — DSAR capstone (VII.7) [PASSED TAG]
 * [DONE] Batch 49 — Verify PII-before-derivation on every write path (VII.1) [PASSED TAG]
-* [OPEN] Batch 50 — Scoped MongoDB accessor (VII.2) [NO TAG]
+* [DONE] Batch 50 — Scoped MongoDB accessor (VII.2) [PASSED TAG]
 * [OPEN] Batch 51 — MinIO per-namespace isolation (VII.3) [NO TAG]
 * [DONE] Batch 52 — Auto-generated Settings panel (V.3) [PASSED TAG]
 * [DONE] Batch 53 — Settings interaction design (V.3a) [PASSED TAG]

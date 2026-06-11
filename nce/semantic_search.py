@@ -322,7 +322,8 @@ async def semantic_search(
         )
     )
 
-    db = mongo_client.memory_archive
+    from nce.db_utils import scoped_mongo_session
+
     oid_map: dict[str, ObjectId] = {}
     for res in top_results:
         ref = str(res.get("payload_ref") or "")
@@ -333,11 +334,12 @@ async def semantic_search(
 
     docs: dict[str, Any] = {}
     if oid_map:
-        async for doc in db.episodes.find(
-            {"_id": {"$in": list(oid_map.values())}},
-            {"raw_data": 1},
-        ):
-            docs[str(doc["_id"])] = doc
+        async with scoped_mongo_session(mongo_client, namespace_id) as s_db:
+            async for doc in s_db.episodes.find(
+                {"_id": {"$in": list(oid_map.values())}},
+                {"raw_data": 1},
+            ):
+                docs[str(doc["_id"])] = doc
 
     from datetime import datetime, timezone
 

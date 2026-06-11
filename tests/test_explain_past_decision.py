@@ -130,6 +130,7 @@ async def test_explain_past_decision_belief_set_and_verified_fork(
             "_id": src_oid,
             "raw_data": "Bi-temporal belief content",
             "source": "test_explain_past_decision",
+            "namespace_id": str(source_ns),
         }
     )
 

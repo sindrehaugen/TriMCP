@@ -82,16 +82,22 @@ async def compute_namespace_state_digest(
 
     mongo_client: AsyncIOMotorClient | None = None
     try:
+        from nce.db_utils import scoped_mongo_session
+
         mongo_client = AsyncIOMotorClient(cfg.MONGO_URI, serverSelectionTimeoutMS=2000)
-        db = mongo_client.memory_archive
-        if episode_oids:
-            cursor = db.episodes.find({"_id": {"$in": episode_oids}}, projection={"raw_data": 1})
-            async for doc in cursor:
-                episode_contents[str(doc["_id"])] = doc.get("raw_data") or ""
-        if code_oids:
-            cursor = db.code_files.find({"_id": {"$in": code_oids}}, projection={"raw_code": 1})
-            async for doc in cursor:
-                code_contents[str(doc["_id"])] = doc.get("raw_code") or ""
+        async with scoped_mongo_session(mongo_client, ns) as s_db:
+            if episode_oids:
+                cursor = s_db.episodes.find(
+                    {"_id": {"$in": episode_oids}}, projection={"raw_data": 1}
+                )
+                async for doc in cursor:
+                    episode_contents[str(doc["_id"])] = doc.get("raw_data") or ""
+            if code_oids:
+                cursor = s_db.code_files.find(
+                    {"_id": {"$in": code_oids}}, projection={"raw_code": 1}
+                )
+                async for doc in cursor:
+                    code_contents[str(doc["_id"])] = doc.get("raw_code") or ""
     except Exception as exc:
         log.warning("Failed to connect to MongoDB or fetch payloads for digest: %s", exc)
     finally:

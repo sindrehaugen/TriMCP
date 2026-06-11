@@ -111,7 +111,6 @@ class ConsolidationWorker:
         import numpy as np
         from sklearn.cluster import HDBSCAN
 
-
         valid_memories = []
         embeddings = []
         expected_dim = None
@@ -161,13 +160,17 @@ class ConsolidationWorker:
 
         return valid_memories, clusters
 
-    async def _build_cluster_llm_documents(self, cluster_mems: list) -> list[dict]:
+    async def _build_cluster_llm_documents(
+        self, cluster_mems: list, namespace_id: UUID
+    ) -> list[dict]:
         """Resolve Mongo episode bodies in one ``$in`` query; fallback without Mongo."""
         refs = [m["payload_ref"] for m in cluster_mems]
         by_ref: dict[str, str] = {}
         if self.mongo_client is not None and refs:
-            db = self.mongo_client.memory_archive
-            by_ref = await fetch_episodes_raw_by_ref(db, refs)
+            from nce.db_utils import scoped_mongo_session
+
+            async with scoped_mongo_session(self.mongo_client, namespace_id) as s_db:
+                by_ref = await fetch_episodes_raw_by_ref(s_db, refs)
 
         docs: list[dict] = []
         for m in cluster_mems:
@@ -190,9 +193,10 @@ class ConsolidationWorker:
         cluster_mems: list,
         mem_ids: list,
         label: int,
+        namespace_id: UUID,
     ) -> ConsolidatedAbstraction | None:
         """Call LLM, validate abstraction, return None on any failure."""
-        llm_documents = await self._build_cluster_llm_documents(cluster_mems)
+        llm_documents = await self._build_cluster_llm_documents(cluster_mems, namespace_id)
         messages = _build_consolidation_messages(json.dumps(llm_documents))
 
         try:
@@ -232,11 +236,8 @@ class ConsolidationWorker:
 
         return abstraction
 
-    async def _store_abstraction_in_mongo(self, abstraction_text: str) -> str:
-        """Persist abstraction text to Mongo and return its ObjectId string.
-
-        This gives us a valid ObjectId to use as payload_ref in the memories
-        table, satisfying the ObjectId format constraint (FIX: P0.2).
+    async def _store_abstraction_in_mongo(self, namespace_id: UUID, abstraction_text: str) -> str:
+        """Store consolidated abstraction in MongoDB and return the payload_ref.
 
         When mongo_client is None (e.g. test environments or Mongo-less deployments),
         falls back to a UUID-based ref prefixed with ``nomongo/`` so the caller can
@@ -252,12 +253,13 @@ class ConsolidationWorker:
                 fallback_ref,
             )
             return fallback_ref
-        db = self.mongo_client.memory_archive
-        result = await db.episodes.insert_one(
-            {"raw_data": abstraction_text, "source": "consolidation"}
-        )
-        return str(result.inserted_id)
+        from nce.db_utils import scoped_mongo_session
 
+        async with scoped_mongo_session(self.mongo_client, namespace_id) as s_db:
+            result = await s_db.episodes.insert_one(
+                {"raw_data": abstraction_text, "source": "consolidation"}
+            )
+            return str(result.inserted_id)
 
     async def _store_consolidated_memory(
         self,
@@ -449,7 +451,9 @@ class ConsolidationWorker:
             for label, cluster_mems in clusters.items():
                 mem_ids = [str(m["id"]) for m in cluster_mems]
 
-                abstraction = await self._call_consolidation_llm(cluster_mems, mem_ids, label)
+                abstraction = await self._call_consolidation_llm(
+                    cluster_mems, mem_ids, label, namespace_id
+                )
                 if abstraction is None:
                     continue
 
@@ -457,7 +461,9 @@ class ConsolidationWorker:
                     # Store abstraction text in Mongo FIRST to get a valid ObjectId
                     # for payload_ref. This must happen outside the PG transaction
                     # because Motor is async and the PG transaction should be short.
-                    payload_ref = await self._store_abstraction_in_mongo(abstraction.abstraction)
+                    payload_ref = await self._store_abstraction_in_mongo(
+                        namespace_id, abstraction.abstraction
+                    )
 
                     # PG transaction: memory row + WORM event log via append_event().
                     async with scoped_pg_session(self.pool, namespace_id) as conn:

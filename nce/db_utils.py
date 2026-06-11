@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from contextlib import asynccontextmanager
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 
 import asyncpg  # type: ignore[import-untyped]
@@ -136,3 +136,151 @@ async def scoped_pg_session(
             # No explicit _reset_rls_context() call: that would run inside the
             # transaction's finally block and can mask the original SQL error if
             # the transaction is already in an aborted state.
+
+
+class ScopedMongoCollection:
+    """Wrapper around Motor's AsyncIOMotorCollection to enforce and auto-inject namespace scoping."""
+
+    def __init__(self, collection: Any, namespace_id: str):
+        self._collection = collection
+        self._namespace_id = namespace_id
+
+    def _scope_filter(self, filter_spec: Any) -> dict[str, Any]:
+        """Ensures namespace_id matches scope, or auto-injects it."""
+        if filter_spec is None:
+            filter_spec = {}
+
+        if not isinstance(filter_spec, dict):
+            raise ValueError(f"Filter must be a dictionary, got {type(filter_spec)}")
+
+        if "namespace_id" in filter_spec:
+            ns_val = filter_spec["namespace_id"]
+            if str(ns_val) != self._namespace_id:
+                raise ValueError(
+                    f"Mismatched namespace_id: query has '{ns_val}', but session scope is '{self._namespace_id}'"
+                )
+            new_filter = dict(filter_spec)
+            new_filter["namespace_id"] = self._namespace_id
+            return new_filter
+        else:
+            new_filter = dict(filter_spec)
+            new_filter["namespace_id"] = self._namespace_id
+            return new_filter
+
+    def _scope_document(self, document: Any) -> dict[str, Any]:
+        """Ensures document has correct namespace_id for writes/inserts."""
+        if not isinstance(document, dict):
+            raise ValueError(f"Document must be a dictionary, got {type(document)}")
+
+        if "namespace_id" in document:
+            ns_val = document["namespace_id"]
+            if str(ns_val) != self._namespace_id:
+                raise ValueError(
+                    f"Mismatched namespace_id: document has '{ns_val}', but session scope is '{self._namespace_id}'"
+                )
+            new_doc = dict(document)
+            new_doc["namespace_id"] = self._namespace_id
+            return new_doc
+        else:
+            new_doc = dict(document)
+            new_doc["namespace_id"] = self._namespace_id
+            return new_doc
+
+    async def find_one(self, filter: Any = None, *args: Any, **kwargs: Any) -> Any:
+        scoped_filter = self._scope_filter(filter)
+        return await self._collection.find_one(scoped_filter, *args, **kwargs)
+
+    def find(self, filter: Any = None, *args: Any, **kwargs: Any) -> Any:
+        scoped_filter = self._scope_filter(filter)
+        return self._collection.find(scoped_filter, *args, **kwargs)
+
+    async def insert_one(self, document: Any, *args: Any, **kwargs: Any) -> Any:
+        scoped_doc = self._scope_document(document)
+        return await self._collection.insert_one(scoped_doc, *args, **kwargs)
+
+    async def insert_many(self, documents: Any, *args: Any, **kwargs: Any) -> Any:
+        if not isinstance(documents, list):
+            raise ValueError("documents must be a list")
+        scoped_docs = [self._scope_document(doc) for doc in documents]
+        return await self._collection.insert_many(scoped_docs, *args, **kwargs)
+
+    async def update_one(self, filter: Any, update: Any, *args: Any, **kwargs: Any) -> Any:
+        scoped_filter = self._scope_filter(filter)
+        if isinstance(update, dict):
+            for op, val in update.items():
+                if op == "$set" and isinstance(val, dict) and "namespace_id" in val:
+                    if str(val["namespace_id"]) != self._namespace_id:
+                        raise ValueError(
+                            f"Cannot update namespace_id to '{val['namespace_id']}'; session scope is '{self._namespace_id}'"
+                        )
+        return await self._collection.update_one(scoped_filter, update, *args, **kwargs)
+
+    async def update_many(self, filter: Any, update: Any, *args: Any, **kwargs: Any) -> Any:
+        scoped_filter = self._scope_filter(filter)
+        if isinstance(update, dict):
+            for op, val in update.items():
+                if op == "$set" and isinstance(val, dict) and "namespace_id" in val:
+                    if str(val["namespace_id"]) != self._namespace_id:
+                        raise ValueError(
+                            f"Cannot update namespace_id to '{val['namespace_id']}'; session scope is '{self._namespace_id}'"
+                        )
+        return await self._collection.update_many(scoped_filter, update, *args, **kwargs)
+
+    async def replace_one(self, filter: Any, replacement: Any, *args: Any, **kwargs: Any) -> Any:
+        scoped_filter = self._scope_filter(filter)
+        scoped_replacement = self._scope_document(replacement)
+        return await self._collection.replace_one(
+            scoped_filter, scoped_replacement, *args, **kwargs
+        )
+
+    async def delete_one(self, filter: Any, *args: Any, **kwargs: Any) -> Any:
+        scoped_filter = self._scope_filter(filter)
+        return await self._collection.delete_one(scoped_filter, *args, **kwargs)
+
+    async def delete_many(self, filter: Any, *args: Any, **kwargs: Any) -> Any:
+        scoped_filter = self._scope_filter(filter)
+        return await self._collection.delete_many(scoped_filter, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._collection, name)
+
+
+class ScopedMongoDatabase:
+    """Wrapper around Motor's AsyncIOMotorDatabase to return scoped collection accessors."""
+
+    def __init__(self, database: Any, namespace_id: str):
+        self._database = database
+        self._namespace_id = namespace_id
+
+    def __getitem__(self, name: str) -> ScopedMongoCollection:
+        coll = self._database[name]
+        return ScopedMongoCollection(coll, self._namespace_id)
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._database, name)
+        if name.startswith("_"):
+            return attr
+        from motor.core import AgnosticCollection
+
+        if isinstance(attr, AgnosticCollection) or (
+            hasattr(attr, "__class__") and "Mock" in attr.__class__.__name__
+        ):
+            return ScopedMongoCollection(attr, self._namespace_id)
+        return attr
+
+
+@asynccontextmanager
+async def scoped_mongo_session(
+    client: Any,
+    namespace_id: str | UUID,
+):
+    """Context manager for tenant-isolated MongoDB sessions.
+
+    Analogous to scoped_pg_session. Enforces that all database operations
+    automatically inject/verify the namespace_id.
+    """
+    if not namespace_id:
+        raise ValueError("namespace_id is required for scoped Mongo sessions")
+    ns_str = str(namespace_id)
+    db = ScopedMongoDatabase(client.memory_archive, ns_str)
+    yield db

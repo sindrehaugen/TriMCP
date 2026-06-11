@@ -103,7 +103,7 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
                 # Process memories
                 # We use keyset pagination on memories.id
                 memories_query = """
-                    SELECT id, payload_ref 
+                    SELECT id, payload_ref, namespace_id 
                     FROM memories 
                     WHERE id > $1
                     ORDER BY id ASC
@@ -111,7 +111,7 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
                 """
                 if not last_memory_id:
                     memories_query = """
-                        SELECT id, payload_ref 
+                        SELECT id, payload_ref, namespace_id 
                         FROM memories 
                         ORDER BY id ASC
                         LIMIT 100
@@ -122,19 +122,24 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
 
                 if memories_batch:
                     # Hydrate from Mongo using optimized bulk lookup
-                    db = mongo_client.memory_archive
+                    from collections import defaultdict
+
+                    from nce.db_utils import scoped_mongo_session
+
                     texts_to_embed = []
                     valid_memories = []
 
-                    # Map valid ObjectIds to their original memories
+                    # Group oids and their row references by namespace_id
+                    ns_to_oids = defaultdict(list)
                     ref_to_row = {}
-                    oids = []
+
                     for row in memories_batch:
                         ref = row.get("payload_ref")
-                        if ref:
+                        ns_id = row.get("namespace_id")
+                        if ref and ns_id:
                             try:
                                 oid = ObjectId(ref)
-                                oids.append(oid)
+                                ns_to_oids[ns_id].append(oid)
                                 ref_to_row[oid] = row
                             except Exception:
                                 log.warning(
@@ -142,18 +147,25 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
                                     ref,
                                 )
 
-                    if oids:
-                        docs = {}
-                        cursor = db.episodes.find({"_id": {"$in": oids}}, {"raw_data": 1})
-                        async for doc in cursor:
-                            docs[doc["_id"]] = doc
+                    docs = {}
+                    for ns_id, oids in ns_to_oids.items():
+                        async with scoped_mongo_session(mongo_client, ns_id) as s_db:
+                            cursor = s_db.episodes.find({"_id": {"$in": oids}}, {"raw_data": 1})
+                            async for doc in cursor:
+                                docs[doc["_id"]] = doc
 
-                        # Process in order to align properly
-                        for oid in oids:
-                            doc = docs.get(oid)
-                            if doc and doc.get("raw_data"):
-                                texts_to_embed.append(doc["raw_data"])
-                                valid_memories.append(ref_to_row[oid]["id"])
+                    # Process in order to align properly
+                    for row in memories_batch:
+                        ref = row.get("payload_ref")
+                        if ref:
+                            try:
+                                oid = ObjectId(ref)
+                                doc = docs.get(oid)
+                                if doc and doc.get("raw_data"):
+                                    texts_to_embed.append(doc["raw_data"])
+                                    valid_memories.append(row["id"])
+                            except Exception:
+                                pass
 
                     if texts_to_embed:
                         # Embed batch
@@ -258,4 +270,6 @@ async def run_re_embedding_worker(pg_pool: asyncpg.Pool, mongo_client: Any):
 
 
 def start_re_embedder(pg_pool, mongo_client) -> asyncio.Task:
-    return create_tracked_task(run_re_embedding_worker(pg_pool, mongo_client), name="re_embedding_worker")
+    return create_tracked_task(
+        run_re_embedding_worker(pg_pool, mongo_client), name="re_embedding_worker"
+    )

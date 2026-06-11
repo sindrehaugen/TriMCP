@@ -469,6 +469,7 @@ async def test_replay_payload_copy_strategy(pg_pool, make_namespace, monkeypatch
             "_id": src_oid,
             "raw_data": "True isolation target content test",
             "source": "test_replay_payload_copy_strategy",
+            "namespace_id": str(source_ns),
         }
     )
 
@@ -892,11 +893,13 @@ async def test_reconstructive_replay_digest_match(pg_pool, make_namespace, monke
                 "_id": src_oid,
                 "raw_data": "State digest verification content",
                 "source": "test_reconstructive_replay_digest_match",
+                "namespace_id": str(source_ns),
             },
             {
                 "_id": ObjectId("000000000000000000000002"),
                 "raw_data": "This is a consolidated abstraction",
                 "source": "test_reconstructive_replay_digest_match",
+                "namespace_id": str(source_ns),
             },
         ]
     )

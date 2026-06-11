@@ -476,12 +476,13 @@ async def _detect_contradictions_impl(
         ns_row = await conn.fetchrow("SELECT metadata FROM namespaces WHERE id = $1", namespace_id)
     ns_for_factory = _namespace_provider_metadata(ns_row)
 
-    db = mongo_client.memory_archive
+    from nce.db_utils import scoped_mongo_session
 
-    raw_by_ref = await fetch_episodes_raw_by_ref(
-        db,
-        [c["payload_ref"] for c in candidates],
-    )
+    async with scoped_mongo_session(mongo_client, namespace_id) as s_db:
+        raw_by_ref = await fetch_episodes_raw_by_ref(
+            s_db,
+            [c["payload_ref"] for c in candidates],
+        )
 
     detected: list[dict] = []
 

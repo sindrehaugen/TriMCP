@@ -450,8 +450,11 @@ def _fork_llm_payload_uri(
 class ReplayContext:
     """Carries state for replay executions, ensuring deterministic UUID remapping."""
 
-    def __init__(self, target_namespace_id: uuid.UUID) -> None:
+    def __init__(
+        self, target_namespace_id: uuid.UUID, source_namespace_id: uuid.UUID | None = None
+    ) -> None:
         self.target_namespace_id = target_namespace_id
+        self.source_namespace_id = source_namespace_id
         self.uuid_remap: dict[uuid.UUID, uuid.UUID] = {}
         self.mongo_remap: dict[str, str] = {}
         self._mongo_client: Any = None
@@ -485,7 +488,9 @@ class ReplayContext:
             self.mongo_remap[src_ref] = str(ObjectId(derived_bytes))
         return self.mongo_remap[src_ref]
 
-    async def copy_mongo_doc(self, src_ref: str) -> str:
+    async def copy_mongo_doc(
+        self, src_ref: str, source_namespace_id: uuid.UUID | None = None
+    ) -> str:
         """Copy Mongo document from src_ref to a deterministic target_ref."""
         target_ref = self.remap_mongo_ref(src_ref)
         if src_ref in self._copied_refs:
@@ -493,7 +498,11 @@ class ReplayContext:
 
         from bson import ObjectId
 
-        db = self.mongo_client.memory_archive
+        from nce.db_utils import scoped_mongo_session
+
+        ns_to_use = source_namespace_id or self.source_namespace_id
+        if ns_to_use is None:
+            ns_to_use = self.target_namespace_id
 
         try:
             src_oid = ObjectId(src_ref)
@@ -502,16 +511,29 @@ class ReplayContext:
             return target_ref
 
         try:
-            doc = await db.episodes.find_one({"_id": src_oid})
+            async with scoped_mongo_session(self.mongo_client, ns_to_use) as src_db:
+                doc = await src_db.episodes.find_one({"_id": src_oid})
+
             if doc is not None:
                 # Prepare target document
                 target_doc = dict(doc)
                 target_doc["_id"] = ObjectId(target_ref)
+                target_doc["namespace_id"] = str(self.target_namespace_id)
+
                 # Insert or replace in target (using upsert to be idempotent)
-                await db.episodes.replace_one({"_id": target_doc["_id"]}, target_doc, upsert=True)
+                async with scoped_mongo_session(
+                    self.mongo_client, self.target_namespace_id
+                ) as tgt_db:
+                    await tgt_db.episodes.replace_one(
+                        {"_id": target_doc["_id"]}, target_doc, upsert=True
+                    )
                 self._copied_refs.add(src_ref)
             else:
-                log.warning("Source Mongo document not found for payload_ref: %s", src_ref)
+                log.warning(
+                    "Source Mongo document not found for payload_ref: %s in namespace %s",
+                    src_ref,
+                    ns_to_use,
+                )
         except Exception as e:
             # Under some test configurations, Mongo might be mocked or unavailable.
             # We log the warning but do not crash the replay, so mock tests can run cleanly.
@@ -568,17 +590,12 @@ async def _handle_store_memory(
     that the fork's semantic state is identical up to the divergence point.
     Full re-embedding is supported by kicking off a re-embedding job later.
     """
-    is_raw_uuid = isinstance(ctx, uuid.UUID)
-    if isinstance(ctx, uuid.UUID):
-        ctx = ReplayContext(ctx)
-
     try:
         memory_id_str: str = src.params.get("memory_id", "")
         if not memory_id_str:
             return {"skipped": True, "reason": "no_memory_id_in_params"}
 
         src_memory_id = uuid.UUID(memory_id_str)
-        new_memory_id = ctx.remap(src_memory_id)
 
         # Fetch the source memory row (embedding + metadata).
         # The source_namespace_id is injected into params.source_namespace_id by
@@ -587,6 +604,12 @@ async def _handle_store_memory(
         src_ns_id = uuid.UUID(raw_src_ns) if raw_src_ns else None
         if src_ns_id is None:
             return {"skipped": True, "reason": "source_namespace_id_missing_in_params"}
+
+        is_raw_uuid = isinstance(ctx, uuid.UUID)
+        if isinstance(ctx, uuid.UUID):
+            ctx = ReplayContext(ctx, source_namespace_id=src_ns_id)
+
+        new_memory_id = ctx.remap(src_memory_id)
 
         src_row = await conn.fetchrow(
             """
@@ -611,7 +634,7 @@ async def _handle_store_memory(
             return {"skipped": True, "reason": "payload_ref_missing_in_params"}
 
         # Copy the MongoDB document to a deterministic targets ref and update the params in-place
-        target_payload_ref = await ctx.copy_mongo_doc(payload_ref)
+        target_payload_ref = await ctx.copy_mongo_doc(payload_ref, source_namespace_id=src_ns_id)
         src.params["payload_ref"] = target_payload_ref
 
         meta = dict(src_row["metadata"]) if src_row["metadata"] else {}
@@ -816,10 +839,6 @@ async def _handle_consolidation_run(
     The handler writes the resulting consolidated memory and returns the
     result_summary for the fork's event_log entry.
     """
-    is_raw_uuid = isinstance(ctx, uuid.UUID)
-    if isinstance(ctx, uuid.UUID):
-        ctx = ReplayContext(ctx)
-
     try:
         if llm_payload is None:
             return {"skipped": True, "reason": "llm_payload_unavailable"}
@@ -842,8 +861,15 @@ async def _handle_consolidation_run(
         if not payload_ref:
             return {"skipped": True, "reason": "payload_ref_missing_in_params"}
 
+        raw_src_ns = src.params.get("source_namespace_id")
+        src_ns_id = uuid.UUID(raw_src_ns) if raw_src_ns else None
+
+        is_raw_uuid = isinstance(ctx, uuid.UUID)
+        if isinstance(ctx, uuid.UUID):
+            ctx = ReplayContext(ctx, source_namespace_id=src_ns_id)
+
         # Copy the MongoDB document to a deterministic targets ref and update the params in-place
-        target_payload_ref = await ctx.copy_mongo_doc(payload_ref)
+        target_payload_ref = await ctx.copy_mongo_doc(payload_ref, source_namespace_id=src_ns_id)
         src.params["payload_ref"] = target_payload_ref
 
         consolidated_memory_id_str = src.params.get("consolidated_memory_id")
@@ -1387,9 +1413,9 @@ async def _dispatch_and_apply_event(
     if ctx is None:
         if target_namespace_id is None:
             raise ValueError("Either ctx or target_namespace_id must be provided")
-        ctx = ReplayContext(target_namespace_id)
+        ctx = ReplayContext(target_namespace_id, source_namespace_id=source_namespace_id)
     elif isinstance(ctx, uuid.UUID):
-        ctx = ReplayContext(ctx)
+        ctx = ReplayContext(ctx, source_namespace_id=source_namespace_id)
 
     handler = _HANDLER_REGISTRY.get(src.event_type)
     if handler is None:
@@ -1478,7 +1504,7 @@ class ForkedReplay:
 
         run_id: uuid.UUID | None = None
         events_applied = 0
-        ctx = ReplayContext(target_namespace_id)
+        ctx = ReplayContext(target_namespace_id, source_namespace_id=source_namespace_id)
 
         try:
             # ------------------------------------------------------------------
@@ -1699,7 +1725,7 @@ class ReconstructiveReplay:
         """
         run_id: uuid.UUID | None = None
         events_applied = 0
-        ctx = ReplayContext(target_namespace_id)
+        ctx = ReplayContext(target_namespace_id, source_namespace_id=source_namespace_id)
 
         # 1. Create (or reuse) run row
         try:

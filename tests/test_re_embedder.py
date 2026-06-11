@@ -93,7 +93,7 @@ async def test_re_embedder_processes_memories_batch_successfully(mock_embed):
     # First fetch returns memory records
     mem_id = uuid.uuid4()
     oid_str = "a" * 24
-    conn.fetch.return_value = [{"id": mem_id, "payload_ref": oid_str}]
+    conn.fetch.return_value = [{"id": mem_id, "payload_ref": oid_str, "namespace_id": uuid.uuid4()}]
 
     # Mock MongoDB
     mongo = MagicMock()
@@ -155,9 +155,10 @@ async def test_re_embedder_skips_invalid_payload_refs(mock_embed):
     # One valid payload_ref, one invalid
     mem_id_1 = uuid.uuid4()
     mem_id_2 = uuid.uuid4()
+    ns_id = uuid.uuid4()
     conn.fetch.return_value = [
-        {"id": mem_id_1, "payload_ref": "invalid-non-hex"},
-        {"id": mem_id_2, "payload_ref": "b" * 24},
+        {"id": mem_id_1, "payload_ref": "invalid-non-hex", "namespace_id": ns_id},
+        {"id": mem_id_2, "payload_ref": "b" * 24, "namespace_id": ns_id},
     ]
 
     mongo = MagicMock()

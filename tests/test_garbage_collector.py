@@ -774,7 +774,12 @@ async def test_reverse_sweep_soft_retires_dangling_and_leaves_healthy(
         db = mongo_client.memory_archive
         # Insert ONLY the healthy doc; the dangling ref is intentionally absent.
         await db.episodes.insert_one(
-            {"_id": healthy_oid, "raw_data": "present", "source": "test_reverse_sweep"}
+            {
+                "_id": healthy_oid,
+                "raw_data": "present",
+                "source": "test_reverse_sweep",
+                "namespace_id": str(ns_id),
+            }
         )
 
         try:

@@ -126,7 +126,7 @@ async def _fetch_memories_batch(
     if cursor_created_at is None:
         return await conn.fetch(
             """
-            SELECT id, created_at, memory_type, payload_ref, name, filepath
+            SELECT id, created_at, memory_type, payload_ref, name, filepath, namespace_id
             FROM   memories
             WHERE  embedding IS NOT NULL
               AND  (embedding_model_id IS NULL
@@ -141,7 +141,7 @@ async def _fetch_memories_batch(
     # Composite keyset: advance past (created_at, id) of the last processed row.
     return await conn.fetch(
         """
-        SELECT id, created_at, memory_type, payload_ref, name, filepath
+        SELECT id, created_at, memory_type, payload_ref, name, filepath, namespace_id
         FROM   memories
         WHERE  embedding IS NOT NULL
           AND  (embedding_model_id IS NULL
@@ -207,40 +207,44 @@ async def _resolve_texts_from_mongo(
     Episodic memories → ``episodes.raw_data``.
     Code chunks       → ``code_files.raw_code`` (truncated to max_text_chars).
     """
+    from collections import defaultdict
+
     from bson import ObjectId  # defer so tests that mock Mongo don't need bson
 
-    episodic_refs: list[str] = []
-    code_refs: list[str] = []
+    from nce.db_utils import scoped_mongo_session
+
+    ns_episodic_refs = defaultdict(list)
+    ns_code_refs = defaultdict(list)
 
     for row in rows:
         ref = row.get("payload_ref") or ""
-        if len(ref) != 24:  # MongoDB ObjectId hex is always 24 chars
+        ns_id = row.get("namespace_id")
+        if len(ref) != 24 or not ns_id:  # MongoDB ObjectId hex is always 24 chars
             continue
         if row.get("memory_type") == "code_chunk":
-            code_refs.append(ref)
+            ns_code_refs[ns_id].append(ObjectId(ref))
         else:
-            episodic_refs.append(ref)
+            ns_episodic_refs[ns_id].append(ObjectId(ref))
 
     result: dict[str, str] = {}
-    db = mongo_client.memory_archive
 
-    if episodic_refs:
+    for ns_id, oids in ns_episodic_refs.items():
         try:
-            oids = [ObjectId(r) for r in episodic_refs]
-            async for doc in db.episodes.find({"_id": {"$in": oids}}, {"raw_data": 1}):
-                ref = str(doc["_id"])
-                result[ref] = str(doc.get("raw_data", ""))[:max_text_chars]
+            async with scoped_mongo_session(mongo_client, ns_id) as s_db:
+                async for doc in s_db.episodes.find({"_id": {"$in": oids}}, {"raw_data": 1}):
+                    ref = str(doc["_id"])
+                    result[ref] = str(doc.get("raw_data", ""))[:max_text_chars]
         except Exception as exc:
-            log.warning("Re-embed: Mongo episodic fetch error: %s", exc)
+            log.warning("Re-embed: Mongo episodic fetch error for ns %s: %s", ns_id, exc)
 
-    if code_refs:
+    for ns_id, oids in ns_code_refs.items():
         try:
-            oids = [ObjectId(r) for r in code_refs]
-            async for doc in db.code_files.find({"_id": {"$in": oids}}, {"raw_code": 1}):
-                ref = str(doc["_id"])
-                result[ref] = str(doc.get("raw_code", ""))[:max_text_chars]
+            async with scoped_mongo_session(mongo_client, ns_id) as s_db:
+                async for doc in s_db.code_files.find({"_id": {"$in": oids}}, {"raw_code": 1}):
+                    ref = str(doc["_id"])
+                    result[ref] = str(doc.get("raw_code", ""))[:max_text_chars]
         except Exception as exc:
-            log.warning("Re-embed: Mongo code fetch error: %s", exc)
+            log.warning("Re-embed: Mongo code fetch error for ns %s: %s", ns_id, exc)
 
     return result
 

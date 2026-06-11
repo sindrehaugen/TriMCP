@@ -26,7 +26,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from nce import embeddings as _embeddings
 from nce.auth import set_namespace_context, validate_agent_id
 from nce.config import cfg
-from nce.db_utils import scoped_pg_session
+from nce.db_utils import scoped_mongo_session, scoped_pg_session
 from nce.models import (
     _SAFE_ID_RE,
     ArtifactPayload,
@@ -598,8 +598,6 @@ class MemoryOrchestrator(OrchestratorBase):
         is off, ``raw_data`` is stored as plaintext and ``(None, None)`` is
         returned (the legacy / back-compatible shape).
         """
-        db = self.mongo_client.memory_archive
-        collection = db.episodes
         user_id = payload.metadata.get("user_id") if payload.metadata else None
         session_id = payload.metadata.get("session_id") if payload.metadata else None
 
@@ -611,19 +609,20 @@ class MemoryOrchestrator(OrchestratorBase):
 
             raw_data, wrapped_dek, dek_key_id = encrypt_raw_data(sanitized_heavy)
 
-        inserted_result = await collection.insert_one(
-            {
-                "user_id": user_id,
-                "session_id": session_id,
-                "namespace_id": str(payload.namespace_id),
-                "type": payload.memory_type.value,
-                "raw_data": raw_data,
-                "metadata": payload.metadata,
-                "pii_redacted": pii_result.redacted,
-                "pii_entities_found": pii_result.entities_found,
-                "ingested_at": datetime.now(timezone.utc),
-            }
-        )
+        async with scoped_mongo_session(self.mongo_client, payload.namespace_id) as db:
+            inserted_result = await db.episodes.insert_one(
+                {
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "namespace_id": str(payload.namespace_id),
+                    "type": payload.memory_type.value,
+                    "raw_data": raw_data,
+                    "metadata": payload.metadata,
+                    "pii_redacted": pii_result.redacted,
+                    "pii_entities_found": pii_result.entities_found,
+                    "ingested_at": datetime.now(timezone.utc),
+                }
+            )
         inserted_mongo_id = str(inserted_result.inserted_id)
         log.debug("[Mongo] Inserted episode. id=%s", inserted_mongo_id)
         return inserted_mongo_id, inserted_result, wrapped_dek, dek_key_id
@@ -1058,8 +1057,8 @@ class MemoryOrchestrator(OrchestratorBase):
                 pass  # Cache miss or Redis down — recalculate below
 
             if payload_hash is None:
-                db = self.mongo_client.memory_archive
-                doc = await db.episodes.find_one({"_id": row["payload_ref"]})
+                async with scoped_mongo_session(self.mongo_client, row["namespace_id"]) as s_db:
+                    doc = await s_db.episodes.find_one({"_id": row["payload_ref"]})
                 if doc:
                     # Part II.4: hash the *decrypted* content so the payload hash is
                     # stable across the plaintext→ciphertext rollout (legacy rows
@@ -1131,8 +1130,8 @@ class MemoryOrchestrator(OrchestratorBase):
             ]
 
         # Phase 2 — Mongo + local crypto (no DB connection held).
-        db = self.mongo_client.memory_archive
-        doc = await db.episodes.find_one({"_id": ObjectId(payload_ref)})
+        async with scoped_mongo_session(self.mongo_client, namespace_id) as s_db:
+            doc = await s_db.episodes.find_one({"_id": ObjectId(payload_ref)})
         if not doc:
             raise ValueError("MongoDB payload missing.")
 
@@ -1419,17 +1418,18 @@ class MemoryOrchestrator(OrchestratorBase):
         if payload_ref and self.mongo_client is not None:
             try:
                 oid = ObjectId(payload_ref)
-                await self._mongo_db.episodes.update_one(
-                    {"_id": oid},
-                    {
-                        "$set": {
-                            "raw_data": None,
-                            "shredded": True,
-                            "shredded_at": datetime.now(timezone.utc),
+                async with scoped_mongo_session(self.mongo_client, namespace_id) as s_db:
+                    await s_db.episodes.update_one(
+                        {"_id": oid},
+                        {
+                            "$set": {
+                                "raw_data": None,
+                                "shredded": True,
+                                "shredded_at": datetime.now(timezone.utc),
+                            },
+                            "$unset": {"metadata": ""},
                         },
-                        "$unset": {"metadata": ""},
-                    },
-                )
+                    )
             except Exception as exc:
                 warnings.append(f"mongo_tombstone_failed:{payload_ref}:{exc}")
 

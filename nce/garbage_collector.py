@@ -447,10 +447,8 @@ async def _collect_reverse_orphans(
     Returns the number of memories soft-retired across all namespaces.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=cfg.GC_ORPHAN_AGE_SECONDS)
-    # Subscript access (db["episodes"]) mirrors the forward sweep and matches the
-    # MagicMock dict used in unit tests.
-    episodes = mongo_client.memory_archive["episodes"]
     retired = 0
+    from nce.db_utils import scoped_mongo_session
 
     for ns_id in namespaces:
         try:
@@ -470,48 +468,49 @@ async def _collect_reverse_orphans(
                 f"({REVERSE_SWEEP_MAX_PER_NS}); remaining refs deferred to the next pass.",
             )
 
-        for memory_id, payload_ref in candidates:
-            try:
-                doc = await episodes.find_one({"_id": ObjectId(payload_ref)}, {"_id": 1})
-            except Exception as exc:
-                # Malformed ObjectId or a transient Mongo error: skip — never
-                # soft-retire on uncertainty.
-                log.error(
-                    "GC reverse sweep: Mongo lookup failed for memory=%s ns=%s: %s",
-                    memory_id,
-                    ns_id,
-                    type(exc).__name__,
-                )
-                continue
+        async with scoped_mongo_session(mongo_client, ns_id) as s_db:
+            for memory_id, payload_ref in candidates:
+                try:
+                    doc = await s_db.episodes.find_one({"_id": ObjectId(payload_ref)}, {"_id": 1})
+                except Exception as exc:
+                    # Malformed ObjectId or a transient Mongo error: skip — never
+                    # soft-retire on uncertainty.
+                    log.error(
+                        "GC reverse sweep: Mongo lookup failed for memory=%s ns=%s: %s",
+                        memory_id,
+                        ns_id,
+                        type(exc).__name__,
+                    )
+                    continue
 
-            if doc is not None:
-                continue  # healthy — Mongo doc present, leave untouched
+                if doc is not None:
+                    continue  # healthy — Mongo doc present, leave untouched
 
-            try:
-                did_retire = await _soft_retire_dangling(pg_pool, ns_id, memory_id)
-            except Exception as exc:
-                log.error(
-                    "GC reverse sweep: soft-retire failed for memory=%s ns=%s: %s",
-                    memory_id,
-                    ns_id,
-                    type(exc).__name__,
-                )
-                continue
+                try:
+                    did_retire = await _soft_retire_dangling(pg_pool, ns_id, memory_id)
+                except Exception as exc:
+                    log.error(
+                        "GC reverse sweep: soft-retire failed for memory=%s ns=%s: %s",
+                        memory_id,
+                        ns_id,
+                        type(exc).__name__,
+                    )
+                    continue
 
-            if did_retire:
-                retired += 1
-                log.warning(
-                    "GC reverse sweep: soft-retired dangling memory=%s ns=%s "
-                    "(payload_ref=%s missing in Mongo episodes).",
-                    memory_id,
-                    ns_id,
-                    payload_ref,
-                )
-                await _dispatch_reverse_alert(
-                    "Dangling memory payload",
-                    f"Memory {memory_id} (namespace {ns_id}) referenced a missing "
-                    f"MongoDB episodes document and was soft-retired (valid_to set).",
-                )
+                if did_retire:
+                    retired += 1
+                    log.warning(
+                        "GC reverse sweep: soft-retired dangling memory=%s ns=%s "
+                        "(payload_ref=%s missing in Mongo episodes).",
+                        memory_id,
+                        ns_id,
+                        payload_ref,
+                    )
+                    await _dispatch_reverse_alert(
+                        "Dangling memory payload",
+                        f"Memory {memory_id} (namespace {ns_id}) referenced a missing "
+                        f"MongoDB episodes document and was soft-retired (valid_to set).",
+                    )
 
     if retired:
         log.warning("GC reverse sweep: soft-retired %d dangling memory(ies).", retired)

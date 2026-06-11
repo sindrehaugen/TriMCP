@@ -805,7 +805,8 @@ async def get_me_dsar_export(request: Request) -> JSONResponse:
     if payload_refs and engine.mongo_client is not None:
         from bson import ObjectId
 
-        db = engine.mongo_client.memory_archive
+        from nce.db_utils import scoped_mongo_session
+
         oids = []
         for ref in payload_refs:
             try:
@@ -813,9 +814,10 @@ async def get_me_dsar_export(request: Request) -> JSONResponse:
             except Exception:
                 pass
 
-        cursor = db.episodes.find({"_id": {"$in": oids}})
-        async for doc in cursor:
-            mongo_payloads[str(doc["_id"])] = doc
+        async with scoped_mongo_session(engine.mongo_client, ns_id) as s_db:
+            cursor = s_db.episodes.find({"_id": {"$in": oids}})
+            async for doc in cursor:
+                mongo_payloads[str(doc["_id"])] = doc
 
     # Map contradictions to memories
     contra_map: dict[UUID, list[dict]] = {}
