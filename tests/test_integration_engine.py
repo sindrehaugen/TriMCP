@@ -573,6 +573,7 @@ async def test_post_commit_failure_saga_recovery(engine, namespace_id, monkeypat
 
     from motor.motor_asyncio import AsyncIOMotorClient
     from nce.cron import _saga_recovery_tick
+    from nce.db_utils import scoped_pg_session
 
     test_id = str(uuid4())
 
@@ -603,10 +604,10 @@ async def test_post_commit_failure_saga_recovery(engine, namespace_id, monkeypat
     assert after_count == before_count + 1
 
     # 2. Retrieve saga and verify it is in 'pg_committed' state
-    async with engine.pg_pool.acquire(timeout=10.0) as conn:
+    async with scoped_pg_session(engine.pg_pool, namespace_id) as conn:
         row = await conn.fetchrow(
-            "SELECT id, state FROM saga_execution_log WHERE payload->'metadata'->>'user_id' = $1",
-            test_id,
+            "SELECT id, state FROM saga_execution_log WHERE namespace_id = $1",
+            namespace_id,
         )
         assert row is not None
         assert row["state"] == "pg_committed"
@@ -622,7 +623,7 @@ async def test_post_commit_failure_saga_recovery(engine, namespace_id, monkeypat
     await _saga_recovery_tick(engine.pg_pool)
 
     # 4. Verify saga is now 'completed'
-    async with engine.pg_pool.acquire(timeout=10.0) as conn:
+    async with scoped_pg_session(engine.pg_pool, namespace_id) as conn:
         row = await conn.fetchrow(
             "SELECT state FROM saga_execution_log WHERE id = $1",
             saga_id,

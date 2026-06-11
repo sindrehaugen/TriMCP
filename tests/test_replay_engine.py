@@ -167,6 +167,8 @@ async def test_handle_store_memory_handler() -> None:
             "metadata": {"some_key": "some_val"},
             "valid_from": mock_valid_from,
             "created_at": mock_created_at,
+            "wrapped_dek": None,
+            "dek_key_id": None,
         },
         # Second query: SELECT salience_score FROM memory_salience
         {
@@ -242,6 +244,8 @@ async def test_handle_store_memory_handler() -> None:
     assert args_memories[7] == json.dumps({"some_key": "some_val", "source_memory_id": str(src_mem_id)})
     assert args_memories[8] == mock_valid_from
     assert args_memories[9] == mock_created_at
+    assert args_memories[10] is None
+    assert args_memories[11] is None
 
     # Verify the arguments to INSERT INTO memory_salience
     salience_insert_call = mock_conn.execute.call_args_list[1]

@@ -10,6 +10,7 @@ import logging
 import re
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from uuid import UUID
 
 from starlette.applications import Starlette
@@ -700,6 +701,323 @@ async def post_me_govern(request: Request) -> JSONResponse:
                 )
 
 
+async def get_me_dsar_export(request: Request) -> JSONResponse:
+    """GET /api/me/dsar/export
+
+    Retrieve all data associated with the subject (namespace and agent) including decrypted raw payloads.
+    """
+    ns_ctx: NamespaceContext | None = getattr(request.state, "namespace_ctx", None)
+    if not ns_ctx or ns_ctx.namespace_id is None:
+        return JSONResponse(
+            {
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32005,
+                    "message": "Unauthorized",
+                    "data": {"reason": "missing_namespace_context"},
+                },
+                "id": None,
+            },
+            status_code=401,
+        )
+
+    ns_id: UUID = ns_ctx.namespace_id
+
+    # Enforce namespace matching if passed as query parameter
+    query_ns = request.query_params.get("namespace_id")
+    if query_ns:
+        try:
+            query_ns_uuid = UUID(str(query_ns).strip())
+        except ValueError:
+            return JSONResponse(
+                {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32007,
+                        "message": "Invalid namespace_id format",
+                        "data": {"reason": "invalid_namespace_format"},
+                    },
+                    "id": None,
+                },
+                status_code=400,
+            )
+        if query_ns_uuid != ns_id:
+            return JSONResponse(
+                {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32005,
+                        "message": "Forbidden",
+                        "data": {"reason": "cross-namespace request is denied"},
+                    },
+                    "id": None,
+                },
+                status_code=403,
+            )
+
+    # Enforce agent matching if passed as query parameter
+    query_agent = request.query_params.get("agent_id")
+    if query_agent and query_agent.strip() != ns_ctx.agent_id:
+        return JSONResponse(
+            {
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32005,
+                    "message": "Forbidden",
+                    "data": {"reason": "cross-agent request is denied"},
+                },
+                "id": None,
+            },
+            status_code=403,
+        )
+
+    engine: NCEEngine = request.app.state.engine
+    async with scoped_pg_session(engine.pg_pool, ns_id) as conn:
+        # Fetch all memories (active and soft-deleted) for this agent
+        mem_rows = await conn.fetch(
+            """
+            SELECT m.id, m.namespace_id, m.agent_id, m.memory_type, m.assertion_type, m.payload_ref, 
+                   m.valid_from, m.valid_to, m.metadata, m.created_at, m.wrapped_dek,
+                   COALESCE(ms.salience_score, 1.0) AS salience,
+                   COALESCE(ms.updated_at, m.created_at) AS last_reinforced
+            FROM memories m
+            LEFT JOIN memory_salience ms ON m.id = ms.memory_id AND ms.agent_id = m.agent_id AND ms.namespace_id = m.namespace_id
+            WHERE m.agent_id = $1 AND m.namespace_id = $2
+            """,
+            ns_ctx.agent_id,
+            ns_id,
+        )
+
+        # Fetch active contradictions in the namespace
+        contra_rows = await conn.fetch(
+            """
+            SELECT id, memory_a_id, memory_b_id, confidence, detected_at, detection_path, signals, resolution
+            FROM contradictions
+            WHERE namespace_id = $1
+            """,
+            ns_id,
+        )
+
+    # Fetch MongoDB payloads
+    payload_refs = [r["payload_ref"] for r in mem_rows if r["payload_ref"]]
+
+    mongo_payloads = {}
+    if payload_refs and engine.mongo_client is not None:
+        from bson import ObjectId
+
+        db = engine.mongo_client.memory_archive
+        oids = []
+        for ref in payload_refs:
+            try:
+                oids.append(ObjectId(ref))
+            except Exception:
+                pass
+
+        cursor = db.episodes.find({"_id": {"$in": oids}})
+        async for doc in cursor:
+            mongo_payloads[str(doc["_id"])] = doc
+
+    # Map contradictions to memories
+    contra_map: dict[UUID, list[dict]] = {}
+    for c in contra_rows:
+        signals = c["signals"]
+        if isinstance(signals, str):
+            try:
+                signals = json.loads(signals)
+            except Exception:
+                signals = {}
+        contra_data = {
+            "id": str(c["id"]),
+            "memory_a_id": str(c["memory_a_id"]),
+            "memory_b_id": str(c["memory_b_id"]),
+            "confidence": float(c["confidence"]),
+            "detected_at": c["detected_at"].isoformat() if c["detected_at"] else None,
+            "detection_path": c["detection_path"],
+            "signals": signals,
+            "resolution": c["resolution"],
+        }
+        contra_map.setdefault(c["memory_a_id"], []).append(contra_data)
+        contra_map.setdefault(c["memory_b_id"], []).append(contra_data)
+
+    from nce.envelope import maybe_decrypt_raw_data
+
+    beliefs = []
+    for row in mem_rows:
+        mem_id = row["id"]
+        metadata = row["metadata"] or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+        confidence = metadata.get("confidence", 1.0)
+        try:
+            confidence = float(confidence)
+        except (ValueError, TypeError):
+            confidence = 1.0
+
+        source = metadata.get("source", row["payload_ref"])
+
+        # Fetch and decrypt raw payload if present
+        raw_content = None
+        payload_ref = row["payload_ref"]
+        if payload_ref and payload_ref in mongo_payloads:
+            doc = mongo_payloads[payload_ref]
+            raw_data = doc.get("raw_data")
+            wrapped = row["wrapped_dek"]
+            if raw_data is not None:
+                try:
+                    raw_content = maybe_decrypt_raw_data(
+                        raw_data, bytes(wrapped) if wrapped is not None else None
+                    )
+                except Exception as e:
+                    log.warning("Failed to decrypt raw data for memory %s: %s", mem_id, e)
+                    raw_content = "[Decryption Error]"
+
+        beliefs.append(
+            {
+                "id": str(mem_id),
+                "namespace_id": str(row["namespace_id"]),
+                "agent_id": row["agent_id"],
+                "memory_type": row["memory_type"],
+                "assertion_type": row["assertion_type"],
+                "payload_ref": payload_ref,
+                "valid_from": row["valid_from"].isoformat() if row["valid_from"] else None,
+                "valid_to": row["valid_to"].isoformat() if row["valid_to"] else None,
+                "metadata": metadata,
+                "salience": float(row["salience"]),
+                "confidence": confidence,
+                "last_reinforced": row["last_reinforced"].isoformat()
+                if row["last_reinforced"]
+                else None,
+                "source": source,
+                "content": raw_content,
+                "contradictions": contra_map.get(mem_id, []),
+            }
+        )
+
+    return JSONResponse(
+        {
+            "namespace_id": str(ns_id),
+            "agent_id": ns_ctx.agent_id,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "beliefs": beliefs,
+        }
+    )
+
+
+async def post_me_dsar_erase(request: Request) -> JSONResponse:
+    """POST /api/me/dsar/erase
+
+    Provably erase all memories associated with the subject (namespace and agent) and return deletion receipts.
+    """
+    ns_ctx: NamespaceContext | None = getattr(request.state, "namespace_ctx", None)
+    if not ns_ctx or ns_ctx.namespace_id is None:
+        return JSONResponse(
+            {
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32005,
+                    "message": "Unauthorized",
+                    "data": {"reason": "missing_namespace_context"},
+                },
+                "id": None,
+            },
+            status_code=401,
+        )
+
+    ns_id: UUID = ns_ctx.namespace_id
+
+    # Enforce namespace matching if passed as query parameter
+    query_ns = request.query_params.get("namespace_id")
+    if query_ns:
+        try:
+            query_ns_uuid = UUID(str(query_ns).strip())
+        except ValueError:
+            return JSONResponse(
+                {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32007,
+                        "message": "Invalid namespace_id format",
+                        "data": {"reason": "invalid_namespace_format"},
+                    },
+                    "id": None,
+                },
+                status_code=400,
+            )
+        if query_ns_uuid != ns_id:
+            return JSONResponse(
+                {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32005,
+                        "message": "Forbidden",
+                        "data": {"reason": "cross-namespace request is denied"},
+                    },
+                    "id": None,
+                },
+                status_code=403,
+            )
+
+    # Enforce agent matching if passed as query parameter
+    query_agent = request.query_params.get("agent_id")
+    if query_agent and query_agent.strip() != ns_ctx.agent_id:
+        return JSONResponse(
+            {
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32005,
+                    "message": "Forbidden",
+                    "data": {"reason": "cross-agent request is denied"},
+                },
+                "id": None,
+            },
+            status_code=403,
+        )
+
+    engine: NCEEngine = request.app.state.engine
+
+    # Fetch all memories that are not yet shredded
+    async with scoped_pg_session(engine.pg_pool, ns_id) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id FROM memories 
+            WHERE agent_id = $1 AND namespace_id = $2 
+              AND (wrapped_dek IS NOT NULL OR content_fts IS NOT NULL OR embedding IS NOT NULL)
+            """,
+            ns_ctx.agent_id,
+            ns_id,
+        )
+
+    receipts = []
+    errors = []
+
+    for r in rows:
+        mem_id = str(r["id"])
+        try:
+            shred_result = await engine.shred_memory(mem_id, str(ns_id), ns_ctx.agent_id)
+            if shred_result.get("status") == "success":
+                receipts.append(shred_result.get("receipt"))
+            else:
+                errors.append({"memory_id": mem_id, "error": "unknown_shred_failure"})
+        except Exception as e:
+            log.error("Failed to shred memory %s in DSAR erasure: %s", mem_id, e)
+            errors.append({"memory_id": mem_id, "error": str(e)})
+
+    return JSONResponse(
+        {
+            "status": "success",
+            "namespace_id": str(ns_id),
+            "agent_id": ns_ctx.agent_id,
+            "erased_at": datetime.now(timezone.utc).isoformat(),
+            "shredded_count": len(receipts),
+            "receipts": receipts,
+            "errors": errors,
+        }
+    )
+
+
 app = Starlette(
     debug=False,
     lifespan=me_lifespan,
@@ -715,5 +1033,7 @@ app = Starlette(
         Route("/api/me/profile", endpoint=get_me_profile, methods=["GET"]),
         Route("/api/me/govern", endpoint=post_me_govern, methods=["POST"]),
         Route("/api/me/profile/govern", endpoint=post_me_govern, methods=["POST"]),
+        Route("/api/me/dsar/export", endpoint=get_me_dsar_export, methods=["GET"]),
+        Route("/api/me/dsar/erase", endpoint=post_me_dsar_erase, methods=["POST"]),
     ],
 )

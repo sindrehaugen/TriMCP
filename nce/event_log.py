@@ -173,10 +173,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 # Tables expected to be append-only (no UPDATE/DELETE at the application role).
-_WORM_TABLES: tuple[str, ...] = (
-    "event_log",
-    "pii_redactions",
-)
+_WORM_TABLES: tuple[str, ...] = ("event_log",)
 
 
 async def verify_worm_on_table(conn: asyncpg.Connection, table_name: str) -> None:

@@ -466,6 +466,23 @@ CREATE TABLE IF NOT EXISTS kg_node_embeddings_1 PARTITION OF kg_node_embeddings 
 CREATE TABLE IF NOT EXISTS kg_node_embeddings_2 PARTITION OF kg_node_embeddings FOR VALUES WITH (MODULUS 4, REMAINDER 2);
 CREATE TABLE IF NOT EXISTS kg_node_embeddings_3 PARTITION OF kg_node_embeddings FOR VALUES WITH (MODULUS 4, REMAINDER 3);
 
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nce_app') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON kg_node_embeddings TO nce_app;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON kg_node_embeddings_0 TO nce_app;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON kg_node_embeddings_1 TO nce_app;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON kg_node_embeddings_2 TO nce_app;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON kg_node_embeddings_3 TO nce_app;
+        
+        GRANT DELETE ON pii_redactions TO nce_app;
+        IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pii_redactions_default') THEN
+            GRANT DELETE ON pii_redactions_default TO nce_app;
+        END IF;
+    END IF;
+END $$;
+
+
 CREATE TABLE IF NOT EXISTS embedding_migrations (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     namespace_id     UUID REFERENCES namespaces(id),
@@ -1187,7 +1204,7 @@ BEGIN
             t
         );
         EXECUTE format('REVOKE ALL ON TABLE public.%I FROM nce_app', t);
-        IF t IN ('event_log', 'pii_redactions') THEN
+        IF t IN ('event_log') THEN
             EXECUTE format(
                 'GRANT SELECT, INSERT ON TABLE public.%I TO nce_app',
                 t

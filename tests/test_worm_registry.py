@@ -23,8 +23,7 @@ def test_memory_salience_not_in_worm_tables():
 
 def test_worm_tables_contains_expected_entries():
     assert "event_log" in _WORM_TABLES
-    assert "pii_redactions" in _WORM_TABLES
-    assert len(_WORM_TABLES) == 2
+    assert len(_WORM_TABLES) == 1
 
 
 # ---------------------------------------------------------------------------
