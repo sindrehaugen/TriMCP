@@ -84,7 +84,7 @@ jobs:
       - name: pip-audit (requirements)
         run: pip-audit -r requirements.txt --strict --disable-pip
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.6.0"
 
