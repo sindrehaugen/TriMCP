@@ -60,7 +60,9 @@ CREATE TABLE IF NOT EXISTS memories (
     memory_type         TEXT        NOT NULL DEFAULT 'episodic',
     assertion_type      TEXT        NOT NULL DEFAULT 'fact',
     payload_ref         TEXT        NOT NULL,
-    embedding           vector(768),
+    -- VI.5c D2: fp16 (halfvec) halves on-disk vector + HNSW index size and read
+    -- I/O vs full fp32 storage, with negligible recall loss. fp32 casts to fp16.
+    embedding           halfvec(768),
     embedding_model_id  UUID,
     derived_from        JSONB,
     valid_from          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -163,7 +165,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_user ON memories (user_id);
 CREATE INDEX IF NOT EXISTS idx_memories_user_session ON memories (user_id, session_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_filepath ON memories (filepath);
 CREATE INDEX IF NOT EXISTS idx_memories_user_path ON memories (user_id, filepath);
-CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw ON memories USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw ON memories USING hnsw (embedding halfvec_cosine_ops);
 -- Fleet admin: COUNT(*) / lookups by tenant without scanning all time partitions
 CREATE INDEX IF NOT EXISTS idx_memories_namespace_id ON memories (namespace_id);
 
@@ -191,7 +193,8 @@ CREATE TABLE IF NOT EXISTS kg_nodes (
     id            UUID DEFAULT gen_random_uuid(),
     label         TEXT NOT NULL,
     entity_type   VARCHAR(64) NOT NULL DEFAULT 'UNKNOWN',
-    embedding     VECTOR(768),
+    -- VI.5c D2: fp16 (halfvec) — see memories.embedding above.
+    embedding     halfvec(768),
     embedding_model_id UUID,
     namespace_id  UUID NOT NULL,
     payload_ref   CHAR(24),
@@ -270,7 +273,7 @@ BEGIN
     END IF;
 END $$;
 
-CREATE INDEX IF NOT EXISTS idx_kg_nodes_embedding_hnsw ON kg_nodes USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_kg_nodes_embedding_hnsw ON kg_nodes USING hnsw (embedding halfvec_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_kg_nodes_updated ON kg_nodes (updated_at);
 
 -- --- Knowledge-graph edges (partitioned by HASH) ---

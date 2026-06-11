@@ -25,6 +25,25 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: nce-postgres
+    # Disk-I/O tuning (VI.5c D1). Larger shared_buffers + maintenance_work_mem
+    # speed HNSW index builds; wal_compression + a higher max_wal_size and
+    # checkpoint_completion_target=0.9 spread WAL/checkpoint flushes for the
+    # write-heavy WORM event_log. synchronous_commit STAYS ON — the WORM log's
+    # durability (a committed row is WAL-durable on disk) must NOT be weakened.
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "maintenance_work_mem=512MB"
+      - "-c"
+      - "wal_compression=on"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "max_wal_size=4GB"
+      - "-c"
+      - "synchronous_commit=on"
     environment:
       POSTGRES_USER: mcp_user
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mcp_password}
@@ -41,10 +60,21 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   mongodb:
     image: mongo:7.0
     container_name: nce-mongo
+    # Disk-I/O tuning (VI.5c D1): zstd block compressor (vs the snappy default)
+    # for collection data — transcripts/code/payloads compress well, so this
+    # cuts on-disk size and read I/O.
+    command:
+      - "--wiredTigerCollectionBlockCompressor"
+      - "zstd"
     ports:
       - "127.0.0.1:27017:27017"
     volumes:
@@ -55,6 +85,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   minio:
     image: minio/minio:RELEASE.2024-11-07T00-52-20Z
@@ -108,6 +143,14 @@ services:
       OMP_NUM_THREADS: ${OMP_NUM_THREADS:-2}
       MKL_NUM_THREADS: ${MKL_NUM_THREADS:-2}
       TOKENIZERS_PARALLELISM: ${TOKENIZERS_PARALLELISM:-false}
+      # Disk-I/O tuning (VI.5c D4/D5): extractor temp churn (write temp ->
+      # subprocess reads -> unlink) is purely transient data. Point the artifact
+      # staging dir AND tempfile's TMPDIR at the RAM-backed tmpfs mount below so
+      # those writes never touch real disk.
+      NCE_ARTIFACT_STAGING_DIR: ${NCE_ARTIFACT_STAGING_DIR:-/dev/shm/nce-staging}
+      TMPDIR: /dev/shm/nce-staging
+    tmpfs:
+      - /dev/shm/nce-staging
     deploy:
       # N replicas process N RQ jobs concurrently (default 2).
       replicas: ${WORKER_REPLICAS:-2}
@@ -128,6 +171,11 @@ services:
       minio:
         condition: service_healthy
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # APScheduler: bridge subscription renewal + re-embedding sweeps (cognitive maintenance).
   cron:
@@ -147,6 +195,11 @@ services:
       OMP_NUM_THREADS: ${OMP_NUM_THREADS:-2}
       MKL_NUM_THREADS: ${MKL_NUM_THREADS:-2}
       TOKENIZERS_PARALLELISM: ${TOKENIZERS_PARALLELISM:-false}
+      # Disk-I/O tuning (VI.5c D4/D5): RAM-backed temp/staging (see worker).
+      NCE_ARTIFACT_STAGING_DIR: ${NCE_ARTIFACT_STAGING_DIR:-/dev/shm/nce-staging}
+      TMPDIR: /dev/shm/nce-staging
+    tmpfs:
+      - /dev/shm/nce-staging
     # Multicore (VI.5a): cron MUST stay a singleton — CronLock is the only
     # split-brain guard. NEVER scale this above 1 replica.
     deploy:
@@ -161,6 +214,11 @@ services:
       minio:
         condition: service_healthy
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   admin:
     build:
@@ -191,6 +249,11 @@ services:
       OMP_NUM_THREADS: ${OMP_NUM_THREADS:-2}
       MKL_NUM_THREADS: ${MKL_NUM_THREADS:-2}
       TOKENIZERS_PARALLELISM: ${TOKENIZERS_PARALLELISM:-false}
+      # Disk-I/O tuning (VI.5c D4/D5): RAM-backed temp/staging (see worker).
+      NCE_ARTIFACT_STAGING_DIR: ${NCE_ARTIFACT_STAGING_DIR:-/dev/shm/nce-staging}
+      TMPDIR: /dev/shm/nce-staging
+    tmpfs:
+      - /dev/shm/nce-staging
     ports:
       - "${ADMIN_PORT:-8003}:8003"
     depends_on:
@@ -217,6 +280,11 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   a2a:
     build:
@@ -248,6 +316,11 @@ services:
       OMP_NUM_THREADS: ${OMP_NUM_THREADS:-2}
       MKL_NUM_THREADS: ${MKL_NUM_THREADS:-2}
       TOKENIZERS_PARALLELISM: ${TOKENIZERS_PARALLELISM:-false}
+      # Disk-I/O tuning (VI.5c D4/D5): RAM-backed temp/staging (see worker).
+      NCE_ARTIFACT_STAGING_DIR: ${NCE_ARTIFACT_STAGING_DIR:-/dev/shm/nce-staging}
+      TMPDIR: /dev/shm/nce-staging
+    tmpfs:
+      - /dev/shm/nce-staging
     ports:
       - "${A2A_PORT:-8004}:8004"
     depends_on:
@@ -272,6 +345,11 @@ services:
       retries: 3
       start_period: 15s
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   webhook-receiver:
     build:
@@ -303,6 +381,11 @@ services:
       OMP_NUM_THREADS: ${OMP_NUM_THREADS:-2}
       MKL_NUM_THREADS: ${MKL_NUM_THREADS:-2}
       TOKENIZERS_PARALLELISM: ${TOKENIZERS_PARALLELISM:-false}
+      # Disk-I/O tuning (VI.5c D4/D5): RAM-backed temp/staging (see worker).
+      NCE_ARTIFACT_STAGING_DIR: ${NCE_ARTIFACT_STAGING_DIR:-/dev/shm/nce-staging}
+      TMPDIR: /dev/shm/nce-staging
+    tmpfs:
+      - /dev/shm/nce-staging
     ports:
       - "${WEBHOOK_PORT:-8080}:8080"
     depends_on:
@@ -323,6 +406,11 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   jaeger:
     image: jaegertracing/all-in-one:1.60

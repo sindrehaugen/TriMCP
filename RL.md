@@ -54,7 +54,7 @@
 * [DONE] Batch 44 — Close raw-PII side sinks (saga-log + me_app edit), preserve time-travel (R2 / VII.5; KG-history 44b deferred) [PASSED TAG]
 * [DONE] Batch 45 — Envelope-encryption subsystem (II.4a) [PASSED TAG]
 * [DONE] Batch 46 — Encrypt `episodes.raw_data` under the DEK + teach read paths (II.4b) [PASSED TAG]
-* [LOCKED] Batch 47 — `shred_memory` / `forget_subject` + deletion receipt (II.4c) [NO TAG]
+* [RUNNING] Batch 47 — `shred_memory` / `forget_subject` + deletion receipt (II.4c) [NO TAG]
 * [LOCKED] Batch 48 — DSAR capstone (VII.7) [NO TAG]
 * [LOCKED] Batch 49 — Verify PII-before-derivation on every write path (VII.1) [NO TAG]
 * [LOCKED] Batch 50 — Scoped MongoDB accessor (VII.2) [NO TAG]
@@ -69,7 +69,7 @@
 * [DONE] Batch 59 — RQ in-flight job recovery (R-C / VI.6a) [PASSED TAG]
 * [DONE] Batch 60 — Multicore: HTTP workers + RQ replicas + thread pinning (VI.5a) [PASSED TAG]
 * [LOCKED] Batch 61 — RAM: offload spaCy + NLI to a sidecar; container mem limits (VI.5b) [NO TAG]
-* [LOCKED] Batch 62 — Disk: datastore tuning + halfvec + tmpfs temp (VI.5c) [NO TAG]
+* [DONE] Batch 62 — Disk: datastore tuning + halfvec + tmpfs temp (VI.5c) [PASSED TAG]
 * [LOCKED] Batch 63 — Cross-encoder reranking (IV.1) [NO TAG]
 * [LOCKED] Batch 64 — Multi-vector / aspect embeddings (IV.2) [NO TAG]
 * [LOCKED] Batch 65 — diag-config: `NCE_DIAG_*` configuration surface (Diag P1) [NO TAG]
@@ -594,5 +594,14 @@ When steps are done: STOP. Run `_internal\tools\generate_diff.py` (flips the row
 * **Identified System Flaws:** None. Prior finding genuinely resolved, no new regression.
 * **Defensive Refactoring Correction Blueprint:** None.
 * **Kaizen:** `Embeddings & edge` / `Re-embedding worker` map to `'llm'` though some of their keys are HOT/COLD — harmless (the chip only renders for WARM `pending_reload` results), but worth a comment that the domain applies per-result, not per-section.
+
+### TAG Batch 62 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_62.md`, `docker-compose.yml`, `nce/schema.sql`, `nce/migrations/019_halfvec_embeddings.sql`, `tests/test_disk_io_tuning.py`. The four in-scope files match the diff; other working-tree changes (chrono.py etc.) are external/concurrent, not in Batch 62's diff. Migration numbered 019 (next free), new file, edits no existing migration.
+* **Structural Integrity:** D1 PG tuning present (shared_buffers, maintenance_work_mem, wal_compression=on, checkpoint_completion_target=0.9, max_wal_size). **WORM durability preserved:** `synchronous_commit=on` explicitly present, NOT off/local/remote_* (honors R-A). Mongo `--wiredTigerCollectionBlockCompressor zstd`. D2 halfvec fully consistent: `memories.embedding`/`kg_nodes.embedding` → `halfvec(768)` with `halfvec_cosine_ops` HNSW indexes, zero residual `vector(768)`/`vector_cosine_ops`; dynamic-dim stores stay `vector`. Proven by a fresh scratch-DB `schema.sql` apply (ON_ERROR_STOP=1, exit 0). Migration 019 mirrors schema.sql, guarded `IF udt_name='vector'`, drops+recreates HNSW indexes, casts fp32→fp16, idempotent (re-run no-op). D4 tmpfs staging mounts + `NCE_ARTIFACT_STAGING_DIR`/`TMPDIR` on compute services; D7 json-file log rotation on all.
+* **Contractual Test Fidelity:** Not a Trivial Test Trap. `test_worm_synchronous_commit_not_weakened` fails on `=off`/absence, passes only on `=on`. Schema/migration tests assert real invariants; the schema-bootstrap integration test passes (applies schema.sql twice on a live DB), proving internal consistency. `13 passed` (unit) + `1 passed` (schema bootstrap integration); ruff clean.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** D3 (Redis persistence) and D5 (TemporaryDirectory/try-finally in extractors) remain open; a follow-up should confirm extractor temp paths actually resolve under `NCE_ARTIFACT_STAGING_DIR`/`TMPDIR` so D4's tmpfs fully eliminates the D5 leak risk.
 
 [EOF: END OF REFACTORING LEDGER]
