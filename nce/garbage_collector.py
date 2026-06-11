@@ -18,12 +18,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
-import asyncpg
+import asyncpg  # type: ignore[import-untyped]
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from nce.auth import set_namespace_context
 from nce.config import cfg, redact_secrets_in_text
+from nce.db_utils import resolve_worker_dsn
 from nce.redis_lock import acquire_lock as _acquire_redis_lock
 from nce.redis_lock import release_lock as _release_redis_lock
 
@@ -87,8 +88,11 @@ async def _connect_with_retry() -> tuple[AsyncIOMotorClient, asyncpg.Pool]:
             # Force a real connection check
             await mongo_client.admin.command("ping")
 
+            # R4 / VI.4: connect as the least-privilege worker principal
+            # (``nce_gc`` via NCE_GC_DSN) when provisioned; falls back to the
+            # app DSN (``nce_app``) when NCE_GC_DSN is unset.
             pg_pool = await asyncpg.create_pool(
-                cfg.PG_DSN,
+                resolve_worker_dsn(),
                 min_size=1,
                 max_size=3,  # GC needs very few connections
                 command_timeout=30,

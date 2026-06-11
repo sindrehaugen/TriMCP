@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Final
 from uuid import UUID
 
-import asyncpg
+import asyncpg  # type: ignore[import-untyped]
 
 from nce.observability import SCOPED_SESSION_LATENCY
 
@@ -36,6 +36,43 @@ UNMANAGED_PG_AUDITED_SITES: Final[frozenset[str]] = frozenset(
         "cron.chain_verify.namespace_scan",
     }
 )
+
+
+def resolve_worker_dsn() -> str:
+    """Return the DSN background maintenance workers must connect with (R4 / VI.4).
+
+    Garbage-collection and re-embedding workers should authenticate as a
+    *distinct, least-privilege* principal (provisioned as ``nce_gc``) rather
+    than reusing the application role. The selection contract is:
+
+    * ``NCE_GC_DSN`` set → use it (the worker principal, distinct from the app).
+    * ``NCE_GC_DSN`` unset → fall back to ``PG_DSN`` (the app role) so existing
+      deployments keep working unchanged (backward-compatible default).
+
+    Resolving from config (rather than reading ``cfg.PG_DSN`` directly at the
+    worker connect site) is what lets a deployment grant the workers their own
+    credentials without the application pool ever holding ``BYPASSRLS``.
+
+    The returned string is a secret — callers must never log it in cleartext
+    (use ``config.redact_secrets_in_text``) nor return it from an endpoint.
+    """
+    from nce.config import cfg
+
+    return cfg.NCE_GC_DSN
+
+
+def worker_dsn_is_segregated() -> bool:
+    """True when workers connect as a principal distinct from the app role.
+
+    Equivalent to "``NCE_GC_DSN`` resolved to something other than ``PG_DSN``".
+    When False, workers share the app DSN (the safe, backward-compatible
+    fallback) — the app role still never gains ``BYPASSRLS`` either way; that
+    attribute is a property of the *role* the DSN authenticates as, granted at
+    provisioning time, not of these workers.
+    """
+    from nce.config import cfg
+
+    return bool(cfg.NCE_GC_DSN) and cfg.NCE_GC_DSN != cfg.PG_DSN
 
 
 @asynccontextmanager

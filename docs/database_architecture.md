@@ -107,7 +107,8 @@ async def scoped_pg_session(pool: asyncpg.Pool, namespace_id: str):
 ### 3b. Why RLS Context Requires SET LOCAL
 Using `SET LOCAL` scopes the configuration setting to the immediate transaction block. If the connection is returned to the pool, the setting is guaranteed to revert, preventing cross-tenant leakage. 
 
-* **Admin Bypass**: Background administrative tasks (such as database migrations, global auditing, or the garbage collector) check out connections via `unmanaged_pg_connection(pool)`. These connections bypass RLS using the privileged `nce_gc` role, which has the `BYPASSRLS` attribute enabled.
+* **Admin Bypass**: A narrow set of global maintenance paths (schema migrations, partition maintenance, cron namespace scans) check out connections via `unmanaged_pg_connection(pool)`, which skips `SET LOCAL nce.namespace_id`. Today these still authenticate as the application role (`nce_app`) — `unmanaged_pg_connection` is the app role *skipping* RLS scoping on audited global sites, not a separate database principal.
+* **Worker principal segregation (`nce_gc`)**: The `nce_gc` role exists in `schema.sql` with the `BYPASSRLS` attribute for least-privilege worker isolation. Background maintenance **workers** (the garbage collector and the re-embedding worker) resolve their connection DSN via `db_utils.resolve_worker_dsn()`, which returns `NCE_GC_DSN` when set (so the worker connects as `nce_gc` with its own credentials) and otherwise falls back to `PG_DSN` (the app role) for backward compatibility. To activate segregation, provision `nce_gc` with `LOGIN` + its own password and point `NCE_GC_DSN` at it; the application pool then never authenticates as a `BYPASSRLS` role. Note the GC itself runs RLS-scoped per namespace (it calls `set_namespace_context` rather than relying on `BYPASSRLS`), so segregation is primarily a credential-isolation boundary.
 
 ---
 

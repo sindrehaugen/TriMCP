@@ -155,7 +155,7 @@ CREATE POLICY tenant_isolation_policy ON memories
 ```
 
 * **RLS Enforcement Rule**: All SELECT, INSERT, UPDATE, and DELETE operations executed under the standard application role `nce_app` are restricted to the UUID returned by `get_nce_namespace()`.
-* **Privileged Role Exception**: The garbage collection role `nce_gc` bypasses RLS using the database-level `BYPASSRLS` attribute. This role is not accessible to application threads.
+* **Privileged Role Exception (`nce_gc`)**: The `nce_gc` role is defined in `schema.sql` with the database-level `BYPASSRLS` attribute as a least-privilege boundary for background maintenance workers. Workers select their DSN via `db_utils.resolve_worker_dsn()`: when `NCE_GC_DSN` is set they connect as `nce_gc` (its own credentials, distinct from `nce_app`); when it is unset they fall back to `PG_DSN` (the app role) for backward compatibility. The application role `nce_app` never holds `BYPASSRLS` in either case — that attribute belongs only to `nce_gc`. To enforce hard segregation in production, provision `nce_gc` with `LOGIN` and a dedicated password and set `NCE_GC_DSN` accordingly (`NCE_GC_DSN` is environment-only and never returned by any endpoint). The garbage collector additionally runs RLS-scoped per namespace (via `set_namespace_context`), so it does not depend on `BYPASSRLS` for correctness.
 
 ---
 

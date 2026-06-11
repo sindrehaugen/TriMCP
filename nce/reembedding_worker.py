@@ -67,10 +67,11 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-import asyncpg
+import asyncpg  # type: ignore[import-untyped]
 
 from nce import embeddings as _embeddings
 from nce.config import cfg
+from nce.db_utils import resolve_worker_dsn
 from nce.embeddings import MODEL_ID, VECTOR_DIM  # noqa: F401
 from nce.redis_lock import acquire_lock as _acquire_redis_lock
 from nce.redis_lock import release_lock as _release_redis_lock
@@ -683,8 +684,13 @@ async def async_main() -> None:
 
     cfg.validate()
 
+    # R4 / VI.4: connect as the least-privilege worker principal
+    # (``nce_gc`` via NCE_GC_DSN) when provisioned; falls back to the app DSN
+    # (``nce_app``) when NCE_GC_DSN is unset.  Only the standalone entry point
+    # owns its pool — when driven by ``nce/cron.py`` the worker reuses the
+    # pool the caller passes to ``run_once`` (see module docstring / cron).
     pool = await asyncpg.create_pool(
-        cfg.PG_DSN,
+        resolve_worker_dsn(),
         min_size=1,
         max_size=4,
         command_timeout=120,

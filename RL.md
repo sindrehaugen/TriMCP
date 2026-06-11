@@ -63,7 +63,7 @@
 * [LOCKED] Batch 53 — Settings interaction design (V.3a) [NO TAG]
 * [RUNNING] Batch 54 — `config_changed` time-travel + rollback (V.6) [NO TAG]
 * [DONE] Batch 55 — Secrets-manager seam + remove dev dotenv-persist in prod (VI.1) [PASSED TAG]
-* [RUNNING] Batch 56 — Resolve `nce_gc` least-privilege (R4 / VI.4) [NO TAG]
+* [DONE] Batch 56 — Resolve `nce_gc` least-privilege (R4 / VI.4) [PASSED TAG]
 * [LOCKED] Batch 57 — Mongo write durability for the saga (R-A / VI.6a) [NO TAG]
 * [LOCKED] Batch 58 — Reverse-orphan reconciliation sweep (R-B / VI.6a) [NO TAG]
 * [DONE] Batch 59 — RQ in-flight job recovery (R-C / VI.6a) [PASSED TAG]
@@ -392,5 +392,14 @@
 * **Identified System Flaws:** None.
 * **Defensive Refactoring Correction Blueprint:** None.
 * **Kaizen:** The list/number/str inputs render enabled but are inert until Batch 53 wires change handlers — add a read-only affordance in 53 so users don't type into fields that silently discard input.
+
+### TAG Batch 56 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_56.md`, `nce/config.py`, `nce/db_utils.py`, `nce/garbage_collector.py`, `nce/reembedding_worker.py`, `docs/database_architecture.md`, `docs/enterprise_security.md`, `tests/test_worker_dsn_segregation.py`; cross-checked `nce/schema.sql`, `nce/settings_registry.py`. No out-of-scope files modified.
+* **Structural Integrity:** DSN seam correct. `resolve_worker_dsn()` returns `cfg.NCE_GC_DSN` (which falls back `PG_DSN`→`DATABASE_URL`→dev default, so unset == `PG_DSN`, backward-compatible). Both worker connect sites use it (`garbage_collector._connect_with_retry`, `reembedding_worker.async_main`); the cron path reuses the passed app pool (documented). App-never-BYPASSRLS verified: `nce_app` is `WITH LOGIN` only, `nce_gc` is `BYPASSRLS NOLOGIN` (`schema.sql:24-27`); no `nce_app … BYPASSRLS` anywhere. Role left NOLOGIN (out of scope); docs now document operator activation. Secret handling: `NCE_GC_DSN` is env-only, NOT in `settings_registry` (never returned by admin endpoints), and GC connect-failure logs route through `redact_secrets_in_text`. `# type: ignore[import-untyped]` on asyncpg matches the existing convention (`a2a.py`).
+* **Contractual Test Fidelity:** No Trivial Test Trap. Tests assert the real selection contract in clean subprocesses: `resolve_worker_dsn()==NCE_GC_DSN` (distinct from `PG_DSN`) and `==PG_DSN` on fallback; worker-wiring captures the actual DSN passed to `asyncpg.create_pool` and asserts it equals the resolved worker DSN; the app-never-GC-DSN invariant is guarded. `5 passed`; mypy 133 (below baseline).
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** When `nce_gc` is granted LOGIN, add a startup assertion that the app pool's role lacks `rolbypassrls` (defense-in-depth against `PG_DSN` accidentally pointing at the privileged role).
 
 [EOF: END OF REFACTORING LEDGER]

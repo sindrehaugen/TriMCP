@@ -306,6 +306,20 @@ class _Config:
         or "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta"
     )
     PG_BOUNCER_URL: str = os.getenv("PG_BOUNCER_URL", "")
+    # Least-privilege worker DSN (R4 / VI.4).  Background maintenance workers
+    # (garbage collector, re-embedding worker) connect with this DSN when set,
+    # so they authenticate as a *distinct* principal (e.g. ``nce_gc``) rather
+    # than reusing the application role (``nce_app``).  Handled like other DSNs:
+    # environment-only, never logged in cleartext, never returned by endpoints.
+    # When UNSET it falls back to ``PG_DSN`` so existing deployments are
+    # unchanged (backward-compatible) — segregation is opt-in via provisioning
+    # a dedicated role and pointing this at it.
+    NCE_GC_DSN: str = (
+        os.getenv("NCE_GC_DSN")
+        or os.getenv("PG_DSN")
+        or os.getenv("DATABASE_URL")
+        or "postgresql://mcp_user:mcp_password@localhost:5432/memory_meta"
+    )
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
     # --- Redis ---
