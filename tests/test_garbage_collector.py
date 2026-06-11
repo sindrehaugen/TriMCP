@@ -720,3 +720,125 @@ async def test_collect_minio_orphans_sweeps_incomplete_uploads():
         "mcp-test-bucket", "stale-upload", "stale-id"
     )
     assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# Batch 58 — R-B reverse integrity sweep (PG ref → missing Mongo doc)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_reverse_sweep_soft_retires_dangling_and_leaves_healthy(
+    pg_pool, make_namespace
+) -> None:
+    """R-B: a memory whose Mongo episodes doc is missing is soft-retired + alerted;
+    a memory whose Mongo doc is present is left untouched.
+
+    Exercises real Postgres (RLS-scoped UPDATE valid_to) and real MongoDB, then
+    asserts persisted DB state — not just that a function was called.
+    """
+    import os
+    from datetime import datetime, timedelta
+
+    from bson import ObjectId
+    from motor.motor_asyncio import AsyncIOMotorClient
+    from nce.db_utils import scoped_pg_session
+    from nce.garbage_collector import _collect_reverse_orphans
+
+    ns_id = await make_namespace()
+    agent_id = "test-reverse-sweep-agent"
+
+    # created_at must be older than the orphan-age cutoff so the sweep considers
+    # the rows (mirrors the forward GC's freshly-written-payload guard).
+    old_created = datetime.now(timezone.utc) - timedelta(days=365)
+
+    # Healthy memory: Mongo episodes doc exists.
+    healthy_oid = ObjectId()
+    healthy_ref = str(healthy_oid)
+    healthy_memory_id = uuid4()
+
+    # Dangling memory: payload_ref points at an ObjectId never written to Mongo.
+    dangling_oid = ObjectId()
+    dangling_ref = str(dangling_oid)
+    dangling_memory_id = uuid4()
+
+    mongo_uri = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017")
+    mongo_client = AsyncIOMotorClient(mongo_uri, serverSelectionTimeoutMS=5_000)
+    try:
+        try:
+            await mongo_client.admin.command("ping")
+        except Exception as exc:  # noqa: BLE001 - skip if Mongo unreachable
+            pytest.skip(f"MongoDB not reachable for integration test: {exc}")
+
+        db = mongo_client.memory_archive
+        # Insert ONLY the healthy doc; the dangling ref is intentionally absent.
+        await db.episodes.insert_one(
+            {"_id": healthy_oid, "raw_data": "present", "source": "test_reverse_sweep"}
+        )
+
+        try:
+            async with scoped_pg_session(pg_pool, ns_id) as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO memories (id, namespace_id, agent_id,
+                                          assertion_type, memory_type, payload_ref,
+                                          metadata, created_at)
+                    VALUES
+                        ($1, $3, $4, 'fact', 'episodic', $5, '{}'::jsonb, $7),
+                        ($2, $3, $4, 'fact', 'episodic', $6, '{}'::jsonb, $7)
+                    """,
+                    healthy_memory_id,
+                    dangling_memory_id,
+                    ns_id,
+                    agent_id,
+                    healthy_ref,
+                    dangling_ref,
+                    old_created,
+                )
+
+            # Patch the operator alert so we can assert it fired without I/O.
+            alert_mock = AsyncMock()
+            with patch("nce.notifications.dispatcher.dispatch_alert", alert_mock):
+                retired = await _collect_reverse_orphans(mongo_client, pg_pool, [ns_id])
+
+            # Exactly the dangling memory was soft-retired.
+            assert retired == 1
+
+            async with scoped_pg_session(pg_pool, ns_id) as conn:
+                dangling_valid_to = await conn.fetchval(
+                    "SELECT valid_to FROM memories WHERE id = $1 AND namespace_id = $2",
+                    dangling_memory_id,
+                    ns_id,
+                )
+                healthy_valid_to = await conn.fetchval(
+                    "SELECT valid_to FROM memories WHERE id = $1 AND namespace_id = $2",
+                    healthy_memory_id,
+                    ns_id,
+                )
+
+            # Dangling row soft-retired (valid_to set); healthy row untouched.
+            assert dangling_valid_to is not None, "dangling memory must be soft-retired"
+            assert healthy_valid_to is None, "healthy memory must be left untouched"
+
+            # An operator alert was dispatched naming the dangling memory.
+            assert alert_mock.await_count >= 1
+            dispatched_text = " ".join(
+                str(arg) for call in alert_mock.await_args_list for arg in call.args
+            )
+            assert str(dangling_memory_id) in dispatched_text
+            assert str(healthy_memory_id) not in dispatched_text
+        finally:
+            # Clean up PG rows (best-effort) and the healthy Mongo doc.
+            try:
+                async with scoped_pg_session(pg_pool, ns_id) as conn:
+                    await conn.execute(
+                        "DELETE FROM memories WHERE namespace_id = $1 AND id = ANY($2::uuid[])",
+                        ns_id,
+                        [healthy_memory_id, dangling_memory_id],
+                    )
+            except Exception:
+                pass
+            await db.episodes.delete_one({"_id": healthy_oid})
+    finally:
+        mongo_client.close()

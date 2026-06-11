@@ -65,7 +65,7 @@
 * [DONE] Batch 55 — Secrets-manager seam + remove dev dotenv-persist in prod (VI.1) [PASSED TAG]
 * [DONE] Batch 56 — Resolve `nce_gc` least-privilege (R4 / VI.4) [PASSED TAG]
 * [LOCKED] Batch 57 — Mongo write durability for the saga (R-A / VI.6a) [NO TAG]
-* [RUNNING] Batch 58 — Reverse-orphan reconciliation sweep (R-B / VI.6a) [NO TAG]
+* [DONE] Batch 58 — Reverse-orphan reconciliation sweep (R-B / VI.6a) [PASSED TAG]
 * [DONE] Batch 59 — RQ in-flight job recovery (R-C / VI.6a) [PASSED TAG]
 * [DONE] Batch 60 — Multicore: HTTP workers + RQ replicas + thread pinning (VI.5a) [PASSED TAG]
 * [LOCKED] Batch 61 — RAM: offload spaCy + NLI to a sidecar; container mem limits (VI.5b) [NO TAG]
@@ -576,5 +576,14 @@ When steps are done: STOP. Run `_internal\tools\generate_diff.py` (flips the row
 * **Identified System Flaws:** None blocking. Documented residual-reader gap (safe while flag defaults OFF, MUST be covered before enabling in prod): `nce/re_embedder.py`, `nce/reembedding_worker.py`, `nce/consolidation.py`, `nce/contradictions.py` read `raw_data` without `maybe_decrypt_raw_data`; `state_digest.py` hashes ciphertext (benign for replay equality).
 * **Defensive Refactoring Correction Blueprint:** None.
 * **Kaizen:** Before flipping `NCE_ENVELOPE_ENCRYPTION_ENABLED` on, add a follow-up batch routing re_embedder / reembedding_worker / consolidation / contradictions through `maybe_decrypt_raw_data` (the enumerated decryption blind-spots the default-OFF flag currently masks).
+
+### TAG Batch 58 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_58.md`, `nce/garbage_collector.py`, `tests/test_garbage_collector.py`; cross-referenced `nce/db_utils.py`, `nce/notifications.py`, `nce/schema.sql`. Exactly the two in-scope files modified; built on Batch 56's committed `resolve_worker_dsn()`. `nce/causal/chrono.py` confirmed external, not in this batch.
+* **Structural Integrity:** Faithful mirror of the forward GC. Detection scans live memories (payload_ref NOT NULL, valid_to NULL, past orphan-age cutoff) per namespace, checks the `episodes` doc by ObjectId; missing → soft-retire, present → untouched. RLS-safe: candidate fetch + UPDATE inside `scoped_pg_session(pool, ns_id)` with redundant explicit `namespace_id` filters. No-delete invariant honored — repair is `UPDATE memories SET valid_to = now()` only; no DELETE, no `event_log` reference (WORM preserved). Mongo existence check is OUTSIDE the scoped PG txn (no slow I/O held). Bounded: keyset pagination + `REVERSE_SWEEP_MAX_PER_NS=5000` ceiling with deferral alert on overflow. Fail-safe alert wrapped in try/except. `NCE_MASTER_KEY` never read/logged. Early-return shapes preserved (`reverse_retired` added only to the success return), so existing exact-equality tests stay green. Soft-retire + alert (no delete, rebuild-from-WORM correctly deferred to Wave 5).
+* **Contractual Test Fidelity:** No Trivial Test Trap. `test_reverse_sweep_soft_retires_dangling_and_leaves_healthy` inserts a real dangling row (PG memory + absent Mongo doc) AND a healthy row, runs `_collect_reverse_orphans` against live PG+Mongo, and asserts persisted state: dangling `valid_to` set + alert text contains its id; healthy `valid_to` NULL + absent from alert; count == 1. Executed (not skipped). `23 passed`; mypy 132 (below baseline).
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** `_fetch_reverse_candidates` buffers up to 5000 tuples/namespace before Mongo lookup; a future iteration could stream page-by-page to flatten peak memory.
 
 [EOF: END OF REFACTORING LEDGER]
