@@ -25,7 +25,7 @@ from nce.tool_registry import (
 # Cardinality
 # ---------------------------------------------------------------------------
 
-_EXPECTED_TOTAL = 64
+_EXPECTED_TOTAL = 65
 
 
 def test_registry_has_expected_entries():
@@ -154,6 +154,9 @@ _EXPECTED_ADMIN_ONLY: frozenset[str] = frozenset(
         "explain_past_decision",
         "d365_sync_now",
         "d365_list_sla_breaches",
+        # Batch 54 — V.6 config time-travel audit; admin-only read of the
+        # config_changed/config_reset WORM history for a key.
+        "explain_config_change",
     }
 )
 
@@ -166,7 +169,7 @@ def test_admin_only_tools_exact_match():
 
 
 def test_admin_only_tools_count():
-    assert len(ADMIN_ONLY_TOOLS) == 8
+    assert len(ADMIN_ONLY_TOOLS) == 9
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +325,10 @@ def test_toolspec_is_frozen():
         (
             "explain_past_decision",
             {"mutation": True, "cacheable": False, "admin_only": True, "migration": False},
+        ),
+        (
+            "explain_config_change",
+            {"mutation": False, "cacheable": False, "admin_only": True, "migration": False},
         ),
         # a2a
         (

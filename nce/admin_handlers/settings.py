@@ -162,13 +162,109 @@ async def api_admin_settings_list(request: Any) -> JSONResponse:
     return JSONResponse({"sections": response_sections})
 
 
+def _baseline_effective_value(key: str, metadata: SettingMetadata) -> Any:
+    """Return the env/default effective value for *key*, ignoring any DB override.
+
+    Secrets are masked to ``••••set``/``None`` by ``get_effective_value`` — the raw
+    secret value is never produced here.
+    """
+    value, _, _ = get_effective_value(key, metadata, {})
+    return value
+
+
+def _coerce_event_params(raw: Any) -> dict[str, Any]:
+    """Normalise an ``event_log.params`` column (jsonb may arrive as str) to a dict."""
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
+async def _reconstruct_effective_as_of(conn: Any, as_of_dt: Any) -> dict[str, Any]:
+    """Fold ordered ``config_changed``/``config_reset`` WORM events up to *as_of_dt*
+    over the env/default baseline, returning the effective (secrets-masked) config.
+
+    Only the redacted ``new_value`` recorded on each ``config_changed`` event is
+    applied — secret *values* are never reconstructed from the log (they are stored
+    only as ``••••set``/``••••unset`` lifecycle tokens). A ``config_reset`` event
+    reverts the affected keys back to their env/default baseline.
+    """
+    effective: dict[str, Any] = {
+        key: _baseline_effective_value(key, metadata) for key, metadata in REGISTRY.items()
+    }
+
+    rows = await conn.fetch(
+        """
+        SELECT event_type, params, event_seq, occurred_at
+        FROM event_log
+        WHERE event_type IN ('config_changed', 'config_reset')
+          AND occurred_at <= $1
+        ORDER BY occurred_at ASC, event_seq ASC
+        """,
+        as_of_dt,
+    )
+
+    for row in rows:
+        params = _coerce_event_params(row["params"])
+        if row["event_type"] == "config_changed":
+            changes = params.get("changes")
+            if isinstance(changes, dict):
+                for key, change in changes.items():
+                    if key in effective and isinstance(change, dict) and "new_value" in change:
+                        effective[key] = change["new_value"]
+        elif row["event_type"] == "config_reset":
+            resets = params.get("resets")
+            if isinstance(resets, dict):
+                for key in resets:
+                    if key in REGISTRY:
+                        effective[key] = _baseline_effective_value(key, REGISTRY[key])
+
+    return effective
+
+
 async def api_admin_settings_effective(request: Any) -> JSONResponse:
-    """GET /api/admin/settings/effective
+    """GET /api/admin/settings/effective[?as_of=T]
 
     Returns a flat key-value object of all settings with effective values (secrets masked).
+
+    When ``as_of`` (ISO 8601 timestamp) is supplied, the effective config is
+    reconstructed by folding the ordered ``config_changed``/``config_reset`` WORM
+    events up to ``T`` over the env/default baseline — the config analog of
+    ``semantic_search(as_of=)``. Non-secret values reconstruct exactly; secret
+    values are never recovered from the log (only the set/unset lifecycle token).
     """
     if not admin_state.engine:
         return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    as_of_raw = request.query_params.get("as_of")
+    if as_of_raw is not None:
+        from nce.temporal import parse_as_of
+
+        try:
+            as_of_dt = parse_as_of(as_of_raw)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=422)
+
+        if not admin_state.engine.pg_pool:
+            return JSONResponse({"error": "Database not available"}, status_code=503)
+
+        try:
+            async with admin_state.engine.pg_pool.acquire(timeout=10.0) as conn:
+                effective_dict = await _reconstruct_effective_as_of(conn, as_of_dt)
+        except Exception as e:
+            logger.exception("Failed to reconstruct effective config as_of: %s", e)
+            return JSONResponse({"error": f"Database query failed: {e}"}, status_code=500)
+
+        return JSONResponse(
+            {"as_of": as_of_dt.isoformat() if as_of_dt else None, "effective": effective_dict}
+        )
 
     db_overrides: dict[str, Any] = {}
     if admin_state.engine.pg_pool:
@@ -188,6 +284,238 @@ async def api_admin_settings_effective(request: Any) -> JSONResponse:
         effective_dict[key] = effective_value
 
     return JSONResponse(effective_dict)
+
+
+async def handle_explain_config_change(engine: Any, arguments: dict[str, Any]) -> str:
+    """[MCP] explain_config_change(key) — return a config key's full change history.
+
+    Folds the ordered ``config_changed``/``config_reset`` WORM events that touched
+    *key*, returning one entry per change (timestamp, actor, reason, old→new,
+    reset-to-baseline) — the audit companion to ``effective?as_of=T``. Secret
+    values are never returned: only the recorded ``set``/``unset``/``rotated``
+    redaction tokens already stored on the event.
+    """
+    key = arguments.get("key")
+    if not key or not isinstance(key, str):
+        raise ValueError("explain_config_change requires a string 'key' argument")
+    if key not in REGISTRY:
+        return json.dumps({"key": key, "error": "Setting key not found in registry"})
+
+    metadata = REGISTRY[key]
+    pool = getattr(engine, "pg_pool", None)
+    if pool is None:
+        raise RuntimeError("Database pool not available")
+
+    async with pool.acquire(timeout=10.0) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT event_id, event_type, agent_id, params, event_seq, occurred_at
+            FROM event_log
+            WHERE event_type IN ('config_changed', 'config_reset')
+            ORDER BY occurred_at ASC, event_seq ASC
+            """
+        )
+
+    history: list[dict[str, Any]] = []
+    for row in rows:
+        params = _coerce_event_params(row["params"])
+        occurred_at = row["occurred_at"]
+        occurred_iso = occurred_at.isoformat() if occurred_at is not None else None
+        if row["event_type"] == "config_changed":
+            changes = params.get("changes")
+            if isinstance(changes, dict) and key in changes and isinstance(changes[key], dict):
+                change = changes[key]
+                history.append(
+                    {
+                        "event_id": str(row["event_id"]),
+                        "event_seq": row["event_seq"],
+                        "occurred_at": occurred_iso,
+                        "event_type": "config_changed",
+                        "actor": params.get("actor"),
+                        "reason": params.get("reason"),
+                        "old_value": change.get("old_value"),
+                        "new_value": change.get("new_value"),
+                    }
+                )
+        elif row["event_type"] == "config_reset":
+            resets = params.get("resets")
+            if isinstance(resets, dict) and key in resets:
+                reset = resets[key] if isinstance(resets[key], dict) else {}
+                history.append(
+                    {
+                        "event_id": str(row["event_id"]),
+                        "event_seq": row["event_seq"],
+                        "occurred_at": occurred_iso,
+                        "event_type": "config_reset",
+                        "actor": params.get("actor"),
+                        "reverted_to_source": reset.get("source"),
+                        "new_value": reset.get("new_value"),
+                    }
+                )
+
+    return json.dumps(
+        {
+            "key": key,
+            "is_secret": metadata.is_secret,
+            "section": metadata.section,
+            "change_count": len(history),
+            "history": history,
+        }
+    )
+
+
+class _PatchRequestProxy:
+    """Minimal request shim that delegates to *base* but serves a synthesized JSON body.
+
+    Used so a rollback can apply its inverse change-set through the *normal* PATCH
+    path (``api_admin_settings_patch``) — preserving every guardrail (prod-locked
+    skip, validation, optimistic-lock, COLD→pending_restart, signed config_changed
+    event) rather than re-implementing the write.
+    """
+
+    def __init__(self, base: Any, body: dict[str, Any]) -> None:
+        self._base = base
+        self._body = body
+
+    async def json(self) -> dict[str, Any]:
+        return self._body
+
+    @property
+    def state(self) -> Any:
+        return self._base.state
+
+    @property
+    def headers(self) -> Any:
+        return self._base.headers
+
+
+async def api_admin_settings_rollback(request: Any) -> JSONResponse:
+    """POST /api/admin/settings/rollback { as_of, sections?, dry_run }
+
+    Config time-travel rollback (V.6). Reconstructs the effective config at ``as_of``,
+    diffs it against the current effective config, and computes the inverse change-set
+    that would restore the past state.
+
+    - ``dry_run`` (default True) returns the proposed diff for a confirm-modal.
+    - On apply (``dry_run: false``), the inverse change-set is pushed through the
+      normal PATCH path so every guardrail still holds; the rollback is itself
+      recorded as a ``config_changed`` event (``reason: "rollback to T"``).
+
+    Guardrails: prod-locked keys are never silently re-enabled (skipped); secrets
+    cannot be auto-restored from the WORM log (their values are unrecoverable by
+    design) — keys whose secret changed since ``as_of`` are *flagged* for manual
+    re-entry rather than fabricated.
+    """
+    if not admin_state.engine:
+        return JSONResponse({"error": "Engine not connected"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    if not isinstance(body, dict) or "as_of" not in body:
+        return JSONResponse({"error": "Payload must contain 'as_of'"}, status_code=422)
+
+    from nce.temporal import parse_as_of
+
+    try:
+        as_of_dt = parse_as_of(body["as_of"])
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+    if as_of_dt is None:
+        return JSONResponse({"error": "'as_of' must be a timestamp"}, status_code=422)
+
+    section_filter = body.get("sections")
+    if section_filter is not None and (
+        not isinstance(section_filter, list) or not all(isinstance(s, str) for s in section_filter)
+    ):
+        return JSONResponse({"error": "'sections' must be a list of strings"}, status_code=422)
+    section_set = set(section_filter) if section_filter else None
+
+    dry_run = body.get("dry_run", True)
+    if not isinstance(dry_run, bool):
+        return JSONResponse({"error": "'dry_run' must be a boolean"}, status_code=422)
+
+    if not admin_state.engine.pg_pool:
+        return JSONResponse({"error": "Database not available"}, status_code=503)
+
+    # Reconstruct past config + read current DB overrides for the live effective view.
+    try:
+        async with admin_state.engine.pg_pool.acquire(timeout=10.0) as conn:
+            past = await _reconstruct_effective_as_of(conn, as_of_dt)
+            db_overrides: dict[str, Any] = {}
+            rows = await conn.fetch(
+                "SELECT key, value, (secret_enc IS NOT NULL) AS has_secret, is_secret FROM settings"
+            )
+            for row in rows:
+                db_overrides[row["key"]] = row
+    except Exception as e:
+        logger.exception("Failed to load config for rollback: %s", e)
+        return JSONResponse({"error": f"Database query failed: {e}"}, status_code=500)
+
+    current = {
+        key: get_effective_value(key, metadata, db_overrides)[0]
+        for key, metadata in REGISTRY.items()
+    }
+
+    applied_diff: dict[str, dict[str, Any]] = {}
+    skipped: dict[str, dict[str, Any]] = {}
+    flagged_secrets: dict[str, dict[str, Any]] = {}
+
+    for key, metadata in REGISTRY.items():
+        if section_set is not None and metadata.section not in section_set:
+            continue
+        target = past[key]
+        cur = current[key]
+        if target == cur:
+            continue  # no inverse change required
+
+        if metadata.prod_locked:
+            skipped[key] = {
+                "reason": "prod_locked",
+                "current_value": cur,
+                "would_restore_to": target,
+            }
+            continue
+
+        if metadata.is_secret:
+            # Secret values are unrecoverable from the WORM log; never fabricate.
+            flagged_secrets[key] = {
+                "reason": "secret_rotated_since_as_of",
+                "current_value": cur,
+                "target_token": target,
+            }
+            continue
+
+        applied_diff[key] = {"old_value": cur, "new_value": target}
+
+    proposal: dict[str, Any] = {
+        "as_of": as_of_dt.isoformat(),
+        "dry_run": dry_run,
+        "diff": applied_diff,
+        "skipped_prod_locked": skipped,
+        "flagged_secrets": flagged_secrets,
+    }
+
+    if dry_run:
+        return JSONResponse(proposal)
+
+    if not applied_diff:
+        return JSONResponse({**proposal, "settings": {}, "note": "No applicable changes"})
+
+    # Apply the inverse (non-secret) change-set through the normal PATCH path so
+    # all guardrails/validation/WORM logging still apply.
+    patch_body = {
+        "settings": {k: {"value": v["new_value"]} for k, v in applied_diff.items()},
+        "reason": f"rollback to {as_of_dt.isoformat()}",
+    }
+    patch_resp = await api_admin_settings_patch(_PatchRequestProxy(request, patch_body))
+    patch_payload = json.loads(bytes(patch_resp.body).decode("utf-8"))
+    return JSONResponse(
+        {**proposal, "settings": patch_payload.get("settings", patch_payload)},
+        status_code=patch_resp.status_code,
+    )
 
 
 async def api_admin_settings_get(request: Any) -> JSONResponse:

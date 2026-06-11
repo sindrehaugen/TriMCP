@@ -35,6 +35,7 @@ from nce import (
     replay_mcp_handlers,
     snapshot_mcp_handlers,
 )
+from nce.admin_handlers import settings as settings_mcp_handlers
 from nce.vertical_modules.dynamics365 import mcp_handlers as d365_mcp_handlers
 from nce.vertical_modules.netbox import circuits as netbox_circuits
 
@@ -240,6 +241,10 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         _h(replay_mcp_handlers, "handle_explain_past_decision"),
         admin_only=True,
         mutation=True,
+    ),
+    "explain_config_change": ToolSpec(
+        _h(settings_mcp_handlers, "handle_explain_config_change"),
+        admin_only=True,
     ),
     # ------------------------------------------------------------------
     # Agent-to-Agent (A2A) grant tools

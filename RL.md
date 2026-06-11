@@ -61,7 +61,7 @@
 * [LOCKED] Batch 51 — MinIO per-namespace isolation (VII.3) [NO TAG]
 * [DONE] Batch 52 — Auto-generated Settings panel (V.3) [PASSED TAG]
 * [LOCKED] Batch 53 — Settings interaction design (V.3a) [NO TAG]
-* [RUNNING] Batch 54 — `config_changed` time-travel + rollback (V.6) [NO TAG]
+* [DONE] Batch 54 — `config_changed` time-travel + rollback (V.6) [PASSED TAG]
 * [DONE] Batch 55 — Secrets-manager seam + remove dev dotenv-persist in prod (VI.1) [PASSED TAG]
 * [DONE] Batch 56 — Resolve `nce_gc` least-privilege (R4 / VI.4) [PASSED TAG]
 * [LOCKED] Batch 57 — Mongo write durability for the saga (R-A / VI.6a) [NO TAG]
@@ -401,5 +401,14 @@
 * **Identified System Flaws:** None.
 * **Defensive Refactoring Correction Blueprint:** None.
 * **Kaizen:** When `nce_gc` is granted LOGIN, add a startup assertion that the app pool's role lacks `rolbypassrls` (defense-in-depth against `PG_DSN` accidentally pointing at the privileged role).
+
+### TAG Batch 54 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_54.md`, `nce/admin_handlers/settings.py`, `nce/admin_app.py`, `nce/tool_registry.py`, `nce/mcp_stdio_tools.py`, `nce/event_types.py`, `nce/settings_registry.py`, `tests/test_tool_registry.py`, `tests/test_settings_time_travel.py`. Exactly the six approved files modified; disk matches the diff.
+* **Structural Integrity:** `_reconstruct_effective_as_of` seeds the env/default baseline for every registry key then folds ordered `config_changed`/`config_reset` rows (`occurred_at <= $1 ORDER BY occurred_at, event_seq`) — read-only over `event_log`, WORM preserved. Fold reads the REAL event shape (`params["changes"][key]["new_value"]`, matching `api_admin_settings_patch`, not the plan's list sketch). Secret masking sound: baselines from `get_effective_value` (secrets→`••••set`, `NCE_MASTER_KEY` never raw), fold only applies already-redacted `new_value` tokens, so a real secret value can never enter the reconstruction. Rollback computes the inverse diff, routes prod-locked keys to `skipped` (never re-enabled), secrets to `flagged_secrets` (never fabricated), and applies the rest through the genuine PATCH path via `_PatchRequestProxy` (validation, optimistic-lock, COLD→pending_restart, signed `config_changed` with `reason:"rollback to T"`); `dry_run` defaults True. `config_reset`/`config_reload` absent from `VALID_EVENT_TYPES` is a PRE-EXISTING gap handled defensively (out of scope).
+* **Contractual Test Fidelity:** No Trivial Test Trap. Real multi-event reconstruction (100→200→300 with a post-cutoff event correctly excluded; untouched key keeps baseline), inverse-diff with prod-locked skipped + secret flagged (asserted absent from apply diff, only `••••set` exposed), per-key history with cross-key leakage negated, unknown-key + missing-`as_of` (422). Registry pins `_EXPECTED_TOTAL=65`, admin-only 8→9 with `explain_config_change` (read tool), mutation(30)/cacheable(7)/migration(5) unchanged; registered in both `tool_registry.py` and `mcp_stdio_tools.py`. `55 passed`; mypy 133 (below baseline).
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** Add `config_reset`/`config_reload` to `EventType`/`VALID_EVENT_TYPES` in a future batch so the reset branch of the fold becomes reachable once those events are emitted.
 
 [EOF: END OF REFACTORING LEDGER]

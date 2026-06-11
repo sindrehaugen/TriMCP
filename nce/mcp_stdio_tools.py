@@ -980,6 +980,30 @@ TOOLS = [
         },
     ),
     Tool(
+        name="explain_config_change",
+        description=(
+            "[Phase V.6] Config time-travel audit — return a configuration key's full "
+            "change history by folding the ordered config_changed/config_reset WORM "
+            "events that touched it (timestamp, actor, reason, old->new for non-secrets). "
+            "Secret values are never returned: only the recorded set/unset/rotated "
+            "lifecycle token. The audit companion to GET /api/admin/settings/effective?as_of=T."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "Registry configuration key whose change history to return.",
+                },
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
+            },
+            "required": ["key", "admin_api_key"],
+        },
+    ),
+    Tool(
         name="a2a_create_grant",
         description=(
             "[Phase 3.1] Create an A2A sharing grant — generates a secure token "

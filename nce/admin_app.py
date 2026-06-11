@@ -183,6 +183,11 @@ def build_admin_routes() -> list[Route]:
             methods=["POST"],
         ),
         Route(
+            "/api/admin/settings/rollback",
+            endpoint=h.api_admin_settings_rollback,
+            methods=["POST"],
+        ),
+        Route(
             "/api/admin/settings/{key}",
             endpoint=h.api_admin_settings_get,
             methods=["GET"],
