@@ -60,7 +60,7 @@
 * [LOCKED] Batch 50 — Scoped MongoDB accessor (VII.2) [NO TAG]
 * [LOCKED] Batch 51 — MinIO per-namespace isolation (VII.3) [NO TAG]
 * [DONE] Batch 52 — Auto-generated Settings panel (V.3) [PASSED TAG]
-* [RUNNING] Batch 53 — Settings interaction design (V.3a) [NO TAG]
+* [DONE] Batch 53 — Settings interaction design (V.3a) [PASSED TAG]
 * [DONE] Batch 54 — `config_changed` time-travel + rollback (V.6) [PASSED TAG]
 * [DONE] Batch 55 — Secrets-manager seam + remove dev dotenv-persist in prod (VI.1) [PASSED TAG]
 * [DONE] Batch 56 — Resolve `nce_gc` least-privilege (R4 / VI.4) [PASSED TAG]
@@ -585,5 +585,14 @@ When steps are done: STOP. Run `_internal\tools\generate_diff.py` (flips the row
 * **Identified System Flaws:** None.
 * **Defensive Refactoring Correction Blueprint:** None.
 * **Kaizen:** `_fetch_reverse_candidates` buffers up to 5000 tuples/namespace before Mongo lookup; a future iteration could stream page-by-page to flatten peak memory.
+
+### TAG Batch 53 Evaluation Audit Report
+* **Verification Status:** PASSED TAG (re-audit after one REJECT cycle)
+* **Target Scope Verification:** `admin/index.html` ONLY — no `nce/causal/chrono.py` or other files in the diff. Batch-52 read/render panel and shell untouched outside the V.3a additions.
+* **Structural Integrity:** Prior REJECT finding resolved. `SECTION_DOMAIN` (L5529-5536) now `{'Cron intervals':'cron','LLM / Cognitive':'llm','Embeddings & edge':'llm','Re-embedding worker':'llm','Observability':'observability','A2A / JWT':'a2a'}` — every key an exact `section=` string from `nce/settings_registry.py`; the five bogus keys gone. The WARM "Apply (reload {domain})" affordance now resolves for all WARM keys in cron/llm/observability/a2a sections. `node --check` passes on the full inline script; `<template>` 73/73, `<script>` 2/2. Dirty-tracking, confirm-diff modal, 207 rendering, 409 UX, secret rotate/clear, pending_restart banner, export-effective all intact.
+* **Contractual Test Fidelity:** Interaction layer matches the real `nce/admin_handlers/settings.py` contract: PATCH→207 `{settings:{key:{status,error?,status_code?}}}`; 409 carries `status_code:409`; `/reload` validates against `VALID_DOMAINS={cron,llm,observability,a2a}` → `{outcomes}`; `/reset {keys}`; `/pending {keys}`; `/effective` masked. Secrets write-only (`••••set`, never plaintext). `SECTION_DOMAIN` now matches the registry.
+* **Identified System Flaws:** None. Prior finding genuinely resolved, no new regression.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** `Embeddings & edge` / `Re-embedding worker` map to `'llm'` though some of their keys are HOT/COLD — harmless (the chip only renders for WARM `pending_reload` results), but worth a comment that the domain applies per-result, not per-section.
 
 [EOF: END OF REFACTORING LEDGER]
