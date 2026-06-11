@@ -220,6 +220,7 @@ async def stream_snapshot_export(
                         m.valid_from,
                         m.pii_redacted,
                         m.derived_from,
+                        m.wrapped_dek,
                         COALESCE(m.metadata, '{}'::jsonb) AS metadata,
                         (SELECT ms.salience_score
                          FROM memory_salience ms
@@ -325,6 +326,10 @@ def _serialize_memory_row(row: Any) -> dict[str, Any]:
     for k, v in dict(row).items():
         if isinstance(v, uuid.UUID):
             out[k] = str(v)
+        elif isinstance(v, (bytes, bytearray, memoryview)):
+            # Part II.4: wrapped_dek is BYTEA; hex-encode so it survives NDJSON
+            # and import can decrypt the source ciphertext before re-storing.
+            out[k] = bytes(v).hex()
         elif isinstance(v, datetime):
             out[k] = v.astimezone(timezone.utc).isoformat() if v else None
         elif k == "metadata" and isinstance(v, str):
@@ -421,7 +426,14 @@ async def restore_namespace(
             errors.append(f"Line {i + 1}: MongoDB document not found for payload_ref {payload_ref}")
             continue
 
-        raw_data = doc.get("raw_data", "")
+        # Part II.4: decrypt the source ciphertext (if encrypted) back to plaintext
+        # before re-storing; store_memory will re-encrypt under a fresh DEK if the
+        # target has envelope encryption enabled.  Legacy docs read as plaintext.
+        from nce.envelope import maybe_decrypt_raw_data
+
+        wrapped_hex = memory_data.get("wrapped_dek")
+        wrapped_bytes = bytes.fromhex(wrapped_hex) if wrapped_hex else None
+        raw_data = maybe_decrypt_raw_data(doc.get("raw_data", ""), wrapped_bytes)
 
         # Merge metadata with salience and bypass_quarantine
         metadata = dict(memory_data.get("metadata") or {})

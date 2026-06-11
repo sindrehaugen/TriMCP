@@ -590,7 +590,8 @@ async def _handle_store_memory(
 
         src_row = await conn.fetchrow(
             """
-            SELECT embedding, assertion_type, memory_type, metadata, valid_from, created_at
+            SELECT embedding, assertion_type, memory_type, metadata, valid_from, created_at,
+                   wrapped_dek, dek_key_id
             FROM memories
             WHERE id = $1 AND namespace_id = $2
               AND valid_to IS NULL
@@ -616,18 +617,23 @@ async def _handle_store_memory(
         meta = dict(src_row["metadata"]) if src_row["metadata"] else {}
         meta["source_memory_id"] = str(src_memory_id)
 
+        # Part II.4: the copied Mongo doc carries the source ciphertext verbatim;
+        # carry the source wrapped_dek/dek_key_id so the target can decrypt under
+        # the same (global) NCE_MASTER_KEY.  Legacy rows carry NULL → plaintext.
         await conn.execute(
             """
             INSERT INTO memories (
                 id, namespace_id, agent_id,
                 embedding, assertion_type, memory_type,
                 payload_ref, metadata,
-                valid_from, created_at
+                valid_from, created_at,
+                wrapped_dek, dek_key_id
             ) VALUES (
                 $1, $2, $3,
                 $4, $5, $6,
                 $7, $8::jsonb,
-                $9, $10
+                $9, $10,
+                $11, $12
             )
             ON CONFLICT DO NOTHING
             """,
@@ -641,6 +647,8 @@ async def _handle_store_memory(
             json.dumps(meta),
             src_row["valid_from"],
             src_row["created_at"],
+            src_row["wrapped_dek"],
+            src_row["dek_key_id"],
         )
 
         # Carry over salience score if it exists in the source namespace
@@ -849,16 +857,22 @@ async def _handle_consolidation_run(
         src_ns_id = uuid.UUID(raw_src_ns) if raw_src_ns else None
         src_valid_from = None
         src_created_at = None
+        src_wrapped_dek = None
+        src_dek_key_id = None
         if consolidated_memory_id_str and src_ns_id:
             try:
                 row = await conn.fetchrow(
-                    "SELECT valid_from, created_at FROM memories WHERE id = $1 AND namespace_id = $2",
+                    "SELECT valid_from, created_at, wrapped_dek, dek_key_id FROM memories WHERE id = $1 AND namespace_id = $2",
                     uuid.UUID(consolidated_memory_id_str),
                     src_ns_id,
                 )
                 if row:
                     src_valid_from = row["valid_from"]
                     src_created_at = row["created_at"]
+                    # Part II.4: carry the source DEK so the copied ciphertext doc
+                    # stays decryptable under the global master key.
+                    src_wrapped_dek = row["wrapped_dek"]
+                    src_dek_key_id = row["dek_key_id"]
             except Exception:
                 pass
 
@@ -888,12 +902,14 @@ async def _handle_consolidation_run(
                 id, namespace_id, agent_id,
                 embedding, assertion_type, memory_type,
                 payload_ref, metadata,
-                valid_from, created_at
+                valid_from, created_at,
+                wrapped_dek, dek_key_id
             ) VALUES (
                 $1, $2, $3,
                 $4, 'fact', 'consolidated',
                 $5, $6::jsonb,
-                $7, $8
+                $7, $8,
+                $9, $10
             )
             ON CONFLICT DO NOTHING
             """,
@@ -905,6 +921,8 @@ async def _handle_consolidation_run(
             json.dumps(meta),
             src_valid_from,
             src_created_at,
+            src_wrapped_dek,
+            src_dek_key_id,
         )
 
         # Populate target namespace KG nodes and edges

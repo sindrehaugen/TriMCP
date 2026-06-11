@@ -114,9 +114,45 @@ class TemporalOrchestrator(OrchestratorBase):
             return
         refs = [normalize_payload_ref(getattr(res, "payload_ref", None)) for res in outs]
         previews = await fetch_episode_previews_by_ref(self._mongo_db, refs)
+
+        # Part II.4: previews prefer the (plaintext) summary, but fall back to
+        # raw_data which may now be DEK-encrypted.  Fetch the wrapped DEK per
+        # memory and decrypt those refs so the preview is plaintext; legacy rows
+        # (wrapped_dek NULL) are untouched.
+        from nce.envelope import maybe_decrypt_raw_data
+        from nce.mongo_bulk import fetch_episodes_raw_by_ref
+
+        memory_ids = [getattr(res, "memory_id", None) for res in outs]
+        memory_ids = [m for m in memory_ids if m]
+        wrapped_by_ref: dict[str, bytes] = {}
+        if memory_ids:
+            try:
+                async with self.pg_pool.acquire(timeout=10.0) as conn:
+                    dek_rows = await conn.fetch(
+                        "SELECT payload_ref, wrapped_dek FROM memories "
+                        "WHERE id = ANY($1::uuid[]) AND wrapped_dek IS NOT NULL",
+                        [UUID(str(m)) for m in memory_ids],
+                    )
+                for dek_row in dek_rows:
+                    wrapped_by_ref[str(dek_row["payload_ref"])] = bytes(dek_row["wrapped_dek"])
+            except Exception:
+                wrapped_by_ref = {}
+
+        decrypted_raw: dict[str, str] = {}
+        if wrapped_by_ref:
+            raw_by_ref = await fetch_episodes_raw_by_ref(
+                self._mongo_db, list(wrapped_by_ref.keys()), decode_bytes=False
+            )
+            for ref, blob in raw_by_ref.items():
+                decrypted_raw[ref] = maybe_decrypt_raw_data(blob, wrapped_by_ref.get(ref))
+
         for res in outs:
             key = normalize_payload_ref(getattr(res, "payload_ref", None))
-            if key and key in previews:
+            if not key:
+                continue
+            if key in decrypted_raw:
+                res.content_preview = decrypted_raw[key][:200]
+            elif key in previews:
                 res.content_preview = previews[key]
 
     # ------------------------------------------------------------------
@@ -317,12 +353,8 @@ class TemporalOrchestrator(OrchestratorBase):
         hit_b = {_mid(r): r for r in res_b}
 
         async with self.scoped_session(payload.namespace_id) as conn:
-            map_a = await self._fetch_memories_valid_at(
-                conn, ns_uuid, all_uuid, payload.as_of_a
-            )
-            map_b = await self._fetch_memories_valid_at(
-                conn, ns_uuid, all_uuid, payload.as_of_b
-            )
+            map_a = await self._fetch_memories_valid_at(conn, ns_uuid, all_uuid, payload.as_of_a)
+            map_b = await self._fetch_memories_valid_at(conn, ns_uuid, all_uuid, payload.as_of_b)
 
         added_ids = ids_b - ids_a
         removed_ids = ids_a - ids_b

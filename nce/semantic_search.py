@@ -292,6 +292,26 @@ async def semantic_search(
         ]
         reinforcement_delta = cognitive_config.reinforcement_delta
 
+        # Part II.4: fetch the wrapped DEK for each result so encrypted raw_data
+        # can be decrypted on hydration; legacy rows return NULL → plaintext.
+        memory_ids = [r["memory_id"] for r in top_results if r.get("memory_id")]
+        wrapped_by_ref: dict[str, bytes | None] = {}
+        if memory_ids:
+            try:
+                dek_rows = await conn.fetch(
+                    "SELECT payload_ref, wrapped_dek FROM memories WHERE id = ANY($1::uuid[])",
+                    memory_ids,
+                )
+                for dek_row in dek_rows:
+                    wd = dek_row.get("wrapped_dek") if hasattr(dek_row, "get") else None
+                    if wd is None:
+                        continue
+                    wrapped_by_ref[str(dek_row["payload_ref"] or "")] = bytes(wd)
+            except Exception:
+                # Defensive: a DEK lookup failure must not break search; rows
+                # then read as plaintext (only encrypted rows would be affected).
+                wrapped_by_ref = {}
+
     asyncio.create_task(
         _fire_reinforcement(
             pg_pool,
@@ -321,13 +341,16 @@ async def semantic_search(
 
     from datetime import datetime, timezone
 
+    from nce.envelope import maybe_decrypt_raw_data
     from nce.temporal_decay import retention
 
     results = []
     for res in top_results:
         ref = str(res.get("payload_ref") or "")
         doc = docs.get(ref)
-        raw = (doc.get("raw_data") or "") if doc else ""
+        # Part II.4: transparently decrypt encrypted raw_data; legacy rows
+        # (wrapped_dek NULL) pass through as plaintext.
+        raw = maybe_decrypt_raw_data(doc.get("raw_data"), wrapped_by_ref.get(ref)) if doc else ""
 
         salience_score = res.get("salience_score", 1.0)
         last_reinforced_at = res.get("last_reinforced_at")

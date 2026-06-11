@@ -348,6 +348,15 @@ class _Config:
 
     NCE_MAX_OCR_PAGES: int = _int_env("NCE_MAX_OCR_PAGES", 10, minimum=1)
 
+    # --- Provable Forgetting (Part II.4) — envelope encryption of raw content ---
+    # When enabled, store_memory encrypts the raw payload that fans out to
+    # MongoDB ``episodes.raw_data`` under a fresh per-memory DEK (wrapped under
+    # NCE_MASTER_KEY; see nce/envelope.py).  Read paths transparently decrypt and
+    # ALWAYS remain back-compatible with legacy rows whose ``wrapped_dek IS NULL``
+    # (those carry plaintext raw_data).  Default OFF so rollout is controlled —
+    # flip on only once NCE_MASTER_KEY is provisioned in the target environment.
+    NCE_ENVELOPE_ENCRYPTION_ENABLED: bool = _bool_env("NCE_ENVELOPE_ENCRYPTION_ENABLED", False)
+
     # --- MCP Sizing Limits ---
     NCE_MAX_ARGUMENTS_JSON_SIZE: int = _int_env(
         "NCE_MAX_ARGUMENTS_JSON_SIZE", 1_000_000, minimum=1024

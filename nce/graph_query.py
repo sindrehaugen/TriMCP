@@ -839,13 +839,34 @@ class GraphRAGTraverser:
         except Exception as e:
             log.warning("Batch code_files hydration failed: %s", e)
 
+        # Part II.4: fetch the wrapped DEK for each episode payload_ref so an
+        # encrypted raw_data excerpt can be decrypted; legacy rows → NULL →
+        # plaintext.  code_files.raw_code is not envelope-encrypted by this batch.
+        wrapped_by_ref: dict[str, bytes | None] = {}
+        if ep_docs:
+            try:
+                async with self.pg_pool.acquire(timeout=10.0) as c:
+                    dek_rows = await c.fetch(
+                        "SELECT payload_ref, wrapped_dek FROM memories WHERE payload_ref = ANY($1::text[])",
+                        list(ep_docs.keys()),
+                    )
+                for dek_row in dek_rows:
+                    wd = dek_row["wrapped_dek"]
+                    wrapped_by_ref[str(dek_row["payload_ref"])] = (
+                        bytes(wd) if wd is not None else None
+                    )
+            except Exception as e:
+                log.warning("wrapped_dek lookup failed; treating raw_data as plaintext: %s", e)
+
+        from nce.envelope import maybe_decrypt_raw_data
+
         sources: list[dict] = []
         for ref_id in valid_refs:
             doc = ep_docs.get(ref_id)
             if doc is not None:
                 if restrict_user_id is not None and doc.get("user_id") != restrict_user_id:
                     continue
-                raw = doc.get("raw_data", "")
+                raw = maybe_decrypt_raw_data(doc.get("raw_data", ""), wrapped_by_ref.get(ref_id))
                 sources.append(
                     {
                         "payload_ref": ref_id,
@@ -893,9 +914,7 @@ class GraphRAGTraverser:
                 "Pass _allow_global_sweep=True only for admin/diagnostic cross-tenant operations."
             )
         if not (1 <= max_depth <= MAX_GRAPH_DEPTH):
-            raise ValueError(
-                f"max_depth must be between 1 and {MAX_GRAPH_DEPTH}, got {max_depth}"
-            )
+            raise ValueError(f"max_depth must be between 1 and {MAX_GRAPH_DEPTH}, got {max_depth}")
         if as_of is not None:
             if not isinstance(as_of, datetime):
                 raise ValueError("as_of must be a datetime object")

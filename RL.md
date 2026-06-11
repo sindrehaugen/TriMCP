@@ -53,25 +53,70 @@
 * [DONE] Batch 43 — Bi-temporal "explain my past decision" (II.5) [PASSED TAG]
 * [DONE] Batch 44 — Close raw-PII side sinks (saga-log + me_app edit), preserve time-travel (R2 / VII.5; KG-history 44b deferred) [PASSED TAG]
 * [DONE] Batch 45 — Envelope-encryption subsystem (II.4a) [PASSED TAG]
-* [LOCKED] Batch 46 — Encrypt `episodes.raw_data` under the DEK + teach read paths (II.4b) [NO TAG]
+* [DONE] Batch 46 — Encrypt `episodes.raw_data` under the DEK + teach read paths (II.4b) [PASSED TAG]
 * [LOCKED] Batch 47 — `shred_memory` / `forget_subject` + deletion receipt (II.4c) [NO TAG]
 * [LOCKED] Batch 48 — DSAR capstone (VII.7) [NO TAG]
 * [LOCKED] Batch 49 — Verify PII-before-derivation on every write path (VII.1) [NO TAG]
 * [LOCKED] Batch 50 — Scoped MongoDB accessor (VII.2) [NO TAG]
 * [LOCKED] Batch 51 — MinIO per-namespace isolation (VII.3) [NO TAG]
 * [DONE] Batch 52 — Auto-generated Settings panel (V.3) [PASSED TAG]
-* [LOCKED] Batch 53 — Settings interaction design (V.3a) [NO TAG]
+* [RUNNING] Batch 53 — Settings interaction design (V.3a) [NO TAG]
 * [DONE] Batch 54 — `config_changed` time-travel + rollback (V.6) [PASSED TAG]
 * [DONE] Batch 55 — Secrets-manager seam + remove dev dotenv-persist in prod (VI.1) [PASSED TAG]
 * [DONE] Batch 56 — Resolve `nce_gc` least-privilege (R4 / VI.4) [PASSED TAG]
 * [LOCKED] Batch 57 — Mongo write durability for the saga (R-A / VI.6a) [NO TAG]
-* [LOCKED] Batch 58 — Reverse-orphan reconciliation sweep (R-B / VI.6a) [NO TAG]
+* [RUNNING] Batch 58 — Reverse-orphan reconciliation sweep (R-B / VI.6a) [NO TAG]
 * [DONE] Batch 59 — RQ in-flight job recovery (R-C / VI.6a) [PASSED TAG]
 * [DONE] Batch 60 — Multicore: HTTP workers + RQ replicas + thread pinning (VI.5a) [PASSED TAG]
 * [LOCKED] Batch 61 — RAM: offload spaCy + NLI to a sidecar; container mem limits (VI.5b) [NO TAG]
 * [LOCKED] Batch 62 — Disk: datastore tuning + halfvec + tmpfs temp (VI.5c) [NO TAG]
 * [LOCKED] Batch 63 — Cross-encoder reranking (IV.1) [NO TAG]
 * [LOCKED] Batch 64 — Multi-vector / aspect embeddings (IV.2) [NO TAG]
+* [LOCKED] Batch 65 — diag-config: `NCE_DIAG_*` configuration surface (Diag P1) [NO TAG]
+* [LOCKED] Batch 66 — ingestion-event-type: `ingestion_completed` event type + replay handler (Diag P1) [NO TAG]
+* [LOCKED] Batch 67 — diag-schema: diag tables + `topology_graph` unique index + RLS (Diag P1) [NO TAG]
+* [LOCKED] Batch 68 — diag-queue-lane: dedicated `diag_ingest` RQ lane (Diag P1) [NO TAG]
+* [LOCKED] Batch 69 — landing-bucket-ttl: MinIO landing bucket + 7-day lifecycle (Diag P1) [NO TAG]
+* [LOCKED] Batch 70 — log-profiles: vendor log-profile registry (Diag P2) [NO TAG]
+* [LOCKED] Batch 71 — stream-reduce: flat-memory Stream-and-Reduce core (Diag P2) [NO TAG]
+* [LOCKED] Batch 72 — netbox-enrichment: NetBox device-context resolver (Diag P2) [NO TAG]
+* [LOCKED] Batch 73 — diag-ingest-orchestrator: idempotent topology/rollup writer (Diag P2) [NO TAG]
+* [LOCKED] Batch 74 — digest-sink-central: `DigestSink` + `CentralSink` cognitive-layer write (Diag P2) [NO TAG]
+* [LOCKED] Batch 75 — diag-worker-task: `process_diag_bundle` RQ task (Diag P2) [NO TAG]
+* [LOCKED] Batch 76 — diag-mcp-handlers: diagnostics MCP handlers (Diag P2) [NO TAG]
+* [LOCKED] Batch 77 — diag-tool-registry: register diag tools + tool-count tests (Diag P2) [NO TAG]
+* [LOCKED] Batch 78 — crash-storm-atms: crash-storm → ATMS cascade (Diag P3) [NO TAG]
+* [LOCKED] Batch 79 — causal-root-cause-tool: `diag_root_cause` do-calculus tool (Diag P3) [NO TAG]
+* [LOCKED] Batch 80 — source-adapter-base: pluggable source-adapter contract (Diag P4) [NO TAG]
+* [LOCKED] Batch 81 — diag-cron-puller: per-namespace adapter pull tick (Diag P4) [NO TAG]
+* [LOCKED] Batch 82 — diag-metrics: diagnostics metric set (Diag hardening) [NO TAG]
+* [LOCKED] Batch 83 — worker-hardening: quota + concurrency cap + metrics + temp sweep (Diag hardening) [NO TAG]
+* [LOCKED] Batch 84 — landing-gc: orphan landing-object reaper — closes central-first release (Diag hardening) [NO TAG]
+* [LOCKED] Batch 85 — edge-role-config: edge role/mode config (Diag P5) [NO TAG]
+* [LOCKED] Batch 86 — embedding-parity-guard: edge↔enterprise embedding parity + fallback kill (Diag P5) [NO TAG]
+* [LOCKED] Batch 87 — fdw-federation: read-only FDW to enterprise `kg_nodes`/`kg_edges` (Diag P5) [NO TAG]
+* [LOCKED] Batch 88 — edge-reconcile-labels: FDW entity reconciliation (Diag P5) [NO TAG]
+* [LOCKED] Batch 89 — edge-sink: `EdgeSink` zero-copy `GraphMutationPayload` (Diag P5) [NO TAG]
+* [LOCKED] Batch 90 — outbound-spool: durable store-and-forward sender (Diag P5) [NO TAG]
+* [LOCKED] Batch 91 — ingest-digest-endpoint: mTLS/JWT `POST /ingest/digest` merge endpoint (Diag P5) [NO TAG]
+* [LOCKED] Batch 92 — edge-offline-autonomy: autonomous offline mode + resync (Diag P5b) [NO TAG]
+* [LOCKED] Batch 93 — packaging-windows: Windows `.exe` installer + services (Diag P6) [NO TAG]
+* [LOCKED] Batch 94 — packaging-macos: macOS `.dmg` + launchd (Diag P6) [NO TAG]
+* [LOCKED] Batch 95 — packaging-debian: Debian/Ubuntu `.deb` + systemd (Diag P6) [NO TAG]
+* [LOCKED] Batch 96 — packaging-proxmox: Proxmox LXC/VM appliance (Diag P6) [NO TAG]
+* [LOCKED] Batch 97 — release-ci: tagged installer release workflow (Diag P6) [NO TAG]
+* [LOCKED] Batch 98 — standalone-guide: standalone user guide doc (Diag docs) [NO TAG]
+
+### Architectural audit remediation (2026-06-11; prompts in `Batch_99..105_prompt.md`)
+> Next free sequence after the Diagnostic Log Digestion Engine roadmap (65–98). READY, not dependency-blocked; kept `[LOCKED]` only so `generate_diff.py` (which auto-picks `[RUNNING]`) does not grab them while Batches 53/58 are mid-flight. Each takes its own clean branch + commit.
+* [LOCKED] Batch 99 — chrono-nesting-guard: reject nested `branch_timeline` (audit Domain 4) [NO TAG] — *code pre-applied to working tree; gate green (ruff+mypy clean, 8/8 `test_chrono.py`); needs clean-branch commit + TAG*
+* [LOCKED] Batch 100 — governance-last-known-good: kill fail-open governance on Redis outage (audit Domain 1) [NO TAG]
+* [LOCKED] Batch 101 — atms-iterative-traversal: remove unbounded ATMS recursion (audit Domain 4) [NO TAG]
+* [LOCKED] Batch 102 — health-probe-signature-verify: verify event signatures, not just Merkle chain (audit Domain 2) [NO TAG]
+* [LOCKED] Batch 103 — docalculus-truncation-report: report `truncated_targets` vs silent max-depth drop (audit Domain 4) [NO TAG]
+* [LOCKED] Batch 104 — reembed-vram-guard: wire the orphaned VRAM metric into a back-pressure guard (audit Domain 3) [NO TAG]
+* [LOCKED] Batch 105 — gc-cascade-age-grace: PG cascade respects `GC_ORPHAN_AGE_SECONDS` (audit Domain 2) [NO TAG]
+> Collision-resolved into existing open prompts (no new batch): topology_graph `FORCE ROW LEVEL SECURITY` (audit Domain 5 / D1) folded into **Batch 67** step 4; streaming <50MB ingestion is already **Batch 71**; `nce_gc` least-privilege was **Batch 56** (done). Dropped as false-positive: `replay_runs` already has `FORCE` + source-scoped policy.
 
 ---
 
@@ -410,5 +455,126 @@
 * **Identified System Flaws:** None.
 * **Defensive Refactoring Correction Blueprint:** None.
 * **Kaizen:** Add `config_reset`/`config_reload` to `EventType`/`VALID_EVENT_TYPES` in a future batch so the reset branch of the fold becomes reachable once those events are emitted.
+
+---
+
+## Pending Audit-Remediation Batch Prompts (99–105)
+
+> Full prompts for the architectural-audit remediation batches. Source-of-truth copies also live in `Batch_99..105_prompt.md` at repo root. These are READY (not dependency-blocked); the State Registry rows are `[LOCKED]` only so `generate_diff.py` does not auto-pick them while Batches 53/58 are mid-flight. Each takes its own clean branch + commit.
+
+### Shared operating rules (apply to every batch below)
+1. One batch = one branch = one commit (`batch-NN-shortname`). Never combine batches.
+2. Verify before you act: open each target file and confirm the cited symbol exists. Line numbers are approximate (`~`) — trust the symbol, not the number. On any mismatch, STOP and report — do not invent a fix or create a new file.
+3. Modify only the files listed. No new modules/classes/deps/abstractions unless marked **new**. If you think you need one, STOP and report.
+4. Minimal diff; reuse existing utilities (`scoped_pg_session`, `unmanaged_pg_connection`, `append_event`, `acquire_cron_lock`, `_jsonrpc_error_response`, `_safe_counter`/`_safe_gauge`, the typed-env `_int_env`/`_float_env` helpers). Match surrounding style.
+5. Acceptance gate (all green before commit): `make lint`; `make typecheck`; the named test; any touched tests; if MCP tool counts changed, update `tests/test_tool_registry.py` exact-count asserts in THIS batch.
+6. New migrations → `nce/migrations/` next free number (current max 018); mirror into `nce/schema.sql`; never edit an existing migration.
+7. WORM/RLS: tenant SQL inside `scoped_pg_session`; `append_event` in the same txn as its write; never UPDATE/DELETE `event_log`; no raw content/PII in `event_log.params`.
+8. `NCE_MASTER_KEY` is env-only — never read/write it via DB/settings/endpoint.
+9. DB-dependent tests are `@pytest.mark.integration` (run via `pytest -m integration` against `make local-up`); pure-unit batches must not need Docker.
+10. Report: files changed, gate output, anything you STOPped on.
+
+### Shared closing protocol (per batch)
+When steps are done: STOP. Run `_internal\tools\generate_diff.py` (flips the row `[NO TAG]→[WAITING TAG]` and writes `diff_batch_NN.md`). When it reports `[SUCCESS]`, run `_internal\tools\trigger_tag_audit.py`. Open a PR `Batch NN — <name>`, paste the gate output, wait for review. If the gate fails and you cannot fix it in-scope, STOP and report — do not widen scope or start the next batch.
+
+---
+
+#### Batch 99 — chrono-nesting-guard
+* **Skills:** `python-pro` (primary), `clean-code`
+* **Depends on:** none
+* **Files:** `nce/causal/chrono.py` (`branch_timeline` ~`:28`, `chrono_branch_var` ~`:24`); `tests/unit/test_chrono.py` (`TestChronoContextManager` ~`:50`)
+* **Goal:** Reject nested `branch_timeline` counterfactual scopes (audit Domain 4). A second `branch_timeline` opened inside an active one silently shadows the outer branch via `ContextVar.set`, then `reset`s back to the *inner* branch on exit — corrupting the outer scope. Fail loudly instead.
+* **Steps:**
+  1. Confirm `branch_timeline` is a `@contextmanager` doing `token = chrono_branch_var.set({...})` / `chrono_branch_var.reset(token)`, and `get_active_branch()` returns `chrono_branch_var.get()`. Else STOP.
+  2. At the top of `branch_timeline` (before `parse_as_of`), raise `RuntimeError` if `chrono_branch_var.get() is not None`, message naming the constraint. Document in docstring.
+  3. Confirm no production caller nests (grep `branch_timeline` in `nce/`): `correlation.py` only reads via `get_active_branch()`. If a nested production usage exists, STOP.
+* **Acceptance:** add `test_nested_branch_timeline_is_rejected` (`pytest.raises(RuntimeError)` on inner `with`; outer branch survives) + `test_sequential_branches_after_exit_are_allowed`. Pure-unit. `make lint && make typecheck && pytest tests/unit/test_chrono.py` clean.
+* **NOTE:** code pre-applied to the working tree during the audit (gate already green: ruff+mypy clean, 8/8 `test_chrono.py`). This batch routes that change through the TAG pipeline on a clean branch — verify the working-tree diff matches the Steps.
+
+#### Batch 100 — governance-last-known-good
+* **Skills:** `backend-architect` (primary), `python-pro`, `security-auditor`
+* **Depends on:** none
+* **Files:** **new** `nce/tool_governance.py`; `nce/mcp_stdio_dispatch.py` (`nce:tools:disabled` `hexists` check ~`:74-83`); `nce/a2a_server.py` (A2A skill disable check ~`:604-613`); `nce/config.py` (typed-env knobs); `nce/observability.py` (`_safe_counter`); **new** `tests/test_tool_governance.py`
+* **Goal:** Replace the fail-OPEN governance check (audit Domain 1) with a **last-known-good interceptor**: high availability without silently un-revoking an admin-disabled tool/skill on a Redis blip. Today both surfaces do `except Exception: log.warning("defaulting to enabled")` — a revoked skill runs during a Redis outage. The HMAC nonce store already fails *closed*; align governance with it.
+* **Steps:**
+  1. Confirm the current fail-open shape on both surfaces. Else STOP.
+  2. Config knobs: `NCE_TOOL_GOVERNANCE_STALE_OK_SEC` (`_int_env`, 30, min 1), `NCE_TOOL_GOVERNANCE_STALE_HARD_SEC` (`_int_env`, 300, min 1).
+  3. **new** `nce/tool_governance.py`: process-local `ToolGovernanceCache` holding `frozenset[str]` + a `time.monotonic()` timestamp. `is_disabled(redis, name)`: serve snapshot while age < STALE_OK, else refresh via `hkeys`. On Redis error: serve snapshot until age > STALE_HARD, then raise `GovernanceUnavailable` (fail-closed). Increment `_safe_counter` `nce_tool_governance_degraded_total` on hard-stale.
+  4. Wire both surfaces: positive `is_disabled` → existing strict scope error (`-32005` stdio / `A2AScopeViolationError`→`-32011` A2A); `GovernanceUnavailable` → `-32005` / `A2AScopeViolationError` with "governance registry unavailable" — never `-32603`, never an internal frame.
+  5. One module-singleton cache shared by both surfaces.
+* **Acceptance:** `tests/test_tool_governance.py` (pure-unit, mocked Redis): disabled→blocked; Redis error within STALE_OK→snapshot still enforced; past STALE_HARD→`GovernanceUnavailable` + counter++; re-enable propagates within STALE_OK. Touched: `tests/test_tools_administration.py`, `tests/test_dispatch_error_envelopes.py`, `tests/test_a2a_hardening.py`.
+
+#### Batch 101 — atms-iterative-traversal
+* **Skills:** `python-pro` (primary), `clean-code`, `debugger`
+* **Depends on:** none
+* **Files:** `nce/atms.py` (`is_node_provably_valid` ~`:113`, `propagate_deprecation` ~`:199`, `evaluate_belief_states` ~`:235`); **new** `tests/test_atms_recursion.py`
+* **Goal:** Remove unbounded Python call-stack recursion in ATMS (audit Domain 4, HIGH). Deep justification chains (≳1000 nodes) overflow the C stack and crash the worker. Convert both functions to explicit-stack iterative traversal, preserving exact cycle-guard + memoization semantics (behavior-PRESERVING: identical `set[str]` for identical inputs).
+* **Steps:**
+  1. Confirm the documented semantics (PREMISE→True, ASSUMPTION→`is_valid`, cycle→False, memo only when `active_path` empty; `propagate_deprecation` mutates `is_valid=False`, tracks `visited`, recurses into newly-unprovable DERIVED children). Else STOP.
+  2. Rewrite `is_node_provably_valid` iteratively (post-order / explicit stack); same signature, same truth values incl. cyclic→False and memo reuse.
+  3. Rewrite `propagate_deprecation` iteratively (worklist + `visited`); return the same flipped-to-False set; do not change which nodes invalidate.
+  4. Guarantee no Python recursion remains in either function (independent of `sys.setrecursionlimit`).
+* **Acceptance:** `tests/test_atms_recursion.py` (pure-unit): 5,000-node linear chain cascades with no `RecursionError`; cyclic set reported invalid (no infinite loop); small graph yields byte-identical cascade vs. contract. Touched: `tests/test_contradiction_detection.py`.
+
+#### Batch 102 — health-probe-signature-verify
+* **Skills:** `security-auditor` (primary), `python-pro`, `observability-engineer`
+* **Depends on:** none
+* **Files:** `nce/orchestrator.py` (`check_health` Merkle-sampling block ~`:789-830`); `nce/observability.py` (gauge mirroring `MERKLE_CHAIN_VALID`); `tests/test_health_probes.py`
+* **Goal:** Close the audit Domain-2 gap: the hourly probe verifies the Merkle *chain* (`verify_merkle_chain`) but never event *signatures* (`verify_event_signature`) — an attacker who rewrites the `signature` column passes the chain check. Add a bounded signature-sampling pass to the same probe.
+* **Steps:**
+  1. Confirm `check_health` samples ~5 namespaces calling `verify_merkle_chain` + sets `MERKLE_CHAIN_VALID`, and `event_log.verify_event_signature` exists (~`:1120`). Else STOP.
+  2. In the same loop, verify signatures of a bounded recent-event sample per namespace (reuse the existing bound — no full-partition scan). Aggregate into a new gauge `nce_event_signature_valid` (1/0); downgrade health to `degraded` on failure exactly as the Merkle path does.
+  3. On failure: log critical + reuse the SAME failure audit event/dispatcher the Merkle path uses (do not invent a new event type without confirming `event_types.py`).
+* **Acceptance:** `tests/test_health_probes.py` gains a tampered-signature case (health degrades + `nce_event_signature_valid == 0`) + a positive pass.
+
+#### Batch 103 — docalculus-truncation-report
+* **Skills:** `python-pro` (primary), `clean-code`
+* **Depends on:** none
+* **Files:** `nce/causal/correlation.py` (`DoCalculusEngine.evaluate` ~`:713`, `find_all_causal_paths(..., max_depth=10)` / `if not paths: continue` ~`:786-808`, `InterventionResult` dataclass ~`:203`); `tests/test_correlation_propagation.py`
+* **Goal:** Stop silent truncation in do-calculus (audit Domain 4). A node reachable per `impacted_by()` but whose every path exceeds `max_path_depth` is silently dropped from `probability_matrix`, making a real distant impact look like zero. Report them.
+* **Steps:**
+  1. Confirm `evaluate` builds `impacted_in_mutilated`, then per target calls `find_all_causal_paths(..., max_depth=max_path_depth)` with `if not paths: continue`; confirm `InterventionResult` is a dataclass. Else STOP.
+  2. Add `truncated_targets: list[str] = field(default_factory=list)` to `InterventionResult`.
+  3. In the `if not paths:` branch, append the target (sorted, deduped) instead of silently continuing. Do NOT fabricate a probability — distinct from a computed `0.0`.
+  4. Populate the field in construction; the additive default keeps existing consumers (`circuits.py`, `evaluate_intervention` callers) unaffected — fix any positional `InterventionResult(...)` in-scope.
+* **Acceptance:** `tests/test_correlation_propagation.py` gains a >max-depth chain proving the distant target lands in `truncated_targets` (not as `0.0`), plus a within-depth regression. Touched: `tests/unit/test_chrono.py`, `tests/unit/test_netbox_circuits.py`.
+
+#### Batch 104 — reembed-vram-guard
+* **Skills:** `mlops-engineer` (primary), `performance-engineer`, `python-pro`
+* **Depends on:** none
+* **Files:** `nce/reembedding_worker.py` (`ReembeddingWorker._embed` ~`:369-408`, `run_once`); `nce/config.py` (typed-env knobs); `tests/test_reembedding_worker.py`
+* **Goal:** Wire the ALREADY-DEFINED but orphaned VRAM metric (`nce_reembedder_vram_allocated_bytes`, `observability.py` ~`:165`) into a real back-pressure guard (audit Domain 3, CRITICAL). Today `_embed` calls `embed_batch` with no VRAM check; a large batch OOMs → job dies → retries → DLQ, and the metric is never emitted by the live worker. Pause, don't poison.
+* **Steps:**
+  1. Confirm `_embed` returns `await _embeddings.embed_batch(texts)` with no VRAM check, and the three `REEMBEDDER_VRAM_*` gauges exist but are only recorded in the deprecated `re_embedder.py` stub. Else STOP.
+  2. Config: `NCE_REEMBED_VRAM_HIGH_WATERMARK` (`_float_env`, 0.85, 0.1–0.99), `NCE_REEMBED_VRAM_MAX_PRESSURE_WAITS` (`_int_env`, 12, min 0).
+  3. `_vram_pressure_gate(self)`: if `torch.cuda.is_available()`, read `memory_allocated()/total_memory`, emit the gauges (labelled `worker_id`); if ≥ watermark → `empty_cache()` + `await asyncio.sleep` + retry up to MAX_PRESSURE_WAITS; still saturated → raise typed `VRAMPressureError`. No-op when CUDA absent. Call before each batch in `_embed`.
+  4. In `run_once`, catch `VRAMPressureError` and exit the tick cleanly (keyset cursor resumes next cron tick) — not a crash/DLQ. Warn.
+* **Acceptance:** `tests/test_reembedding_worker.py` (pure-unit, mocked `torch`+gauges): below watermark → embeds + emits gauge; saturated forever → `VRAMPressureError` after MAX_PRESSURE_WAITS and `run_once` yields cleanly (no DLQ); CUDA absent → no-op.
+
+#### Batch 105 — gc-cascade-age-grace
+* **Skills:** `database-optimizer` (primary), `python-pro`
+* **Depends on:** Batch 58 (both touch `garbage_collector.py` — branch off after 58 lands)
+* **Files:** `nce/garbage_collector.py` (Postgres cascade cleanup CTE ~`:225-336`); `tests/test_garbage_collector.py`
+* **Goal:** Add an age grace period to the PG cascade cleanup (audit Domain 2). Mongo/MinIO sweeps filter by `GC_ORPHAN_AGE_SECONDS`, but the PG cascade (`memory_salience`, `contradictions`) reaps orphans the instant a `memory_id` disappears — so an operator-deleted memory can immediately reap still-fresh dependents a late/concurrent writer may reference. Make the cascade respect the same window.
+* **Steps:**
+  1. Confirm the cascade CTE deletes orphans with NO temporal filter while Mongo/MinIO use `cutoff = now() - GC_ORPHAN_AGE_SECONDS`. Else STOP.
+  2. Add the same cutoff to cascade predicates (`memory_salience.updated_at < cutoff`, `contradictions.created_at < cutoff`). Verify those columns exist in `schema.sql`; if a table lacks a usable timestamp, STOP and report.
+  3. Keep batch size, chunking, `asyncio.sleep` yields, per-namespace RLS scoping unchanged — predicate-only change.
+* **Acceptance:** `tests/test_garbage_collector.py` (`@pytest.mark.integration`): fresh orphan SURVIVES a GC pass; backdated beyond `GC_ORPHAN_AGE_SECONDS` is reaped. Run `pytest -m integration tests/test_garbage_collector.py` against `make local-up`.
+
+#### Collision-resolved into existing open prompts (no new batch)
+* topology_graph `FORCE ROW LEVEL SECURITY` (audit Domain 5 / D1) → folded into **Batch 67** step 4 (`Batch_67_prompt.md`).
+* Streaming <50MB ingestion (audit Domain 3) → already **Batch 71** (stream-reduce).
+* `nce_gc` least-privilege → **Batch 56** (done).
+* Dropped as false-positive: `replay_runs` already has `FORCE` + a source-scoped policy (`schema.sql:644`).
+
+### TAG Batch 46 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified on-disk against `diff_batch_46.md` for all 10 in-scope files: `nce/envelope.py` (`encrypt_raw_data`/`maybe_decrypt_raw_data`), `nce/config.py` (`NCE_ENVELOPE_ENCRYPTION_ENABLED` default False), `nce/orchestrators/memory.py` (write encrypt + persist `wrapped_dek`/`dek_key_id`; `recall_recent`/`verify_memory`/`unredact_memory` decrypt), `nce/mongo_bulk.py` (ciphertext-preserving fetch), `nce/semantic_search.py`, `nce/graph_query.py` (`_hydrate_sources`), `nce/orchestrators/temporal.py`, `nce/snapshot_mcp_handlers.py` (export hex BYTEA / import decrypt), `nce/replay.py` (both INSERTs carry wrapped_dek), `tests/test_envelope_encryption_integration.py`. No out-of-scope files; migration 018 columns pre-exist (Batch 45).
+* **Structural Integrity:** Write path encrypts only when the flag is on (legacy shape preserved). Crypto reuse confirmed — `envelope.py` delegates to `signing.py` AES-256-GCM; `NCE_MASTER_KEY` reached only via `require_master_key` (env-only). Read-path coverage complete for the flag-gated set (recall/verify/unredact/semantic_search/graph hydrate/temporal preview/snapshot import all route through `maybe_decrypt_raw_data`). Back-compat verified: returns plaintext when `wrapped_dek` falsy or payload lacks `TCDEK\x01` prefix. Replay/digest sound: target copies source ciphertext + wrapped_dek → decrypts under the global master key; `state_digest` hashes identical ciphertext both sides so equality holds. Never UPDATE/DELETE `event_log`; write SQL in `scoped_pg_session`.
+* **Contractual Test Fidelity:** No Trivial Test Trap. Asserts Mongo `raw_data` is bytes with `TCDEK\x01` prefix AND plaintext sentinel ABSENT, `wrapped_dek`/`dek_key_id` set, `recall_recent` + `semantic_search` return decrypted plaintext; legacy NULL-wrapped_dek reads as plaintext. `2 passed` (live stack); regression `25 passed, 6 skipped`; mypy 132 (below baseline).
+* **Identified System Flaws:** None blocking. Documented residual-reader gap (safe while flag defaults OFF, MUST be covered before enabling in prod): `nce/re_embedder.py`, `nce/reembedding_worker.py`, `nce/consolidation.py`, `nce/contradictions.py` read `raw_data` without `maybe_decrypt_raw_data`; `state_digest.py` hashes ciphertext (benign for replay equality).
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** Before flipping `NCE_ENVELOPE_ENCRYPTION_ENABLED` on, add a follow-up batch routing re_embedder / reembedding_worker / consolidation / contradictions through `maybe_decrypt_raw_data` (the enumerated decryption blind-spots the default-OFF flag currently masks).
 
 [EOF: END OF REFACTORING LEDGER]

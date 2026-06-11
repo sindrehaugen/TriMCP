@@ -34,9 +34,7 @@ def normalize_payload_ref(payload_ref: str | ObjectId | None) -> str | None:
     return str(payload_ref)
 
 
-def _normalize_and_validate_refs(
-    refs: Iterable[str | ObjectId | None]
-) -> list[ObjectId]:
+def _normalize_and_validate_refs(refs: Iterable[str | ObjectId | None]) -> list[ObjectId]:
     """Deduplicate, normalize, and validate a sequence of payload refs.
 
     Raises ValueError if the number of unique refs exceeds _MAX_REFS.
@@ -73,7 +71,16 @@ async def _fetch_field_by_refs(
     refs: Iterable[str | ObjectId | None],
     *,
     field: str,
+    decode_bytes: bool = True,
 ) -> dict[str, str]:
+    """Map episode/code ``_id`` (str) → *field* value.
+
+    By default the value is coerced to ``str`` (legacy behaviour).  Pass
+    ``decode_bytes=False`` to preserve a ``bytes`` payload verbatim — required
+    by callers that must hand DEK-encrypted ciphertext (Part II.4) to
+    :func:`nce.envelope.maybe_decrypt_raw_data` without corrupting it via
+    ``str(bytes)``.
+    """
     if field not in _ALLOWED_FIELDS:
         raise ValueError(f"field {field!r} is not allowed. Allowed: {sorted(_ALLOWED_FIELDS)}")
 
@@ -93,8 +100,15 @@ async def _fetch_field_by_refs(
             )
             async for doc in cursor:
                 rid = normalize_payload_ref(doc.get("_id"))
+                if not rid:
+                    continue
                 raw = doc.get(field)
-                out[rid] = "" if raw is None else str(raw)
+                if raw is None:
+                    out[rid] = ""
+                elif isinstance(raw, (bytes, bytearray, memoryview)) and not decode_bytes:
+                    out[rid] = bytes(raw)  # type: ignore[assignment]
+                else:
+                    out[rid] = raw if isinstance(raw, str) else str(raw)
         except Exception as exc:
             log.error(
                 "Batch Mongo hydrate failed batch=%d/%d (%s): %s",
@@ -112,9 +126,14 @@ async def fetch_episodes_raw_by_ref(
     refs: Iterable[str | ObjectId | None],
     *,
     field: str = "raw_data",
+    decode_bytes: bool = True,
 ) -> dict[str, str]:
-    """Map episode ``_id`` (str) → ``raw_data`` (or *field*) text."""
-    return await _fetch_field_by_refs(db.episodes, refs, field=field)
+    """Map episode ``_id`` (str) → ``raw_data`` (or *field*) text.
+
+    ``decode_bytes=False`` preserves a ``bytes`` ciphertext payload so callers
+    can decrypt it (Part II.4); see :func:`_fetch_field_by_refs`.
+    """
+    return await _fetch_field_by_refs(db.episodes, refs, field=field, decode_bytes=decode_bytes)
 
 
 async def fetch_episode_previews_by_ref(

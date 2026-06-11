@@ -50,6 +50,7 @@ from nce.signing import (
     SigningError,
     decrypt_signing_key,
     encrypt_signing_key,
+    require_master_key,
 )
 
 # ---------------------------------------------------------------------------
@@ -192,3 +193,76 @@ def decrypt_with_dek(blob: bytes, dek: bytes) -> bytes:
             "has been corrupted (or the DEK was destroyed — content is "
             "cryptographically unrecoverable)."
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# High-level helpers — orchestrate DEK + master-key + back-compat for callers
+# ---------------------------------------------------------------------------
+#
+# These wrap the primitives above so the write path and every read path share
+# one implementation of "encrypt the raw payload" / "decrypt it transparently,
+# tolerating legacy plaintext rows".  Read paths must hydrate raw content
+# through :func:`maybe_decrypt_raw_data` so that:
+#   * a row with a wrapped DEK → its ciphertext is unwrapped + decrypted, and
+#   * a legacy row (``wrapped_dek IS NULL``) → its plaintext is returned as-is.
+
+
+def encrypt_raw_data(plaintext: str) -> tuple[bytes, bytes, str]:
+    """Encrypt a raw-content *plaintext* under a fresh per-memory DEK.
+
+    Reuses the envelope primitives: generates a DEK, AES-256-GCM-encrypts the
+    UTF-8 payload under it, and wraps the DEK under the environment master key.
+
+    Returns ``(ciphertext, wrapped_dek, dek_key_id)`` — ``ciphertext`` goes into
+    Mongo ``episodes.raw_data``; ``wrapped_dek`` + ``dek_key_id`` go onto the
+    ``memories`` row.  ``NCE_MASTER_KEY`` is reached only via
+    :func:`nce.signing.require_master_key` (env-only).
+    """
+    dek = generate_dek()
+    try:
+        ciphertext = encrypt_with_dek(plaintext.encode("utf-8"), dek)
+        with require_master_key() as master_key:
+            wrapped = wrap_dek(dek, master_key)
+    finally:
+        # Zero the transient plaintext DEK the moment wrapping completes.
+        with SecureKeyBuffer(dek):
+            pass
+    return ciphertext, wrapped, new_dek_key_id()
+
+
+def maybe_decrypt_raw_data(raw_data: object, wrapped_dek: bytes | None) -> str:
+    """Return the plaintext raw content, decrypting only when encrypted.
+
+    Back-compat contract (legacy rows predate envelope encryption):
+      * ``wrapped_dek`` is ``None``/empty  → *raw_data* is plaintext; coerce to
+        ``str`` and return it unchanged.
+      * ``wrapped_dek`` is set            → *raw_data* is a DEK-encrypted blob;
+        unwrap the DEK under the master key and AES-256-GCM-decrypt it.
+
+    As a defensive fallback, if a ``wrapped_dek`` is present but *raw_data* is
+    not a recognised ciphertext blob (e.g. a half-migrated row), the value is
+    treated as plaintext rather than raising — so reads never hard-fail.
+
+    Raises :class:`~nce.signing.SigningKeyDecryptionError` if the wrapped DEK
+    cannot be unwrapped (wrong/destroyed master key) and
+    :class:`DEKDecryptionError` if the ciphertext fails authentication.
+    """
+    if not wrapped_dek:
+        if raw_data is None:
+            return ""
+        return raw_data if isinstance(raw_data, str) else str(raw_data)
+
+    blob = bytes(raw_data) if isinstance(raw_data, (bytes, bytearray, memoryview)) else raw_data
+    if not isinstance(blob, bytes) or not blob.startswith(_DEK_PAYLOAD_PREFIX):
+        # wrapped_dek set but payload isn't ciphertext — treat as plaintext.
+        if raw_data is None:
+            return ""
+        return raw_data if isinstance(raw_data, str) else str(raw_data)
+
+    with require_master_key() as master_key:
+        dek = unwrap_dek(bytes(wrapped_dek), master_key)
+    try:
+        return decrypt_with_dek(blob, dek).decode("utf-8")
+    finally:
+        with SecureKeyBuffer(dek):
+            pass

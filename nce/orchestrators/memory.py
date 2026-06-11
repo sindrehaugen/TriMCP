@@ -147,10 +147,14 @@ class MemoryOrchestrator(OrchestratorBase):
         target_model_ids,
         user_id,
         session_id,
+        wrapped_dek=None,
+        dek_key_id=None,
     ):
         """Insert memory row + memory_embeddings + PII vault (inside PG tx).
 
-        Returns the new memory_id (UUID).
+        Returns the new memory_id (UUID).  ``wrapped_dek``/``dek_key_id`` are the
+        envelope-encryption handles for the Mongo ``raw_data`` ciphertext (Part
+        II.4); both are NULL for legacy / unencrypted writes.
         """
         metadata = dict(payload.metadata) if payload.metadata else {}
         if (
@@ -161,8 +165,8 @@ class MemoryOrchestrator(OrchestratorBase):
 
         memory_id = await conn.fetchval(
             """
-            INSERT INTO memories (user_id, session_id, namespace_id, agent_id, embedding, content_fts, payload_ref, pii_redacted, assertion_type, memory_type, metadata)
-            VALUES ($1, $2, $3, $4, $5::vector, to_tsvector('english', $6), $7, $8, $9, $10, $11)
+            INSERT INTO memories (user_id, session_id, namespace_id, agent_id, embedding, content_fts, payload_ref, pii_redacted, assertion_type, memory_type, metadata, wrapped_dek, dek_key_id)
+            VALUES ($1, $2, $3, $4, $5::vector, to_tsvector('english', $6), $7, $8, $9, $10, $11, $12, $13)
             RETURNING id
             """,
             user_id,
@@ -176,6 +180,8 @@ class MemoryOrchestrator(OrchestratorBase):
             payload.assertion_type.value,
             payload.memory_type.value,
             json.dumps(metadata),
+            wrapped_dek,
+            dek_key_id,
         )
 
         for model_id in target_model_ids:
@@ -582,12 +588,28 @@ class MemoryOrchestrator(OrchestratorBase):
 
     async def _store_episodic_mongodb(
         self, payload: StoreMemoryRequest, sanitized_heavy: str, pii_result: Any
-    ) -> tuple[str, Any]:
-        """STEP 1: Episodic Commit (MongoDB)."""
+    ) -> tuple[str, Any, bytes | None, str | None]:
+        """STEP 1: Episodic Commit (MongoDB).
+
+        Part II.4 (Provable Forgetting): when ``NCE_ENVELOPE_ENCRYPTION_ENABLED``
+        is set, the raw payload (``raw_data``) is encrypted under a fresh
+        per-memory DEK before it touches Mongo, and the wrapped DEK + key id are
+        returned so they can be persisted on the ``memories`` row.  When the flag
+        is off, ``raw_data`` is stored as plaintext and ``(None, None)`` is
+        returned (the legacy / back-compatible shape).
+        """
         db = self.mongo_client.memory_archive
         collection = db.episodes
         user_id = payload.metadata.get("user_id") if payload.metadata else None
         session_id = payload.metadata.get("session_id") if payload.metadata else None
+
+        raw_data: Any = sanitized_heavy
+        wrapped_dek: bytes | None = None
+        dek_key_id: str | None = None
+        if cfg.NCE_ENVELOPE_ENCRYPTION_ENABLED:
+            from nce.envelope import encrypt_raw_data
+
+            raw_data, wrapped_dek, dek_key_id = encrypt_raw_data(sanitized_heavy)
 
         inserted_result = await collection.insert_one(
             {
@@ -595,7 +617,7 @@ class MemoryOrchestrator(OrchestratorBase):
                 "session_id": session_id,
                 "namespace_id": str(payload.namespace_id),
                 "type": payload.memory_type.value,
-                "raw_data": sanitized_heavy,
+                "raw_data": raw_data,
                 "metadata": payload.metadata,
                 "pii_redacted": pii_result.redacted,
                 "pii_entities_found": pii_result.entities_found,
@@ -604,7 +626,7 @@ class MemoryOrchestrator(OrchestratorBase):
         )
         inserted_mongo_id = str(inserted_result.inserted_id)
         log.debug("[Mongo] Inserted episode. id=%s", inserted_mongo_id)
-        return inserted_mongo_id, inserted_result
+        return inserted_mongo_id, inserted_result, wrapped_dek, dek_key_id
 
     async def _store_semantic_graph_pg(
         self,
@@ -619,6 +641,8 @@ class MemoryOrchestrator(OrchestratorBase):
         saga_id: str,
         user_id: str | None,
         session_id: str | None,
+        wrapped_dek: bytes | None = None,
+        dek_key_id: str | None = None,
     ) -> UUID:
         """STEP 2 + 2b + 2c: Atomic Semantic + Graph Commit (single PG transaction)."""
         async with scoped_pg_session(self.pg_pool, payload.namespace_id) as conn:
@@ -639,6 +663,8 @@ class MemoryOrchestrator(OrchestratorBase):
                     target_model_ids=target_model_ids,
                     user_id=user_id,
                     session_id=session_id,
+                    wrapped_dek=wrapped_dek,
+                    dek_key_id=dek_key_id,
                 )
 
                 await self._insert_graph_nodes_and_edges(
@@ -748,9 +774,12 @@ class MemoryOrchestrator(OrchestratorBase):
                 user_id = payload.metadata.get("user_id") if payload.metadata else None
                 session_id = payload.metadata.get("session_id") if payload.metadata else None
 
-                inserted_mongo_id, inserted_result = await self._store_episodic_mongodb(
-                    payload, sanitized_heavy, pii_result
-                )
+                (
+                    inserted_mongo_id,
+                    inserted_result,
+                    wrapped_dek,
+                    dek_key_id,
+                ) = await self._store_episodic_mongodb(payload, sanitized_heavy, pii_result)
 
                 # Pre-compute all embeddings OUTSIDE the PG transaction
                 all_texts = [sanitized_summary] + [e.label for e in entities]
@@ -771,6 +800,8 @@ class MemoryOrchestrator(OrchestratorBase):
                     saga_id=saga_id,
                     user_id=user_id,
                     session_id=session_id,
+                    wrapped_dek=wrapped_dek,
+                    dek_key_id=dek_key_id,
                 )
 
                 # Mark committed once exited from PG session block successfully
@@ -1030,7 +1061,16 @@ class MemoryOrchestrator(OrchestratorBase):
                 db = self.mongo_client.memory_archive
                 doc = await db.episodes.find_one({"_id": row["payload_ref"]})
                 if doc:
-                    content = doc.get("raw_data", "")
+                    # Part II.4: hash the *decrypted* content so the payload hash is
+                    # stable across the plaintext→ciphertext rollout (legacy rows
+                    # have wrapped_dek NULL and read as plaintext).
+                    from nce.envelope import maybe_decrypt_raw_data
+
+                    wrapped = row["wrapped_dek"]
+                    content = maybe_decrypt_raw_data(
+                        doc.get("raw_data", ""),
+                        bytes(wrapped) if wrapped is not None else None,
+                    )
                     payload_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
                     try:
                         await self.redis_client.setex(cache_key, cfg.REDIS_TTL, payload_hash)
@@ -1069,7 +1109,7 @@ class MemoryOrchestrator(OrchestratorBase):
                 )
 
             mem_row = await conn.fetchrow(
-                "SELECT payload_ref, pii_redacted FROM memories WHERE id = $1",
+                "SELECT payload_ref, pii_redacted, wrapped_dek FROM memories WHERE id = $1",
                 memory_id,
             )
             if not mem_row:
@@ -1085,6 +1125,7 @@ class MemoryOrchestrator(OrchestratorBase):
                 return {"status": "no_vault_entries"}
 
             payload_ref = mem_row["payload_ref"]
+            wrapped_dek = mem_row["wrapped_dek"]
             vault_list = [
                 {"token": r["token"], "encrypted_value": r["encrypted_value"]} for r in vault_rows
             ]
@@ -1095,9 +1136,16 @@ class MemoryOrchestrator(OrchestratorBase):
         if not doc:
             raise ValueError("MongoDB payload missing.")
 
-        raw_data = doc.get("raw_data", "")
-        if not isinstance(raw_data, str):
+        # Part II.4: decrypt the raw payload under its wrapped DEK; legacy rows
+        # (wrapped_dek NULL) read as plaintext.
+        from nce.envelope import maybe_decrypt_raw_data
+
+        stored_raw = doc.get("raw_data", "")
+        if not wrapped_dek and not isinstance(stored_raw, str):
             return {"status": "raw_data_not_string"}
+        raw_data = maybe_decrypt_raw_data(
+            stored_raw, bytes(wrapped_dek) if wrapped_dek is not None else None
+        )
 
         with require_master_key() as mk:
             for v_row in vault_list:
@@ -1214,7 +1262,7 @@ class MemoryOrchestrator(OrchestratorBase):
                 order_by = "created_at DESC"
 
             sql = f"""
-                SELECT payload_ref FROM memories
+                SELECT payload_ref, wrapped_dek FROM memories
                 WHERE {" AND ".join(filters)}
                 ORDER BY {order_by} LIMIT ${p_idx} OFFSET ${p_idx + 1}
             """
@@ -1224,16 +1272,24 @@ class MemoryOrchestrator(OrchestratorBase):
         if not rows:
             return []
 
+        from nce.envelope import maybe_decrypt_raw_data
+
         db = self.mongo_client.memory_archive
         keys = [normalize_payload_ref(r["payload_ref"]) for r in rows]
-        raw_by_ref = await fetch_episodes_raw_by_ref(db, keys)
+        # Part II.4: hydrate raw_data and transparently decrypt rows that carry a
+        # wrapped DEK; legacy rows (wrapped_dek NULL) read as plaintext.
+        raw_by_ref = await fetch_episodes_raw_by_ref(db, keys, decode_bytes=False)
 
         results = []
         for row in rows:
             key = normalize_payload_ref(row["payload_ref"])
-            txt = raw_by_ref.get(key, "")
+            raw = raw_by_ref.get(key)
+            if raw is None:
+                continue
+            wrapped = row["wrapped_dek"]
+            txt = maybe_decrypt_raw_data(raw, bytes(wrapped) if wrapped is not None else None)
             if txt:
-                results.append(str(txt))
+                results.append(txt)
 
         if not as_of and limit == 1 and offset == 0 and results:
             if user_id and session_id:
