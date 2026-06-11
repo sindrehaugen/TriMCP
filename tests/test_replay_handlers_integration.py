@@ -884,6 +884,8 @@ async def test_reconstructive_replay_digest_match(pg_pool, make_namespace, monke
     src_payload_ref = str(src_oid)
     mongo_client = AsyncIOMotorClient(os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017"))
     db = mongo_client.memory_archive
+    # Resilient clean up before insertion to prevent E11000 duplicate key error
+    await db.episodes.delete_many({"_id": {"$in": [src_oid, ObjectId("000000000000000000000002")]}})
     await db.episodes.insert_many(
         [
             {

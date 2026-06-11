@@ -222,6 +222,7 @@ class TestNetBoxCircuitEscalator:
         mock_redis = MagicMock()
 
         mock_conn = AsyncMock()
+        mock_conn.fetchrow = AsyncMock(return_value=None)
         mock_scoped_session = MagicMock()
         mock_scoped_session.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_scoped_session.__aexit__ = AsyncMock()

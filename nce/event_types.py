@@ -58,6 +58,7 @@ EventType = Literal[
     "chain_verification_failed",
     "atms_cascade",
     "config_changed",
+    "d365_sla_breach",
 ]
 
 VALID_EVENT_TYPES: Final[frozenset[str]] = frozenset(get_args(EventType))
@@ -70,6 +71,15 @@ VALID_EVENT_TYPES: Final[frozenset[str]] = frozenset(get_args(EventType))
 # -----------------------------------------------------------------------------
 
 EVENT_REQUIRED_PARAM_KEYS: Final[dict[str, frozenset[str]]] = {
+    "d365_sla_breach": frozenset(
+        {
+            "incident_id",
+            "breach_type",
+            "account_name",
+            "memory_id",
+            "mongo_id",
+        }
+    ),
     "store_memory": frozenset(
         {
             "saga_id",

@@ -53,6 +53,7 @@ def run_async(coro):
             new_loop.close()
     else:
         import threading
+
         res = []
         err = []
 
@@ -74,7 +75,6 @@ def run_async(coro):
         if err:
             raise err[0]
         return res[0]
-
 
 
 def _get_job_id() -> str:
@@ -224,9 +224,41 @@ def process_code_indexing(
             inserted_result = await collection.insert_one(doc)
             inserted_mongo_id = str(inserted_result.inserted_id)
 
-            # STEP 2: Batch-embed all AST chunks
+            # STEP 2: Batch-embed all AST chunks after PII sanitization
+            from nce.models import NamespacePIIConfig
+            from nce.pii import process as pii_process
+
+            pii_config = NamespacePIIConfig()
+            if namespace_id:
+                from unittest.mock import AsyncMock, Mock
+
+                if isinstance(engine.pg_pool, Mock):
+                    if isinstance(getattr(engine.pg_pool, "fetchrow", None), AsyncMock):
+                        ns_row = await engine.pg_pool.fetchrow(
+                            "SELECT metadata FROM namespaces WHERE id = $1::uuid", namespace_id
+                        )
+                    else:
+                        ns_row = None
+                else:
+                    ns_row = await engine.pg_pool.fetchrow(
+                        "SELECT metadata FROM namespaces WHERE id = $1::uuid", namespace_id
+                    )
+                if ns_row:
+                    meta = json.loads(ns_row["metadata"])
+                    if "pii" in meta:
+                        pii_config = NamespacePIIConfig(**meta["pii"])
+
             chunks = list(parse_file(raw_code, language))
-            texts = [f"{c.name}\n{c.code_string}" for c in chunks]
+            sanitized_chunks_code = []
+            chunk_vault_entries = []
+            chunk_redacted = []
+            for chunk in chunks:
+                pii_res = await pii_process(chunk.code_string, pii_config)
+                sanitized_chunks_code.append(pii_res.sanitized_text)
+                chunk_vault_entries.append(pii_res.vault_entries)
+                chunk_redacted.append(pii_res.redacted)
+
+            texts = [f"{c.name}\n{sc}" for c, sc in zip(chunks, sanitized_chunks_code)]
             vectors = await _embeddings.embed_batch(texts)
 
             # Use scoped session for RLS if namespace_id is provided
@@ -244,6 +276,7 @@ def process_code_indexing(
                         filepath,
                         user_id,
                     )
+                    import uuid
                     from uuid import UUID
 
                     ns_uuid = UUID(namespace_id) if namespace_id else None
@@ -254,15 +287,19 @@ def process_code_indexing(
                     ):
                         metadata["degraded_embedding"] = True
 
-                    for chunk, vector in zip(chunks, vectors):
+                    for chunk, sc, vector, vault, redacted in zip(
+                        chunks, sanitized_chunks_code, vectors, chunk_vault_entries, chunk_redacted
+                    ):
+                        memory_id = uuid.uuid4()
                         await conn.execute(
                             """
                             INSERT INTO memories
-                                (filepath, language, node_type, name, start_line, end_line,
-                                 file_hash, embedding, content_fts, payload_ref, user_id, namespace_id, memory_type, metadata)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, 
-                                    to_tsvector('english', $9 || ' ' || $10), $11, $12, $13, 'code_chunk', $14)
+                                (id, filepath, language, node_type, name, start_line, end_line,
+                                 file_hash, embedding, content_fts, payload_ref, user_id, namespace_id, memory_type, metadata, pii_redacted)
+                            VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::vector, 
+                                    to_tsvector('english', $10 || ' ' || $11), $12, $13, $14::uuid, 'code_chunk', $15, $16)
                             """,
+                            str(memory_id),
                             filepath,
                             language,
                             chunk.node_type,
@@ -272,12 +309,30 @@ def process_code_indexing(
                             file_hash,
                             json.dumps(vector),
                             chunk.name,
-                            chunk.code_string,
+                            sc,
                             inserted_mongo_id,
                             user_id,
                             ns_uuid,
                             json.dumps(metadata),
+                            redacted,
                         )
+                        if vault and ns_uuid:
+                            await conn.executemany(
+                                """
+                                INSERT INTO pii_redactions (namespace_id, memory_id, token, encrypted_value, entity_type)
+                                VALUES ($1, $2, $3, $4, $5)
+                                """,
+                                [
+                                    (
+                                        ns_uuid,
+                                        memory_id,
+                                        v["token"],
+                                        v["encrypted_value"],
+                                        v["entity_type"],
+                                    )
+                                    for v in vault
+                                ],
+                            )
 
             # STEP 3: Cache hash in Redis
             cache_key = get_code_index_cache_key(namespace_id, user_id, filepath)
@@ -431,7 +486,9 @@ def process_d365_event(payload: dict) -> dict:
 
     log.info(
         "[D365 Worker] entity_type=%s operation=%s job=%s",
-        entity_type, operation, job_id,
+        entity_type,
+        operation,
+        job_id,
     )
 
     try:
@@ -551,7 +608,11 @@ async def _dispatch_d365_event(
                 stats = await sync_engine.run_full_sync(entity_types=[f"{entity_type}s"])
             return {"status": "ok", "action": "sync_edges", "stats": stats}
 
-        log.info("[D365 Worker] Unhandled entity_type=%s operation=%s — no action", entity_type, operation)
+        log.info(
+            "[D365 Worker] Unhandled entity_type=%s operation=%s — no action",
+            entity_type,
+            operation,
+        )
         return {"status": "no_action", "entity_type": entity_type, "operation": operation}
 
     finally:

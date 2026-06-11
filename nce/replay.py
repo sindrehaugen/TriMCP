@@ -1076,6 +1076,7 @@ _additional_fork_provenance_types: tuple[str, ...] = (
     "chain_verification_failed",
     "atms_cascade",
     "config_changed",
+    "d365_sla_breach",
     # Part II.4: shred is destructive + content-free; fork projection records
     # provenance only (no content to re-apply).
     "memory_shredded",
