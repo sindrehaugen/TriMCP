@@ -64,7 +64,7 @@ jobs:
 
       - name: Open GitHub Issue if vulnerabilities found
         if: steps.pip_audit.outputs.audit_exit != '0'
-        uses: peter-evans/create-issue-from-file@v5
+        uses: peter-evans/create-issue-from-file@v6
         with:
           title: "🔐 Dependency Security Alert — ${{ github.run_id }}"
           content-filepath: /tmp/dep_report.md
