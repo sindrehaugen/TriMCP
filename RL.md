@@ -51,7 +51,7 @@
 * [DONE] Batch 41 — Accountable Federation: write `a2a_shared_query` + signed provenance (II.6) [PASSED TAG]
 * [DONE] Batch 42 — A2A security hardening (III.5) [PASSED TAG]
 * [DONE] Batch 43 — Bi-temporal "explain my past decision" (II.5) [PASSED TAG]
-* [RUNNING] Batch 44 — DECISION + content-free WORM log fork (R2 / VII.5) [NO TAG]
+* [DONE] Batch 44 — Close raw-PII side sinks (saga-log + me_app edit), preserve time-travel (R2 / VII.5; KG-history 44b deferred) [PASSED TAG]
 * [DONE] Batch 45 — Envelope-encryption subsystem (II.4a) [PASSED TAG]
 * [LOCKED] Batch 46 — Encrypt `episodes.raw_data` under the DEK + teach read paths (II.4b) [NO TAG]
 * [LOCKED] Batch 47 — `shred_memory` / `forget_subject` + deletion receipt (II.4c) [NO TAG]
@@ -59,11 +59,11 @@
 * [LOCKED] Batch 49 — Verify PII-before-derivation on every write path (VII.1) [NO TAG]
 * [LOCKED] Batch 50 — Scoped MongoDB accessor (VII.2) [NO TAG]
 * [LOCKED] Batch 51 — MinIO per-namespace isolation (VII.3) [NO TAG]
-* [LOCKED] Batch 52 — Auto-generated Settings panel (V.3) [NO TAG]
+* [RUNNING] Batch 52 — Auto-generated Settings panel (V.3) [NO TAG]
 * [LOCKED] Batch 53 — Settings interaction design (V.3a) [NO TAG]
-* [LOCKED] Batch 54 — `config_changed` time-travel + rollback (V.6) [NO TAG]
+* [RUNNING] Batch 54 — `config_changed` time-travel + rollback (V.6) [NO TAG]
 * [DONE] Batch 55 — Secrets-manager seam + remove dev dotenv-persist in prod (VI.1) [PASSED TAG]
-* [LOCKED] Batch 56 — Resolve `nce_gc` least-privilege (R4 / VI.4) [NO TAG]
+* [RUNNING] Batch 56 — Resolve `nce_gc` least-privilege (R4 / VI.4) [NO TAG]
 * [LOCKED] Batch 57 — Mongo write durability for the saga (R-A / VI.6a) [NO TAG]
 * [LOCKED] Batch 58 — Reverse-orphan reconciliation sweep (R-B / VI.6a) [NO TAG]
 * [DONE] Batch 59 — RQ in-flight job recovery (R-C / VI.6a) [PASSED TAG]
@@ -374,5 +374,14 @@
 * **Contractual Test Fidelity:** No Trivial Test Trap. A non-env recording provider proves resolution routes through the seam; fallback-to-default when the provider misses; env value wins and the provider is NOT consulted for the master key; prod rejection of dotenv-persist verified in a fresh interpreter (subprocess `NCE_ENV=prod`), covering both the import-time path and `validate_secrets_provider()` directly, plus a positive prod-posture pass. `9 passed` (seam) + `6 passed` (regression); mypy at baseline.
 * **Identified System Flaws:** None.
 * **Defensive Refactoring Correction Blueprint:** None.
+
+### TAG Batch 44 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_44.md`, `nce/orchestrators/memory.py`, `nce/me_app.py`, `tests/test_batch44_worm_pii_sidesinks.py`. Diff touches EXACTLY the three approved files; **`nce/graph_query.py` is NOT in the diff** — time-travel's WORM source is untouched. Decided refined scope (close raw-PII side sinks without altering time-travel) honored.
+* **Structural Integrity:** Both side-sink fixes correct and minimal. (1) `_saga_log_start` now serializes only recovery refs (`memory_type`, `assertion_type`); raw `summary` + free-form `metadata` removed. Recovery integrity preserved — `memory_id` is merged in later via `_saga_log_transition` after PG commit, and rollback reads from function args, not the saga payload. (2) `me_app` edit path's new `_pseudonymize_edit_graph` runs caller entity/triplet labels through real `nce.pii.process` with the namespace config, inside the existing `scoped_pg_session`/transaction; malformed items dropped. **Regression confirmed:** the main `store_memory` `append_event` still writes `entities`/`triplets` to `event_log.params` unchanged. Never UPDATE/DELETE `event_log`; `saga_execution_log` is the mutable table; no `NCE_MASTER_KEY` exposure.
+* **Contractual Test Fidelity:** No Trivial Test Trap. All three tests assert real DB state against live Postgres: saga-log row has no raw PII/`summary`/`metadata` (refs present); edit-path `event_log` row shows the email redacted to `<EMAIL>` (proving the pipeline ran) with non-PII fields preserved; the main-path event_log row still carries the full graph. `3 passed`; regression `tests/test_saga_rollback.py tests/test_me_app.py` `18 passed`. mypy 133 (below baseline).
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** The edit-path helper re-fetches `namespaces.metadata` per call; if govern/edit becomes hot, pass the resolved namespace PII config down instead of a second round-trip. (Note: full content-free WORM incl. KG structure remains deferred as Batch 44b — requires bitemporal KG history to avoid breaking time-travel.)
 
 [EOF: END OF REFACTORING LEDGER]

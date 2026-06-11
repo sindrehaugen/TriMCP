@@ -357,10 +357,13 @@ class MemoryOrchestrator(OrchestratorBase):
                     payload.agent_id,
                     json.dumps(
                         {
+                            # WORM-content gate / VII.5: the saga log is a mutable
+                            # recovery table, but it must NOT persist pre-redaction
+                            # content. Store recovery references only — never the raw
+                            # `summary` or free-form `metadata` (both may carry PII
+                            # before the Phase 0.3 redaction pipeline runs).
                             "memory_type": payload.memory_type.value,
                             "assertion_type": payload.assertion_type.value,
-                            "summary": payload.summary,
-                            "metadata": payload.metadata,
                         }
                     ),
                 )

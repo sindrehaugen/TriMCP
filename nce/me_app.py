@@ -301,6 +301,59 @@ async def get_me_profile(request: Request) -> JSONResponse:
         return JSONResponse(beliefs)
 
 
+async def _pseudonymize_edit_graph(
+    conn,
+    namespace_id: UUID,
+    entities: list,
+    triplets: list,
+) -> tuple[list, list]:
+    """Pseudonymize caller-supplied entity/triplet label strings before they
+    enter the immutable event_log via the edit path (VII.5 / WORM-content gate).
+
+    Mirrors the main store_memory path, which only ever logs labels derived from
+    PII-sanitized text. Here the labels are caller-supplied, so each label string
+    is run through the namespace PII pipeline; the sanitized (pseudonymized or
+    redacted) text replaces the raw value. Non-conforming inputs are dropped so a
+    malformed payload cannot smuggle raw content past the sanitizer.
+    """
+    from nce.models import NamespacePIIConfig
+    from nce.pii import process as pii_process
+
+    pii_config = NamespacePIIConfig(namespace_id=str(namespace_id))
+    ns_row = await conn.fetchrow("SELECT metadata FROM namespaces WHERE id = $1", namespace_id)
+    if ns_row and ns_row["metadata"]:
+        meta = ns_row["metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        if isinstance(meta, dict) and "pii" in meta:
+            pii_config = NamespacePIIConfig(**{**meta["pii"], "namespace_id": str(namespace_id)})
+
+    async def _sanitize(text) -> str:
+        if not isinstance(text, str) or not text:
+            return ""
+        return (await pii_process(text, pii_config)).sanitized_text
+
+    safe_entities: list = []
+    for ent in entities:
+        if not isinstance(ent, dict):
+            continue
+        safe_entities.append({**ent, "label": await _sanitize(ent.get("label"))})
+
+    safe_triplets: list = []
+    for tri in triplets:
+        if not isinstance(tri, dict):
+            continue
+        safe_triplets.append(
+            {
+                **tri,
+                "subject_label": await _sanitize(tri.get("subject_label")),
+                "object_label": await _sanitize(tri.get("object_label")),
+            }
+        )
+
+    return safe_entities, safe_triplets
+
+
 async def post_me_govern(request: Request) -> JSONResponse:
     """POST /api/me/govern
 
@@ -455,6 +508,19 @@ async def post_me_govern(request: Request) -> JSONResponse:
                     ns_id,
                 )
 
+                # VII.5 / WORM-content gate: this is a SECOND writer into the
+                # immutable event_log. Unlike the main store_memory path, the
+                # entities/triplets here are caller-supplied metadata that have
+                # NOT been through the PII pipeline. Pseudonymize their label
+                # strings (mirroring the main path's graph-extract-on-sanitized
+                # approach) so no raw PII can be injected into the WORM log.
+                safe_entities, safe_triplets = await _pseudonymize_edit_graph(
+                    conn,
+                    ns_id,
+                    new_metadata.get("entities", []),
+                    new_metadata.get("triplets", []),
+                )
+
                 await append_event(
                     conn=conn,
                     namespace_id=ns_id,
@@ -465,8 +531,8 @@ async def post_me_govern(request: Request) -> JSONResponse:
                         "memory_id": str(memory_id),
                         "payload_ref": new_payload_ref,
                         "assertion_type": new_assertion_type,
-                        "entities": new_metadata.get("entities", []),
-                        "triplets": new_metadata.get("triplets", []),
+                        "entities": safe_entities,
+                        "triplets": safe_triplets,
                         "action": "edit",
                     },
                     result_summary={"status": "success", "edited": True},
