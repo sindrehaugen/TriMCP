@@ -125,6 +125,11 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         admin_only=True,
         mutation=True,
     ),
+    "shred_memory": ToolSpec(
+        _h(memory_mcp_handlers, "handle_shred_memory"),
+        admin_only=True,
+        mutation=True,
+    ),
     # ------------------------------------------------------------------
     # Code indexing tools
     # ------------------------------------------------------------------

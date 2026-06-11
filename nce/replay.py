@@ -1076,6 +1076,9 @@ _additional_fork_provenance_types: tuple[str, ...] = (
     "chain_verification_failed",
     "atms_cascade",
     "config_changed",
+    # Part II.4: shred is destructive + content-free; fork projection records
+    # provenance only (no content to re-apply).
+    "memory_shredded",
 )
 for _fork_et in _additional_fork_provenance_types:
     assert _fork_et not in _HANDLER_REGISTRY, (

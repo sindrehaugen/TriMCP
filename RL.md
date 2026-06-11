@@ -54,7 +54,7 @@
 * [DONE] Batch 44 — Close raw-PII side sinks (saga-log + me_app edit), preserve time-travel (R2 / VII.5; KG-history 44b deferred) [PASSED TAG]
 * [DONE] Batch 45 — Envelope-encryption subsystem (II.4a) [PASSED TAG]
 * [DONE] Batch 46 — Encrypt `episodes.raw_data` under the DEK + teach read paths (II.4b) [PASSED TAG]
-* [RUNNING] Batch 47 — `shred_memory` / `forget_subject` + deletion receipt (II.4c) [NO TAG]
+* [DONE] Batch 47 — `shred_memory` / `forget_subject` + deletion receipt (II.4c) [PASSED TAG]
 * [LOCKED] Batch 48 — DSAR capstone (VII.7) [NO TAG]
 * [LOCKED] Batch 49 — Verify PII-before-derivation on every write path (VII.1) [NO TAG]
 * [LOCKED] Batch 50 — Scoped MongoDB accessor (VII.2) [NO TAG]
@@ -603,5 +603,14 @@ When steps are done: STOP. Run `_internal\tools\generate_diff.py` (flips the row
 * **Identified System Flaws:** None.
 * **Defensive Refactoring Correction Blueprint:** None.
 * **Kaizen:** D3 (Redis persistence) and D5 (TemporaryDirectory/try-finally in extractors) remain open; a follow-up should confirm extractor temp paths actually resolve under `NCE_ARTIFACT_STAGING_DIR`/`TMPDIR` so D4's tmpfs fully eliminates the D5 leak risk.
+
+### TAG Batch 47 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_47.md` + the 10 batch files on disk (`nce/orchestrators/memory.py` shred_memory 1177-1492, `nce/orchestrator.py`, `nce/memory_mcp_handlers.py`, `nce/models.py`, `nce/event_types.py`, `nce/replay.py`, `nce/tool_registry.py`, `nce/mcp_stdio_tools.py`, `tests/test_tool_registry.py`, `tests/test_shred_memory_integration.py`). Diff byte-identical to disk; no out-of-scope files; `nce/causal/chrono.py` correctly NOT in the diff. Schema confirms `kg_nodes.payload_ref`/`kg_edges.payload_ref` exist so the delete-by-payload_ref targets real rows.
+* **Structural Integrity:** 8-step sequence sound. Steps 1-5 (DEK destroy via NULLing wrapped_dek/dek_key_id; zero content_fts/embedding; DELETE memory_embeddings; ATMS-cascade KG nodes/edges/node_embeddings + derived-memory invalidation via the Batch-23 mechanism, bounded at 100; DELETE pii_redactions; signed content-free WORM append) all run in ONE `scoped_pg_session` + transaction so `append_event` commits atomically with the crypto-shred. Steps 6-8 (Redis purge, MinIO remove, Mongo tombstone) are post-commit, each try/excepted into `receipt.warnings` (never raised) — sound, since DEK destruction already made content unrecoverable. Content-free WORM event enforced both ways: `event_types.py` forbidden-key set {raw_data,content,summary,heavy_payload,entities,triplets} AND params carry only refs/counts/key-id/receipt_digest. RLS: SELECT + UPDATE both carry `AND namespace_id=$2::uuid` (raises PermissionError cross-namespace); `event_log` INSERT-only. `NCE_MASTER_KEY` env-only.
+* **Contractual Test Fidelity:** Genuine completeness test, NOT trivial. PRE-shred preconditions asserted non-trivial: wrapped_dek NOT NULL, `memory_embeddings`>0, `pii_redactions`>0 (reversible-pseudonymise EMAIL path), ciphertext has DEK prefix, Redis key primed. POST-shred: wrapped_dek/dek_key_id NULL; content_fts/embedding NULL; captured ciphertext raises `DEKDecryptionError`; Mongo doc tombstoned (sentinel/email absent); `memory_embeddings`/`kg_nodes`/`kg_edges`/`pii_redactions` all 0; Redis purged; signed `memory_shredded` event with sentinel/email/entity strings absent, 64-char receipt_digest, none of the 6 forbidden keys; receipt self-verified. `1 passed` (live Mongo+PG+Redis); tool registry `50 passed`; replay `5 passed`; mypy 133 (baseline).
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** The honest-scope guarantee is correctly stated (raw payload cryptographically unrecoverable + derivatives deleted; immutable log keeps only the fact of deletion, with prior-WORM entity/triplet strings persisting by design per Batch-44a/b). If "complete forgetting" becomes a hard promise, revisit 44b (content-free store_memory params).
 
 [EOF: END OF REFACTORING LEDGER]

@@ -25,6 +25,7 @@ from nce.models import (
     ForgetMemoryRequest,
     GetRecentContextRequest,
     SemanticSearchRequest,
+    ShredMemoryRequest,
     StoreMemoryRequest,
     UnredactMemoryRequest,
 )
@@ -137,6 +138,18 @@ async def handle_forget_memory(engine: NCEEngine, arguments: dict[str, Any]) -> 
         namespace_id=str(req.namespace_id),
     )
     return _serialize(res)
+
+
+@mcp_handler
+async def handle_shred_memory(engine: NCEEngine, arguments: dict[str, Any]) -> str:
+    """[ADMIN] Provably forget a memory across every store, returning a deletion receipt."""
+    req = ShredMemoryRequest(**arguments)
+    result = await engine.shred_memory(
+        memory_id=str(req.memory_id),
+        namespace_id=str(req.namespace_id),
+        agent_id=req.agent_id,
+    )
+    return _serialize(result)
 
 
 @mcp_handler

@@ -843,6 +843,21 @@ class UnredactMemoryRequest(BaseModel):
         return _validate_agent_id(v)
 
 
+class ShredMemoryRequest(BaseModel):
+    """Input for the shred_memory MCP tool (Part II.4 — Provable Forgetting, ADMIN)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    memory_id: UUID4
+    namespace_id: UUID4
+    agent_id: str
+
+    @field_validator("agent_id")
+    @classmethod
+    def _validate_agent_id(cls, v: str) -> str:
+        return _validate_agent_id(v)
+
+
 class GetRecentContextRequest(BaseModel):
     """Input for the get_recent_context MCP tool."""
 

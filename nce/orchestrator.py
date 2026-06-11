@@ -943,6 +943,11 @@ class NCEEngine(OrchestratorBase):
         await self._ensure_memory()
         return await self.memory.unredact_memory(memory_id, namespace_id, agent_id)
 
+    async def shred_memory(self, memory_id: str, namespace_id: str, agent_id: str) -> dict:
+        """[Part II.4] Provably forget a memory — delegating to MemoryOrchestrator."""
+        await self._ensure_memory()
+        return await self.memory.shred_memory(memory_id, namespace_id, agent_id)
+
     # --- Phase 1.1: Cognitive Layer (Salience) ---
 
     async def boost_memory(

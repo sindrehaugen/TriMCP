@@ -25,7 +25,7 @@ from nce.tool_registry import (
 # Cardinality
 # ---------------------------------------------------------------------------
 
-_EXPECTED_TOTAL = 65
+_EXPECTED_TOTAL = 66
 
 
 def test_registry_has_expected_entries():
@@ -82,6 +82,9 @@ _EXPECTED_MUTATION_TOOLS: frozenset[str] = frozenset(
         "a2a_revoke_grant",
         "a2a_update_grant_scopes",
         "unredact_memory",
+        # Batch 47 — Part II.4 Provable Forgetting; full crypto-shred + cascade
+        # delete across all stores is a mutation (and admin_only).
+        "shred_memory",
         "replay_reconstruct",
         # Batch 43 — bi-temporal accountability; optional counterfactual fork writes
         # events into the target namespace, so the tool is a mutation.
@@ -109,7 +112,7 @@ def test_mutation_tools_exact_match():
 
 
 def test_mutation_tools_count():
-    assert len(MUTATION_TOOLS) == 30
+    assert len(MUTATION_TOOLS) == 31
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +155,8 @@ _EXPECTED_ADMIN_ONLY: frozenset[str] = frozenset(
         "replay_fork",
         "replay_status",
         "explain_past_decision",
+        # Batch 47 — Part II.4 Provable Forgetting; shred is destructive + admin-only.
+        "shred_memory",
         "d365_sync_now",
         "d365_list_sla_breaches",
         # Batch 54 — V.6 config time-travel audit; admin-only read of the
@@ -169,7 +174,7 @@ def test_admin_only_tools_exact_match():
 
 
 def test_admin_only_tools_count():
-    assert len(ADMIN_ONLY_TOOLS) == 9
+    assert len(ADMIN_ONLY_TOOLS) == 10
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +268,10 @@ def test_toolspec_is_frozen():
         ),
         (
             "unredact_memory",
+            {"mutation": True, "cacheable": False, "admin_only": True, "migration": False},
+        ),
+        (
+            "shred_memory",
             {"mutation": True, "cacheable": False, "admin_only": True, "migration": False},
         ),
         # code

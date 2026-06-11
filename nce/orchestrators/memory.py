@@ -1175,6 +1175,323 @@ class MemoryOrchestrator(OrchestratorBase):
         return {"status": "success", "unredacted_text": raw_data}
 
     # ------------------------------------------------------------------
+    # shred_memory — Part II.4 Provable Forgetting
+    # ------------------------------------------------------------------
+
+    async def shred_memory(
+        self,
+        memory_id: str,
+        namespace_id: str,
+        agent_id: str,
+    ) -> dict:
+        """[Part II.4] Provably forget a memory across every store.
+
+        Performs the full provable-forgetting sequence and returns a verifiable
+        *deletion receipt*.  The cryptographic guarantee is: after this call the
+        raw payload is **cryptographically unrecoverable** (its per-memory DEK is
+        destroyed) and every plaintext *derivative* is deleted; the immutable
+        ``event_log`` retains only the *fact* of deletion — never the content.
+
+        Sequence (the durable steps run inside one RLS-scoped PG transaction so
+        they commit atomically with the signed WORM event):
+
+          1. Destroy the DEK — zero ``memories.wrapped_dek`` / ``dek_key_id`` so
+             the encrypted Mongo ``episodes.raw_data`` becomes undecryptable.
+          2. Delete the plaintext derivatives — ``memories.content_fts`` and
+             ``memories.embedding`` (zeroed in place) plus ``memory_embeddings``.
+          3. ATMS-cascade-delete the KG labels/edges (``kg_nodes`` / ``kg_edges``
+             keyed by ``payload_ref``) and derived/consolidated dependent
+             memories (reuses the Batch-23 ATMS mechanism).
+          4. Delete the ``pii_redactions`` rows.
+          5. Append a signed, **content-free** ``memory_shredded`` WORM event
+             (refs + counts + key-id only).
+
+        The best-effort, out-of-transaction steps (durable once the PG tx has
+        committed; a partial failure leaves the content cryptographically
+        unrecoverable regardless, and is surfaced in the receipt's ``warnings``):
+
+          6. Purge the Redis working-memory cache key(s).
+          7. ``remove_object`` the MinIO media object(s).
+          8. Overwrite the Mongo ciphertext with a tombstone (defence-in-depth;
+             the content is already unrecoverable once the DEK is destroyed).
+
+        RLS: all tenant SQL runs inside ``scoped_session`` so a caller cannot
+        shred a memory outside their own namespace.
+        """
+        from nce.atms import evaluate_atms_intervention, persist_atms_invalidation
+        from nce.event_log import append_event
+
+        ns_uuid = UUID(str(namespace_id))
+        mem_uuid = UUID(str(memory_id))
+
+        # ── Durable phase: DEK destroy + derivative deletes + WORM event ──────
+        # All inside one RLS-scoped transaction; append_event shares the tx.
+        async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
+            async with conn.transaction():
+                # Defence-in-depth on top of RLS: the row must live in this
+                # namespace, else the SELECT returns nothing and we abort.
+                row = await conn.fetchrow(
+                    """
+                    SELECT payload_ref, dek_key_id,
+                           (wrapped_dek IS NOT NULL) AS was_encrypted,
+                           user_id, session_id, agent_id, metadata
+                    FROM memories
+                    WHERE id = $1::uuid AND namespace_id = $2::uuid
+                    """,
+                    mem_uuid,
+                    ns_uuid,
+                )
+                if not row:
+                    raise PermissionError(f"Memory {memory_id} not accessible in your namespace")
+
+                payload_ref = row["payload_ref"]
+                dek_key_id = row["dek_key_id"]
+                was_encrypted = bool(row["was_encrypted"])
+                metadata = row["metadata"]
+                if isinstance(metadata, str):
+                    try:
+                        metadata = json.loads(metadata)
+                    except Exception:
+                        metadata = {}
+                metadata = metadata or {}
+
+                # 1+2. Destroy the DEK and the plaintext derivatives on the
+                # memories row.  Zeroing wrapped_dek crypto-shreds the Mongo
+                # ciphertext; content_fts/embedding are reversible derivatives.
+                await conn.execute(
+                    """
+                    UPDATE memories
+                    SET wrapped_dek = NULL,
+                        dek_key_id = NULL,
+                        content_fts = NULL,
+                        embedding = NULL,
+                        valid_to = COALESCE(valid_to, now())
+                    WHERE id = $1::uuid AND namespace_id = $2::uuid
+                    """,
+                    mem_uuid,
+                    ns_uuid,
+                )
+
+                # 2b. Delete derived embedding vectors.
+                res_emb = await conn.execute(
+                    "DELETE FROM memory_embeddings WHERE memory_id = $1::uuid",
+                    mem_uuid,
+                )
+                embeddings_deleted = int(res_emb.split()[-1]) if res_emb else 0
+
+                # 3. ATMS-cascade-delete KG labels/edges + derived memories.
+                #    KG nodes/edges are keyed by the Mongo payload_ref (the
+                #    content fanned out under that ref); delete them outright —
+                #    labels are plaintext content that cannot be encrypted.
+                nodes_deleted = 0
+                edges_deleted = 0
+                if payload_ref:
+                    await conn.execute(
+                        "DELETE FROM kg_node_embeddings "
+                        "WHERE node_id IN (SELECT id FROM kg_nodes WHERE payload_ref = $1)",
+                        payload_ref,
+                    )
+                    res_edges = await conn.execute(
+                        "DELETE FROM kg_edges WHERE payload_ref = $1", payload_ref
+                    )
+                    edges_deleted = int(res_edges.split()[-1]) if res_edges else 0
+                    res_nodes = await conn.execute(
+                        "DELETE FROM kg_nodes WHERE payload_ref = $1", payload_ref
+                    )
+                    nodes_deleted = int(res_nodes.split()[-1]) if res_nodes else 0
+
+                # 3b. Cascade soft-deletion to derived/consolidated dependents
+                #     and topology edges via the Batch-23 ATMS mechanism.
+                cascade_set: set[str] = {str(mem_uuid)}
+                topo_cascade = await evaluate_atms_intervention(conn, ns_uuid, str(mem_uuid))
+                cascade_set.update(topo_cascade)
+
+                max_cascade = 100
+                todo = [str(mem_uuid)]
+                visited = {str(mem_uuid)}
+                while todo and len(visited) < max_cascade:
+                    current = todo.pop()
+                    dep_rows = await conn.fetch(
+                        """
+                        SELECT id FROM memories
+                        WHERE namespace_id = $1::uuid
+                          AND (derived_from @> jsonb_build_array($2::text)
+                               OR derived_from @> jsonb_build_array($2::uuid))
+                          AND valid_to IS NULL
+                        """,
+                        ns_uuid,
+                        current,
+                    )
+                    for dep in dep_rows:
+                        dep_id = str(dep["id"])
+                        if dep_id not in visited:
+                            visited.add(dep_id)
+                            todo.append(dep_id)
+                            if len(visited) >= max_cascade:
+                                break
+                cascade_set.update(visited)
+                await persist_atms_invalidation(conn, ns_uuid, cascade_set)
+
+                # 4. Delete the PII vault rows (encrypted derivatives).
+                res_pii = await conn.execute(
+                    "DELETE FROM pii_redactions WHERE memory_id = $1::uuid",
+                    mem_uuid,
+                )
+                pii_deleted = int(res_pii.split()[-1]) if res_pii else 0
+
+                # 5. Append the signed, content-free memory_shredded WORM event.
+                #    Carries refs + counts + key-id ONLY — never any content,
+                #    entity string, summary, or PII.  A content-free digest binds
+                #    the receipt to the destroyed artifacts without revealing them.
+                shred_facts = {
+                    "memory_id": str(mem_uuid),
+                    "payload_ref": payload_ref or "",
+                    "dek_key_id": dek_key_id or "",
+                    "was_encrypted": was_encrypted,
+                    "cascade_count": len(cascade_set),
+                }
+                receipt_digest = hashlib.sha256(
+                    json.dumps(shred_facts, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+
+                append_result = await append_event(
+                    conn=conn,
+                    namespace_id=ns_uuid,
+                    agent_id=agent_id,
+                    event_type="memory_shredded",
+                    params={
+                        "memory_id": str(mem_uuid),
+                        "payload_ref": payload_ref or "",
+                        "dek_key_id": dek_key_id or "",
+                        "was_encrypted": was_encrypted,
+                        "kg_nodes_deleted": nodes_deleted,
+                        "kg_edges_deleted": edges_deleted,
+                        "embeddings_deleted": embeddings_deleted,
+                        "pii_redactions_deleted": pii_deleted,
+                        "cascade_ids": sorted(cascade_set),
+                        "receipt_digest": receipt_digest,
+                    },
+                    result_summary={
+                        "status": "success",
+                        "cascade_count": len(cascade_set),
+                    },
+                )
+
+        # ── Best-effort phase (post-commit): Redis, MinIO, Mongo tombstone ────
+        # The cryptographic guarantee already holds; these reduce the residual
+        # ciphertext/cache surface.  Failures are recorded in `warnings`, never
+        # raised — the durable forget has already committed.
+        warnings: list[str] = []
+
+        # 6. Purge Redis working-memory cache key(s).
+        redis_keys_purged = 0
+        if self.redis_client is not None:
+            user_id = row["user_id"]
+            session_id = row["session_id"]
+            mem_agent = row["agent_id"]
+            candidate_keys: list[str] = []
+            if user_id and session_id:
+                candidate_keys.append(f"cache:{namespace_id}:{user_id}:{session_id}")
+            if mem_agent:
+                candidate_keys.append(f"cache:{namespace_id}:{mem_agent}")
+            candidate_keys.append(f"mem_verify_hash:{memory_id}")
+            for key in candidate_keys:
+                try:
+                    redis_keys_purged += int(await self.redis_client.delete(key))
+                except Exception as exc:
+                    warnings.append(f"redis_purge_failed:{key}:{exc}")
+
+        # 7. remove_object the MinIO media object(s).
+        minio_objects_removed = 0
+        bucket = metadata.get("bucket")
+        object_name = metadata.get("object_name")
+        if bucket and object_name:
+            if self.minio_client is None:
+                warnings.append("minio_object_present_but_client_unconfigured")
+            else:
+                try:
+                    await asyncio.to_thread(self.minio_client.remove_object, bucket, object_name)
+                    minio_objects_removed = 1
+                except Exception as exc:
+                    warnings.append(f"minio_remove_failed:{bucket}/{object_name}:{exc}")
+
+        # 8. Overwrite the Mongo ciphertext with a tombstone (defence-in-depth).
+        if payload_ref and self.mongo_client is not None:
+            try:
+                oid = ObjectId(payload_ref)
+                await self._mongo_db.episodes.update_one(
+                    {"_id": oid},
+                    {
+                        "$set": {
+                            "raw_data": None,
+                            "shredded": True,
+                            "shredded_at": datetime.now(timezone.utc),
+                        },
+                        "$unset": {"metadata": ""},
+                    },
+                )
+            except Exception as exc:
+                warnings.append(f"mongo_tombstone_failed:{payload_ref}:{exc}")
+
+        # ── Build the verifiable deletion receipt ─────────────────────────────
+        receipt = {
+            "memory_id": str(mem_uuid),
+            "namespace_id": str(ns_uuid),
+            "dek_destroyed": was_encrypted,
+            "dek_key_id": dek_key_id or "",
+            "payload_ref": payload_ref or "",
+            "derivatives_deleted": {
+                "content_fts": True,
+                "embedding": True,
+                "memory_embeddings": embeddings_deleted,
+                "kg_nodes": nodes_deleted,
+                "kg_edges": edges_deleted,
+                "pii_redactions": pii_deleted,
+            },
+            "cascade_count": len(cascade_set),
+            "redis_keys_purged": redis_keys_purged,
+            "minio_objects_removed": minio_objects_removed,
+            "receipt_digest": receipt_digest,
+            "worm_event": {
+                "event_id": str(append_result.event_id),
+                "event_seq": append_result.event_seq,
+                "occurred_at": append_result.occurred_at.isoformat(),
+                "event_type": "memory_shredded",
+            },
+            "warnings": warnings,
+            "guarantee": (
+                "raw payload is cryptographically unrecoverable (DEK destroyed) "
+                "and all plaintext derivatives are deleted; the immutable log "
+                "retains only the fact of deletion, never the content. "
+                "Note: entity/triplet strings recorded in prior store_memory WORM "
+                "events at write time persist there by design."
+            ),
+        }
+
+        # Self-verify the WORM event signature so the receipt ships verified.
+        async with scoped_pg_session(self.pg_pool, namespace_id) as conn:
+            event_row = await conn.fetchrow(
+                """
+                SELECT id, namespace_id, agent_id, event_type, event_seq,
+                       occurred_at, params, signature, signature_key_id,
+                       signature_version, chain_hash
+                FROM event_log
+                WHERE id = $1 AND namespace_id = $2::uuid
+                """,
+                append_result.event_id,
+                ns_uuid,
+            )
+            from nce.event_log import DataIntegrityError, verify_event_signature
+
+            try:
+                await verify_event_signature(conn, event_row)
+                receipt["verified"] = True
+            except DataIntegrityError:
+                receipt["verified"] = False
+
+        return {"status": "success", "receipt": receipt}
+
+    # ------------------------------------------------------------------
     # recall_memory / recall_recent
     # ------------------------------------------------------------------
 

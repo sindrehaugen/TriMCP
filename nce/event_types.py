@@ -21,6 +21,8 @@ EventType = Literal[
     "store_memory_rolled_back",
     "forget_memory",
     "boost_memory",
+    # SECURITY_EVENTS — Part II.4 Provable Forgetting (content-free shred receipt)
+    "memory_shredded",
     # COGNITIVE_EVENTS
     "resolve_contradiction",
     "consolidation_run",
@@ -80,6 +82,20 @@ EVENT_REQUIRED_PARAM_KEYS: Final[dict[str, frozenset[str]]] = {
     ),
     "store_memory_rolled_back": frozenset({"saga_id", "memory_id", "reason", "payload_ref"}),
     "forget_memory": frozenset({"memory_id"}),
+    "memory_shredded": frozenset(
+        {
+            "memory_id",
+            "payload_ref",
+            "dek_key_id",
+            "was_encrypted",
+            "kg_nodes_deleted",
+            "kg_edges_deleted",
+            "embeddings_deleted",
+            "pii_redactions_deleted",
+            "cascade_ids",
+            "receipt_digest",
+        }
+    ),
     "boost_memory": frozenset({"memory_id", "factor"}),
     "resolve_contradiction": frozenset({"contradiction_id", "resolution"}),
     "consolidation_run": frozenset(
@@ -122,6 +138,11 @@ EVENT_FORBIDDEN_PARAM_KEYS: Final[dict[str, frozenset[str]]] = {
     # Prevent accidentally mixing audit vocabulary into the wrong event shape.
     "unredact": frozenset({"pii_redaction"}),
     "pii_redaction": frozenset({"unredact"}),
+    # Part II.4: the shred event is a content-free receipt — never let raw
+    # content, derived strings, or PII leak into the immutable log.
+    "memory_shredded": frozenset(
+        {"raw_data", "content", "summary", "heavy_payload", "entities", "triplets"}
+    ),
     # Never persist raw bearer material or hashed secrets in provenance payloads.
     "a2a_grant_created": frozenset({"sharing_token", "token_hash", "scopes"}),
     "a2a_grant_revoked": frozenset({"sharing_token", "token_hash"}),

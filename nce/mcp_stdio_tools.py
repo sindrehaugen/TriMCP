@@ -678,6 +678,30 @@ TOOLS = [
             "required": ["memory_id", "namespace_id", "agent_id", "admin_api_key"],
         },
     ),
+    Tool(
+        name="shred_memory",
+        description=(
+            "[ADMIN][Part II.4] Provably forget a memory across every store: destroys "
+            "the per-memory DEK (making the encrypted raw payload cryptographically "
+            "unrecoverable), deletes all plaintext derivatives (FTS, embeddings, KG "
+            "labels/edges via ATMS cascade, PII vault), purges Redis + MinIO, and "
+            "appends a signed, content-free 'memory_shredded' WORM event.  Returns a "
+            "verifiable deletion receipt."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string"},
+                "namespace_id": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "admin_api_key": {
+                    "type": "string",
+                    "description": "Server-side admin API key for elevated access",
+                },
+            },
+            "required": ["memory_id", "namespace_id", "agent_id", "admin_api_key"],
+        },
+    ),
     # Migration tools are appended conditionally below
     Tool(
         name="replay_observe",
