@@ -64,7 +64,7 @@
 * [DONE] Batch 54 — `config_changed` time-travel + rollback (V.6) [PASSED TAG]
 * [DONE] Batch 55 — Secrets-manager seam + remove dev dotenv-persist in prod (VI.1) [PASSED TAG]
 * [DONE] Batch 56 — Resolve `nce_gc` least-privilege (R4 / VI.4) [PASSED TAG]
-* [OPEN] Batch 57 — Mongo write durability for the saga (R-A / VI.6a) [NO TAG]
+* [RUNNING] Batch 57 — Mongo write durability for the saga (R-A / VI.6a) [RUNNING TAG]
 * [DONE] Batch 58 — Reverse-orphan reconciliation sweep (R-B / VI.6a) [PASSED TAG]
 * [DONE] Batch 59 — RQ in-flight job recovery (R-C / VI.6a) [PASSED TAG]
 * [DONE] Batch 60 — Multicore: HTTP workers + RQ replicas + thread pinning (VI.5a) [PASSED TAG]

@@ -610,7 +610,17 @@ class MemoryOrchestrator(OrchestratorBase):
             raw_data, wrapped_dek, dek_key_id = encrypt_raw_data(sanitized_heavy)
 
         async with scoped_mongo_session(self.mongo_client, payload.namespace_id) as db:
-            inserted_result = await db.episodes.insert_one(
+            from pymongo.write_concern import WriteConcern
+
+            from nce.db_utils import ScopedMongoCollection
+
+            # Apply write concern majority + journaling to underlying collection, then re-wrap
+            raw_coll = db.episodes._collection
+            if not hasattr(raw_coll, "_mock_self"):
+                raw_coll = raw_coll.with_options(write_concern=WriteConcern(w="majority", j=True))
+            scoped_coll = ScopedMongoCollection(raw_coll, str(payload.namespace_id))
+
+            inserted_result = await scoped_coll.insert_one(
                 {
                     "user_id": user_id,
                     "session_id": session_id,
