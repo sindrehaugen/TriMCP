@@ -7,7 +7,7 @@
    - `make typecheck` clean
    - the specific test named in the batch passes
    - existing event_log/replay/provenance tests still pass
-6. **Migrations:** add `nce/migrations/026_event_parents.sql` (confirm 026 free) + mirror into `nce/schema.sql`.
+6. **Migrations:** NONE. The append-only `event_parents` table (RLS + WORM trigger) was established by **Batch C0** (already in `main`). Verify it exists; do NOT add a migration or edit `schema.sql`. If absent, STOP — C0 was not merged.
 7. **WORM/RLS invariants (never violate):** `event_parents` is append-only (no UPDATE/DELETE), RLS-enabled + forced; written in the SAME saga transaction as `append_event`; `parent_event_id` column retained for back-compat (signature unchanged where callers don't pass multiples).
 8. **Secrets:** `NCE_MASTER_KEY` env-only.
 9. **DB-dependent tests** are `@pytest.mark.integration`.
@@ -17,10 +17,10 @@
 
 **Skills:** `event-store-design` (primary), `database-architect`
 **Depends on:** none (prerequisite for Batch 129 loop breaker)
-**Files:** `nce/migrations/026_event_parents.sql` (new); `nce/schema.sql`; `nce/event_log.py` (`append_event` accepts `parent_event_ids`); `nce/consolidation.py` (pass all source events); `nce/replay_mcp_handlers.py` (`get_event_provenance` reads DAG); `nce/admin_handlers/fleet.py` (`detect_causal_cycles`); `nce/tool_registry.py`; `tests/test_causal_dag.py` (new)
+**Files:** `nce/event_log.py` (`append_event` accepts `parent_event_ids`); `nce/consolidation.py` (pass all source events); `nce/replay_mcp_handlers.py` (`get_event_provenance` reads DAG); `nce/admin_handlers/fleet.py` (`detect_causal_cycles`); `nce/tool_registry.py`; `tests/test_causal_dag.py` (new)
 **Goal:** `parent_event_id` is single-parent metadata — consolidation (N→1) and merges can't express lineage and there's no loop detection. Add a multi-parent causal DAG without breaking the existing single-parent column or `append_event` signature.
 **Steps:**
-1. Migration 026 + schema.sql: `event_parents(event_id UUID, parent_event_id UUID, namespace_id UUID, PRIMARY KEY(event_id, parent_event_id))`; append-only (WORM trigger or REVOKE per existing event_log pattern), RLS enabled + forced.
+1. Verify the C0 `event_parents` table exists (PK `(event_id, parent_event_id)`, append-only WORM trigger, FORCE RLS, reverse index on `parent_event_id`). (No DDL here.)
 2. `event_log.py`: `append_event(..., parent_event_ids: list[UUID] | None = None)`; when provided, write all rows to `event_parents` in the same transaction; keep populating the scalar `parent_event_id` with the primary parent (first id) for back-compat.
 3. `consolidation.py`: pass all source-memory event ids as `parent_event_ids` on the consolidation event.
 4. `get_event_provenance`: extend to walk `event_parents` (multi-parent ancestry). Add `detect_causal_cycles` admin tool in `fleet.py` (recursive CTE, depth-capped) + register in `tool_registry.py` (bump tool counts in `tests/test_tool_registry.py`).

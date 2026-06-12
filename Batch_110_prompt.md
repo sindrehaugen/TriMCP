@@ -7,7 +7,7 @@
    - `make typecheck` clean
    - the specific test named in the batch passes
    - existing outbox/relay tests still pass
-6. **Migrations:** add `nce/migrations/024_processed_outbox_events.sql` (confirm 024 free) + mirror into `nce/schema.sql`.
+6. **Migrations:** NONE. The `processed_outbox_events` table (RLS-enabled) was established by **Batch C0** (already in `main`). Verify it exists; do NOT add a migration or edit `schema.sql`. If absent, STOP — C0 was not merged.
 7. **WORM/RLS invariants (never violate):** the dedup insert MUST be in the SAME transaction as the handler's DB effects; tenant-scoped; RLS-enabled on the new table; the no-Redis-I/O-inside-transaction rule for handlers stays enforced.
 8. **Secrets:** `NCE_MASTER_KEY` env-only.
 9. **DB-dependent tests** are `@pytest.mark.integration`.
@@ -17,10 +17,10 @@
 
 **Skills:** `event-store-design` (primary), `python-pro`
 **Depends on:** none
-**Files:** `nce/migrations/024_processed_outbox_events.sql` (new); `nce/schema.sql`; `nce/outbox_relay.py` (poll/deliver/mark loop + handler registry); `nce/tasks.py` (handler signatures); `tests/test_outbox_idempotency.py` (new)
+**Files:** `nce/outbox_relay.py` (poll/deliver/mark loop + handler registry); `nce/tasks.py` (handler signatures); `tests/test_outbox_idempotency.py` (new)
 **Goal:** Relay semantics are at-least-once but the module comment claims at-most-once and the handler registry is hardcoded to one event type. Make consumers idempotent and the registry extensible. (1) Fix the docstring to state the at-least-once contract. (2) Add `processed_outbox_events(event_id UUID PK, namespace_id UUID, processed_at TIMESTAMPTZ)` RLS-enabled. (3) Convert the hardcoded handler dict to decorator registration.
 **Steps:**
-1. Migration 024 + schema.sql: create `processed_outbox_events`, enable + force RLS with the standard `namespace_id = get_nce_namespace()` policy.
+1. Verify the C0 `processed_outbox_events` table exists with FORCE RLS + tenant policy. (No DDL here.)
 2. `outbox_relay.py`: in the delivery transaction, INSERT the event_id into `processed_outbox_events` alongside the handler's effects; on crash-redelivery, skip events whose id already exists (idempotent). Pass handlers `(event_id, aggregate_type, aggregate_id, event_type, payload)`.
 3. Replace the hardcoded handler map with an `@outbox_handler("memory.stored")`-style decorator registry; the registration wrapper asserts handlers perform no Redis/sync I/O inside the transaction (preserve the existing rule). Re-register the current `memory.stored` handler via the decorator so behavior is unchanged.
 4. Correct the module docstring/comment from "at-most-once" to "at-least-once with consumer idempotency."

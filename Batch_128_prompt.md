@@ -7,7 +7,7 @@
    - `make typecheck` clean
    - the specific test named in the batch passes
    - existing active-learning/admin tests still pass
-6. **Migrations:** add `nce/migrations/027_action_approval_queue.sql` (confirm 027 free) + mirror into `nce/schema.sql`.
+6. **Migrations:** NONE. The `action_approval_queue` table (RLS-enabled) was established by **Batch C0** (already in `main`). Verify it exists; do NOT add a migration or edit `schema.sql`. If absent, STOP — C0 was not merged.
 7. **WORM/RLS invariants (never violate):** new table RLS-enabled + forced; every confirm/reject emits a WORM event; tenant-scoped; nothing here calls an external system.
 8. **Secrets:** `NCE_MASTER_KEY` env-only.
 9. **DB-dependent tests** are `@pytest.mark.integration`.
@@ -17,10 +17,10 @@
 
 **Skills:** `database-architect` (primary), `python-pro`
 **Depends on:** Batch 106 (origin), Batch 113 (trust), Batch 116 (nonces) — confirm all merged before starting
-**Files:** `nce/migrations/027_action_approval_queue.sql` (new); `nce/schema.sql`; `nce/active_learning.py` (or a sibling using the same pattern — do NOT create a new module if the pattern fits here); `nce/admin_handlers/` (approve/reject endpoints); `nce/event_types.py`; `nce/config.py`; `tests/test_action_approval.py` (new)
+**Files:** `nce/active_learning.py` (or a sibling using the same pattern — do NOT create a new module if the pattern fits here); `nce/admin_handlers/` (approve/reject endpoints — note: read-only GET shapes already exist from C0); `nce/event_types.py`; `nce/config.py`; `tests/test_action_approval.py` (new)
 **Goal:** Before any agent can mutate an external system (Batch 129), build the human-gated rail: proposed mutations land in an approval queue (dry-run by default), an operator confirms/rejects, and high-trust agents + low-risk action types can be auto-approved per namespace policy. Trust widens this bypass but NEVER bypasses the queue's existence.
 **Steps:**
-1. Migration 027 + schema.sql: `action_approval_queue(id, namespace_id, agent_id, action_type, target_system, target_entity_id, proposed_payload JSONB, status TEXT CHECK(status IN ('pending','approved','rejected','executed','expired')), dry_run_result JSONB, created_at, resolved_at, resolved_by)`; RLS enabled + forced.
+1. Verify the C0 `action_approval_queue` table exists (cols incl. `status` CHECK in pending/approved/rejected/executed/expired, `proposed_payload`, `dry_run_result`, `resolved_*`) with FORCE RLS, and the read-only GET endpoints C0 shipped. (No DDL here.) This batch adds the WRITE/transition behavior + auto-approve policy on top.
 2. Enqueue API: a proposed action is stored `pending` with `dry_run=true` semantics; the stored `proposed_payload` is exactly what would be sent (no execution here).
 3. Approve/reject admin endpoints: approve ⇒ status `approved` + `action_approved` WORM event (execution is Batch 129); reject ⇒ `rejected` + `action_rejected` event. 
 4. Auto-approve policy: read `namespaces.metadata.<system>.auto_approve` + agent trust (Batch 113) ≥ `cfg.NCE_ACTION_AUTOAPPROVE_TRUST` (default 0.85) AND action_type in a low-risk allowlist ⇒ mark `approved` automatically with an `action_auto_approved` event. Everything else stays `pending`.

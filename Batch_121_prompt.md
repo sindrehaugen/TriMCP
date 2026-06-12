@@ -7,7 +7,7 @@
    - `make typecheck` clean
    - the specific test named in the batch passes
    - existing DLQ/tasks tests still pass
-6. **Migrations:** none (reuse existing `dead_letter_queue` columns; fingerprint stored in existing JSONB/metadata or a nullable column only if one already exists — if not, store in metadata, do NOT add a migration).
+6. **Migrations:** NONE. `dead_letter_queue.error_fingerprint` + `quarantined_until` columns were established by **Batch C0** (already in `main`). Use them directly (do not stash in JSONB metadata). If absent, STOP — C0 was not merged.
 7. **WORM/RLS invariants (never violate):** tenant-scoped; circuit-open flag is Redis-only; no `event_log` mutation.
 8. **Secrets:** `NCE_MASTER_KEY` env-only.
 9. **DB-dependent tests** are `@pytest.mark.integration`.
@@ -20,7 +20,7 @@
 **Files:** `nce/dead_letter_queue.py`; `nce/tasks.py` (enqueue guard); `nce/notifications.py`; `nce/admin_handlers/fleet.py` (circuit-close endpoint); `nce/config.py`; `tests/test_dlq_triage.py` (new)
 **Goal:** DLQ faults are stored and alerted but never consumed — replay is fully manual, and a deterministically-failing task type retries forever. Add error-fingerprint triage: auto-replay transients, circuit-break repeat deterministic failures.
 **Steps:**
-1. Fingerprint: `sha256(task_name + exception_class + normalized_top_frame)`. Classify transient (timeouts, connection resets, 429/5xx) vs deterministic.
+1. Fingerprint: `sha256(task_name + exception_class + normalized_top_frame)`, stored in the C0 `dead_letter_queue.error_fingerprint` column. Classify transient (timeouts, connection resets, 429/5xx) vs deterministic. Use `quarantined_until` for the circuit window where a persisted timestamp is clearer than the Redis flag.
 2. Transient ⇒ auto-replay with exponential backoff (max `cfg.NCE_DLQ_AUTO_REPLAY_MAX`, default 3), then alert and leave for manual handling.
 3. Deterministic ⇒ after `k=cfg.NCE_DLQ_CIRCUIT_THRESHOLD` (default 3) same-fingerprint entries, set `nce:dlq:quarantine:{task_name}` in Redis (TTL `cfg.NCE_DLQ_CIRCUIT_TTL_S`, default 3600). `tasks.py` enqueue rejects that task type fast while the flag is set, with an alert.
 4. `fleet.py`: admin endpoint to close the circuit (delete the flag). Config knobs registered.

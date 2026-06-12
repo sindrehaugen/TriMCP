@@ -7,7 +7,7 @@
    - `make typecheck` clean
    - the specific test named in the batch passes (including the loop test)
    - existing D365/tool-registry tests still pass (bump tool counts)
-6. **Migrations:** none (reuse Batch 128 table; idempotency dedup may reuse `processed_outbox_events`-style table from Batch 110 or a small actions dedup — prefer reuse; if a new table is truly needed, STOP and report rather than adding one here).
+6. **Migrations:** NONE. The `action_idempotency` table (PK `(namespace_id, idempotency_key)`) and `action_approval_queue` were established by **Batch C0** (already in `main`). Use them directly. If absent, STOP — C0 was not merged.
 7. **WORM/RLS invariants (never violate):** every executed action is a WORM event with request+response hashes and `origin_event_id`; the action only executes from an `approved` queue row; tenant-scoped; dry-run is the default.
 8. **Secrets:** Azure creds + `NCE_MASTER_KEY` env-only.
 9. **DB-dependent tests** are `@pytest.mark.integration`; Dataverse mocked.

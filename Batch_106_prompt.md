@@ -7,7 +7,7 @@
    - `make typecheck` (mypy strict on `nce/`) clean
    - the specific test named in the batch passes
    - existing D365/consolidation/replay/memory tests still pass
-6. **Migrations:** add `nce/migrations/022_change_origin_tags.sql` (next free number — confirm 022 is unused before writing) and mirror the columns into `nce/schema.sql`.
+6. **Migrations:** NONE. `change_origin` + `origin_event_id` on `memories`/`kg_nodes`/`kg_edges` were established by **Batch C0** (already in `main`). Verify they exist; do NOT add a migration or edit `schema.sql`. If absent, STOP — C0 was not merged.
 7. **WORM/RLS invariants (never violate):** all tenant SQL runs inside the existing namespace-scoped context; every write keeps its `namespace_id` filter; never `UPDATE`/`DELETE` `event_log` rows. The new `origin_event_id` references an event id but adds NO FK to `event_log` (partitioned/WORM) — store the UUID only.
 8. **Secrets:** `NCE_MASTER_KEY` is environment-only.
 9. **DB-dependent tests** are `@pytest.mark.integration`.
@@ -17,10 +17,10 @@
 
 **Skills:** `database-architect` (primary), `python-pro`
 **Depends on:** none
-**Files:** `nce/migrations/022_change_origin_tags.sql` (new); `nce/schema.sql` (`kg_edges`, `kg_nodes`, `memories` defs + RLS unchanged); `nce/vertical_modules/dynamics365/sync.py` (kg upserts); `nce/vertical_modules/dynamics365/ingestion.py`; `nce/tasks.py` (`process_d365_event` path); `nce/consolidation.py` (kg insert ~`:321-333`); `nce/replay.py` (fork apply path); `nce/orchestrators/memory.py` (saga kg writes); `tests/test_change_origin.py` (new)
+**Files:** `nce/vertical_modules/dynamics365/sync.py` (kg upserts); `nce/vertical_modules/dynamics365/ingestion.py`; `nce/tasks.py` (`process_d365_event` path); `nce/consolidation.py` (kg insert ~`:321-333`); `nce/replay.py` (fork apply path); `nce/orchestrators/memory.py` (saga kg writes); `tests/test_change_origin.py` (new)
 **Goal:** Make change-origin first-class so echo suppression (Batch 119) and loop detection (Batch 129) become possible. This is retrofit-impossible after a mutating tool ships — do it now. Add `change_origin TEXT NOT NULL DEFAULT 'unknown'` with `CHECK (change_origin IN ('sync','webhook','agent','operator','consolidation','replay','unknown'))` and nullable `origin_event_id UUID` to `kg_edges`, `kg_nodes`, and `memories`. Tag every write site with its true origin.
 **Steps:**
-1. Migration 022 + schema.sql: add the two columns to all three tables; backfill existing rows to `'unknown'`. Confirm column names don't already exist (Batch 21/64 touched embeddings on these tables) — if present, STOP.
+1. Verify the C0 columns (`change_origin`, `origin_event_id`) exist on all three tables. Backfill of existing rows to `'unknown'` was C0's default — confirm. (No DDL here.)
 2. Tag write sites: `dynamics365/sync.py` upserts → `'sync'`; `ingestion.py` / `tasks.process_d365_event` → `'webhook'`; `consolidation.py` derived edges → `'consolidation'`; `replay.py` fork application → `'replay'`; `orchestrators/memory.py` saga → `'agent'` or `'operator'` derived from the caller context (agent_id present ⇒ agent; admin/operator path ⇒ operator).
 3. Upsert precedence: in the `ON CONFLICT … DO UPDATE` clauses for `kg_edges`/`kg_nodes`, only overwrite `change_origin` when the incoming origin is higher-authority (`sync` > `webhook` > `consolidation` > `unknown`); never let a webhook downgrade a sync-authored edge. Encode as a CASE in the DO UPDATE.
 4. Set `origin_event_id` to the saga/append_event id where one exists at the write site; leave NULL where there is none.
