@@ -912,6 +912,13 @@ class MemoryOrchestrator(OrchestratorBase):
                     f"{payload.namespace_id}/{payload.session_id}/{uuid.uuid4().hex}{file_ext}"
                 )
 
+                # Enforce that the object name carries the namespace prefix
+                ns_prefix = f"{payload.namespace_id}/"
+                if not object_name.startswith(ns_prefix):
+                    raise PermissionError(
+                        "Access denied: Object name must start with namespace prefix."
+                    )
+
                 await asyncio.to_thread(
                     self.minio_client.fput_object,
                     bucket_name,
@@ -1409,6 +1416,12 @@ class MemoryOrchestrator(OrchestratorBase):
                 warnings.append("minio_object_present_but_client_unconfigured")
             else:
                 try:
+                    # Enforce that the object name carries the namespace prefix
+                    ns_prefix = f"{namespace_id}/"
+                    if not object_name.startswith(ns_prefix):
+                        raise PermissionError(
+                            "Access denied: Object name does not belong to this namespace."
+                        )
                     await asyncio.to_thread(self.minio_client.remove_object, bucket, object_name)
                     minio_objects_removed = 1
                 except Exception as exc:

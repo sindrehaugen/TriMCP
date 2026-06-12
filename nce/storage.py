@@ -22,31 +22,29 @@ def generate_secure_presigned_url(
     minio_client: Minio,
     bucket_name: str,
     object_name: str,
+    current_namespace_id: str | UUID,
     method: str = "GET",
     expiry_seconds: int = 900,
     expected_mime: str | None = None,
-    current_namespace_id: str | UUID | None = None,
 ) -> str:
     """
     Generate a secure pre-signed URL for a MinIO object.
 
     Enforces the following security boundaries:
-    1. Tenant Isolation: If current_namespace_id is specified, validates that
-       the object_name starts with the prefix "{namespace_id}/".
+    1. Tenant Isolation: Validates that the object_name starts with the prefix "{namespace_id}/".
     2. Expiry Bounding: Restricts expiry to a maximum of 15 minutes (900 seconds).
     3. MIME/Extension Validation: For PUT operations, validates that the extension
        in the object_name is supported by the NCE document dispatcher.
     """
     # 1. Tenant Isolation Check
-    if current_namespace_id:
-        ns_str = str(current_namespace_id).strip().lower()
-        if not object_name.lower().startswith(f"{ns_str}/"):
-            log.warning(
-                "Access denied: Tenant path mismatch. Namespace %s requested object %s",
-                ns_str,
-                object_name,
-            )
-            raise PermissionError("Access denied: Tenant path mismatch.")
+    ns_str = str(current_namespace_id).strip().lower()
+    if not object_name.lower().startswith(f"{ns_str}/"):
+        log.warning(
+            "Access denied: Tenant path mismatch. Namespace %s requested object %s",
+            ns_str,
+            object_name,
+        )
+        raise PermissionError("Access denied: Tenant path mismatch.")
 
     # 2. Expiry Bounding Check
     bounded_expiry = min(max(expiry_seconds, 1), MAX_EXPIRY_SECONDS)
@@ -87,7 +85,7 @@ def generate_secure_presigned_url(
     try:
         if method_upper == "GET":
             # For GET operations, enforce attachment Content-Disposition to prevent inline HTML/XSS
-            response_headers = {
+            response_headers: dict[str, str | list[str] | tuple[str]] = {
                 "response-content-type": expected_mime or "application/octet-stream",
                 "response-content-disposition": "attachment",
             }

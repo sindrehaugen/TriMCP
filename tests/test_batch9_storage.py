@@ -52,6 +52,7 @@ def test_presigned_url_expiry_bounding():
         minio_client=minio_mock,
         bucket_name="mcp-document",
         object_name=object_name,
+        current_namespace_id=ns_id,
         method="GET",
         expiry_seconds=3600,  # 1 hour
     )
@@ -71,6 +72,7 @@ def test_presigned_url_put_validation():
         minio_client=minio_mock,
         bucket_name="mcp-document",
         object_name=f"{ns_id}/session-1/document.pdf",
+        current_namespace_id=ns_id,
         method="PUT",
     )
 
@@ -80,6 +82,7 @@ def test_presigned_url_put_validation():
             minio_client=minio_mock,
             bucket_name="mcp-document",
             object_name=f"{ns_id}/session-1/malicious.exe",
+            current_namespace_id=ns_id,
             method="PUT",
         )
     assert "Unsupported file extension" in str(exc_info.value)
@@ -250,3 +253,106 @@ async def test_dispatch_gc_collection():
             assert res.text == "hello"
             # Verify gc.collect() was explicitly called in dispatch.py success path
             mock_gc.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_store_artifact_object_name_prefix(monkeypatch):
+    from nce.models import ArtifactPayload
+    from nce.orchestrators.memory import MemoryOrchestrator
+
+    pg_pool = MagicMock()
+    mongo_client = MagicMock()
+    redis_client = MagicMock()
+    minio_client = MagicMock(spec=Minio)
+
+    orchestrator = MemoryOrchestrator(
+        pg_pool=pg_pool,
+        mongo_client=mongo_client,
+        redis_client=redis_client,
+        minio_client=minio_client,
+    )
+
+    monkeypatch.setattr("pathlib.Path.is_file", lambda self: True)
+    orchestrator.store_memory = AsyncMock(return_value={"payload_ref": "some_ref"})
+
+    ns_id = uuid4()
+    payload = ArtifactPayload(
+        namespace_id=ns_id,
+        user_id="user1",
+        session_id="session1",
+        media_type="image",
+        file_path_on_disk="test.png",
+        summary="Test artifact",
+    )
+
+    res = await orchestrator.store_artifact(payload)
+    assert res == "some_ref"
+
+    # Assert that fput_object was called with an object_name starting with f"{ns_id}/"
+    minio_client.fput_object.assert_called_once()
+    args, kwargs = minio_client.fput_object.call_args
+    # signature: fput_object(bucket_name, object_name, file_path)
+    called_object_name = args[1]
+    assert called_object_name.startswith(f"{ns_id}/")
+
+
+@pytest.mark.asyncio
+async def test_shred_memory_cross_tenant_denied():
+    from nce.orchestrators.memory import MemoryOrchestrator
+
+    pg_pool = MagicMock()
+    mongo_client = MagicMock()
+    redis_client = MagicMock()
+    minio_client = MagicMock(spec=Minio)
+
+    orchestrator = MemoryOrchestrator(
+        pg_pool=pg_pool,
+        mongo_client=mongo_client,
+        redis_client=redis_client,
+        minio_client=minio_client,
+    )
+
+    ns_id = uuid4()
+    other_ns_id = uuid4()
+    memory_id = uuid4()
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow.return_value = {
+        "payload_ref": "507f1f77bcf86cd799439011",
+        "dek_key_id": "key-1",
+        "was_encrypted": True,
+        "user_id": "user1",
+        "session_id": "session1",
+        "agent_id": "agent1",
+        "metadata": {"bucket": "mcp-image", "object_name": f"{other_ns_id}/session1/file.png"},
+    }
+
+    mock_conn.execute.return_value = "UPDATE 1"
+    mock_conn.fetch.return_value = []
+
+    mock_tx = AsyncMock()
+    mock_conn.transaction = MagicMock(return_value=mock_tx)
+
+    class MockSession:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    with (
+        patch("nce.orchestrators.memory.scoped_pg_session", return_value=MockSession()),
+        patch("nce.event_log.append_event", AsyncMock()),
+    ):
+        res = await orchestrator.shred_memory(
+            memory_id=str(memory_id), namespace_id=str(ns_id), agent_id="system"
+        )
+
+    warnings = res["receipt"]["warnings"]
+    assert len(warnings) > 0
+    assert any(
+        "Access denied: Object name does not belong to this namespace" in w for w in warnings
+    )
+
+    # Verify that remove_object was NEVER called
+    minio_client.remove_object.assert_not_called()
