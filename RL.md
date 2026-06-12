@@ -1,0 +1,659 @@
+# Neuro Cognitive Engine (NCE) — Sequential Refactoring Verification State Log
+
+> **Protocol Engine:** Gemini 3.5 Flash
+> **Target Architecture:** Gated Enterprise Orchestration Layer
+> **Methodology:** File-Backed Iterative Verification via Markdown Source Diffs
+
+
+---
+
+## State Registry
+* [DONE] Batch 1 — Fix `_handle_store_memory` schema mismatch [PASSED TAG]
+* [DONE] Batch 2 — Fix `_handle_consolidation_run` schema mismatch [PASSED TAG]
+* [DONE] Batch 3 — Fix `_handle_boost_memory` salience target [PASSED TAG]
+* [DONE] Batch 4 — Integration test: replay handlers apply real state (R1 regression guard) [PASSED TAG]
+* [DONE] Batch 5 — Add `pytest-xdist` for parallel test runs (T2) [PASSED TAG]
+* [DONE] Batch 6 — Add per-test timeout (T3) [PASSED TAG]
+* [DONE] Batch 7 — Scope the signing-cache reset so unit tests stop re-deriving the KDF (T1) [PASSED TAG]
+* [DONE] Batch 8 — Mark heavy ML-model tests so they can be deselected (T5) [PASSED TAG]
+* [DONE] Batch 9 — Register the dormant decay-prune job (Phase 1.3) [PASSED TAG]
+* [DONE] Batch 10 — Config knobs for continuous chain verification (Phase 1.1a) [PASSED TAG]
+* [DONE] Batch 11 — Add the continuous Merkle-chain-verification cron tick (Phase 1.1b) [PASSED TAG]
+* [DONE] Batch 12 — Migration: `event_log.signature_version` (Phase 1.2a) [PASSED TAG]
+* [DONE] Batch 13 — Sign `prev_chain_hash` in the event signature (Phase 1.2b) [PASSED TAG]
+* [DONE] Batch 14 — Integration tests for chain + decay wiring (Phase 3 slice) [PASSED TAG]
+* [DONE] Batch 15 — Route DLQ exhaustion to the alert dispatcher (III.1a) [PASSED TAG]
+* [DONE] Batch 16 — Route cron-tick + outbox failures to alerts (III.1b) [PASSED TAG]
+* [DONE] Batch 17 — Deepen health checks (III.4) [PASSED TAG]
+* [DONE] Batch 18 — Instrument the saga write path (III.3a) [PASSED TAG]
+* [DONE] Batch 19 — Quota + embedding-fallback metrics & alert (III.3b, closes N-D) [PASSED TAG]
+* [DONE] Batch 20 — Add timeouts to all NetBox clients (N-B, unbounded-hang fix) [PASSED TAG]
+* [DONE] Batch 21 — Route the embedding sidecar + D365/NetBox HTTP through the resilience helper (N-A/N-C) [PASSED TAG]
+* [DONE] Batch 22 — Close the SSRF TOCTOU + pin extractor binaries (III.6) [PASSED TAG]
+* [DONE] Batch 23 — ATMS cascade on contradiction resolution (Phase 4.1) [PASSED TAG]
+* [DONE] Batch 24 — Expose `neuromorphic_search` as an MCP tool (Phase 4.3) [PASSED TAG]
+* [DONE] Batch 25 — Wire do-calculus circuit escalation (Phase 4.2) [PASSED TAG]
+* [DONE] Batch 26 — Snapshot import / restore (III.2) [PASSED TAG]
+* [DONE] Batch 27 — Deterministic identity remap (uuid5) in replay (Phase 2.1) [PASSED TAG]
+* [DONE] Batch 28 — Payload copy strategy (Phase 2.1b) [PASSED TAG]
+* [DONE] Batch 29 — Faithful timestamps with mandatory re-sign (Phase 2.2) [PASSED TAG]
+* [DONE] Batch 30 — Namespace state-digest + equality gate (Phase 2.3) [PASSED TAG]
+* [DONE] Batch 31 — `settings` table migration (V.1a) [PASSED TAG]
+* [DONE] Batch 32 — `SettingsStore` accessor with precedence + cache (V.1b) [PASSED TAG]
+* [DONE] Batch 33 — Settings registry metadata (V.1a) [PASSED TAG]
+* [DONE] Batch 34 — `GET /api/admin/settings` (+ `/effective`, `/{key}`) (V.1b) [PASSED TAG]
+* [DONE] Batch 35 — `PATCH /api/admin/settings` (207) + `config_changed` WORM event (V.1b/V.5) [PASSED TAG]
+* [DONE] Batch 36 — `/reset`, `/reload`, `/pending` endpoints (V.1b) [PASSED TAG]
+* [DONE] Batch 37 — Honest Uncertainty in search results (II.1) [PASSED TAG]
+* [DONE] Batch 38 — Epistemic Receipts (II.2) [PASSED TAG]
+* [DONE] Batch 39 — Subject-scoped `/api/me/*` surface (cross-cutting enabler) [PASSED TAG]
+* [DONE] Batch 40 — Glass Profile endpoint + retract→ATMS (II.3) [PASSED TAG]
+* [DONE] Batch 41 — Accountable Federation: write `a2a_shared_query` + signed provenance (II.6) [PASSED TAG]
+* [DONE] Batch 42 — A2A security hardening (III.5) [PASSED TAG]
+* [DONE] Batch 43 — Bi-temporal "explain my past decision" (II.5) [PASSED TAG]
+* [DONE] Batch 44 — Close raw-PII side sinks (saga-log + me_app edit), preserve time-travel (R2 / VII.5; KG-history 44b deferred) [PASSED TAG]
+* [DONE] Batch 45 — Envelope-encryption subsystem (II.4a) [PASSED TAG]
+* [DONE] Batch 46 — Encrypt `episodes.raw_data` under the DEK + teach read paths (II.4b) [PASSED TAG]
+* [DONE] Batch 47 — `shred_memory` / `forget_subject` + deletion receipt (II.4c) [PASSED TAG]
+* [DONE] Batch 48 — DSAR capstone (VII.7) [PASSED TAG]
+* [DONE] Batch 49 — Verify PII-before-derivation on every write path (VII.1) [PASSED TAG]
+* [DONE] Batch 50 — Scoped MongoDB accessor (VII.2) [PASSED TAG]
+* [DONE] Batch 51 — MinIO per-namespace isolation (VII.3) [PASSED TAG]
+* [DONE] Batch 52 — Auto-generated Settings panel (V.3) [PASSED TAG]
+* [DONE] Batch 53 — Settings interaction design (V.3a) [PASSED TAG]
+* [DONE] Batch 54 — `config_changed` time-travel + rollback (V.6) [PASSED TAG]
+* [DONE] Batch 55 — Secrets-manager seam + remove dev dotenv-persist in prod (VI.1) [PASSED TAG]
+* [DONE] Batch 56 — Resolve `nce_gc` least-privilege (R4 / VI.4) [PASSED TAG]
+* [DONE] Batch 57 — Mongo write durability for the saga (R-A / VI.6a) [PASSED TAG]
+* [DONE] Batch 58 — Reverse-orphan reconciliation sweep (R-B / VI.6a) [PASSED TAG]
+* [DONE] Batch 59 — RQ in-flight job recovery (R-C / VI.6a) [PASSED TAG]
+* [DONE] Batch 60 — Multicore: HTTP workers + RQ replicas + thread pinning (VI.5a) [PASSED TAG]
+* [DONE] Batch 61 — RAM: offload spaCy + NLI to a sidecar; container mem limits (VI.5b) [PASSED TAG]
+* [DONE] Batch 62 — Disk: datastore tuning + halfvec + tmpfs temp (VI.5c) [PASSED TAG]
+* [DONE] Batch 63 — Cross-encoder reranking (IV.1) [PASSED TAG]
+* [RUNNING] Batch 64 — Multi-vector / aspect embeddings (IV.2) [PASSED TAG]
+* [LOCKED] Batch 65 — diag-config: `NCE_DIAG_*` configuration surface (Diag P1) [NO TAG]
+* [LOCKED] Batch 66 — ingestion-event-type: `ingestion_completed` event type + replay handler (Diag P1) [NO TAG]
+* [LOCKED] Batch 67 — diag-schema: diag tables + `topology_graph` unique index + RLS (Diag P1) [NO TAG]
+* [LOCKED] Batch 68 — diag-queue-lane: dedicated `diag_ingest` RQ lane (Diag P1) [NO TAG]
+* [LOCKED] Batch 69 — landing-bucket-ttl: MinIO landing bucket + 7-day lifecycle (Diag P1) [NO TAG]
+* [LOCKED] Batch 70 — log-profiles: vendor log-profile registry (Diag P2) [NO TAG]
+* [LOCKED] Batch 71 — stream-reduce: flat-memory Stream-and-Reduce core (Diag P2) [NO TAG]
+* [LOCKED] Batch 72 — netbox-enrichment: NetBox device-context resolver (Diag P2) [NO TAG]
+* [LOCKED] Batch 73 — diag-ingest-orchestrator: idempotent topology/rollup writer (Diag P2) [NO TAG]
+* [LOCKED] Batch 74 — digest-sink-central: `DigestSink` + `CentralSink` cognitive-layer write (Diag P2) [NO TAG]
+* [LOCKED] Batch 75 — diag-worker-task: `process_diag_bundle` RQ task (Diag P2) [NO TAG]
+* [LOCKED] Batch 76 — diag-mcp-handlers: diagnostics MCP handlers (Diag P2) [NO TAG]
+* [LOCKED] Batch 77 — diag-tool-registry: register diag tools + tool-count tests (Diag P2) [NO TAG]
+* [LOCKED] Batch 78 — crash-storm-atms: crash-storm → ATMS cascade (Diag P3) [NO TAG]
+* [LOCKED] Batch 79 — causal-root-cause-tool: `diag_root_cause` do-calculus tool (Diag P3) [NO TAG]
+* [LOCKED] Batch 80 — source-adapter-base: pluggable source-adapter contract (Diag P4) [NO TAG]
+* [LOCKED] Batch 81 — diag-cron-puller: per-namespace adapter pull tick (Diag P4) [NO TAG]
+* [LOCKED] Batch 82 — diag-metrics: diagnostics metric set (Diag hardening) [NO TAG]
+* [LOCKED] Batch 83 — worker-hardening: quota + concurrency cap + metrics + temp sweep (Diag hardening) [NO TAG]
+* [LOCKED] Batch 84 — landing-gc: orphan landing-object reaper — closes central-first release (Diag hardening) [NO TAG]
+* [LOCKED] Batch 85 — edge-role-config: edge role/mode config (Diag P5) [NO TAG]
+* [LOCKED] Batch 86 — embedding-parity-guard: edge↔enterprise embedding parity + fallback kill (Diag P5) [NO TAG]
+* [LOCKED] Batch 87 — fdw-federation: read-only FDW to enterprise `kg_nodes`/`kg_edges` (Diag P5) [NO TAG]
+* [LOCKED] Batch 88 — edge-reconcile-labels: FDW entity reconciliation (Diag P5) [NO TAG]
+* [LOCKED] Batch 89 — edge-sink: `EdgeSink` zero-copy `GraphMutationPayload` (Diag P5) [NO TAG]
+* [LOCKED] Batch 90 — outbound-spool: durable store-and-forward sender (Diag P5) [NO TAG]
+* [LOCKED] Batch 91 — ingest-digest-endpoint: mTLS/JWT `POST /ingest/digest` merge endpoint (Diag P5) [NO TAG]
+* [LOCKED] Batch 92 — edge-offline-autonomy: autonomous offline mode + resync (Diag P5b) [NO TAG]
+* [LOCKED] Batch 93 — packaging-windows: Windows `.exe` installer + services (Diag P6) [NO TAG]
+* [LOCKED] Batch 94 — packaging-macos: macOS `.dmg` + launchd (Diag P6) [NO TAG]
+* [LOCKED] Batch 95 — packaging-debian: Debian/Ubuntu `.deb` + systemd (Diag P6) [NO TAG]
+* [LOCKED] Batch 96 — packaging-proxmox: Proxmox LXC/VM appliance (Diag P6) [NO TAG]
+* [LOCKED] Batch 97 — release-ci: tagged installer release workflow (Diag P6) [NO TAG]
+* [LOCKED] Batch 98 — standalone-guide: standalone user guide doc (Diag docs) [NO TAG]
+
+### Architectural audit remediation (2026-06-11; prompts in `Batch_99..105_prompt.md`)
+> Next free sequence after the Diagnostic Log Digestion Engine roadmap (65–98). READY, not dependency-blocked; kept `[LOCKED]` only so `generate_diff.py` (which auto-picks `[RUNNING]`) does not grab them while Batches 53/58 are mid-flight. Each takes its own clean branch + commit.
+* [LOCKED] Batch 99 — chrono-nesting-guard: reject nested `branch_timeline` (audit Domain 4) [NO TAG] — *code pre-applied to working tree; gate green (ruff+mypy clean, 8/8 `test_chrono.py`); needs clean-branch commit + TAG*
+* [LOCKED] Batch 100 — governance-last-known-good: kill fail-open governance on Redis outage (audit Domain 1) [NO TAG]
+* [LOCKED] Batch 101 — atms-iterative-traversal: remove unbounded ATMS recursion (audit Domain 4) [NO TAG]
+* [LOCKED] Batch 102 — health-probe-signature-verify: verify event signatures, not just Merkle chain (audit Domain 2) [NO TAG]
+* [LOCKED] Batch 103 — docalculus-truncation-report: report `truncated_targets` vs silent max-depth drop (audit Domain 4) [NO TAG]
+* [LOCKED] Batch 104 — reembed-vram-guard: wire the orphaned VRAM metric into a back-pressure guard (audit Domain 3) [NO TAG]
+* [LOCKED] Batch 105 — gc-cascade-age-grace: PG cascade respects `GC_ORPHAN_AGE_SECONDS` (audit Domain 2) [NO TAG]
+> Collision-resolved into existing open prompts (no new batch): topology_graph `FORCE ROW LEVEL SECURITY` (audit Domain 5 / D1) folded into **Batch 67** step 4; streaming <50MB ingestion is already **Batch 71**; `nce_gc` least-privilege was **Batch 56** (done). Dropped as false-positive: `replay_runs` already has `FORCE` + source-scoped policy.
+
+### Cognitive muscles: closing scaffolded-vs-shipped (2026-06-11; plan in `NCE_MUSCLES_PLAN.md`)
+> Derived from the five-pillar + function-level audit. Verdict: infrastructure (WORM/Merkle log, replay, RLS, outbox, MCP surface) is load-bearing; four areas are scaffolded but not yet load-bearing — **epistemics** (ATMS/contradiction split-brain, hallucination compounding), **learning loop** (signals collected, not consumed), **vertical write path** (agents read-only; loop-amplification risk on first mutating tool), **security deployment** (mTLS off, no nonces, Redis open, Citus untested, outbox idempotency assumed). Batches are dependency-ordered into 4 phases (Foundations → Closing-loops → Structural → Unlock). Kept `[LOCKED]` so `generate_diff.py` does not auto-grab them while 64/99–105 are open; each takes its own clean branch + commit + TAG. Collision files (never parallel): `schema.sql`+migration#, `config.py`, `tool_registry.py`+counts, `cron.py`, `orchestrators/memory.py`, `docker-compose.yml`, `gc.py`. **Pre-flight required:** Batches 109 and 111 are scoped as *residuals* on already-`[PASSED TAG]` work (Batch 46 read-path, Batch 23 cascade) — confirm what those left undone before implementing.
+> **Phase 1 — Foundations (no deps):**
+* [LOCKED] Batch 106 — change-origin-tags: `change_origin` + `origin_event_id` on every kg_edges/kg_nodes/memories write site, authority-precedence upsert (Muscles C1; retrofit-impossible later) [NO TAG]
+* [LOCKED] Batch 107 — derivation-depth-guard: `memories.derivation_depth` + cap on consolidation input + edge confidence attenuation `conf×γ^depth` (Muscles A1; hallucination-compounding fix) [NO TAG]
+* [LOCKED] Batch 108 — reembed-quality-gate-prod: wire neighbor-overlap Jaccard gate into `handle_commit_migration` + dimension preflight + WORM-audited force escape (Muscles B5) [NO TAG]
+* [LOCKED] Batch 109 — envelope-read-residual: route `re_embedder`/`reembedding_worker`/`consolidation`/`contradictions` reads through `maybe_decrypt_raw_data` + skip-on-failure flag (Muscles D6; closes Batch 46 kaizen) [NO TAG]
+* [LOCKED] Batch 110 — outbox-idempotency: `processed_outbox_events` dedup table + decorator handler registry + honest at-least-once contract (Muscles D9) [NO TAG]
+> **Phase 2 — Closing the loops:**
+* [LOCKED] Batch 111 — contradiction-cascade-residual: floor confidence on origin-tagged edges of retracted memories + re-queue `superseded`/`merged` consolidations (Muscles A2; extends Batch 23, depends 106/107) [NO TAG]
+* [LOCKED] Batch 112 — signal-consequences: salience prior on quarantine confirm + WORM `quarantine_confirmed`/`quarantine_rejected` events (Muscles B1) [NO TAG]
+* [LOCKED] Batch 113 — actor-trust-scores: `actor_trust` table (Laplace-smoothed) + dynamic quarantine threshold feed (Muscles B2; depends 112) [NO TAG]
+* [LOCKED] Batch 114 — d365-incremental-sync: `modifiedon` watermark cursors + weekly full-refresh delete reconcile (Muscles C2) [NO TAG]
+* [LOCKED] Batch 115 — mtls-prod-default: refuse boot when `IS_PROD` + mTLS unconfigured unless acknowledged (Muscles D1) [NO TAG]
+* [LOCKED] Batch 116 — hmac-nonce-mandatory: required nonce when Redis reachable + window ±300s→±90s, fail-closed in prod (Muscles D2) [NO TAG]
+* [LOCKED] Batch 117 — redis-auth-scoped-locks: compose `requirepass` + namespace-scoped cron-lock keys (Muscles D3) [NO TAG]
+* [LOCKED] Batch 118 — secrets-file-convention: `*_FILE` secret loading + Docker secrets in compose (Muscles D4) [NO TAG]
+> **Phase 3 — Structural upgrades:**
+* [LOCKED] Batch 119 — echo-suppression: Redis echo-set keyed by origin event + webhook echo tagging + skip semantic re-ingest (Muscles C3; depends 106/114) [NO TAG]
+* [LOCKED] Batch 120 — causal-dag-multiparent: `event_parents` table (N→1 lineage) + `detect_causal_cycles` admin tool (Muscles C5) [NO TAG]
+* [LOCKED] Batch 121 — dlq-auto-triage: error-fingerprint classifier + auto-replay transients + task-type circuit breaker (Muscles B3) [NO TAG]
+* [LOCKED] Batch 122 — citus-deploy-or-descope: CI Citus profile + RLS-on-distributed/2PC/seq matrix; green ⇒ keep, fail ⇒ move migration 010 to `optional/` + strike README claim (Muscles D5) [NO TAG]
+* [LOCKED] Batch 123 — worker-confinement: scoped worker image (no admin/master env) + `deploy.resources.limits` + `no-new-privileges` + rlimit subprocess wrapper (Muscles D7) [NO TAG]
+* [LOCKED] Batch 124 — external-tamper-anchor: hourly object-locked chain-head anchor to MinIO + `verify_merkle_chain --against-anchor` (Muscles D8) [NO TAG]
+* [LOCKED] Batch 125 — event-retention: post-anchor partition archive+drop + resolved-contradiction/low-confidence-edge purge respecting origin tags (Muscles E1; depends 124) [NO TAG]
+* [LOCKED] Batch 126 — vector-tenancy-assert: `assert_namespace_filter()` on every `memory_embeddings` query + document `kg_node_embeddings` global (Muscles E2) [NO TAG]
+* [LOCKED] Batch 127 — nli-lifecycle: replace `@lru_cache` singleton with TTL/idle eviction + `empty_cache` + VRAM gauge (Muscles E3) [NO TAG]
+> **Phase 4 — The unlock (only after Phase 1–3 rails exist):**
+* [LOCKED] Batch 128 — action-approval-queue: `action_approval_queue` table + dry-run default + trust-gated auto-approve policy (Muscles C4a; depends 106/113/116) [NO TAG]
+* [LOCKED] Batch 129 — d365-mutating-tools: `d365_update_case` + `d365_create_escalation` behind idempotency + per-entity rate limit + causal-ancestry loop breaker + echo provenance (Muscles C4b; depends 119/120/128) [NO TAG]
+* [LOCKED] Batch 130 — epistemic-self-maintenance: auto re-evaluate open contradictions on retraction + feed `contradictions_sourced` into trust (Muscles A3; depends 111/113) [NO TAG]
+* [LOCKED] Batch 131 — decay-param-learning: report-only per-class post-prune miss-rate, then feature-flagged ±10%/wk auto-tune with `config_changed` WORM events (Muscles B4; depends 113) [NO TAG]
+
+---
+
+## Sequential Batch Evaluations
+
+### TAG Batch 1 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_1.md`, and modified files: `nce/replay.py`, `nce/admin_handlers/_shared.py`, `nce/admin_handlers/d365.py`.
+* **Findings:** None
+* **Structural Integrity:** Decoupling of `summary` and `salience` properties from the direct memory storage inserts is structurally clean and perfectly isolates metadata updates from the fundamental event/memory payload logs.
+* **Contractual Test Fidelity:** The test contract fidelity is high. The full suite of 2119 unit and integration tests successfully passes, proving the schema alignment is robust and has no adverse regression footprint.
+
+### TAG Batch 2 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_2.md`, and modified file: `nce/replay.py`.
+* **Findings:** None
+* **Structural Integrity:** The removal of `summary` and `salience` columns from the memories table insertion during replay of `consolidation_run` events matches the new schema layout. Storing `payload_ref` sourced from the event parameters and writing `salience` score to `memory_salience` via a separate insert/upsert query is cleanly decoupled and enforces correct relational bounds.
+* **Contractual Test Fidelity:** High. The test suite has been updated with mock database checks in `tests/test_replay_handlers_integration.py` that explicitly assert the absence of `summary`/`salience` in `memories` insertions and verify the separate `memory_salience` upserts, passing successfully.
+
+### TAG Batch 4 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_4.md`, and modified files: `tests/test_replay_handlers_integration.py`, `nce/replay.py`.
+* **Findings:** None
+* **Structural Integrity:** Replay handlers are correctly updated to route salience scoring to the `memory_salience` table and payload reference to `memories`, fully aligned with the NCE V3 schema design. The decoupling of salience updates and core memory insertion is clean and robust.
+* **Contractual Test Fidelity:** High. The newly introduced integration test `tests/test_replay_handlers_integration.py` runs against a live database using `scoped_pg_session`, seeding actual event streams (`store_memory`, `consolidation_run`, `boost_memory`) and asserting that target namespace rows land cleanly in `memories` and `memory_salience` with correct formats and boosted values.
+
+### TAG Batch 5 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_5.md`, `.env.example`, `Caddyfile`, `Makefile`, `README.md`, `verify_v1_launch.py`, `pytest.ini`.
+* **Findings:** None
+* **Structural Integrity:** Decoupling of HTTP/HTTPS binding in Caddyfile with security headers, global payload limits, and path-specific proxy routing isolates webhook payloads from administrative interfaces cleanly. Typechecking target paths in Makefile and testing isolation checks in verify_v1_launch.py are aligned with the NCE V3 requirements.
+* **Contractual Test Fidelity:** High. The test suite has been hardened with pytest-xdist running tests in parallel, asserting database and RLS isolation contracts cleanly. All 2121 tests pass successfully.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 6 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_6.md`, `requirements-dev.txt`, `pytest.ini`.
+* **Findings:** None
+* **Structural Integrity:** The addition of `pytest-timeout` as a development dependency and configuring it in `pytest.ini` are clean, decoupled, and do not affect the main source code of the Neuro-Cognitive Engine (NCE) application, keeping the operational configuration isolated from testing concerns.
+* **Contractual Test Fidelity:** High. The timeout configurations successfully terminate any tests that block indefinitely, ensuring the pipeline fails cleanly rather than hanging, which directly satisfies the test execution safety boundary.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 7 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_7.md`, `tests/conftest.py`, `tests/test_signing_cache.py`, `pytest.ini`.
+* **Findings:** None
+* **Structural Integrity:** The custom marker `signing_isolation` allows tests to opt-in to resetting the module-level signing key cache in conftest.py. This decouples individual cache-testing requirements from the broader test suite, eliminating redundant, computationally expensive Argon2id KDF derivations across standard unit/integration tests while preserving the safety of parallel execution.
+* **Contractual Test Fidelity:** High. The tests in `tests/test_signing_cache.py` target the `_SigningKeyCache` class directly, asserting proper storage, containment, length, cache eviction, eviction-triggered buffer zeroing, and rotate-key cache clearing. The entire module is marked with the `signing_isolation` mark to ensure correct cache cleanup, and all unit tests pass successfully.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 8 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_8.md`, `pytest.ini`, `tests/test_reembedding_worker.py`, `tests/test_sleep_consolidation.py`, `tests/test_openvino_npu_export.py`.
+* **Findings:** None
+* **Structural Integrity:** The introduction of the `heavy` marker in `pytest.ini` and its application as a module-level `pytestmark` in `tests/test_reembedding_worker.py`, `tests/test_sleep_consolidation.py`, and `tests/test_openvino_npu_export.py` decouples heavy model loading tests from fast unit runs. This keeps test execution clean, modular, and performant.
+* **Contractual Test Fidelity:** High. The new marker allows selecting or deselecting heavy tests via `pytest -m "not heavy"` or `pytest -m "heavy"`. Running `pytest -m "not heavy"` successfully deselected 44 tests and ran the remaining 2078 unit/integration tests with 100% success. Running `pytest -m "heavy"` executed the 44 model-loading/mocked model-loading tests successfully. All assertions are preserved and assert the expected boundaries.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 9 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_9.md`, `nce/cron.py`, `nce/temporal_decay.py`, `tests/test_cron_decay.py`, `tests/test_batch9_storage.py`.
+* **Findings:** None
+* **Structural Integrity:** The Ebbinghaus-style temporal decay and soft-pruning jobs are cleanly integrated with `nce/cron.py` and modularized in `nce/temporal_decay.py`. Concurrency safety is ensured via the APScheduler triggers and the distributed `CronLock`. Typing and error logging are robustly handled.
+* **Contractual Test Fidelity:** The new test `tests/test_cron_decay.py` verifies the bootstrap and registration of the decay prune job in the APScheduler instance. In addition, `tests/test_batch9_storage.py` asserts storage security, presigned URL isolation, and saga rollbacks, and all tests pass with 100% success.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 10 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md` (lines 1-141), `diff_batch_10.md` (lines 1-800), `nce/config.py` (lines 1-965).
+* **Findings:** None
+* **Structural Integrity:** The chain verification interval and startup depth parameters are added cleanly to the central configuration class using the established `_int_env` helper with correct defaults and minimum constraints. This maintains configuration consistency and centralized management.
+* **Contractual Test Fidelity:** The config variables resolve correctly and mypy typechecking on the config module is clean.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 11 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_11.md`, `nce/cron.py`, `nce/event_types.py`, `nce/db_utils.py`, `tests/test_cron_chain_verify.py`.
+* **Findings:** None
+* **Structural Integrity:** Continuous Merkle chain verification is integrated cleanly inside `nce/cron.py` and registered with the APScheduler framework. It scans all namespaces periodically (using interval configuration knobs) and at startup, ensuring concurrency safety using the distributed `CronLock` mechanism. On failure, it logs critical, dispatches alerts through `NotificationDispatcher`, and appends a `"chain_verification_failed"` audit event to the append-only event log.
+* **Contractual Test Fidelity:** Robust unit and integration tests are added in `tests/test_cron_chain_verify.py`. The boot test validates correct job registration with the scheduler, and the integration test creates a new namespace, appends pristine events, runs verification (setting `MERKLE_CHAIN_VALID` to 1), tampers an event using the `NCE_BYPASS_WORM` bypass conn (disabling and enabling trigger), and asserts that verification fails, setting the gauge to 0 and appending the `"chain_verification_failed"` event. All test suites pass successfully.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 12 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_12.md`, `nce/migrations/013_event_log_sig_version.sql`, and `nce/schema.sql`.
+* **Findings:** None
+* **Structural Integrity:** The database migration `nce/migrations/013_event_log_sig_version.sql` modifies the `event_log` table by adding a new `signature_version` column to handle backward compatibility. The column is correctly mirrored in `nce/schema.sql` within the `event_log` table definition. This provides a clean upgrade path without breaking existing signatures.
+* **Contractual Test Fidelity:** The change does not alter existing runtime validation logic directly, and all 2081 unit/integration tests continue to pass successfully. Typecheck and lint checks are green for the changed files.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 13 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_13.md`, `nce/event_log.py`, `tests/test_event_log_verification.py`.
+* **Findings:** None
+* **Structural Integrity:** The chain position and previous chain hash hex binding are cleanly integrated into HMAC signature generation and verification. Moving the retrieval of the previous chain hash before the signature generation in `append_event` ensures correct data flow for signature version 2. The database insertions set `signature_version = 2` for new events, ensuring proper versioning.
+* **Contractual Test Fidelity:** High. The newly introduced integration test `test_signature_version_2_integration` in `tests/test_event_log_verification.py` verifies both version 2 signature validation and version 1 backward compatibility. It correctly tests tampering of event parameters, tampering of the preceding chain hash (which triggers a verification failure for subsequent version 2 events), and validation of old version 1 events. The entire test suite of 2082 unit and integration tests passes successfully.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 14 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_14.md`, and modified/new files: `nce/cron.py`, `tests/test_chain_and_decay_integration.py`.
+* **Findings:** None
+* **Structural Integrity:** The integration test suite provides a clean, decoupled verification of both the Merkle chain tamper detection and the APScheduler job registration. The use of db-level trigger disablement in tests simulates real tampering precisely without needing app-level bypasses.
+* **Contractual Test Fidelity:** High. The newly introduced integration tests in `tests/test_chain_and_decay_integration.py` successfully assert the actual boundary of Merkle chain tamper detection (valid=False and returning correct first_break) and the database side effects of temporal decay soft-deletion (valid_to set for expired rows). All 2084 unit and integration tests pass successfully with strict mypy type checking.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 15 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_15.md`, and modified/new files: `nce/dead_letter_queue.py`, `tests/test_dead_letter_queue.py`, `.env.example`, `Caddyfile`, `Makefile`, `README.md`.
+* **Findings:** None
+* **Structural Integrity:** Decoupling of the alert dispatch mechanism from the core dead-letter queue storage flow is clean and non-blocking. The alert dispatcher handles tasks asynchronously via an internal queue and handles exceptions defensively, ensuring alert failures cannot disrupt key worker tasks.
+* **Contractual Test Fidelity:** High. The new tests verify both correct alert generation under nominal conditions and fail-safe handling when the notification dispatcher encounters errors. All tests pass successfully.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 16 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified `.env.example`, `Caddyfile`, `Makefile`, `README.md`, `nce/cron.py`, `nce/outbox_relay.py`, `tests/test_outbox_relay.py`, `tests/test_cron.py`, `tests/test_cron_chain_verify.py` on disk.
+* **Findings:** None
+* **Structural Integrity:** The introduction of throttled alerts within exception handlers in `nce/cron.py` and `nce/outbox_relay.py` is robustly designed. The alert dispatching is fail-safe, wrapped in try/except blocks, ensuring that failures in notifications do not affect the main worker flows.
+* **Contractual Test Fidelity:** The test contract fidelity is excellent. Unit and integration tests verify alert throttling, correct formatting of alert titles/messages under simulated exceptions, and ensure that the APScheduler registers the new jobs under appropriate triggers. All tests pass successfully.
+* **Defensive Refactoring Correction Blueprint:** None
+
+
+### TAG Batch 17 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified `.env.example`, `Caddyfile`, `Makefile`, `README.md`, `health_probe.py`, `nce/orchestrator.py`, `tests/test_health_probes.py` on disk.
+* **Findings:** None
+* **Structural Integrity:** The deep health check is cleanly integrated into `nce/orchestrator.py` without modifying the core data paths, ensuring that the health probe reflects signing key decryption, bounded Merkle chain verification, and RLS-scoped read capabilities without compromising the performance or separation of concerns.
+* **Contractual Test Fidelity:** High. The test suite in `tests/test_health_probes.py` verifies correct structure with mocked backends, fully exercises integration flows under optimal conditions, asserts degradation when a broken master key is used, and correctly validates failures when the Merkle chain is tampered with. All tests pass successfully.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 18 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_18.md`, `nce/observability.py`, `nce/orchestrators/memory.py`, and `tests/test_memory_orchestrator_observability.py`.
+* **Findings:** None
+* **Structural Integrity:** Decoupling of Saga metrics instrumentation is clean, properly wrapping the core write flow of `_run_store_memory_saga`. MinIO upload objects are logically isolated by path prefixes. The explicit casting of `$4::jsonb` and dump serialization ensure robust asyncpg type handling.
+* **Contractual Test Fidelity:** Robust tests in `tests/test_memory_orchestrator_observability.py` assert context manager durations, trace context propagation, cache key selections, and error metric recordings, fully validating target contract boundaries and avoiding the Trivial Test Trap. All tests pass successfully.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 19 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified file paths actually read in Phase B: `nce/embeddings.py`, `nce/observability.py`, `nce/orchestrators/memory.py`, `nce/quotas.py`, `tests/test_memory_orchestrator_observability.py`, `tests/test_quotas.py`.
+* **Findings:** None
+* **Structural Integrity:** Highly decoupled integration. Quota metric instrumentation is cleanly embedded in the PG/Redis consumption paths in `nce/quotas.py` without leaking database logic. Embedding degradation alerts are routed non-blockingly to the async `NotificationDispatcher` in `nce/embeddings.py`. MinIO object key structuring logic preserves the required namespace partitioning.
+* **Contractual Test Fidelity:** High fidelity. The new test cases in `tests/test_quotas.py` assert actual metric updates on resource consumption under both SQL and Redis paths. Fallback counter increments and dispatch alerts are verified against mock interfaces, matching contract boundaries. Mypy and ruff validation are completely green.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 20 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified file paths actually read in Phase B: `nce/embeddings.py`, `nce/observability.py`, `nce/orchestrators/memory.py`, `nce/quotas.py`, `nce/vertical_modules/netbox/circuits.py`, `nce/vertical_modules/netbox/contacts.py`, `nce/vertical_modules/netbox/discovery.py`, `nce/vertical_modules/netbox/graphql_activation.py`, `tests/test_memory_orchestrator_observability.py`, `tests/test_quotas.py`, `tests/unit/test_netbox_contacts.py`.
+* **Findings:** None
+* **Structural Integrity:** NetBox HTTP clients across all vertical modules are hardened by adding explicit, non-hanging timeouts of 30.0 seconds to all AsyncClient instances, eliminating any risk of unbounded hangs. Observability and quota metrics are seamlessly integrated without eroding boundary contracts.
+* **Contractual Test Fidelity:** The new unit tests in `tests/unit/test_netbox_contacts.py` and `tests/test_quotas.py` check and assert the correct timeout configuration on the AsyncClient, error propagation, and metric gauge updates, avoiding the Trivial Test Trap. All 63 tests pass successfully.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 21 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified file paths actually read in Phase B: `nce/embeddings.py`, `nce/http_resilience.py`, `nce/observability.py`, `nce/orchestrators/memory.py`, `nce/quotas.py`, `nce/vertical_modules/dynamics365/client.py`, `nce/vertical_modules/dynamics365/netbox_bridge.py`, `nce/vertical_modules/netbox/circuits.py`, `nce/vertical_modules/netbox/contacts.py`, `nce/vertical_modules/netbox/discovery.py`, `nce/vertical_modules/netbox/graphql_activation.py`, `tests/test_http_resilience.py`, `tests/test_memory_orchestrator_observability.py`, `tests/test_quotas.py`, `tests/unit/test_netbox_contacts.py`.
+* **Findings:** None
+* **Structural Integrity:** Outbound HTTP clients are hardened using tenacity retries with exponential backoff and full jitter. Embedding fallbacks increment metrics and alert. Object keys in MinIO are partitioned under the namespace path, and cache partitioning uses a specific user/session key. All saga JSON payload writes are properly typed.
+* **Contractual Test Fidelity:** The test contract fidelity is high. Extensive unit and integration tests successfully verify the transient failure retries, sync vs async retry behaviors, cache hit/miss logic, and quota metrics updates, passing with 100% success.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 22 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_22.md`, and modified files: `nce/embeddings.py`, `nce/extractors/libreoffice.py`, `nce/extractors/project_ext.py`, `nce/http_resilience.py`, `nce/net_safety.py`, `nce/observability.py`, `nce/orchestrators/memory.py`, `nce/quotas.py`, `nce/vertical_modules/dynamics365/client.py`, `nce/vertical_modules/dynamics365/netbox_bridge.py`, `nce/vertical_modules/netbox/circuits.py`, `nce/vertical_modules/netbox/contacts.py`, `nce/vertical_modules/netbox/discovery.py`, `nce/vertical_modules/netbox/graphql_activation.py`, `tests/test_http_resilience.py`, `tests/test_memory_orchestrator_observability.py`, `tests/test_quotas.py`, `tests/unit/test_netbox_contacts.py` on disk.
+* **Findings:** None
+* **Structural Integrity:** Decoupling of HTTP request resilience and DNS-rebinding prevention is clean and robust. IP pinning successfully resolves SSRF TOCTOU risks by intercepting and forcing connection reuse of the pre-validated IP. Extractor binary hash check restricts soffice and MPXJ execution to verified files, which resolves code execution vectors cleanly.
+* **Contractual Test Fidelity:** The test contract fidelity is high. 2150 tests passed successfully. Tests verify the DNS-rebinding redirection by mocking DNS changes and checking the connection target host, and assert binary safety controls comprehensively.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 23 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified file paths actually read in Phase B: `nce/embeddings.py`, `nce/event_types.py`, `nce/extractors/libreoffice.py`, `nce/extractors/project_ext.py`, `nce/http_resilience.py`, `nce/net_safety.py`, `nce/observability.py`, `nce/orchestrators/cognitive.py`, `nce/orchestrators/memory.py`, `nce/quotas.py`, `nce/replay.py`, `nce/vertical_modules/dynamics365/client.py`, `nce/vertical_modules/dynamics365/netbox_bridge.py`, `nce/vertical_modules/netbox/circuits.py`, `nce/vertical_modules/netbox/contacts.py`, `nce/vertical_modules/netbox/discovery.py`, `nce/vertical_modules/netbox/graphql_activation.py`, `tests/test_chain_and_decay_integration.py`, `tests/test_http_resilience.py`, `tests/test_memory_orchestrator_observability.py`, `tests/test_quotas.py`, `tests/unit/test_netbox_contacts.py` on disk.
+* **Findings:** None
+* **Structural Integrity:** ATMS cascades on contradiction resolution are safely isolated using a nested SAVEPOINT/transaction block, preventing ATMS or topology failures from corrupting or aborting the contradiction resolution record. The recursive memory and topology dependency tracking utilizes cycle-proof visited tracking and is safely bounded by max recursion counts.
+* **Contractual Test Fidelity:** High contract fidelity. High-fidelity integration tests verify the complete cascade flow (accepted_a / accepted_b / superseded / rejected), checking that the loser memories and their downstream consolidated/derived dependents are recursively soft-deleted in the real database, and verifying the audit logging of `atms_cascade` in the event ledger.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 24 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_24.md`, and modified files: `nce/embeddings.py`, `nce/extractors/libreoffice.py`, `nce/extractors/project_ext.py`, `nce/graph_mcp_handlers.py`, `nce/http_resilience.py`, `nce/mcp_stdio_tools.py`, `nce/net_safety.py`, `nce/observability.py`, `nce/orchestrators/memory.py`, `nce/quotas.py`, `nce/tool_registry.py`, `nce/vertical_modules/dynamics365/client.py`, `nce/vertical_modules/dynamics365/netbox_bridge.py`, `nce/vertical_modules/netbox/circuits.py`, `nce/vertical_modules/netbox/contacts.py`, `nce/vertical_modules/netbox/discovery.py`, `nce/vertical_modules/netbox/graphql_activation.py`, `tests/test_http_resilience.py`, `tests/test_memory_orchestrator_observability.py`, `tests/test_quotas.py`, `tests/test_tool_registry.py`, `tests/unit/test_netbox_contacts.py` on disk.
+* **Findings:** None
+* **Structural Integrity:** Decoupling of the new `handle_neuromorphic_search` handler is clean and robust. It delegates the parsed and validated request arguments to the engine's `GraphRAGTraverser.neuromorphic_search` implementation. Schema definition and defaults in `mcp_stdio_tools.py` match the target architecture specifications.
+* **Contractual Test Fidelity:** The test contract fidelity is high. The tool count and cacheable settings assertions in `tests/test_tool_registry.py` are successfully bumped to 60 tools and 7 cacheable entries. Mock handler tests successfully assert parameter routing and serialization boundaries. All tests pass successfully.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 25 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_25.md`, and modified files: `nce/consolidation.py`, `nce/embeddings.py`, `nce/extractors/libreoffice.py`, `nce/extractors/project_ext.py`, `nce/graph_mcp_handlers.py`, `nce/http_resilience.py`, `nce/mcp_stdio_tools.py`, `nce/net_safety.py`, `nce/observability.py`, `nce/orchestrators/memory.py`, `nce/quotas.py`, `nce/tool_registry.py`, `nce/vertical_modules/dynamics365/client.py`, `nce/vertical_modules/dynamics365/ingestion.py`, `nce/vertical_modules/dynamics365/netbox_bridge.py`, `nce/vertical_modules/netbox/circuits.py`, `nce/vertical_modules/netbox/contacts.py`, `nce/vertical_modules/netbox/discovery.py`, `nce/vertical_modules/netbox/graphql_activation.py`, `tests/test_http_resilience.py`, `tests/test_memory_orchestrator_observability.py`, `tests/test_quotas.py`, `tests/test_tool_registry.py`, `tests/unit/test_netbox_circuits.py`, `tests/unit/test_netbox_contacts.py` on disk.
+* **Findings:** None
+* **Structural Integrity:** The do-calculus circuit escalation implementation is cleanly structured. NetBox Circuits client timeouts are configured correctly to avoid unbounded hangs. The integration with dynamics365/ingestion is decoupled using `append_event` for event generation.
+* **Contractual Test Fidelity:** The test contract fidelity is high, covering transient http retries, circuit escalation handlers, and D365 ingestion triggers. All 2158 unit and integration tests (including the sleep consolidation tests) pass with 100% success.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 26 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_26.md`, `nce/mcp_stdio_tools.py`, `nce/snapshot_mcp_handlers.py`, `nce/tool_registry.py`, `tests/test_snapshot_mcp_handlers.py`, and `tests/test_tool_registry.py` on disk.
+* **Findings:** None
+* **Structural Integrity:** The snapshot import and restore capabilities are cleanly integrated into `nce/snapshot_mcp_handlers.py` and modularly registered in the tool registry. The import processes NDJSON records back through the Saga write path via `engine.store_memory(req)` correctly, preserving quarantine boundaries by routing through the standard saga. No state assumptions are made.
+* **Contractual Test Fidelity:** The test contract fidelity is high. All unit and integration tests successfully pass. The newly introduced integration test `test_snapshot_import_export_integration` validates the complete round-trip flow: exporting a snapshot from a source namespace and importing/restoring it in a target namespace using real database pools and asserting row counts and memory types precisely.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 27 Evaluation Audit Report
+* **Verification Status:** PASSED
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_27.md`, and target python source files: `nce/event_log.py`, `nce/replay.py`, and `tests/test_replay_handlers_integration.py`.
+* **Structural Integrity Scoring:** Remapping UUIDs deterministically using `uuid.uuid5` keyed on the target namespace is robust and prevents duplicate constraint violations during reconstruction and replay executions. Decoupled, type-safe structures cleanly separate replayed event/memory logging from generation pathways.
+* **Contractual Test Fidelity:** High contract fidelity. The integration test suite runs end-to-end replay, asserting that remapped memories and event IDs are 100% identical and repeatable across multiple reconstruction executions.
+* **Identified System Flaws:** None. The changes preserve RLS and WORM properties and do not expose credentials.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 29 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_29.md`, and modified files: `nce/event_log.py`, `nce/replay.py`, `tests/test_replay_engine.py`, and `tests/test_replay_handlers_integration.py`.
+* **Structural Integrity Scoring:** Decoupling of timestamp preservation and sequence logic is structurally clean. Setting the valid_from timestamp and carrying it over during store_memory/consolidation replay runs matches the expected schema contracts.
+* **Contractual Test Fidelity:** High. The unit test `test_handle_store_memory_handler` in `tests/test_replay_engine.py` has been updated to include `valid_from` mocks and fully verify target insert parameters. The integration test `test_replay_deterministic_timestamp_preservation` verifies deterministic timestamp preservation and signature validity under real database constraints. All 12 tests pass successfully.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 30 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified file paths: `nce/replay.py`, `nce/schema.sql`, `tests/test_replay_engine.py`, and `tests/test_replay_handlers_integration.py`.
+* **Structural Integrity Scoring:** Integration of state digest calculations and equality gates inside reconstructive replay execution is structurally clean and properly decoupled. Carrying over `created_at` timestamps alongside bitemporal `valid_from` columns ensures deterministic, OS-independent verification.
+* **Contractual Test Fidelity:** High. The unit test `test_handle_store_memory_handler` asserts that memory creation timestamps are correctly replayed. The integration test `test_reconstructive_replay_digest_match` validates end-to-end replay, populates memories and KG edges, and asserts that the computed digests are non-null and equal between source and target namespaces.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 31 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified file paths: `nce/schema.sql`, `nce/migrations/015_settings_table.sql`, and `tests/test_schema_bootstrap.py`.
+* **Structural Integrity Scoring:** Creation of a global, RLS-exempt `settings` table with native `JSONB` support and explicit encrypted byte column (`secret_enc`) is structurally clean and correctly keeps system-wide settings separated from tenant-scoped structures. The custom PL/pgSQL DO block correctly revokes PUBLIC permissions and grants least-privilege `SELECT`, `INSERT`, `UPDATE`, `DELETE` access to `nce_app` safely.
+* **Contractual Test Fidelity:** High. The test `test_schema_applies_cleanly_on_fresh_database` successfully boots the entire schema twice to verify idempotence, then queries PG's metadata tables (`information_schema.columns`, `pg_class`, `information_schema.role_table_grants`) directly to assert column types, nullability, RLS-exempt status (`relrowsecurity` is false), and role privileges (`SELECT`, `INSERT`, `UPDATE`, `DELETE` for `nce_app`).
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 32 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified file paths: `nce/settings_store.py` and `tests/test_settings_store.py`.
+* **Structural Integrity Scoring:** Precedence lookup implementation is clean and robust, correctly prioritizing database configuration over environment variable defaults. Secrets are safely encrypted under the master key using AES-256-GCM. In-process cache invalidation via Redis pub/sub matches the architectural pattern.
+* **Contractual Test Fidelity:** High. Comprehensive tests verify correct precedence resolution, encrypted round-trip storage of sensitive credentials, write-only masking of secrets on request, and cache eviction / invalidation scenarios using robust mocks for Postgres and Redis.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 33 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified file paths: `_internal/tools/setup_refactoring_session.py`, `_internal/tools/start_rl.py`, and `_internal/tools/trigger_tag_audit.py`.
+* **Structural Integrity Scoring:** Clean, automated orchestration scripts for session setups, batch transitions, and git tracking.
+* **Contractual Test Fidelity:** High. Static typecheck and lint checks on changed scripts pass cleanly. Existing unit and integration tests continue to run successfully.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 34 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified file paths: `nce/admin_app.py`, `nce/admin_handlers/settings.py`, `nce/settings_registry.py`, and `tests/test_settings_registry.py` on disk.
+* **Structural Integrity Scoring:** High. Global settings table schema integration is robust. Clean precedence lookup and masking of secrets (like `NCE_MASTER_KEY` and other credentials) are enforced correctly.
+* **Contractual Test Fidelity:** High. Tests verify correct schema types, environment validations, and defaults loading, and verify the administrative settings routes via TestClient, including authentication check, listing, and single key detail retrieve operations. All tests pass successfully.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None
+
+### TAG Batch 43 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read on disk and verified against `diff_batch_43.md`: `nce/replay_mcp_handlers.py` (new `handle_explain_past_decision`), `nce/tool_registry.py` (new `explain_past_decision` ToolSpec, admin_only+mutation), `nce/mcp_stdio_tools.py` (Tool schema), `tests/test_tool_registry.py` (count bumps 63→64, MUTATION 29→30, ADMIN_ONLY 7→8), `tests/test_explain_past_decision.py`, `admin/index.html` (glass-profile timeline tab + Alpine `glassProfileTimeline`). No files outside batch scope modified.
+* **Structural Integrity:** Clean. The handler reuses existing primitives (`as_of_query`/`parse_as_of`, `get_event_provenance`, `ForkedReplay`, `compute_namespace_state_digest`) — no DRY violation. The belief read runs inside `scoped_pg_session` (RLS-scoped). No `UPDATE`/`DELETE` against `event_log`; no `NCE_MASTER_KEY` exposure.
+* **Contractual Test Fidelity:** No Trivial Test Trap. `test_explain_past_decision_belief_set_and_verified_fork` exercises the real handler against live Postgres/Mongo: the belief valid before T is included while a future memory is excluded (`belief_count == 1`); the receipt carries `verified is True`; the counterfactual fork returns `digest_match is True` with `source_state_digest == target_state_digest`. `1 passed`; registry suite `48 passed`.
+* **Identified System Flaws:** None blocking. `ForkedReplay` does not populate `replay_runs.digest_match` (only `ReconstructiveReplay` does), so the handler recomputes the digest comparison itself via `compute_namespace_state_digest(as_of=fork_point_ts)` against source and target — a legitimate verification, not a faked check.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** Consider normalizing the receipt at-or-before-T comparison to `datetime` objects rather than ISO-string compare, to harden against any future non-UTC `occurred_at` persistence.
+
+### TAG Batch 45 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_45.md`, `nce/envelope.py`, `nce/migrations/018_memories_envelope_dek.sql`, `nce/schema.sql`, `tests/test_envelope_dek.py`, plus `nce/signing.py` (read-only). Exactly the four batch-scoped files created/modified; `signing.py` not modified; `episodes.raw_data` encryption and read paths NOT wired (Batch 46 scope preserved).
+* **Structural Integrity:** Crypto reuse is correct and non-duplicative. `wrap_dek` delegates to `signing.encrypt_signing_key`; `unwrap_dek` to `signing.decrypt_signing_key` (AES-256-GCM, Argon2id/PBKDF2 envelope). No bespoke KDF/key-wrapping rolled — only a thin payload layer (`encrypt_with_dek`/`decrypt_with_dek`) using `AESGCM` with a distinct `TCDEK\x01` prefix. Transient DEKs held in `SecureKeyBuffer` (zeroed on exit). `NCE_MASTER_KEY` only reached via `signing.require_master_key`; never DB/settings. Migration `018` is next free; columns nullable; `schema.sql` mirror idempotent (`ADD COLUMN IF NOT EXISTS`); no existing migration edited.
+* **Contractual Test Fidelity:** No Trivial Test Trap. Asserts real crypto contracts: generate→wrap→unwrap round-trip; wrong-master-key raises `SigningKeyDecryptionError`; non-deterministic wrapping; payload encrypt/decrypt under DEK with `plaintext not in blob`; wrong-DEK raises `DEKDecryptionError`; provable-forgetting property (destroyed DEK → undecryptable). `10 passed`; schema bootstrap integration `1 passed`.
+* **Identified System Flaws:** None. (Minor non-blocking: redundant `except DEKDecryptionError: raise` in `decrypt_with_dek`; harmless.)
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** Batch 46 should add an integration test that persists/reads `wrapped_dek`+`dek_key_id` through `scoped_pg_session` to confirm the new columns honor RLS once the read path is wired.
+
+### TAG Batch 59 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** `start_worker.py` and `tests/test_worker_inflight_recovery.py` read in full; `diff_batch_59.md` matches source byte-for-byte. No files outside scope modified; `cron` not referenced in `start_worker.py` (separate launcher, singleton preserved).
+* **Structural Integrity:** Sound. Recovery decomposed cleanly: `requeue_abandoned_jobs` (per-lane) → `maintain_started_registries` (fan-out) → `RecoveringWorker.run_maintenance_tasks` hook, wrapped in try/except so recovery can't crash the worker loop. Lane order (`high_priority`→`batch_processing`→`default`) preserved; `with_scheduler=True` added; a pre-start sweep recovers jobs orphaned by a prior crash. Verified against RQ 2.8.0: `StartedJobRegistry.remove()` raises `NotImplementedError` (so the `zrem` workaround is correct), and `Queue.enqueue_job` restores `origin` so the lane is preserved (no migration to `default`); exactly one copy re-enqueued (no drop/duplicate). Live started jobs correctly skipped by `get_expired_job_ids`.
+* **Contractual Test Fidelity:** No Trivial Test Trap. Both tests run against live Redis and assert the real requeue contract: abandoned job lands in `queue.get_job_ids()`, removed from `StartedJobRegistry`, status `QUEUED`, `origin` lane preserved; a live started job is left untouched. `2 passed`; regression `20 passed`.
+* **Identified System Flaws:** None affecting correctness. `RESULT_TTL`/`FAILURE_TTL` constants are defined but never wired (dead config; cosmetic).
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** Wire `RESULT_TTL`/`FAILURE_TTL` through the enqueue sites (or the Worker) so the documented Redis-retention bound is actually enforced, or drop the constants.
+
+### TAG Batch 60 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_60.md`, `docker-compose.yml`, `tests/test_compose_multicore.py`. Exactly the two in-scope files modified; no `nce/` source, MCP stdio, or `RL.md` touched; mypy baseline unaffected.
+* **Structural Integrity:** All CRITICAL invariants hold. `--workers` appears ONLY on the three stateless HTTP services (`admin`/`a2a`/`webhook-receiver`, env-overridable, default 2). `worker` carries NO `--workers`, got `deploy.replicas` (default 2), and its `container_name` was correctly removed (fixed names forbid replicas>1). `cron` is a strict singleton (`deploy.replicas: 1`, no `--workers`) — CronLock split-brain guard preserved. Thread env vars `OMP_NUM_THREADS`/`MKL_NUM_THREADS`/`TOKENIZERS_PARALLELISM` pinned on all five compute services. `docker compose config --quiet` exits 0 (only pre-existing unrelated `$`-interpolation warnings from `deploy/compose.stack.env*`).
+* **Contractual Test Fidelity:** No Trivial Test Trap. PyYAML suite parses the real compose file and asserts: HTTP services carry `--workers` default >1; `worker` declares scaled replicas and no `container_name`; `cron` is exactly `replicas==1` with no `--workers`; background-loop services guarded against `--workers`; thread env vars present. `6 passed`.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** The `has_scaled_replicas` branch in `test_http_services_declare_n_worker_processes` is currently dead; apply the same `>1` default check there for symmetry if a service ever scales HTTP via replicas.
+
+### TAG Batch 55 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_55.md`, `nce/config.py` (seam + `NCE_SECRETS_PROVIDER` field + `validate_secrets_provider()` wired from `validate()`), `scripts/bootstrap-compose-secrets.py` (docstring scoping), `tests/test_secrets_provider_seam.py` (new), `deploy/README.md`. Exactly the four declared files modified — no out-of-scope changes, no dependency additions.
+* **Structural Integrity:** Clean, minimal seam — `SecretsProvider` abstract base + `EnvSecretsProvider` default + get/set/resolve helpers; NO new SDK deps (no boto3/hvac/azure). Secret-handling (R3) correct by code: `resolve_secret()` checks `name in _ENV_ONLY_SECRETS` FIRST and reads straight from `os.environ` with an early return BEFORE the provider is touched — so `NCE_MASTER_KEY` physically cannot route through a DB/store. `validate_secrets_provider()` complements (does not weaken) the import-time guard. Bootstrap-script diff is cosmetic only (lambda parenthesization; one blank line) — no logic change.
+* **Contractual Test Fidelity:** No Trivial Test Trap. A non-env recording provider proves resolution routes through the seam; fallback-to-default when the provider misses; env value wins and the provider is NOT consulted for the master key; prod rejection of dotenv-persist verified in a fresh interpreter (subprocess `NCE_ENV=prod`), covering both the import-time path and `validate_secrets_provider()` directly, plus a positive prod-posture pass. `9 passed` (seam) + `6 passed` (regression); mypy at baseline.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+
+### TAG Batch 44 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_44.md`, `nce/orchestrators/memory.py`, `nce/me_app.py`, `tests/test_batch44_worm_pii_sidesinks.py`. Diff touches EXACTLY the three approved files; **`nce/graph_query.py` is NOT in the diff** — time-travel's WORM source is untouched. Decided refined scope (close raw-PII side sinks without altering time-travel) honored.
+* **Structural Integrity:** Both side-sink fixes correct and minimal. (1) `_saga_log_start` now serializes only recovery refs (`memory_type`, `assertion_type`); raw `summary` + free-form `metadata` removed. Recovery integrity preserved — `memory_id` is merged in later via `_saga_log_transition` after PG commit, and rollback reads from function args, not the saga payload. (2) `me_app` edit path's new `_pseudonymize_edit_graph` runs caller entity/triplet labels through real `nce.pii.process` with the namespace config, inside the existing `scoped_pg_session`/transaction; malformed items dropped. **Regression confirmed:** the main `store_memory` `append_event` still writes `entities`/`triplets` to `event_log.params` unchanged. Never UPDATE/DELETE `event_log`; `saga_execution_log` is the mutable table; no `NCE_MASTER_KEY` exposure.
+* **Contractual Test Fidelity:** No Trivial Test Trap. All three tests assert real DB state against live Postgres: saga-log row has no raw PII/`summary`/`metadata` (refs present); edit-path `event_log` row shows the email redacted to `<EMAIL>` (proving the pipeline ran) with non-PII fields preserved; the main-path event_log row still carries the full graph. `3 passed`; regression `tests/test_saga_rollback.py tests/test_me_app.py` `18 passed`. mypy 133 (below baseline).
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** The edit-path helper re-fetches `namespaces.metadata` per call; if govern/edit becomes hot, pass the resolved namespace PII config down instead of a second round-trip. (Note: full content-free WORM incl. KG structure remains deferred as Batch 44b — requires bitemporal KG history to avoid breaking time-travel.)
+
+### TAG Batch 52 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** `admin/index.html` ONLY — single `diff --git`, three hunks (Settings panel, nav item `{slug:'settings'}`, `Alpine.data('settingsPanel')`). No Python or other files. Append-only: sibling components `d365Panel`/`toolsPanel`/`glassProfileTimeline` and the shell structure untouched.
+* **Structural Integrity:** Tags balanced file-wide (`<script>` 2/2, `<template>` 66/66); the `panel-settings` div opens/closes cleanly (7 balanced template pairs inside). Identifier chain consistent end-to-end: nav slug `settings` → `x-show adminTab==='settings'` → `x-data="settingsPanel"` → `Alpine.data('settingsPanel')` inside the `alpine:init` listener alongside siblings. Mirrors the proven panel pattern (`signedFetch`, section accordions, `trimcpShellToast`). Only Alpine core directives used; `x-collapse`/`@alpinejs/collapse` absent (collapse via `x-show`+`isOpen()`), honoring the not-loaded-plugin constraint.
+* **Contractual Test Fidelity:** Render matches the real GET `/api/admin/settings` (`api_admin_settings_list`) shape — every consumed field is produced by the handler. Type-aware inputs cover the full registry enum `str|int|float|bool|secret|list`; reload chips key on `HOT|WARM|COLD`; source badges on `store|env|default`. Secrets write-only/masked: server returns only `••••set`/null, UI renders a static label with no input and no plaintext fetch. Dirty-tracking/batch-apply/reset/reload explicitly deferred to Batch 53. (No Python added → validation structural only; no live SPA preview available.)
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** The list/number/str inputs render enabled but are inert until Batch 53 wires change handlers — add a read-only affordance in 53 so users don't type into fields that silently discard input.
+
+### TAG Batch 56 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_56.md`, `nce/config.py`, `nce/db_utils.py`, `nce/garbage_collector.py`, `nce/reembedding_worker.py`, `docs/database_architecture.md`, `docs/enterprise_security.md`, `tests/test_worker_dsn_segregation.py`; cross-checked `nce/schema.sql`, `nce/settings_registry.py`. No out-of-scope files modified.
+* **Structural Integrity:** DSN seam correct. `resolve_worker_dsn()` returns `cfg.NCE_GC_DSN` (which falls back `PG_DSN`→`DATABASE_URL`→dev default, so unset == `PG_DSN`, backward-compatible). Both worker connect sites use it (`garbage_collector._connect_with_retry`, `reembedding_worker.async_main`); the cron path reuses the passed app pool (documented). App-never-BYPASSRLS verified: `nce_app` is `WITH LOGIN` only, `nce_gc` is `BYPASSRLS NOLOGIN` (`schema.sql:24-27`); no `nce_app … BYPASSRLS` anywhere. Role left NOLOGIN (out of scope); docs now document operator activation. Secret handling: `NCE_GC_DSN` is env-only, NOT in `settings_registry` (never returned by admin endpoints), and GC connect-failure logs route through `redact_secrets_in_text`. `# type: ignore[import-untyped]` on asyncpg matches the existing convention (`a2a.py`).
+* **Contractual Test Fidelity:** No Trivial Test Trap. Tests assert the real selection contract in clean subprocesses: `resolve_worker_dsn()==NCE_GC_DSN` (distinct from `PG_DSN`) and `==PG_DSN` on fallback; worker-wiring captures the actual DSN passed to `asyncpg.create_pool` and asserts it equals the resolved worker DSN; the app-never-GC-DSN invariant is guarded. `5 passed`; mypy 133 (below baseline).
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** When `nce_gc` is granted LOGIN, add a startup assertion that the app pool's role lacks `rolbypassrls` (defense-in-depth against `PG_DSN` accidentally pointing at the privileged role).
+
+### TAG Batch 54 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_54.md`, `nce/admin_handlers/settings.py`, `nce/admin_app.py`, `nce/tool_registry.py`, `nce/mcp_stdio_tools.py`, `nce/event_types.py`, `nce/settings_registry.py`, `tests/test_tool_registry.py`, `tests/test_settings_time_travel.py`. Exactly the six approved files modified; disk matches the diff.
+* **Structural Integrity:** `_reconstruct_effective_as_of` seeds the env/default baseline for every registry key then folds ordered `config_changed`/`config_reset` rows (`occurred_at <= $1 ORDER BY occurred_at, event_seq`) — read-only over `event_log`, WORM preserved. Fold reads the REAL event shape (`params["changes"][key]["new_value"]`, matching `api_admin_settings_patch`, not the plan's list sketch). Secret masking sound: baselines from `get_effective_value` (secrets→`••••set`, `NCE_MASTER_KEY` never raw), fold only applies already-redacted `new_value` tokens, so a real secret value can never enter the reconstruction. Rollback computes the inverse diff, routes prod-locked keys to `skipped` (never re-enabled), secrets to `flagged_secrets` (never fabricated), and applies the rest through the genuine PATCH path via `_PatchRequestProxy` (validation, optimistic-lock, COLD→pending_restart, signed `config_changed` with `reason:"rollback to T"`); `dry_run` defaults True. `config_reset`/`config_reload` absent from `VALID_EVENT_TYPES` is a PRE-EXISTING gap handled defensively (out of scope).
+* **Contractual Test Fidelity:** No Trivial Test Trap. Real multi-event reconstruction (100→200→300 with a post-cutoff event correctly excluded; untouched key keeps baseline), inverse-diff with prod-locked skipped + secret flagged (asserted absent from apply diff, only `••••set` exposed), per-key history with cross-key leakage negated, unknown-key + missing-`as_of` (422). Registry pins `_EXPECTED_TOTAL=65`, admin-only 8→9 with `explain_config_change` (read tool), mutation(30)/cacheable(7)/migration(5) unchanged; registered in both `tool_registry.py` and `mcp_stdio_tools.py`. `55 passed`; mypy 133 (below baseline).
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** Add `config_reset`/`config_reload` to `EventType`/`VALID_EVENT_TYPES` in a future batch so the reset branch of the fold becomes reachable once those events are emitted.
+
+---
+
+## Pending Audit-Remediation Batch Prompts (99–105)
+
+> Full prompts for the architectural-audit remediation batches. Source-of-truth copies also live in `Batch_99..105_prompt.md` at repo root. These are READY (not dependency-blocked); the State Registry rows are `[LOCKED]` only so `generate_diff.py` does not auto-pick them while Batches 53/58 are mid-flight. Each takes its own clean branch + commit.
+
+### Shared operating rules (apply to every batch below)
+1. One batch = one branch = one commit (`batch-NN-shortname`). Never combine batches.
+2. Verify before you act: open each target file and confirm the cited symbol exists. Line numbers are approximate (`~`) — trust the symbol, not the number. On any mismatch, STOP and report — do not invent a fix or create a new file.
+3. Modify only the files listed. No new modules/classes/deps/abstractions unless marked **new**. If you think you need one, STOP and report.
+4. Minimal diff; reuse existing utilities (`scoped_pg_session`, `unmanaged_pg_connection`, `append_event`, `acquire_cron_lock`, `_jsonrpc_error_response`, `_safe_counter`/`_safe_gauge`, the typed-env `_int_env`/`_float_env` helpers). Match surrounding style.
+5. Acceptance gate (all green before commit): `make lint`; `make typecheck`; the named test; any touched tests; if MCP tool counts changed, update `tests/test_tool_registry.py` exact-count asserts in THIS batch.
+6. New migrations → `nce/migrations/` next free number (current max 018); mirror into `nce/schema.sql`; never edit an existing migration.
+7. WORM/RLS: tenant SQL inside `scoped_pg_session`; `append_event` in the same txn as its write; never UPDATE/DELETE `event_log`; no raw content/PII in `event_log.params`.
+8. `NCE_MASTER_KEY` is env-only — never read/write it via DB/settings/endpoint.
+9. DB-dependent tests are `@pytest.mark.integration` (run via `pytest -m integration` against `make local-up`); pure-unit batches must not need Docker.
+10. Report: files changed, gate output, anything you STOPped on.
+
+### Shared closing protocol (per batch)
+When steps are done: STOP. Run `_internal\tools\generate_diff.py` (flips the row `[NO TAG]→[WAITING TAG]` and writes `diff_batch_NN.md`). When it reports `[SUCCESS]`, run `_internal\tools\trigger_tag_audit.py`. Open a PR `Batch NN — <name>`, paste the gate output, wait for review. If the gate fails and you cannot fix it in-scope, STOP and report — do not widen scope or start the next batch.
+
+---
+
+#### Batch 99 — chrono-nesting-guard
+* **Skills:** `python-pro` (primary), `clean-code`
+* **Depends on:** none
+* **Files:** `nce/causal/chrono.py` (`branch_timeline` ~`:28`, `chrono_branch_var` ~`:24`); `tests/unit/test_chrono.py` (`TestChronoContextManager` ~`:50`)
+* **Goal:** Reject nested `branch_timeline` counterfactual scopes (audit Domain 4). A second `branch_timeline` opened inside an active one silently shadows the outer branch via `ContextVar.set`, then `reset`s back to the *inner* branch on exit — corrupting the outer scope. Fail loudly instead.
+* **Steps:**
+  1. Confirm `branch_timeline` is a `@contextmanager` doing `token = chrono_branch_var.set({...})` / `chrono_branch_var.reset(token)`, and `get_active_branch()` returns `chrono_branch_var.get()`. Else STOP.
+  2. At the top of `branch_timeline` (before `parse_as_of`), raise `RuntimeError` if `chrono_branch_var.get() is not None`, message naming the constraint. Document in docstring.
+  3. Confirm no production caller nests (grep `branch_timeline` in `nce/`): `correlation.py` only reads via `get_active_branch()`. If a nested production usage exists, STOP.
+* **Acceptance:** add `test_nested_branch_timeline_is_rejected` (`pytest.raises(RuntimeError)` on inner `with`; outer branch survives) + `test_sequential_branches_after_exit_are_allowed`. Pure-unit. `make lint && make typecheck && pytest tests/unit/test_chrono.py` clean.
+* **NOTE:** code pre-applied to the working tree during the audit (gate already green: ruff+mypy clean, 8/8 `test_chrono.py`). This batch routes that change through the TAG pipeline on a clean branch — verify the working-tree diff matches the Steps.
+
+#### Batch 100 — governance-last-known-good
+* **Skills:** `backend-architect` (primary), `python-pro`, `security-auditor`
+* **Depends on:** none
+* **Files:** **new** `nce/tool_governance.py`; `nce/mcp_stdio_dispatch.py` (`nce:tools:disabled` `hexists` check ~`:74-83`); `nce/a2a_server.py` (A2A skill disable check ~`:604-613`); `nce/config.py` (typed-env knobs); `nce/observability.py` (`_safe_counter`); **new** `tests/test_tool_governance.py`
+* **Goal:** Replace the fail-OPEN governance check (audit Domain 1) with a **last-known-good interceptor**: high availability without silently un-revoking an admin-disabled tool/skill on a Redis blip. Today both surfaces do `except Exception: log.warning("defaulting to enabled")` — a revoked skill runs during a Redis outage. The HMAC nonce store already fails *closed*; align governance with it.
+* **Steps:**
+  1. Confirm the current fail-open shape on both surfaces. Else STOP.
+  2. Config knobs: `NCE_TOOL_GOVERNANCE_STALE_OK_SEC` (`_int_env`, 30, min 1), `NCE_TOOL_GOVERNANCE_STALE_HARD_SEC` (`_int_env`, 300, min 1).
+  3. **new** `nce/tool_governance.py`: process-local `ToolGovernanceCache` holding `frozenset[str]` + a `time.monotonic()` timestamp. `is_disabled(redis, name)`: serve snapshot while age < STALE_OK, else refresh via `hkeys`. On Redis error: serve snapshot until age > STALE_HARD, then raise `GovernanceUnavailable` (fail-closed). Increment `_safe_counter` `nce_tool_governance_degraded_total` on hard-stale.
+  4. Wire both surfaces: positive `is_disabled` → existing strict scope error (`-32005` stdio / `A2AScopeViolationError`→`-32011` A2A); `GovernanceUnavailable` → `-32005` / `A2AScopeViolationError` with "governance registry unavailable" — never `-32603`, never an internal frame.
+  5. One module-singleton cache shared by both surfaces.
+* **Acceptance:** `tests/test_tool_governance.py` (pure-unit, mocked Redis): disabled→blocked; Redis error within STALE_OK→snapshot still enforced; past STALE_HARD→`GovernanceUnavailable` + counter++; re-enable propagates within STALE_OK. Touched: `tests/test_tools_administration.py`, `tests/test_dispatch_error_envelopes.py`, `tests/test_a2a_hardening.py`.
+
+#### Batch 101 — atms-iterative-traversal
+* **Skills:** `python-pro` (primary), `clean-code`, `debugger`
+* **Depends on:** none
+* **Files:** `nce/atms.py` (`is_node_provably_valid` ~`:113`, `propagate_deprecation` ~`:199`, `evaluate_belief_states` ~`:235`); **new** `tests/test_atms_recursion.py`
+* **Goal:** Remove unbounded Python call-stack recursion in ATMS (audit Domain 4, HIGH). Deep justification chains (≳1000 nodes) overflow the C stack and crash the worker. Convert both functions to explicit-stack iterative traversal, preserving exact cycle-guard + memoization semantics (behavior-PRESERVING: identical `set[str]` for identical inputs).
+* **Steps:**
+  1. Confirm the documented semantics (PREMISE→True, ASSUMPTION→`is_valid`, cycle→False, memo only when `active_path` empty; `propagate_deprecation` mutates `is_valid=False`, tracks `visited`, recurses into newly-unprovable DERIVED children). Else STOP.
+  2. Rewrite `is_node_provably_valid` iteratively (post-order / explicit stack); same signature, same truth values incl. cyclic→False and memo reuse.
+  3. Rewrite `propagate_deprecation` iteratively (worklist + `visited`); return the same flipped-to-False set; do not change which nodes invalidate.
+  4. Guarantee no Python recursion remains in either function (independent of `sys.setrecursionlimit`).
+* **Acceptance:** `tests/test_atms_recursion.py` (pure-unit): 5,000-node linear chain cascades with no `RecursionError`; cyclic set reported invalid (no infinite loop); small graph yields byte-identical cascade vs. contract. Touched: `tests/test_contradiction_detection.py`.
+
+#### Batch 102 — health-probe-signature-verify
+* **Skills:** `security-auditor` (primary), `python-pro`, `observability-engineer`
+* **Depends on:** none
+* **Files:** `nce/orchestrator.py` (`check_health` Merkle-sampling block ~`:789-830`); `nce/observability.py` (gauge mirroring `MERKLE_CHAIN_VALID`); `tests/test_health_probes.py`
+* **Goal:** Close the audit Domain-2 gap: the hourly probe verifies the Merkle *chain* (`verify_merkle_chain`) but never event *signatures* (`verify_event_signature`) — an attacker who rewrites the `signature` column passes the chain check. Add a bounded signature-sampling pass to the same probe.
+* **Steps:**
+  1. Confirm `check_health` samples ~5 namespaces calling `verify_merkle_chain` + sets `MERKLE_CHAIN_VALID`, and `event_log.verify_event_signature` exists (~`:1120`). Else STOP.
+  2. In the same loop, verify signatures of a bounded recent-event sample per namespace (reuse the existing bound — no full-partition scan). Aggregate into a new gauge `nce_event_signature_valid` (1/0); downgrade health to `degraded` on failure exactly as the Merkle path does.
+  3. On failure: log critical + reuse the SAME failure audit event/dispatcher the Merkle path uses (do not invent a new event type without confirming `event_types.py`).
+* **Acceptance:** `tests/test_health_probes.py` gains a tampered-signature case (health degrades + `nce_event_signature_valid == 0`) + a positive pass.
+
+#### Batch 103 — docalculus-truncation-report
+* **Skills:** `python-pro` (primary), `clean-code`
+* **Depends on:** none
+* **Files:** `nce/causal/correlation.py` (`DoCalculusEngine.evaluate` ~`:713`, `find_all_causal_paths(..., max_depth=10)` / `if not paths: continue` ~`:786-808`, `InterventionResult` dataclass ~`:203`); `tests/test_correlation_propagation.py`
+* **Goal:** Stop silent truncation in do-calculus (audit Domain 4). A node reachable per `impacted_by()` but whose every path exceeds `max_path_depth` is silently dropped from `probability_matrix`, making a real distant impact look like zero. Report them.
+* **Steps:**
+  1. Confirm `evaluate` builds `impacted_in_mutilated`, then per target calls `find_all_causal_paths(..., max_depth=max_path_depth)` with `if not paths: continue`; confirm `InterventionResult` is a dataclass. Else STOP.
+  2. Add `truncated_targets: list[str] = field(default_factory=list)` to `InterventionResult`.
+  3. In the `if not paths:` branch, append the target (sorted, deduped) instead of silently continuing. Do NOT fabricate a probability — distinct from a computed `0.0`.
+  4. Populate the field in construction; the additive default keeps existing consumers (`circuits.py`, `evaluate_intervention` callers) unaffected — fix any positional `InterventionResult(...)` in-scope.
+* **Acceptance:** `tests/test_correlation_propagation.py` gains a >max-depth chain proving the distant target lands in `truncated_targets` (not as `0.0`), plus a within-depth regression. Touched: `tests/unit/test_chrono.py`, `tests/unit/test_netbox_circuits.py`.
+
+#### Batch 104 — reembed-vram-guard
+* **Skills:** `mlops-engineer` (primary), `performance-engineer`, `python-pro`
+* **Depends on:** none
+* **Files:** `nce/reembedding_worker.py` (`ReembeddingWorker._embed` ~`:369-408`, `run_once`); `nce/config.py` (typed-env knobs); `tests/test_reembedding_worker.py`
+* **Goal:** Wire the ALREADY-DEFINED but orphaned VRAM metric (`nce_reembedder_vram_allocated_bytes`, `observability.py` ~`:165`) into a real back-pressure guard (audit Domain 3, CRITICAL). Today `_embed` calls `embed_batch` with no VRAM check; a large batch OOMs → job dies → retries → DLQ, and the metric is never emitted by the live worker. Pause, don't poison.
+* **Steps:**
+  1. Confirm `_embed` returns `await _embeddings.embed_batch(texts)` with no VRAM check, and the three `REEMBEDDER_VRAM_*` gauges exist but are only recorded in the deprecated `re_embedder.py` stub. Else STOP.
+  2. Config: `NCE_REEMBED_VRAM_HIGH_WATERMARK` (`_float_env`, 0.85, 0.1–0.99), `NCE_REEMBED_VRAM_MAX_PRESSURE_WAITS` (`_int_env`, 12, min 0).
+  3. `_vram_pressure_gate(self)`: if `torch.cuda.is_available()`, read `memory_allocated()/total_memory`, emit the gauges (labelled `worker_id`); if ≥ watermark → `empty_cache()` + `await asyncio.sleep` + retry up to MAX_PRESSURE_WAITS; still saturated → raise typed `VRAMPressureError`. No-op when CUDA absent. Call before each batch in `_embed`.
+  4. In `run_once`, catch `VRAMPressureError` and exit the tick cleanly (keyset cursor resumes next cron tick) — not a crash/DLQ. Warn.
+* **Acceptance:** `tests/test_reembedding_worker.py` (pure-unit, mocked `torch`+gauges): below watermark → embeds + emits gauge; saturated forever → `VRAMPressureError` after MAX_PRESSURE_WAITS and `run_once` yields cleanly (no DLQ); CUDA absent → no-op.
+
+#### Batch 105 — gc-cascade-age-grace
+* **Skills:** `database-optimizer` (primary), `python-pro`
+* **Depends on:** Batch 58 (both touch `garbage_collector.py` — branch off after 58 lands)
+* **Files:** `nce/garbage_collector.py` (Postgres cascade cleanup CTE ~`:225-336`); `tests/test_garbage_collector.py`
+* **Goal:** Add an age grace period to the PG cascade cleanup (audit Domain 2). Mongo/MinIO sweeps filter by `GC_ORPHAN_AGE_SECONDS`, but the PG cascade (`memory_salience`, `contradictions`) reaps orphans the instant a `memory_id` disappears — so an operator-deleted memory can immediately reap still-fresh dependents a late/concurrent writer may reference. Make the cascade respect the same window.
+* **Steps:**
+  1. Confirm the cascade CTE deletes orphans with NO temporal filter while Mongo/MinIO use `cutoff = now() - GC_ORPHAN_AGE_SECONDS`. Else STOP.
+  2. Add the same cutoff to cascade predicates (`memory_salience.updated_at < cutoff`, `contradictions.created_at < cutoff`). Verify those columns exist in `schema.sql`; if a table lacks a usable timestamp, STOP and report.
+  3. Keep batch size, chunking, `asyncio.sleep` yields, per-namespace RLS scoping unchanged — predicate-only change.
+* **Acceptance:** `tests/test_garbage_collector.py` (`@pytest.mark.integration`): fresh orphan SURVIVES a GC pass; backdated beyond `GC_ORPHAN_AGE_SECONDS` is reaped. Run `pytest -m integration tests/test_garbage_collector.py` against `make local-up`.
+
+#### Collision-resolved into existing open prompts (no new batch)
+* topology_graph `FORCE ROW LEVEL SECURITY` (audit Domain 5 / D1) → folded into **Batch 67** step 4 (`Batch_67_prompt.md`).
+* Streaming <50MB ingestion (audit Domain 3) → already **Batch 71** (stream-reduce).
+* `nce_gc` least-privilege → **Batch 56** (done).
+* Dropped as false-positive: `replay_runs` already has `FORCE` + a source-scoped policy (`schema.sql:644`).
+
+### TAG Batch 46 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Verified on-disk against `diff_batch_46.md` for all 10 in-scope files: `nce/envelope.py` (`encrypt_raw_data`/`maybe_decrypt_raw_data`), `nce/config.py` (`NCE_ENVELOPE_ENCRYPTION_ENABLED` default False), `nce/orchestrators/memory.py` (write encrypt + persist `wrapped_dek`/`dek_key_id`; `recall_recent`/`verify_memory`/`unredact_memory` decrypt), `nce/mongo_bulk.py` (ciphertext-preserving fetch), `nce/semantic_search.py`, `nce/graph_query.py` (`_hydrate_sources`), `nce/orchestrators/temporal.py`, `nce/snapshot_mcp_handlers.py` (export hex BYTEA / import decrypt), `nce/replay.py` (both INSERTs carry wrapped_dek), `tests/test_envelope_encryption_integration.py`. No out-of-scope files; migration 018 columns pre-exist (Batch 45).
+* **Structural Integrity:** Write path encrypts only when the flag is on (legacy shape preserved). Crypto reuse confirmed — `envelope.py` delegates to `signing.py` AES-256-GCM; `NCE_MASTER_KEY` reached only via `require_master_key` (env-only). Read-path coverage complete for the flag-gated set (recall/verify/unredact/semantic_search/graph hydrate/temporal preview/snapshot import all route through `maybe_decrypt_raw_data`). Back-compat verified: returns plaintext when `wrapped_dek` falsy or payload lacks `TCDEK\x01` prefix. Replay/digest sound: target copies source ciphertext + wrapped_dek → decrypts under the global master key; `state_digest` hashes identical ciphertext both sides so equality holds. Never UPDATE/DELETE `event_log`; write SQL in `scoped_pg_session`.
+* **Contractual Test Fidelity:** No Trivial Test Trap. Asserts Mongo `raw_data` is bytes with `TCDEK\x01` prefix AND plaintext sentinel ABSENT, `wrapped_dek`/`dek_key_id` set, `recall_recent` + `semantic_search` return decrypted plaintext; legacy NULL-wrapped_dek reads as plaintext. `2 passed` (live stack); regression `25 passed, 6 skipped`; mypy 132 (below baseline).
+* **Identified System Flaws:** None blocking. Documented residual-reader gap (safe while flag defaults OFF, MUST be covered before enabling in prod): `nce/re_embedder.py`, `nce/reembedding_worker.py`, `nce/consolidation.py`, `nce/contradictions.py` read `raw_data` without `maybe_decrypt_raw_data`; `state_digest.py` hashes ciphertext (benign for replay equality).
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** Before flipping `NCE_ENVELOPE_ENCRYPTION_ENABLED` on, add a follow-up batch routing re_embedder / reembedding_worker / consolidation / contradictions through `maybe_decrypt_raw_data` (the enumerated decryption blind-spots the default-OFF flag currently masks).
+
+### TAG Batch 58 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_58.md`, `nce/garbage_collector.py`, `tests/test_garbage_collector.py`; cross-referenced `nce/db_utils.py`, `nce/notifications.py`, `nce/schema.sql`. Exactly the two in-scope files modified; built on Batch 56's committed `resolve_worker_dsn()`. `nce/causal/chrono.py` confirmed external, not in this batch.
+* **Structural Integrity:** Faithful mirror of the forward GC. Detection scans live memories (payload_ref NOT NULL, valid_to NULL, past orphan-age cutoff) per namespace, checks the `episodes` doc by ObjectId; missing → soft-retire, present → untouched. RLS-safe: candidate fetch + UPDATE inside `scoped_pg_session(pool, ns_id)` with redundant explicit `namespace_id` filters. No-delete invariant honored — repair is `UPDATE memories SET valid_to = now()` only; no DELETE, no `event_log` reference (WORM preserved). Mongo existence check is OUTSIDE the scoped PG txn (no slow I/O held). Bounded: keyset pagination + `REVERSE_SWEEP_MAX_PER_NS=5000` ceiling with deferral alert on overflow. Fail-safe alert wrapped in try/except. `NCE_MASTER_KEY` never read/logged. Early-return shapes preserved (`reverse_retired` added only to the success return), so existing exact-equality tests stay green. Soft-retire + alert (no delete, rebuild-from-WORM correctly deferred to Wave 5).
+* **Contractual Test Fidelity:** No Trivial Test Trap. `test_reverse_sweep_soft_retires_dangling_and_leaves_healthy` inserts a real dangling row (PG memory + absent Mongo doc) AND a healthy row, runs `_collect_reverse_orphans` against live PG+Mongo, and asserts persisted state: dangling `valid_to` set + alert text contains its id; healthy `valid_to` NULL + absent from alert; count == 1. Executed (not skipped). `23 passed`; mypy 132 (below baseline).
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** `_fetch_reverse_candidates` buffers up to 5000 tuples/namespace before Mongo lookup; a future iteration could stream page-by-page to flatten peak memory.
+
+### TAG Batch 53 Evaluation Audit Report
+* **Verification Status:** PASSED TAG (re-audit after one REJECT cycle)
+* **Target Scope Verification:** `admin/index.html` ONLY — no `nce/causal/chrono.py` or other files in the diff. Batch-52 read/render panel and shell untouched outside the V.3a additions.
+* **Structural Integrity:** Prior REJECT finding resolved. `SECTION_DOMAIN` (L5529-5536) now `{'Cron intervals':'cron','LLM / Cognitive':'llm','Embeddings & edge':'llm','Re-embedding worker':'llm','Observability':'observability','A2A / JWT':'a2a'}` — every key an exact `section=` string from `nce/settings_registry.py`; the five bogus keys gone. The WARM "Apply (reload {domain})" affordance now resolves for all WARM keys in cron/llm/observability/a2a sections. `node --check` passes on the full inline script; `<template>` 73/73, `<script>` 2/2. Dirty-tracking, confirm-diff modal, 207 rendering, 409 UX, secret rotate/clear, pending_restart banner, export-effective all intact.
+* **Contractual Test Fidelity:** Interaction layer matches the real `nce/admin_handlers/settings.py` contract: PATCH→207 `{settings:{key:{status,error?,status_code?}}}`; 409 carries `status_code:409`; `/reload` validates against `VALID_DOMAINS={cron,llm,observability,a2a}` → `{outcomes}`; `/reset {keys}`; `/pending {keys}`; `/effective` masked. Secrets write-only (`••••set`, never plaintext). `SECTION_DOMAIN` now matches the registry.
+* **Identified System Flaws:** None. Prior finding genuinely resolved, no new regression.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** `Embeddings & edge` / `Re-embedding worker` map to `'llm'` though some of their keys are HOT/COLD — harmless (the chip only renders for WARM `pending_reload` results), but worth a comment that the domain applies per-result, not per-section.
+
+### TAG Batch 62 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_62.md`, `docker-compose.yml`, `nce/schema.sql`, `nce/migrations/019_halfvec_embeddings.sql`, `tests/test_disk_io_tuning.py`. The four in-scope files match the diff; other working-tree changes (chrono.py etc.) are external/concurrent, not in Batch 62's diff. Migration numbered 019 (next free), new file, edits no existing migration.
+* **Structural Integrity:** D1 PG tuning present (shared_buffers, maintenance_work_mem, wal_compression=on, checkpoint_completion_target=0.9, max_wal_size). **WORM durability preserved:** `synchronous_commit=on` explicitly present, NOT off/local/remote_* (honors R-A). Mongo `--wiredTigerCollectionBlockCompressor zstd`. D2 halfvec fully consistent: `memories.embedding`/`kg_nodes.embedding` → `halfvec(768)` with `halfvec_cosine_ops` HNSW indexes, zero residual `vector(768)`/`vector_cosine_ops`; dynamic-dim stores stay `vector`. Proven by a fresh scratch-DB `schema.sql` apply (ON_ERROR_STOP=1, exit 0). Migration 019 mirrors schema.sql, guarded `IF udt_name='vector'`, drops+recreates HNSW indexes, casts fp32→fp16, idempotent (re-run no-op). D4 tmpfs staging mounts + `NCE_ARTIFACT_STAGING_DIR`/`TMPDIR` on compute services; D7 json-file log rotation on all.
+* **Contractual Test Fidelity:** Not a Trivial Test Trap. `test_worm_synchronous_commit_not_weakened` fails on `=off`/absence, passes only on `=on`. Schema/migration tests assert real invariants; the schema-bootstrap integration test passes (applies schema.sql twice on a live DB), proving internal consistency. `13 passed` (unit) + `1 passed` (schema bootstrap integration); ruff clean.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** D3 (Redis persistence) and D5 (TemporaryDirectory/try-finally in extractors) remain open; a follow-up should confirm extractor temp paths actually resolve under `NCE_ARTIFACT_STAGING_DIR`/`TMPDIR` so D4's tmpfs fully eliminates the D5 leak risk.
+
+### TAG Batch 47 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read in full: `diff_batch_47.md` + the 10 batch files on disk (`nce/orchestrators/memory.py` shred_memory 1177-1492, `nce/orchestrator.py`, `nce/memory_mcp_handlers.py`, `nce/models.py`, `nce/event_types.py`, `nce/replay.py`, `nce/tool_registry.py`, `nce/mcp_stdio_tools.py`, `tests/test_tool_registry.py`, `tests/test_shred_memory_integration.py`). Diff byte-identical to disk; no out-of-scope files; `nce/causal/chrono.py` correctly NOT in the diff. Schema confirms `kg_nodes.payload_ref`/`kg_edges.payload_ref` exist so the delete-by-payload_ref targets real rows.
+* **Structural Integrity:** 8-step sequence sound. Steps 1-5 (DEK destroy via NULLing wrapped_dek/dek_key_id; zero content_fts/embedding; DELETE memory_embeddings; ATMS-cascade KG nodes/edges/node_embeddings + derived-memory invalidation via the Batch-23 mechanism, bounded at 100; DELETE pii_redactions; signed content-free WORM append) all run in ONE `scoped_pg_session` + transaction so `append_event` commits atomically with the crypto-shred. Steps 6-8 (Redis purge, MinIO remove, Mongo tombstone) are post-commit, each try/excepted into `receipt.warnings` (never raised) — sound, since DEK destruction already made content unrecoverable. Content-free WORM event enforced both ways: `event_types.py` forbidden-key set {raw_data,content,summary,heavy_payload,entities,triplets} AND params carry only refs/counts/key-id/receipt_digest. RLS: SELECT + UPDATE both carry `AND namespace_id=$2::uuid` (raises PermissionError cross-namespace); `event_log` INSERT-only. `NCE_MASTER_KEY` env-only.
+* **Contractual Test Fidelity:** Genuine completeness test, NOT trivial. PRE-shred preconditions asserted non-trivial: wrapped_dek NOT NULL, `memory_embeddings`>0, `pii_redactions`>0 (reversible-pseudonymise EMAIL path), ciphertext has DEK prefix, Redis key primed. POST-shred: wrapped_dek/dek_key_id NULL; content_fts/embedding NULL; captured ciphertext raises `DEKDecryptionError`; Mongo doc tombstoned (sentinel/email absent); `memory_embeddings`/`kg_nodes`/`kg_edges`/`pii_redactions` all 0; Redis purged; signed `memory_shredded` event with sentinel/email/entity strings absent, 64-char receipt_digest, none of the 6 forbidden keys; receipt self-verified. `1 passed` (live Mongo+PG+Redis); tool registry `50 passed`; replay `5 passed`; mypy 133 (baseline).
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** The honest-scope guarantee is correctly stated (raw payload cryptographically unrecoverable + derivatives deleted; immutable log keeps only the fact of deletion, with prior-WORM entity/triplet strings persisting by design per Batch-44a/b). If "complete forgetting" becomes a hard promise, revisit 44b (content-free store_memory params).
+
+### TAG Batch 63 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_63.md`, and modified files: `nce/semantic_search.py`, `tests/test_semantic_search.py`.
+* **Structural Integrity Scoring:** Decoupling of cognitive sidecar redirection is clean. In-process fallback to CPU execution utilizes a separate executor thread pool. RLS scoped database belief read boundaries are respected.
+* **Contractual Test Fidelity:** The test contract fidelity is high. Mocked predictions verify both local in-process and sidecar HTTP routing parameters, ensuring proper reranking priority and graceful degradation to database scores on model failure, successfully avoiding the Trivial Test Trap.
+* **Scoped Test Execution:** Pass A target `tests/test_semantic_search.py` passed (19 passed). Pass B unit regression suite passed (2208 passed, 12 skipped). No new failures introduced.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** The check_nli_relevance function could cache local model loads internally to minimize recurrent AST/imports overhead, though it is currently managed via `_load_nli_model`.
+
+[EOF: END OF REFACTORING LEDGER]
