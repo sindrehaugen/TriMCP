@@ -40,7 +40,7 @@ tenacity>=9.0.0              # Retry / resilience decorator
 aiosmtplib>=3.0.2,<4        # SMTP alerts (lazy-imported in nce.notifications)
 
 # --- NLP / Semantic Track ----------------------------------------------------
-spacy>=3.8.0
+spacy>=3.8.14
 # After install run: python -m spacy download en_core_web_sm
 
 # --- AST Parsing (Deterministic Track) --------------------------------------
@@ -57,22 +57,22 @@ APScheduler>=3.11.0          # Bridge subscription renewal + dep-audit scheduler
 cachetools>=7.0.0            # Signing key cache TTL eviction
 
 # --- ML / Embeddings (Poly-Semantic Projection) ------------------------------
-sentence-transformers>=5.0.0
-transformers>=5.0.0
-torch>=2.2.0
+sentence-transformers>=5.5.1
+transformers>=5.10.2
+torch>=2.12.0
 
 # --- Graph Operations (Topology & Causal Inference) -------------------------
 networkx>=3.2.0              # Topology graph, spreading activation, causal paths
 
 # --- Scientific / Statistical ------------------------------------------------
-numpy>=2.0.0
-scipy>=1.12.0                # Gaussian noise overwriting, statistical operations
+numpy>=2.2.6
+scipy>=1.15.3                # Gaussian noise overwriting, statistical operations
 
 # --- Object Storage ----------------------------------------------------------
 minio>=7.2.0
 
 # --- Clustering (HDBSCAN / Sleep Consolidation) ------------------------------
-scikit-learn>=1.4.0
+scikit-learn>=1.7.2
 
 # --- Observability (Prometheus + OpenTelemetry) ------------------------------
 prometheus-client>=0.20.0
