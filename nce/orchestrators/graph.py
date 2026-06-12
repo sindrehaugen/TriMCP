@@ -90,6 +90,7 @@ class GraphOrchestrator(OrchestratorBase):
         *,
         user_id: str | None = None,
         private: bool = False,
+        aspect: str | None = None,
     ) -> list[dict]:
         top_k = max(1, min(top_k, _MAX_TOP_K))
         if language_filter and language_filter not in _ALLOWED_LANGUAGES:
@@ -99,6 +100,8 @@ class GraphOrchestrator(OrchestratorBase):
                 raise ValueError("private codebase search requires valid user_id")
         elif user_id is not None and not _SAFE_ID_RE.match(user_id):
             raise ValueError("Invalid user_id format")
+        if aspect and aspect not in ("code_intent", "nl_intent"):
+            raise ValueError(f"Invalid aspect '{aspect}'")
 
         query = query.strip()
         if not query:
@@ -135,6 +138,17 @@ class GraphOrchestrator(OrchestratorBase):
             lang_clause = f"AND language = ${next_i}" if language_filter else ""
             if language_filter:
                 query_params.append(language_filter)
+                next_i += 1
+
+            embedding_col = "ea.embedding" if aspect else "m.embedding"
+            aspect_join = (
+                f"JOIN embedding_aspects ea ON m.id = ea.memory_id AND ea.aspect = ${next_i}"
+                if aspect
+                else ""
+            )
+            if aspect:
+                query_params.append(aspect)
+                next_i += 1
 
             # NOTE: scope_clause and lang_clause inject ONLY hardcoded string literals
             # or parameterized placeholders ($N). No user-controlled values are
@@ -143,10 +157,11 @@ class GraphOrchestrator(OrchestratorBase):
             # Explicit namespace_id filter added as defense-in-depth (Fix 2B).
             sql = f"""
                 WITH vector_candidates AS (
-                    SELECT id, embedding <=> $1::vector AS distance
-                    FROM memories
-                    WHERE memory_type = 'code_chunk'
-                      AND namespace_id = current_setting('nce.namespace_id')::uuid
+                    SELECT m.id, {embedding_col} <=> $1::vector AS distance
+                    FROM memories m
+                    {aspect_join}
+                    WHERE m.memory_type = 'code_chunk'
+                      AND m.namespace_id = current_setting('nce.namespace_id')::uuid
                       {scope_clause} {lang_clause}
                     ORDER BY distance ASC
                     LIMIT $2
@@ -234,9 +249,14 @@ class GraphOrchestrator(OrchestratorBase):
                         meta = dict(raw)
                 name = row["name"] or meta.get("name") or row["filepath"]
                 node_type = row["node_type"] or meta.get("node_type") or "chunk"
-                start_line = row["start_line"] if row["start_line"] is not None else meta.get("start_line", 0)
-                end_line = row["end_line"] if row["end_line"] is not None else meta.get("end_line", 0)
-
+                start_line = (
+                    row["start_line"]
+                    if row["start_line"] is not None
+                    else meta.get("start_line", 0)
+                )
+                end_line = (
+                    row["end_line"] if row["end_line"] is not None else meta.get("end_line", 0)
+                )
 
                 ref_key = normalize_payload_ref(row["payload_ref"])
                 raw_code = code_docs.get(ref_key, "") if ref_key else ""

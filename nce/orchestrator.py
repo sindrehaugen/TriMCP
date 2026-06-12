@@ -651,6 +651,7 @@ class NCEEngine(OrchestratorBase):
         *,
         user_id: str | None = None,
         private: bool = False,
+        aspect: str | None = None,
     ) -> list[dict]:
         """Codebase hybrid search — delegating to GraphOrchestrator."""
         await self._ensure_graph("search_codebase")
@@ -661,6 +662,7 @@ class NCEEngine(OrchestratorBase):
             top_k,
             user_id=user_id,
             private=private,
+            aspect=aspect,
         )
 
     async def manage_quotas(self, payload: ManageQuotasRequest) -> dict:

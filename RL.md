@@ -71,7 +71,7 @@
 * [DONE] Batch 61 — RAM: offload spaCy + NLI to a sidecar; container mem limits (VI.5b) [PASSED TAG]
 * [DONE] Batch 62 — Disk: datastore tuning + halfvec + tmpfs temp (VI.5c) [PASSED TAG]
 * [DONE] Batch 63 — Cross-encoder reranking (IV.1) [PASSED TAG]
-* [OPEN] Batch 64 — Multi-vector / aspect embeddings (IV.2) [NO TAG]
+* [RUNNING] Batch 64 — Multi-vector / aspect embeddings (IV.2) [PASSED TAG]
 * [LOCKED] Batch 65 — diag-config: `NCE_DIAG_*` configuration surface (Diag P1) [NO TAG]
 * [LOCKED] Batch 66 — ingestion-event-type: `ingestion_completed` event type + replay handler (Diag P1) [NO TAG]
 * [LOCKED] Batch 67 — diag-schema: diag tables + `topology_graph` unique index + RLS (Diag P1) [NO TAG]

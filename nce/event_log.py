@@ -267,6 +267,7 @@ EXPECTED_TENANT_RLS_TABLES: dict[str, str] = {
     "dead_letter_queue": "namespace_id",
     "embedding_migrations": "namespace_id",
     "memory_embeddings": "namespace_id",
+    "embedding_aspects": "namespace_id",
     "graph_schema_registry": "namespace_id",
     "query_templates": "namespace_id",
     "v3_cognitive_ledger": "namespace_id",

@@ -258,8 +258,17 @@ def process_code_indexing(
                 chunk_vault_entries.append(pii_res.vault_entries)
                 chunk_redacted.append(pii_res.redacted)
 
-            texts = [f"{c.name}\n{sc}" for c, sc in zip(chunks, sanitized_chunks_code)]
-            vectors = await _embeddings.embed_batch(texts)
+            primary_texts = [f"{c.name}\n{sc}" for c, sc in zip(chunks, sanitized_chunks_code)]
+            code_texts = [sc for sc in sanitized_chunks_code]
+            nl_texts = [c.name for c in chunks]
+
+            all_texts = primary_texts + code_texts + nl_texts
+            all_vectors = await _embeddings.embed_batch(all_texts)
+
+            n_chunks = len(chunks)
+            primary_vectors = all_vectors[:n_chunks]
+            code_vectors = all_vectors[n_chunks : 2 * n_chunks]
+            nl_vectors = all_vectors[2 * n_chunks :]
 
             # Use scoped session for RLS if namespace_id is provided
             async with (
@@ -287,8 +296,14 @@ def process_code_indexing(
                     ):
                         metadata["degraded_embedding"] = True
 
-                    for chunk, sc, vector, vault, redacted in zip(
-                        chunks, sanitized_chunks_code, vectors, chunk_vault_entries, chunk_redacted
+                    for i, (chunk, sc, vector, vault, redacted) in enumerate(
+                        zip(
+                            chunks,
+                            sanitized_chunks_code,
+                            primary_vectors,
+                            chunk_vault_entries,
+                            chunk_redacted,
+                        )
                     ):
                         memory_id = uuid.uuid4()
                         await conn.execute(
@@ -315,6 +330,36 @@ def process_code_indexing(
                             ns_uuid,
                             json.dumps(metadata),
                             redacted,
+                        )
+                        # Store code_intent aspect embedding
+                        code_vector = (
+                            code_vectors[i]
+                            if i < len(code_vectors)
+                            else (primary_vectors[i] if i < len(primary_vectors) else [0.0] * 768)
+                        )
+                        await conn.execute(
+                            """
+                            INSERT INTO embedding_aspects (memory_id, aspect, embedding, namespace_id)
+                            VALUES ($1::uuid, 'code_intent', $2::vector, $3::uuid)
+                            """,
+                            str(memory_id),
+                            json.dumps(code_vector),
+                            ns_uuid,
+                        )
+                        # Store nl_intent aspect embedding
+                        nl_vector = (
+                            nl_vectors[i]
+                            if i < len(nl_vectors)
+                            else (primary_vectors[i] if i < len(primary_vectors) else [0.0] * 768)
+                        )
+                        await conn.execute(
+                            """
+                            INSERT INTO embedding_aspects (memory_id, aspect, embedding, namespace_id)
+                            VALUES ($1::uuid, 'nl_intent', $2::vector, $3::uuid)
+                            """,
+                            str(memory_id),
+                            json.dumps(nl_vector),
+                            ns_uuid,
                         )
                         if vault and ns_uuid:
                             await conn.executemany(

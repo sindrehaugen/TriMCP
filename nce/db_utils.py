@@ -34,6 +34,7 @@ UNMANAGED_PG_AUDITED_SITES: Final[frozenset[str]] = frozenset(
         "cron.d365_sync.update_stats",
         "cron.d365_netbox_bridge.namespace_scan",
         "cron.chain_verify.namespace_scan",
+        "reembedding.aspects.backfill",
     }
 )
 

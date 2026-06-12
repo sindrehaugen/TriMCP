@@ -453,6 +453,24 @@ CREATE TABLE IF NOT EXISTS memory_embeddings_3 PARTITION OF memory_embeddings FO
 -- Index for validate_migration emb_count query and model-scoped lookups
 CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model_id ON memory_embeddings(model_id);
 
+CREATE TABLE IF NOT EXISTS embedding_aspects (
+    memory_id    UUID NOT NULL,
+    aspect       VARCHAR(64) NOT NULL,
+    embedding    halfvec(768),
+    namespace_id UUID REFERENCES namespaces(id),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (memory_id, aspect)
+) PARTITION BY HASH (memory_id);
+
+CREATE TABLE IF NOT EXISTS embedding_aspects_0 PARTITION OF embedding_aspects FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+CREATE TABLE IF NOT EXISTS embedding_aspects_1 PARTITION OF embedding_aspects FOR VALUES WITH (MODULUS 4, REMAINDER 1);
+CREATE TABLE IF NOT EXISTS embedding_aspects_2 PARTITION OF embedding_aspects FOR VALUES WITH (MODULUS 4, REMAINDER 2);
+CREATE TABLE IF NOT EXISTS embedding_aspects_3 PARTITION OF embedding_aspects FOR VALUES WITH (MODULUS 4, REMAINDER 3);
+
+CREATE INDEX IF NOT EXISTS idx_embedding_aspects_hnsw ON embedding_aspects USING hnsw (embedding halfvec_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_embedding_aspects_namespace_id ON embedding_aspects (namespace_id);
+
+
 CREATE TABLE IF NOT EXISTS kg_node_embeddings (
     node_id    UUID NOT NULL,
     model_id   UUID NOT NULL REFERENCES embedding_models(id),
@@ -1185,6 +1203,7 @@ DECLARE
         'dead_letter_queue',
         'embedding_migrations',
         'memory_embeddings',
+        'embedding_aspects',
         'active_learning_queue',
         'd365_integrations',
         'd365_netbox_mappings'

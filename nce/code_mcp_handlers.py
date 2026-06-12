@@ -125,7 +125,7 @@ async def handle_search_codebase(engine: NCEEngine, arguments: dict[str, Any]) -
     """Semantic search over indexed code chunks. Returns matching functions/classes.
 
     Required: query, namespace_id.
-    Optional: language_filter (allowlisted), top_k (1–50), user_id, private.
+    Optional: language_filter (allowlisted), top_k (1–50), user_id, private, aspect.
     """
     namespace_id = _require_namespace_id(arguments)
 
@@ -140,6 +140,10 @@ async def handle_search_codebase(engine: NCEEngine, arguments: dict[str, Any]) -
 
     top_k = _clamp_top_k(arguments.get("top_k", _TOP_K_DEFAULT))
 
+    aspect = arguments.get("aspect")
+    if aspect is not None:
+        aspect = str(aspect).strip()
+
     results = await engine.search_codebase(
         query=query,
         namespace_id=namespace_id,
@@ -148,5 +152,6 @@ async def handle_search_codebase(engine: NCEEngine, arguments: dict[str, Any]) -
         user_id=arguments.get("user_id"),
         # Default to private=True: callers must opt out explicitly.
         private=_bool_arg(arguments, "private", default=True),
+        aspect=aspect,
     )
     return json.dumps(results)

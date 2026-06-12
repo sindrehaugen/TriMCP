@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import math
 import sys
@@ -23,7 +24,7 @@ if sys.version_info >= (3, 11):
     from enum import StrEnum
 else:
     from strenum import StrEnum  # type: ignore[import-untyped]
-from typing import Protocol
+from typing import Any, Protocol
 
 log = logging.getLogger("nce-reembedding-migration")
 
@@ -382,3 +383,116 @@ _EMBED_MAX_CONCURRENT: int = 8
 _EMBED_TIMEOUT_SECONDS: float = 30.0
 _MAX_CANONICAL_TEXT_BYTES: int = 32_768
 _EMBED_MAX_RETRIES: int = 3
+
+
+class PostgresAspectReembeddingStore:
+    """Postgres aspect store implementing ReembeddingStorePort for aspect backfilling."""
+
+    def __init__(
+        self,
+        pool: Any,
+        aspect: str,
+        mongo_client: Any = None,
+    ) -> None:
+        self.pool = pool
+        self.aspect = aspect
+        self.mongo_client = mongo_client
+
+    async def pop_pending_ids(self, limit: int) -> list[str]:
+        """Fetch code_chunk memories that do not have the target aspect in embedding_aspects."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT m.id::text
+                FROM memories m
+                LEFT JOIN embedding_aspects ea ON m.id = ea.memory_id AND ea.aspect = $1
+                WHERE m.memory_type = 'code_chunk'
+                  AND ea.memory_id IS NULL
+                LIMIT $2
+                """,
+                self.aspect,
+                limit,
+            )
+            return [str(r["id"]) for r in rows]
+
+    async def load_row(self, memory_id: str) -> MemoryEmbeddingRow | None:
+        """Load code_chunk memory and resolve canonical text based on aspect type."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, payload_ref, name, filepath, embedding::vector as embedding_vector, namespace_id
+                FROM memories
+                WHERE id = $1::uuid
+                """,
+                memory_id,
+            )
+            if not row:
+                return None
+
+            raw_emb = row["embedding_vector"]
+            embedding_v1: list[float] = []
+            if isinstance(raw_emb, str):
+                embedding_v1 = [float(x) for x in raw_emb.strip("[]").split(",") if x.strip()]
+            elif isinstance(raw_emb, list):
+                embedding_v1 = [float(x) for x in raw_emb]
+            elif raw_emb is not None:
+                embedding_v1 = [float(x) for x in str(raw_emb).strip("[]").split(",") if x.strip()]
+
+            canonical_text = ""
+            if self.aspect == "nl_intent":
+                canonical_text = row["name"] or ""
+            elif self.aspect == "code_intent":
+                ref = row["payload_ref"]
+                ns_id = row["namespace_id"]
+                if ref and len(ref) == 24 and ns_id and self.mongo_client is not None:
+                    from bson import ObjectId
+                    from nce.db_utils import scoped_mongo_session
+                    try:
+                        async with scoped_mongo_session(self.mongo_client, ns_id) as s_db:
+                            doc = await s_db.code_files.find_one({"_id": ObjectId(ref)}, {"raw_code": 1})
+                            if doc:
+                                canonical_text = doc.get("raw_code", "")
+                    except Exception as exc:
+                        log.warning("Aspect backfill: MongoDB query failed for %s: %s", memory_id, exc)
+
+                if not canonical_text:
+                    canonical_text = row["filepath"] or ""
+
+            return MemoryEmbeddingRow(
+                memory_id=memory_id,
+                canonical_text=canonical_text,
+                embedding_v1=embedding_v1,
+            )
+
+    async def write_embedding_v2(
+        self,
+        memory_id: str,
+        *,
+        embedding: Sequence[float],
+        model_id: str,
+    ) -> None:
+        """Write the aspect embedding to embedding_aspects companion table."""
+        async with self.pool.acquire() as conn:
+            namespace_id = await conn.fetchval(
+                "SELECT namespace_id FROM memories WHERE id = $1::uuid",
+                memory_id,
+            )
+            from nce.db_utils import scoped_pg_session, unmanaged_pg_connection
+            async with (
+                scoped_pg_session(self.pool, str(namespace_id))
+                if namespace_id
+                else unmanaged_pg_connection(self.pool, site="reembedding.aspects.backfill")
+            ) as session_conn:
+                await session_conn.execute(
+                    """
+                    INSERT INTO embedding_aspects (memory_id, aspect, embedding, namespace_id)
+                    VALUES ($1::uuid, $2, $3::vector, $4::uuid)
+                    ON CONFLICT (memory_id, aspect)
+                    DO UPDATE SET embedding = $3::vector
+                    """,
+                    memory_id,
+                    self.aspect,
+                    json.dumps(list(embedding)),
+                    namespace_id,
+                )
+
