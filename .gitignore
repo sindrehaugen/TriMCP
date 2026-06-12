@@ -97,3 +97,10 @@ docs/architecture-phase-*.md
 # Node/npm dependencies
 node_modules/
 
+# Local refactoring session logs and prompt files (not to be pushed to remote)
+RL.md
+REMEDIATION_PROGRESS.md
+Batch_*_prompt.md
+diff_batch_*.md
+AUDIT_REPORT_*.md
+
