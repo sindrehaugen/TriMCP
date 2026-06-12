@@ -48,6 +48,11 @@ ADMIN_FLEET_RLS_TABLES: tuple[str, ...] = (
     "dead_letter_queue",
     "resource_quotas",
     "a2a_grants",
+    "processed_outbox_events",
+    "actor_trust",
+    "event_parents",
+    "action_approval_queue",
+    "action_idempotency",
 )
 
 ADMIN_MAX_EVENT_TYPE_LEN: int = 128

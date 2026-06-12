@@ -197,9 +197,10 @@ class ReembeddingMigrationOrchestrator:
                     try:
                         vec = await asyncio.wait_for(
                             asyncio.to_thread(
-                                self.embed_fn_v2,
-                                row.canonical_text,
-                                dimension=self.dimension,
+                                lambda: self.embed_fn_v2(
+                                    row.canonical_text,
+                                    dimension=self.dimension,
+                                )
                             ),
                             timeout=_EMBED_TIMEOUT_SECONDS,
                         )
@@ -375,7 +376,7 @@ class InMemoryReembeddingStore:
                 break
 
 
-EmbeddingFn = Callable[[str], list[float]]
+EmbeddingFn = Callable[..., list[float]]
 """Embedder callable: accepts text as positional arg; dimension passed as keyword."""
 
 _MAX_BATCH_SIZE: int = 1_000
@@ -446,14 +447,20 @@ class PostgresAspectReembeddingStore:
                 ns_id = row["namespace_id"]
                 if ref and len(ref) == 24 and ns_id and self.mongo_client is not None:
                     from bson import ObjectId
+
                     from nce.db_utils import scoped_mongo_session
+
                     try:
                         async with scoped_mongo_session(self.mongo_client, ns_id) as s_db:
-                            doc = await s_db.code_files.find_one({"_id": ObjectId(ref)}, {"raw_code": 1})
+                            doc = await s_db.code_files.find_one(
+                                {"_id": ObjectId(ref)}, {"raw_code": 1}
+                            )
                             if doc:
                                 canonical_text = doc.get("raw_code", "")
                     except Exception as exc:
-                        log.warning("Aspect backfill: MongoDB query failed for %s: %s", memory_id, exc)
+                        log.warning(
+                            "Aspect backfill: MongoDB query failed for %s: %s", memory_id, exc
+                        )
 
                 if not canonical_text:
                     canonical_text = row["filepath"] or ""
@@ -478,6 +485,7 @@ class PostgresAspectReembeddingStore:
                 memory_id,
             )
             from nce.db_utils import scoped_pg_session, unmanaged_pg_connection
+
             async with (
                 scoped_pg_session(self.pool, str(namespace_id))
                 if namespace_id
@@ -495,4 +503,3 @@ class PostgresAspectReembeddingStore:
                     json.dumps(list(embedding)),
                     namespace_id,
                 )
-

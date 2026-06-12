@@ -36,20 +36,29 @@ def _conn() -> AsyncMock:
 async def test_worm_update_denied_delete_denied():
     """UPDATE and DELETE both raise InsufficientPrivilegeError → probe passes."""
     conn = _conn()
-    n = len(_WORM_TABLES) * 2
-    conn.execute.side_effect = [
-        asyncpg.exceptions.InsufficientPrivilegeError("UPDATE denied"),
-        asyncpg.exceptions.InsufficientPrivilegeError("DELETE denied"),
-    ] * len(_WORM_TABLES)
+
+    def mock_execute(sql, *args, **kwargs):
+        if "SET nce.namespace_id" in sql:
+            return None
+        if "UPDATE" in sql:
+            raise asyncpg.exceptions.InsufficientPrivilegeError("UPDATE denied")
+        if "DELETE" in sql:
+            raise asyncpg.exceptions.InsufficientPrivilegeError("DELETE denied")
+        return None
+
+    conn.execute.side_effect = mock_execute
 
     # Should not raise
     await verify_worm_enforcement(conn)
 
-    assert conn.execute.call_count == n
-    for i in range(len(_WORM_TABLES)):
-        off = i * 2
-        assert "UPDATE" in conn.execute.call_args_list[off][0][0]
-        assert "DELETE" in conn.execute.call_args_list[off + 1][0][0]
+    # For each table, we expect 3 calls: SET, UPDATE, DELETE
+    assert conn.execute.call_count == len(_WORM_TABLES) * 3
+    # Check that SET, UPDATE, and DELETE were called for each table
+    calls = [call[0][0] for call in conn.execute.call_args_list]
+    for table in _WORM_TABLES:
+        assert any("SET nce.namespace_id" in c for c in calls)
+        assert any("UPDATE" in c and table in c for c in calls)
+        assert any("DELETE" in c and table in c for c in calls)
 
 
 # ---------------------------------------------------------------------------
@@ -61,9 +70,15 @@ async def test_worm_update_denied_delete_denied():
 async def test_worm_update_succeeds_raises_runtime_error():
     """UPDATE succeeds → RuntimeError halts startup."""
     conn = _conn()
-    conn.execute.side_effect = [
-        None,  # UPDATE succeeds — DANGER
-    ]
+
+    def mock_execute(sql, *args, **kwargs):
+        if "SET nce.namespace_id" in sql:
+            return None
+        if "UPDATE" in sql:
+            return None  # UPDATE succeeds — DANGER
+        return None
+
+    conn.execute.side_effect = mock_execute
 
     with pytest.raises(RuntimeError, match="UPDATE on event_log succeeded"):
         await verify_worm_enforcement(conn)
@@ -73,10 +88,17 @@ async def test_worm_update_succeeds_raises_runtime_error():
 async def test_worm_delete_succeeds_raises_runtime_error():
     """DELETE succeeds → RuntimeError halts startup."""
     conn = _conn()
-    conn.execute.side_effect = [
-        asyncpg.exceptions.InsufficientPrivilegeError("UPDATE denied"),
-        None,  # DELETE succeeds — DANGER
-    ]
+
+    def mock_execute(sql, *args, **kwargs):
+        if "SET nce.namespace_id" in sql:
+            return None
+        if "UPDATE" in sql:
+            raise asyncpg.exceptions.InsufficientPrivilegeError("UPDATE denied")
+        if "DELETE" in sql:
+            return None  # DELETE succeeds — DANGER
+        return None
+
+    conn.execute.side_effect = mock_execute
 
     with pytest.raises(RuntimeError, match="DELETE on event_log succeeded"):
         await verify_worm_enforcement(conn)
@@ -86,7 +108,17 @@ async def test_worm_delete_succeeds_raises_runtime_error():
 async def test_worm_both_succeed_raises_on_update_first():
     """If both UPDATE and DELETE succeed, only UPDATE error is raised."""
     conn = _conn()
-    conn.execute.side_effect = [None, None]  # both succeed on first table
+
+    def mock_execute(sql, *args, **kwargs):
+        if "SET nce.namespace_id" in sql:
+            return None
+        if "UPDATE" in sql:
+            return None  # UPDATE succeeds — DANGER
+        if "DELETE" in sql:
+            return None
+        return None
+
+    conn.execute.side_effect = mock_execute
 
     with pytest.raises(RuntimeError, match="UPDATE on event_log succeeded"):
         await verify_worm_enforcement(conn)
@@ -101,7 +133,13 @@ async def test_worm_both_succeed_raises_on_update_first():
 async def test_table_missing_propagates_error():
     """If the table doesn't exist, the error propagates (not caught)."""
     conn = _conn()
-    conn.execute.side_effect = asyncpg.exceptions.UndefinedTableError("event_log missing")
+
+    def mock_execute(sql, *args, **kwargs):
+        if "SET nce.namespace_id" in sql:
+            return None
+        raise asyncpg.exceptions.UndefinedTableError("event_log missing")
+
+    conn.execute.side_effect = mock_execute
 
     with pytest.raises(asyncpg.exceptions.UndefinedTableError):
         await verify_worm_enforcement(conn)
@@ -111,7 +149,13 @@ async def test_table_missing_propagates_error():
 async def test_unexpected_postgres_error_propagates():
     """Non-privilege errors propagate unchanged."""
     conn = _conn()
-    conn.execute.side_effect = asyncpg.exceptions.ConnectionFailureError("broken")
+
+    def mock_execute(sql, *args, **kwargs):
+        if "SET nce.namespace_id" in sql:
+            return None
+        raise asyncpg.exceptions.ConnectionFailureError("broken")
+
+    conn.execute.side_effect = mock_execute
 
     with pytest.raises(asyncpg.exceptions.ConnectionFailureError):
         await verify_worm_enforcement(conn)
@@ -126,16 +170,24 @@ async def test_unexpected_postgres_error_propagates():
 async def test_probe_uses_where_false():
     """Both probes use WHERE FALSE so no rows can ever be affected."""
     conn = _conn()
-    conn.execute.side_effect = [
-        asyncpg.exceptions.InsufficientPrivilegeError("no"),
-        asyncpg.exceptions.InsufficientPrivilegeError("no"),
-    ] * len(_WORM_TABLES)
+
+    def mock_execute(sql, *args, **kwargs):
+        if "SET nce.namespace_id" in sql:
+            return None
+        if "UPDATE" in sql:
+            raise asyncpg.exceptions.InsufficientPrivilegeError("no")
+        if "DELETE" in sql:
+            raise asyncpg.exceptions.InsufficientPrivilegeError("no")
+        return None
+
+    conn.execute.side_effect = mock_execute
 
     await verify_worm_enforcement(conn)
 
     for call in conn.execute.call_args_list:
         sql = call[0][0]
-        assert "WHERE FALSE" in sql
+        if "SET nce" not in sql:
+            assert "WHERE FALSE" in sql
 
 
 # ---------------------------------------------------------------------------

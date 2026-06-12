@@ -355,6 +355,21 @@ def build_admin_routes() -> list[Route]:
             methods=["GET"],
         ),
         Route(
+            "/api/admin/actor-trust",
+            endpoint=h.api_admin_actor_trust,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/approval-queue",
+            endpoint=h.api_admin_approval_queue_list,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/approval-queue/{id}",
+            endpoint=h.api_admin_approval_queue_get,
+            methods=["GET"],
+        ),
+        Route(
             "/api/admin/contradictions/recent",
             endpoint=h.api_admin_contradictions_recent,
             methods=["GET"],

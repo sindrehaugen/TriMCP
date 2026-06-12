@@ -1,3 +1,4 @@
+# ruff: noqa: F401, E402, I001
 from __future__ import annotations
 
 import logging
@@ -5,7 +6,7 @@ import logging
 from nce import admin_state
 from nce.admin_app import app
 from nce.admin_http_support import (
-    admin_error_response as _admin_error_response,
+    admin_error_response as _admin_error_response,  # noqa: F401 — re-export for tests
     update_dotenv,  # noqa: F401 — re-export for tests
 )
 
@@ -13,8 +14,6 @@ logging.basicConfig(level=logging.INFO)
 
 # Backward compatibility for tests patching admin_server.engine
 engine = admin_state.engine
-
-
 
 
 if __name__ == "__main__":

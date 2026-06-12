@@ -173,7 +173,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 # Tables expected to be append-only (no UPDATE/DELETE at the application role).
-_WORM_TABLES: tuple[str, ...] = ("event_log",)
+_WORM_TABLES: tuple[str, ...] = ("event_log", "event_parents")
 
 
 async def verify_worm_on_table(conn: asyncpg.Connection, table_name: str) -> None:
@@ -206,9 +206,19 @@ async def verify_worm_on_table(conn: asyncpg.Connection, table_name: str) -> Non
         log.warning("[worm-probe] Bypassing WORM verification for table %s", table_name)
         return
 
+    # Set dummy namespace ID session setting so RLS policies don't fail during WORM checks
+    try:
+        await conn.execute("SET nce.namespace_id = '00000000-0000-0000-0000-000000000000'")
+    except Exception:
+        pass
+
     # Probe 1: UPDATE
     try:
-        await conn.execute(f"UPDATE {table_name} SET id = id WHERE FALSE")
+        try:
+            await conn.execute(f"UPDATE {table_name} SET id = id WHERE FALSE")
+        except asyncpg.exceptions.UndefinedColumnError:
+            # Fallback for tables without 'id' (e.g., event_parents using 'event_id')
+            await conn.execute(f"UPDATE {table_name} SET event_id = event_id WHERE FALSE")
     except asyncpg.exceptions.InsufficientPrivilegeError:
         log.info("[worm-probe] %s: UPDATE denied ✅", table_name)
     else:
@@ -276,6 +286,11 @@ EXPECTED_TENANT_RLS_TABLES: dict[str, str] = {
     "active_learning_queue": "namespace_id",
     "d365_integrations": "namespace_id",
     "d365_netbox_mappings": "namespace_id",
+    "processed_outbox_events": "namespace_id",
+    "actor_trust": "namespace_id",
+    "event_parents": "namespace_id",
+    "action_approval_queue": "namespace_id",
+    "action_idempotency": "namespace_id",
 }
 
 EXPECTED_SPECIAL_RLS_TABLES: dict[str, tuple[str, ...]] = {

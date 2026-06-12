@@ -23,7 +23,8 @@ def test_memory_salience_not_in_worm_tables():
 
 def test_worm_tables_contains_expected_entries():
     assert "event_log" in _WORM_TABLES
-    assert len(_WORM_TABLES) == 1
+    assert "event_parents" in _WORM_TABLES
+    assert len(_WORM_TABLES) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -40,9 +41,19 @@ async def test_worm_tables_db_role_cannot_update(pg_app_conn):
     while row-level triggers block real mutations — ``WHERE FALSE`` does not fire
     row triggers, so **skip** unless a least-privilege DSN is wired via ``PG_DSN_APP``.
     """
+    try:
+        await pg_app_conn.execute("SET nce.namespace_id = '00000000-0000-0000-0000-000000000000'")
+    except Exception:
+        pass
+
     for table_name in _WORM_TABLES:
         try:
-            await pg_app_conn.execute(f"UPDATE {table_name} SET id = id WHERE FALSE")
+            try:
+                await pg_app_conn.execute(f"UPDATE {table_name} SET id = id WHERE FALSE")
+            except asyncpg.exceptions.UndefinedColumnError:
+                await pg_app_conn.execute(
+                    f"UPDATE {table_name} SET event_id = event_id WHERE FALSE"
+                )
         except asyncpg.exceptions.InsufficientPrivilegeError:
             continue
         pytest.skip(
@@ -55,6 +66,11 @@ async def test_worm_tables_db_role_cannot_update(pg_app_conn):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_worm_tables_db_role_cannot_delete(pg_app_conn):
+    try:
+        await pg_app_conn.execute("SET nce.namespace_id = '00000000-0000-0000-0000-000000000000'")
+    except Exception:
+        pass
+
     for table_name in _WORM_TABLES:
         try:
             await pg_app_conn.execute(f"DELETE FROM {table_name} WHERE FALSE")

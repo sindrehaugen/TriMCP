@@ -443,6 +443,8 @@ class NCEEngine(OrchestratorBase):
                                 CREATE POLICY topology_graph_tenant_isolation ON topology_graph
                                     FOR ALL
                                     USING (namespace_id = get_nce_namespace());
+                                GRANT SELECT, INSERT, UPDATE, DELETE ON topology_graph TO nce_app;
+                                GRANT SELECT, INSERT, UPDATE, DELETE ON topology_graph TO nce_gc;
                             """)
                             continue
                     await conn.execute(sql)

@@ -37,7 +37,6 @@ from nce.observability import (
     _safe_counter,
     _safe_gauge,
     _safe_histogram,
-    _StubMetric,
 )
 
 log = logging.getLogger("nce.background_task_manager")

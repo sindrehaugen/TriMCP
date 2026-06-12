@@ -114,6 +114,35 @@ class SigningKeyStatus(StrEnum):
     retired = "retired"
 
 
+class ChangeOrigin(StrEnum):
+    """[Batch C0] Origin of changes on memories/KG entities."""
+
+    sync = "sync"
+    webhook = "webhook"
+    agent = "agent"
+    operator = "operator"
+    consolidation = "consolidation"
+    replay = "replay"
+    unknown = "unknown"
+
+
+class ApprovalStatus(StrEnum):
+    """[Batch C0] Status of approval queue actions."""
+
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+    executed = "executed"
+    expired = "expired"
+
+
+class ActorKind(StrEnum):
+    """[Batch C0] Kind of actors participating in the trust model."""
+
+    agent = "agent"
+    operator = "operator"
+
+
 class ManageNamespaceCommand(StrEnum):
     """Commands accepted by the manage_namespace MCP admin tool."""
 
@@ -574,6 +603,9 @@ class MemoryRecord(BaseModel):
     signature: bytes = Field(description="[Phase 0.2] HMAC-SHA256 over JCS payload")
     signature_key_id: str = Field(description="[Phase 0.2] ID of the signing key used")
     pii_redacted: bool = False
+    change_origin: ChangeOrigin | None = None
+    origin_event_id: UUID4 | None = None
+    derivation_depth: int | None = None
 
 
 class MemorySalienceRecord(BaseModel):
@@ -602,6 +634,9 @@ class KGNode(BaseModel):
     entity_type: str = Field(default="UNKNOWN")
     source_text: str
     payload_ref: str | None = None
+    change_origin: ChangeOrigin | None = None
+    origin_event_id: UUID4 | None = None
+    derivation_depth: int | None = None
 
     @field_validator("label")
     @classmethod
@@ -620,6 +655,9 @@ class KGEdge(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     payload_ref: str | None = None
     metadata: SafeMetadataDict = Field(default_factory=dict)
+    change_origin: ChangeOrigin | None = None
+    origin_event_id: UUID4 | None = None
+    derivation_depth: int | None = None
 
     @field_validator("subject_label", "predicate", "object_label")
     @classmethod
@@ -742,6 +780,9 @@ class SemanticSearchResult(BaseModel):
         default=None,
         description="Optional memories.metadata JSON (compare_states / diagnostics) — flat JSON-safe keys only",
     )
+    change_origin: ChangeOrigin | None = None
+    origin_event_id: UUID4 | None = None
+    derivation_depth: int | None = None
 
 
 class GraphSearchRequest(BaseModel):
@@ -1418,6 +1459,64 @@ class StateDiffResult(BaseModel):
         default_factory=list,
         description="Version transitions: old and new metadata for same memory_id",
     )
+
+
+class ActorTrustOut(BaseModel):
+    """[Batch C0] Response model representing an actor trust row."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    namespace_id: UUID4
+    actor_id: str
+    actor_kind: ActorKind
+    confirmations: int
+    rejections: int
+    contradictions_sourced: int
+    trust: float
+    updated_at: datetime
+
+
+class ApprovalQueueItemOut(BaseModel):
+    """[Batch C0] Response model representing an approval queue item."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: UUID4
+    namespace_id: UUID4
+    agent_id: str
+    action_type: str
+    target_system: str
+    target_entity_id: str | None = None
+    proposed_payload: dict[str, Any]
+    status: ApprovalStatus
+    dry_run_result: dict[str, Any] | None = None
+    created_at: datetime
+    resolved_at: datetime | None = None
+    resolved_by: str | None = None
+
+
+class ActionIdempotencyOut(BaseModel):
+    """[Batch C0] Response model representing an idempotency key row."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    idempotency_key: str
+    namespace_id: UUID4
+    action_type: str
+    target_entity_id: str | None = None
+    response_hash: bytes | None = None
+    created_at: datetime
+
+
+class EventParentOut(BaseModel):
+    """[Batch C0] Response model representing an event parent lineage mapping."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    event_id: UUID4
+    parent_event_id: UUID4
+    namespace_id: UUID4
+    created_at: datetime
 
 
 # ── Instantiation tests ───────────────────────────────────────────────────────

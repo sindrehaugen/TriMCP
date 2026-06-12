@@ -1,3 +1,4 @@
+# ruff: noqa: F401
 """Shared imports and constants for admin HTTP handlers."""
 
 from __future__ import annotations

@@ -70,6 +70,9 @@ CREATE TABLE IF NOT EXISTS memories (
     signature           BYTEA,
     signature_key_id    TEXT,
     pii_redacted        BOOLEAN     NOT NULL DEFAULT false,
+    change_origin       TEXT        NOT NULL DEFAULT 'unknown',
+    origin_event_id     UUID,
+    derivation_depth    SMALLINT    NOT NULL DEFAULT 0,
     
     -- Legacy compatibility fields (from memory_metadata and code_metadata)
     user_id             VARCHAR(128),
@@ -156,6 +159,13 @@ BEGIN
         ALTER TABLE memories ADD CONSTRAINT ck_memories_assertion_type
             CHECK (assertion_type IN ('fact', 'opinion', 'preference', 'observation'));
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.check_constraints
+        WHERE constraint_name = 'memories_change_origin_chk'
+    ) THEN
+        ALTER TABLE memories ADD CONSTRAINT memories_change_origin_chk
+            CHECK (change_origin IN ('sync','webhook','agent','operator','consolidation','replay','unknown'));
+    END IF;
 END $$;
 
 -- Indexes for memories
@@ -168,6 +178,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_user_path ON memories (user_id, filepath
 CREATE INDEX IF NOT EXISTS idx_memories_embedding_hnsw ON memories USING hnsw (embedding halfvec_cosine_ops);
 -- Fleet admin: COUNT(*) / lookups by tenant without scanning all time partitions
 CREATE INDEX IF NOT EXISTS idx_memories_namespace_id ON memories (namespace_id);
+CREATE INDEX IF NOT EXISTS idx_memories_ns_derivation_depth ON memories (namespace_id, derivation_depth);
 
 -- payload_ref CHECK constraint — enforce MongoDB ObjectId hex format (24 hex chars)
 DO $$
@@ -200,7 +211,10 @@ CREATE TABLE IF NOT EXISTS kg_nodes (
     payload_ref   CHAR(24),
     created_at    TIMESTAMPTZ DEFAULT NOW(),
     updated_at    TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (label, namespace_id)
+    change_origin TEXT NOT NULL DEFAULT 'unknown',
+    origin_event_id UUID,
+    UNIQUE (label, namespace_id),
+    CONSTRAINT kg_nodes_change_origin_chk CHECK (change_origin IN ('sync','webhook','agent','operator','consolidation','replay','unknown'))
 ) PARTITION BY HASH (label);
 
 DO $$
@@ -294,7 +308,10 @@ CREATE TABLE IF NOT EXISTS kg_edges (
     payload_ref   CHAR(24),
     created_at    TIMESTAMPTZ DEFAULT NOW(),
     updated_at    TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (subject_label, predicate, object_label, namespace_id)
+    change_origin TEXT NOT NULL DEFAULT 'unknown',
+    origin_event_id UUID,
+    UNIQUE (subject_label, predicate, object_label, namespace_id),
+    CONSTRAINT kg_edges_change_origin_chk CHECK (change_origin IN ('sync','webhook','agent','operator','consolidation','replay','unknown'))
 ) PARTITION BY HASH (subject_label, predicate, object_label);
 
 CREATE TABLE IF NOT EXISTS kg_edges_0 PARTITION OF kg_edges FOR VALUES WITH (MODULUS 4, REMAINDER 0);
@@ -963,10 +980,13 @@ CREATE TABLE IF NOT EXISTS dead_letter_queue (
                    CHECK (status IN ('pending', 'replayed', 'purged')),
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     replayed_at    TIMESTAMPTZ,
-    purged_at      TIMESTAMPTZ
+    purged_at      TIMESTAMPTZ,
+    error_fingerprint TEXT,
+    quarantined_until TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_dlq_task_status ON dead_letter_queue (task_name, status);
+CREATE INDEX IF NOT EXISTS idx_dlq_fingerprint ON dead_letter_queue (error_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_dlq_created ON dead_letter_queue (created_at DESC);
 
 DO $$
@@ -1160,6 +1180,73 @@ BEGIN
     END IF;
 END $$;
 
+-- --- Muscles Schema Contract (Batch C0) ---
+CREATE TABLE IF NOT EXISTS processed_outbox_events (
+    event_id     UUID PRIMARY KEY,
+    namespace_id UUID NOT NULL REFERENCES namespaces(id),
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_processed_outbox_events_namespace_id ON processed_outbox_events (namespace_id);
+
+CREATE TABLE IF NOT EXISTS actor_trust (
+    namespace_id           UUID NOT NULL REFERENCES namespaces(id),
+    actor_id               TEXT NOT NULL,
+    actor_kind             TEXT NOT NULL CHECK (actor_kind IN ('agent','operator')),
+    confirmations          INT NOT NULL DEFAULT 0,
+    rejections             INT NOT NULL DEFAULT 0,
+    contradictions_sourced INT NOT NULL DEFAULT 0,
+    trust                  NUMERIC NOT NULL DEFAULT 0.65,
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (namespace_id, actor_id, actor_kind)
+);
+
+CREATE TABLE IF NOT EXISTS event_parents (
+    event_id        UUID NOT NULL,
+    parent_event_id UUID NOT NULL,
+    namespace_id    UUID NOT NULL REFERENCES namespaces(id),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (event_id, parent_event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_parents_parent_event_id ON event_parents (parent_event_id);
+CREATE INDEX IF NOT EXISTS idx_event_parents_namespace_id ON event_parents (namespace_id);
+
+-- Attach WORM trigger on event_parents (reusing prevent_mutation)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_event_parents_worm') THEN
+        CREATE TRIGGER trg_event_parents_worm
+            BEFORE UPDATE OR DELETE ON event_parents
+            FOR EACH ROW EXECUTE FUNCTION prevent_mutation();
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS action_approval_queue (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    namespace_id     UUID NOT NULL REFERENCES namespaces(id),
+    agent_id         TEXT NOT NULL,
+    action_type      TEXT NOT NULL,
+    target_system    TEXT NOT NULL,
+    target_entity_id TEXT,
+    proposed_payload JSONB NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','executed','expired')),
+    dry_run_result   JSONB,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resolved_at      TIMESTAMPTZ,
+    resolved_by      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_action_approval_queue_ns_status ON action_approval_queue (namespace_id, status);
+CREATE INDEX IF NOT EXISTS idx_action_approval_queue_ns_created ON action_approval_queue (namespace_id, created_at);
+
+CREATE TABLE IF NOT EXISTS action_idempotency (
+    idempotency_key  TEXT NOT NULL,
+    namespace_id     UUID NOT NULL REFERENCES namespaces(id),
+    action_type      TEXT NOT NULL,
+    target_entity_id TEXT,
+    response_hash    BYTEA,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (namespace_id, idempotency_key)
+);
+
 -- --- Row Level Security (Phase 0.1 Hardening) ---
 -- Applied after all tenant tables exist. Policies use get_nce_namespace() (fail-fast).
 -- kg_node_embeddings remain global (no namespace_id). kg_nodes/kg_edges are tenant-scoped.
@@ -1206,7 +1293,12 @@ DECLARE
         'embedding_aspects',
         'active_learning_queue',
         'd365_integrations',
-        'd365_netbox_mappings'
+        'd365_netbox_mappings',
+        'processed_outbox_events',
+        'actor_trust',
+        'event_parents',
+        'action_approval_queue',
+        'action_idempotency'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables
@@ -1223,7 +1315,7 @@ BEGIN
             t
         );
         EXECUTE format('REVOKE ALL ON TABLE public.%I FROM nce_app', t);
-        IF t IN ('event_log') THEN
+        IF t IN ('event_log', 'event_parents') THEN
             EXECUTE format(
                 'GRANT SELECT, INSERT ON TABLE public.%I TO nce_app',
                 t

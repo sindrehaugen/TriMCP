@@ -21,10 +21,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import nce.vertical_modules.netbox.circuits as circuits_mod
 import pytest
 from jsonschema.exceptions import ValidationError
-
-import nce.vertical_modules.netbox.circuits as circuits_mod
 from nce.auth import set_namespace_context
 from nce.graph_query import SpikingActivationEngine
 from nce.vertical_modules.netbox.circuits import (
@@ -750,8 +749,7 @@ async def test_mtbf_forecast_ranks_aged_and_anomalous_devices_highest() -> None:
     forecaster, http_client = _mtbf_forecaster(devices)
     conn = FakeConn(
         event_rows=[
-            {"event_type": "hw_error", "params": {"device_id": "anomalous-sw"}}
-            for _ in range(48)
+            {"event_type": "hw_error", "params": {"device_id": "anomalous-sw"}} for _ in range(48)
         ],
     )
     try:

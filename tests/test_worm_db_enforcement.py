@@ -49,15 +49,28 @@ async def test_nce_app_worm_privilege_enforcement():
         pytest.skip(f"Could not connect as nce_app (role might not be initialized): {exc}")
 
     try:
+        # Set dummy namespace ID session setting so RLS policies don't fail during WORM checks
+        try:
+            await conn.execute("SET nce.namespace_id = '00000000-0000-0000-0000-000000000000'")
+        except Exception:
+            pass
+
         for table in _WORM_TABLES:
             # UPDATE should raise InsufficientPrivilegeError
+            col = "event_id" if table == "event_parents" else "id"
             with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError) as exc_info:
-                await conn.execute(f"UPDATE {table} SET id = id WHERE FALSE")
-            assert "permission denied" in str(exc_info.value).lower() or "privilege" in str(exc_info.value).lower()
+                await conn.execute(f"UPDATE {table} SET {col} = {col} WHERE FALSE")
+            assert (
+                "permission denied" in str(exc_info.value).lower()
+                or "privilege" in str(exc_info.value).lower()
+            )
 
             # DELETE should raise InsufficientPrivilegeError
             with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError) as exc_info:
                 await conn.execute(f"DELETE FROM {table} WHERE FALSE")
-            assert "permission denied" in str(exc_info.value).lower() or "privilege" in str(exc_info.value).lower()
+            assert (
+                "permission denied" in str(exc_info.value).lower()
+                or "privilege" in str(exc_info.value).lower()
+            )
     finally:
         await conn.close()

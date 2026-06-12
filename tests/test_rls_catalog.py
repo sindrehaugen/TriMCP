@@ -58,12 +58,13 @@ async def test_rls_catalog_consistency(pg_admin_conn, pg_app_conn):
 
 def test_static_schema_rls_declarations() -> None:
     """Verify statically that all tables in schema.sql referencing namespaces are registered in event_log.py."""
-    from pathlib import Path
     import re
+    from pathlib import Path
+
     from nce.event_log import (
-        EXPECTED_TENANT_RLS_TABLES,
-        EXPECTED_SPECIAL_RLS_TABLES,
         EXPECTED_GLOBAL_TABLES,
+        EXPECTED_SPECIAL_RLS_TABLES,
+        EXPECTED_TENANT_RLS_TABLES,
     )
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -75,7 +76,9 @@ def test_static_schema_rls_declarations() -> None:
     # Balancing logic to extract table body safely including nested parentheses
     def extract_tables(schema_text: str) -> list[tuple[str, str]]:
         tables = []
-        start_pattern = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)\s*\(", re.IGNORECASE)
+        start_pattern = re.compile(
+            r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)\s*\(", re.IGNORECASE
+        )
         for match in start_pattern.finditer(schema_text):
             table_name = match.group(1)
             start_idx = match.end()
@@ -89,14 +92,14 @@ def test_static_schema_rls_declarations() -> None:
                     paren_count -= 1
                 curr_idx += 1
             if paren_count == 0:
-                table_body = schema_text[start_idx:curr_idx-1]
+                table_body = schema_text[start_idx : curr_idx - 1]
                 tables.append((table_name.lower(), table_body.lower()))
         return tables
 
     registered_tables = (
-        set(EXPECTED_TENANT_RLS_TABLES.keys()) |
-        set(EXPECTED_SPECIAL_RLS_TABLES.keys()) |
-        EXPECTED_GLOBAL_TABLES
+        set(EXPECTED_TENANT_RLS_TABLES.keys())
+        | set(EXPECTED_SPECIAL_RLS_TABLES.keys())
+        | EXPECTED_GLOBAL_TABLES
     )
 
     # Exclude root namespaces and custom tables that handle RLS differently
