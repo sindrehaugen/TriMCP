@@ -276,6 +276,45 @@ def deduplicate_graph(
     return merged_nodes, merged_edges
 
 
+def _spacy_extract_remote(text: str, base_url: str) -> tuple[list[KGNode], list[KGEdge]]:
+    """Send text to cognitive sidecar for spaCy entity and triplet extraction."""
+    import httpx
+
+    from nce.http_resilience import request_with_retry_sync
+
+    url = f"{base_url}/v1/nlp/spacy"
+    with httpx.Client(timeout=30.0) as client:
+        resp = request_with_retry_sync(
+            client,
+            "POST",
+            url,
+            json={"text": text},
+            operation_name="nlp_sidecar:spacy",
+        )
+        data = resp.json()
+
+    nodes = []
+    for n in data.get("nodes", []):
+        nodes.append(
+            KGNode(
+                label=n["label"],
+                entity_type=n["entity_type"],
+                source_text=n["source_text"],
+            )
+        )
+    edges = []
+    for e in data.get("edges", []):
+        edges.append(
+            KGEdge(
+                subject_label=e["subject_label"],
+                predicate=e["predicate"],
+                object_label=e["object_label"],
+                confidence=e.get("confidence", 0.85),
+            )
+        )
+    return nodes, edges
+
+
 # --- Public API ---
 
 
@@ -291,8 +330,19 @@ def extract(text: str) -> tuple[list[KGNode], list[KGEdge]]:
     use ``deduplicate_graph()``.
     """
     try:
-        nodes, edges = _spacy_extract(text)
-        log.debug("spaCy extracted %d nodes, %d edges.", len(nodes), len(edges))
+        from nce.embeddings import validated_cognitive_base_url
+
+        base_url = validated_cognitive_base_url()
+    except Exception:
+        base_url = ""
+
+    try:
+        if base_url:
+            nodes, edges = _spacy_extract_remote(text, base_url)
+            log.debug("spaCy (remote) extracted %d nodes, %d edges.", len(nodes), len(edges))
+        else:
+            nodes, edges = _spacy_extract(text)
+            log.debug("spaCy (local) extracted %d nodes, %d edges.", len(nodes), len(edges))
         return nodes, edges
     except (ImportError, Exception) as e:
         log.info("spaCy unavailable (%s), using regex fallback.", e)

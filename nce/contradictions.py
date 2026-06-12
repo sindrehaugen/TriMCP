@@ -82,7 +82,38 @@ def _sync_nli_predict(premise: str, hypothesis: str) -> float:
 
 
 async def check_nli_contradiction(premise: str, hypothesis: str) -> float:
-    """Async wrapper for NLI prediction."""
+    """Async wrapper for NLI prediction.
+
+    If NCE_COGNITIVE_BASE_URL is configured, the NLI calculation is offloaded
+    out-of-process to the cognitive sidecar to prevent memory usage spikes.
+    """
+    try:
+        from nce.embeddings import validated_cognitive_base_url
+
+        base_url = validated_cognitive_base_url()
+    except Exception:
+        base_url = ""
+
+    if base_url:
+        import httpx
+
+        from nce.http_resilience import request_with_retry
+
+        url = f"{base_url}/v1/nlp/nli"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await request_with_retry(
+                client,
+                "POST",
+                url,
+                json={"premise": premise, "hypothesis": hypothesis},
+                operation_name="nlp_sidecar:nli",
+            )
+            data = resp.json()
+            score = float(data["score"])
+            if math.isnan(score) or not (0.0 <= score <= 1.0):
+                raise NLIUnavailableError(f"Remote NLI score out of bounds: {score}")
+            return score
+
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_executor, _sync_nli_predict, premise, hypothesis)
 
@@ -489,7 +520,7 @@ async def _detect_contradictions_impl(
     for candidate in candidates:
         cand_id = str(candidate["id"])
         key = normalize_payload_ref(candidate["payload_ref"])
-        cand_text_prefetch = raw_by_ref.get(key, "")
+        cand_text_prefetch = raw_by_ref.get(key, "") if key is not None else ""
 
         async with scoped_pg_session(pg_pool, namespace_id) as conn:
             kg_hit = await _check_kg_contradiction(conn, triplets, cand_id)

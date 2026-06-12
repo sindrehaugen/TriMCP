@@ -21,6 +21,10 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -65,6 +69,10 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
   mongodb:
     image: mongo:7.0
@@ -90,6 +98,10 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
   minio:
     image: minio/minio:RELEASE.2024-11-07T00-52-20Z
@@ -109,6 +121,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   cognitive:
     image: ghcr.io/sindrehaugen/nce-cognitive:v1
@@ -117,10 +133,14 @@ services:
       - "${COGNITIVE_PORT:-11435}:11435"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11435/health"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:11435/health')\""]
       interval: 10s
       timeout: 5s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
   worker:
     build:
@@ -149,6 +169,7 @@ services:
       # those writes never touch real disk.
       NCE_ARTIFACT_STAGING_DIR: ${NCE_ARTIFACT_STAGING_DIR:-/dev/shm/nce-staging}
       TMPDIR: /dev/shm/nce-staging
+      NCE_APP_PASSWORD: nce_app_secret
     tmpfs:
       - /dev/shm/nce-staging
     deploy:
@@ -156,6 +177,8 @@ services:
       replicas: ${WORKER_REPLICAS:-2}
       # GPU access for re-embedding CUDA operations (Item 49)
       resources:
+        limits:
+          memory: 1G
         reservations:
           devices:
             - driver: nvidia
@@ -198,12 +221,16 @@ services:
       # Disk-I/O tuning (VI.5c D4/D5): RAM-backed temp/staging (see worker).
       NCE_ARTIFACT_STAGING_DIR: ${NCE_ARTIFACT_STAGING_DIR:-/dev/shm/nce-staging}
       TMPDIR: /dev/shm/nce-staging
+      NCE_APP_PASSWORD: nce_app_secret
     tmpfs:
       - /dev/shm/nce-staging
     # Multicore (VI.5a): cron MUST stay a singleton — CronLock is the only
     # split-brain guard. NEVER scale this above 1 replica.
     deploy:
       replicas: 1
+      resources:
+        limits:
+          memory: 512M
     depends_on:
       postgres:
         condition: service_healthy
@@ -252,6 +279,7 @@ services:
       # Disk-I/O tuning (VI.5c D4/D5): RAM-backed temp/staging (see worker).
       NCE_ARTIFACT_STAGING_DIR: ${NCE_ARTIFACT_STAGING_DIR:-/dev/shm/nce-staging}
       TMPDIR: /dev/shm/nce-staging
+      NCE_APP_PASSWORD: nce_app_secret
     tmpfs:
       - /dev/shm/nce-staging
     ports:
@@ -285,6 +313,10 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
   a2a:
     build:
@@ -319,6 +351,7 @@ services:
       # Disk-I/O tuning (VI.5c D4/D5): RAM-backed temp/staging (see worker).
       NCE_ARTIFACT_STAGING_DIR: ${NCE_ARTIFACT_STAGING_DIR:-/dev/shm/nce-staging}
       TMPDIR: /dev/shm/nce-staging
+      NCE_APP_PASSWORD: nce_app_secret
     tmpfs:
       - /dev/shm/nce-staging
     ports:
@@ -350,6 +383,10 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
   webhook-receiver:
     build:
@@ -384,6 +421,7 @@ services:
       # Disk-I/O tuning (VI.5c D4/D5): RAM-backed temp/staging (see worker).
       NCE_ARTIFACT_STAGING_DIR: ${NCE_ARTIFACT_STAGING_DIR:-/dev/shm/nce-staging}
       TMPDIR: /dev/shm/nce-staging
+      NCE_APP_PASSWORD: nce_app_secret
     tmpfs:
       - /dev/shm/nce-staging
     ports:
@@ -411,6 +449,10 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   jaeger:
     image: jaegertracing/all-in-one:1.60
@@ -428,13 +470,17 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   caddy:
     image: caddy:2.8-alpine
     container_name: nce-caddy
     ports:
-      - "${CADDY_HTTP_PORT:-80}:80"
-      - "${CADDY_HTTPS_PORT:-443}:443"
+      - "${CADDY_HTTP_PORT:-8082}:80"
+      - "${CADDY_HTTPS_PORT:-8443}:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -451,6 +497,10 @@ services:
       retries: 3
       start_period: 5s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
 volumes:
   redis_data:

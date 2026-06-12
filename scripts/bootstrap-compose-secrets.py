@@ -139,7 +139,7 @@ def _hash_pbkdf2(password: str) -> str:
         iters,
         dklen=32,
     )
-    return f"$pbkdf2${iters}${salt.hex()}${dk.hex()}"
+    return f"$$pbkdf2$${iters}$${salt.hex()}$${dk.hex()}"
 
 
 def _gen_for_key(key: str) -> str:

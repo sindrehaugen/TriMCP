@@ -14,12 +14,69 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = int(os.getenv("COGNITIVE_PORT", "11435"))
 DIM = int(os.getenv("EMBEDDING_VECTOR_DIM", "768"))
 
 _HEALTH = json.dumps({"status": "ok", "engine": "stub"}).encode()
+
+_IS_RELATION = re.compile(
+    r"(\b\w[\w\s]{1,30}?\b)\s+(is|are|uses|has|contains|stores|connects to|depends on|runs on)\s+([\w][\w\s]{1,30}?\b)",
+    re.IGNORECASE,
+)
+_KNOWN_TOOLS = {
+    "redis",
+    "postgres",
+    "postgresql",
+    "mongodb",
+    "mongo",
+    "docker",
+    "python",
+    "fastapi",
+    "mcp",
+    "nce",
+    "pgvector",
+    "tree-sitter",
+}
+
+
+def _stub_regex_extract(text: str) -> dict:
+    nodes = []
+    edges = []
+    seen = set()
+
+    def add_node(label: str, etype: str):
+        cleaned = label.strip()
+        key = cleaned.lower()
+        if cleaned and key not in seen:
+            nodes.append({"label": cleaned, "entity_type": etype, "source_text": cleaned})
+            seen.add(key)
+
+    for word in re.findall(r"\b\w[\w\-]+\b", text):
+        lower = word.lower()
+        if lower in _KNOWN_TOOLS:
+            add_node(word, "TOOL")
+
+    for m in _IS_RELATION.finditer(text):
+        subj, pred, obj = (
+            m.group(1).strip(),
+            m.group(2).strip().lower(),
+            m.group(3).strip(),
+        )
+        edges.append(
+            {
+                "subject_label": subj,
+                "predicate": pred,
+                "object_label": obj,
+                "confidence": 0.85,
+            }
+        )
+        for label in (subj, obj):
+            add_node(label, "CONCEPT")
+
+    return {"nodes": nodes, "edges": edges}
 
 
 def _chat_response(body: dict) -> bytes:
@@ -46,8 +103,7 @@ def _embeddings_response(body: dict) -> bytes:
     if isinstance(inputs, str):
         inputs = [inputs]
     data = [
-        {"object": "embedding", "index": i, "embedding": [0.0] * DIM}
-        for i in range(len(inputs))
+        {"object": "embedding", "index": i, "embedding": [0.0] * DIM} for i in range(len(inputs))
     ]
     return json.dumps(
         {
@@ -88,6 +144,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, _chat_response(body))
         elif self.path == "/v1/embeddings":
             self._send(200, _embeddings_response(body))
+        elif self.path == "/v1/nlp/spacy":
+            text = body.get("text", "")
+            self._send(200, json.dumps(_stub_regex_extract(text)).encode())
+        elif self.path == "/v1/nlp/nli":
+            self._send(200, b'{"score":0.0}')
         else:
             self._send(404, b'{"error":"not found"}')
 
