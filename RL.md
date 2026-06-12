@@ -70,7 +70,7 @@
 * [DONE] Batch 60 — Multicore: HTTP workers + RQ replicas + thread pinning (VI.5a) [PASSED TAG]
 * [DONE] Batch 61 — RAM: offload spaCy + NLI to a sidecar; container mem limits (VI.5b) [PASSED TAG]
 * [DONE] Batch 62 — Disk: datastore tuning + halfvec + tmpfs temp (VI.5c) [PASSED TAG]
-* [OPEN] Batch 63 — Cross-encoder reranking (IV.1) [NO TAG]
+* [DONE] Batch 63 — Cross-encoder reranking (IV.1) [PASSED TAG]
 * [OPEN] Batch 64 — Multi-vector / aspect embeddings (IV.2) [NO TAG]
 * [LOCKED] Batch 65 — diag-config: `NCE_DIAG_*` configuration surface (Diag P1) [NO TAG]
 * [LOCKED] Batch 66 — ingestion-event-type: `ingestion_completed` event type + replay handler (Diag P1) [NO TAG]
@@ -612,5 +612,15 @@ When steps are done: STOP. Run `_internal\tools\generate_diff.py` (flips the row
 * **Identified System Flaws:** None.
 * **Defensive Refactoring Correction Blueprint:** None.
 * **Kaizen:** The honest-scope guarantee is correctly stated (raw payload cryptographically unrecoverable + derivatives deleted; immutable log keeps only the fact of deletion, with prior-WORM entity/triplet strings persisting by design per Batch-44a/b). If "complete forgetting" becomes a hard promise, revisit 44b (content-free store_memory params).
+
+### TAG Batch 63 Evaluation Audit Report
+* **Verification Status:** PASSED TAG
+* **Target Scope Verification:** Read `RL.md`, `diff_batch_63.md`, and modified files: `nce/semantic_search.py`, `tests/test_semantic_search.py`.
+* **Structural Integrity Scoring:** Decoupling of cognitive sidecar redirection is clean. In-process fallback to CPU execution utilizes a separate executor thread pool. RLS scoped database belief read boundaries are respected.
+* **Contractual Test Fidelity:** The test contract fidelity is high. Mocked predictions verify both local in-process and sidecar HTTP routing parameters, ensuring proper reranking priority and graceful degradation to database scores on model failure, successfully avoiding the Trivial Test Trap.
+* **Scoped Test Execution:** Pass A target `tests/test_semantic_search.py` passed (19 passed). Pass B unit regression suite passed (2208 passed, 12 skipped). No new failures introduced.
+* **Identified System Flaws:** None.
+* **Defensive Refactoring Correction Blueprint:** None.
+* **Kaizen:** The check_nli_relevance function could cache local model loads internally to minimize recurrent AST/imports overhead, though it is currently managed via `_load_nli_model`.
 
 [EOF: END OF REFACTORING LEDGER]

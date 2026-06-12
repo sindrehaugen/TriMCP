@@ -499,3 +499,209 @@ class TestBatch37DecayConfidence:
         assert res["confidence"] > 0.04
         assert res["salience_score"] == 1.0
         assert res["last_reinforced_at"] == three_months_ago.isoformat()
+
+
+class TestBatch63CrossEncoderReranking:
+    @pytest.mark.asyncio
+    async def test_rerank_default_false(self) -> None:
+        oid = str(ObjectId())
+        mid = uuid.uuid4()
+        rows = [_pg_row(payload_ref=oid, memory_id=mid, score=0.9)]
+        mongo = _mongo_client(
+            episode_docs={oid: {"_id": ObjectId(oid), "raw_data": "some memory content"}}
+        )
+
+        async def embed(_query: str):
+            return [0.0] * VECTOR_DIM
+
+        mock_conn = _base_pg_conn(rows)
+        pool = MagicMock()
+
+        with patch("nce.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
+            with patch(
+                "nce.semantic_search.asyncio.create_task",
+                side_effect=lambda coro: (coro.close(), MagicMock())[1],
+            ):
+                results = await semantic_search(
+                    pg_pool=pool,
+                    mongo_client=mongo,
+                    embedding_fn=embed,
+                    query="test query",
+                    namespace_id=NS,
+                    agent_id=AGENT,
+                    rerank=False,
+                )
+
+        assert len(results) == 1
+        assert results[0]["reranker_score"] is None
+
+    @pytest.mark.asyncio
+    async def test_rerank_local_model_reorders_and_surfaces_score(self) -> None:
+        oid_a = str(ObjectId())
+        oid_b = str(ObjectId())
+        mid_a = uuid.UUID("00000000-0000-4000-8000-00000000000a")
+        mid_b = uuid.UUID("00000000-0000-4000-8000-00000000000b")
+
+        # A has lower database score (0.5) than B (0.9)
+        rows = [
+            _pg_row(payload_ref=oid_b, memory_id=mid_b, score=0.9),
+            _pg_row(payload_ref=oid_a, memory_id=mid_a, score=0.5),
+        ]
+        mongo = _mongo_client(
+            episode_docs={
+                oid_a: {"_id": ObjectId(oid_a), "raw_data": "matching content A"},
+                oid_b: {"_id": ObjectId(oid_b), "raw_data": "unrelated content B"},
+            }
+        )
+
+        async def embed(_query: str):
+            return [0.0] * VECTOR_DIM
+
+        mock_conn = _base_pg_conn(rows)
+        pool = MagicMock()
+
+        # Mock the local NLI model to return higher entailment score (probs[0]) for A than B
+        # probs structure: [entailment, neutral, contradiction]
+        import numpy as np
+
+        mock_model = MagicMock()
+        mock_model.predict = MagicMock(
+            side_effect=lambda pairs: np.array(
+                [[2.0, 0.0, -1.0] if pairs[0][0] == "matching content A" else [-2.0, 0.0, 1.0]],
+                dtype=np.float32,
+            )
+        )
+
+        with patch("nce.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
+            with patch(
+                "nce.semantic_search.asyncio.create_task",
+                side_effect=lambda coro: (coro.close(), MagicMock())[1],
+            ):
+                with patch("nce.contradictions._load_nli_model", return_value=mock_model):
+                    results = await semantic_search(
+                        pg_pool=pool,
+                        mongo_client=mongo,
+                        embedding_fn=embed,
+                        query="matching query",
+                        namespace_id=NS,
+                        agent_id=AGENT,
+                        rerank=True,
+                    )
+
+        # After reranking, A (higher NLI entailment score) should be first, even though its database score was lower
+        assert len(results) == 2
+
+        # A should have high entailment probability (> 0.5)
+        # B should have low entailment probability (< 0.5)
+        assert results[0]["memory_id"] == mid_a
+        assert results[1]["memory_id"] == mid_b
+        assert results[0]["reranker_score"] > 0.8
+        assert results[1]["reranker_score"] < 0.2
+
+        # Surfaced as a confidence signal
+        assert results[0]["confidence"] == results[0]["reranker_score"]
+        assert results[1]["confidence"] == results[1]["reranker_score"]
+
+    @pytest.mark.asyncio
+    async def test_rerank_remote_cognitive_sidecar(self) -> None:
+        oid_a = str(ObjectId())
+        oid_b = str(ObjectId())
+        mid_a = uuid.UUID("00000000-0000-4000-8000-00000000000a")
+        mid_b = uuid.UUID("00000000-0000-4000-8000-00000000000b")
+
+        rows = [
+            _pg_row(payload_ref=oid_b, memory_id=mid_b, score=0.9),
+            _pg_row(payload_ref=oid_a, memory_id=mid_a, score=0.5),
+        ]
+        mongo = _mongo_client(
+            episode_docs={
+                oid_a: {"_id": ObjectId(oid_a), "raw_data": "matching content A"},
+                oid_b: {"_id": ObjectId(oid_b), "raw_data": "unrelated content B"},
+            }
+        )
+
+        async def embed(_query: str):
+            return [0.0] * VECTOR_DIM
+
+        mock_conn = _base_pg_conn(rows)
+        pool = MagicMock()
+
+        # Mock cognitive base URL to return a fake URL
+        with patch(
+            "nce.embeddings.validated_cognitive_base_url", return_value="http://localhost:11435"
+        ):
+            # Mock httpx POST response
+            mock_resp_a = MagicMock()
+            mock_resp_a.json = MagicMock(
+                return_value={"score": 0.1}
+            )  # low contradiction = high relevance
+
+            mock_resp_b = MagicMock()
+            mock_resp_b.json = MagicMock(
+                return_value={"score": 0.9}
+            )  # high contradiction = low relevance
+
+            async def mock_post(*args, **kwargs):
+                body = kwargs.get("json", {})
+                if body.get("premise") == "matching content A":
+                    return mock_resp_a
+                return mock_resp_b
+
+            with patch("nce.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
+                with patch(
+                    "nce.semantic_search.asyncio.create_task",
+                    side_effect=lambda coro: (coro.close(), MagicMock())[1],
+                ):
+                    with patch("nce.http_resilience.request_with_retry", side_effect=mock_post):
+                        results = await semantic_search(
+                            pg_pool=pool,
+                            mongo_client=mongo,
+                            embedding_fn=embed,
+                            query="matching query",
+                            namespace_id=NS,
+                            agent_id=AGENT,
+                            rerank=True,
+                        )
+
+        # After reranking, A should be first (relevance = 1.0 - 0.1 = 0.9)
+        # B should be second (relevance = 1.0 - 0.9 = 0.1)
+        assert len(results) == 2
+        assert results[0]["memory_id"] == mid_a
+        assert results[1]["memory_id"] == mid_b
+        assert pytest.approx(results[0]["reranker_score"], 0.01) == 0.9
+        assert pytest.approx(results[1]["reranker_score"], 0.01) == 0.1
+        assert results[0]["confidence"] == results[0]["reranker_score"]
+
+    @pytest.mark.asyncio
+    async def test_rerank_graceful_degradation_on_nli_failure(self) -> None:
+        oid = str(ObjectId())
+        mid = uuid.uuid4()
+        rows = [_pg_row(payload_ref=oid, memory_id=mid, score=0.9)]
+        mongo = _mongo_client(episode_docs={oid: {"_id": ObjectId(oid), "raw_data": "some memory"}})
+
+        async def embed(_query: str):
+            return [0.0] * VECTOR_DIM
+
+        mock_conn = _base_pg_conn(rows)
+        pool = MagicMock()
+
+        # Mock NLI model loading to return None (model not installed/loaded)
+        with patch("nce.semantic_search.scoped_pg_session", _fake_scoped(mock_conn)):
+            with patch(
+                "nce.semantic_search.asyncio.create_task",
+                side_effect=lambda coro: (coro.close(), MagicMock())[1],
+            ):
+                with patch("nce.contradictions._load_nli_model", return_value=None):
+                    results = await semantic_search(
+                        pg_pool=pool,
+                        mongo_client=mongo,
+                        embedding_fn=embed,
+                        query="test",
+                        namespace_id=NS,
+                        agent_id=AGENT,
+                        rerank=True,
+                    )
+
+        # Should fall back to database sorting and return results cleanly
+        assert len(results) == 1
+        assert results[0]["reranker_score"] is None

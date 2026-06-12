@@ -100,6 +100,67 @@ async def _fire_reinforcement(
         log.warning("Reinforcement background task failed (non-fatal)")
 
 
+async def check_nli_relevance(premise: str, hypothesis: str) -> float:
+    """Async wrapper for NLI relevance prediction.
+
+    If NCE_COGNITIVE_BASE_URL is configured, the NLI calculation is offloaded
+    out-of-process to the cognitive sidecar to prevent memory usage spikes.
+    Otherwise, it runs locally in-process using the CrossEncoder.
+    """
+    try:
+        from nce.embeddings import validated_cognitive_base_url
+
+        base_url = validated_cognitive_base_url()
+    except Exception:
+        base_url = ""
+
+    if base_url:
+        import math
+
+        import httpx
+
+        from nce.contradictions import NLIUnavailableError
+        from nce.http_resilience import request_with_retry
+
+        url = f"{base_url}/v1/nlp/nli"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await request_with_retry(
+                client,
+                "POST",
+                url,
+                json={"premise": premise, "hypothesis": hypothesis},
+                operation_name="nlp_sidecar:nli",
+            )
+            data = resp.json()
+            score = float(data["score"])
+            if math.isnan(score) or not (0.0 <= score <= 1.0):
+                raise NLIUnavailableError(f"Remote NLI score out of bounds: {score}")
+            return 1.0 - score
+
+    from nce.contradictions import NLIUnavailableError, _executor, _load_nli_model
+
+    model = _load_nli_model()
+    if model is None:
+        raise NLIUnavailableError("NLI model not loaded")
+
+    import math
+
+    import torch
+
+    loop = asyncio.get_running_loop()
+
+    def _predict() -> float:
+        scores = model.predict([(premise, hypothesis)])
+        probs = torch.nn.functional.softmax(torch.from_numpy(scores), dim=1).numpy()[0]
+        # DeBERTa NLI: 0=entail, 1=neutral, 2=contradiction
+        entail_score = float(probs[0])
+        if math.isnan(entail_score) or not (0.0 <= entail_score <= 1.0):
+            raise NLIUnavailableError(f"NLI score out of bounds: {entail_score}")
+        return entail_score
+
+    return await loop.run_in_executor(_executor, _predict)
+
+
 async def semantic_search(
     *,
     pg_pool: asyncpg.Pool,
@@ -111,6 +172,7 @@ async def semantic_search(
     limit: int = 5,
     offset: int = 0,
     as_of=None,
+    rerank: bool = False,
 ) -> list[dict]:
     """Semantic search with pgvector cosine + FTS hybrid ranking.
 
@@ -389,6 +451,29 @@ async def semantic_search(
                 else last_reinforced_at,
                 "confidence": confidence,
                 "stale": stale,
+                "reranker_score": None,
             }
         )
+
+    if rerank and results:
+        from nce.contradictions import NLIUnavailableError
+
+        reranked = True
+        for r in results:
+            raw_text = r["raw_data"] or ""
+            if not raw_text:
+                r["reranker_score"] = 0.0
+            else:
+                try:
+                    nli_score = await check_nli_relevance(raw_text, query)
+                    r["reranker_score"] = nli_score
+                except (NLIUnavailableError, Exception) as exc:
+                    log.warning("NLI reranking failed (falling back to database sorting): %s", exc)
+                    reranked = False
+                    break
+
+        if reranked:
+            results.sort(key=lambda x: (-x["reranker_score"], -x["score"], str(x["memory_id"])))
+            for r in results:
+                r["confidence"] = r["reranker_score"]
     return results
